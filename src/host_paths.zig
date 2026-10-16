@@ -1,16 +1,17 @@
 const std = @import("std");
+const sio = @import("sio");
 
 /// Resolve the user home directory on the current host.
 /// On Windows returns USERPROFILE; on Unix-like hosts returns HOME. The
 /// returned slice is owned by the allocator and must be freed by the caller.
 pub fn homeDirectory(allocator: std.mem.Allocator) ?[]u8 {
     // USERPROFILE is the canonical Windows home location.
-    if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |home| {
+    if (sio.getEnvVarOwned(allocator, "USERPROFILE")) |home| {
         if (home.len > 0) return home;
         allocator.free(home);
     } else |_| {}
     // HOME is honored on POSIX and by some Windows shells (Git Bash, WSL).
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+    if (sio.getEnvVarOwned(allocator, "HOME")) |home| {
         if (home.len > 0) return home;
         allocator.free(home);
     } else |_| {}
@@ -53,7 +54,7 @@ const sa_exe_suffix: []const u8 = if (is_windows_build) ".exe" else "";
 
 fn probeExists(allocator: std.mem.Allocator, dir: []const u8, base: []const u8) ?[]u8 {
     const full = std.fs.path.join(allocator, &.{ dir, base }) catch return null;
-    std.fs.cwd().access(full, .{}) catch {
+    sio.cwd().access(full, .{}) catch {
         allocator.free(full);
         return null;
     };
@@ -61,7 +62,7 @@ fn probeExists(allocator: std.mem.Allocator, dir: []const u8, base: []const u8) 
 }
 
 fn accessOk(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    sio.cwd().access(path, .{}) catch return false;
     return true;
 }
 
@@ -70,13 +71,13 @@ pub fn resolveSaExecutable(allocator: std.mem.Allocator) []const u8 {
     const sa_base = std.fmt.allocPrint(allocator, "sa{0s}", .{exe}) catch return "sa";
 
     // 1. explicit override (SA_EXE)
-    if (std.process.getEnvVarOwned(allocator, "SA_EXE")) |override_path| {
+    if (sio.getEnvVarOwned(allocator, "SA_EXE")) |override_path| {
         if (override_path.len > 0 and accessOk(override_path)) return override_path;
         allocator.free(override_path);
     } else |_| {}
 
     // 2. SCI_ROOT/zig-out/bin/sa<exe> (dev layout)
-    if (std.process.getEnvVarOwned(allocator, "SCI_ROOT")) |sci_root| {
+    if (sio.getEnvVarOwned(allocator, "SCI_ROOT")) |sci_root| {
         defer allocator.free(sci_root);
         const dev_bin = std.fs.path.join(allocator, &.{ sci_root, "zig-out", "bin" }) catch return "sa";
         defer allocator.free(dev_bin);
@@ -84,7 +85,7 @@ pub fn resolveSaExecutable(allocator: std.mem.Allocator) []const u8 {
     } else |_| {}
 
     // 3. directory of the sa.exe that loaded this plugin DLL
-    if (std.fs.selfExePathAlloc(allocator)) |self_path| {
+    if (sio.selfExePathAlloc(allocator)) |self_path| {
         defer allocator.free(self_path);
         if (std.fs.path.dirname(self_path)) |self_dir| {
             if (probeExists(allocator, self_dir, sa_base)) |hit| return hit;
@@ -92,7 +93,7 @@ pub fn resolveSaExecutable(allocator: std.mem.Allocator) []const u8 {
     } else |_| {}
 
     // 4. walk PATH (Account for both `;` on Windows and `:`/newline elsewhere.)
-    if (std.process.getEnvVarOwned(allocator, "PATH")) |path_val| {
+    if (sio.getEnvVarOwned(allocator, "PATH")) |path_val| {
         defer allocator.free(path_val);
         const sep: []const u8 = if (is_windows_build) ";" else ":;\x0a";
         var it = std.mem.tokenizeAny(u8, path_val, sep);

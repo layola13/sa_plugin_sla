@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 
 pub const MonomorphizeError = error{
@@ -17,7 +18,7 @@ pub const Monomorphizer = struct {
     struct_templates: std.StringHashMap(*ast.StructDecl),
     enum_templates: std.StringHashMap(*ast.EnumDecl),
     func_templates: std.StringHashMap(*ast.FuncDecl),
-    impl_templates: std.ArrayList(*ast.ImplDecl),
+    impl_templates: std.array_list.Managed(*ast.ImplDecl),
 
     // Tracks already specialized structs, enums, impls, and functions to avoid duplicate generation
     specialized_structs: std.StringHashMap([]const u8),
@@ -26,7 +27,7 @@ pub const Monomorphizer = struct {
     specialized_funcs: std.StringHashMap([]const u8),
 
     // Accumulators for the generated concrete declarations
-    new_decls: std.ArrayList(*ast.Node),
+    new_decls: std.array_list.Managed(*ast.Node),
     last_missing_template: ?[]const u8,
 
     pub fn init(allocator: std.mem.Allocator) Monomorphizer {
@@ -35,12 +36,12 @@ pub const Monomorphizer = struct {
             .struct_templates = std.StringHashMap(*ast.StructDecl).init(allocator),
             .enum_templates = std.StringHashMap(*ast.EnumDecl).init(allocator),
             .func_templates = std.StringHashMap(*ast.FuncDecl).init(allocator),
-            .impl_templates = std.ArrayList(*ast.ImplDecl).init(allocator),
+            .impl_templates = std.array_list.Managed(*ast.ImplDecl).init(allocator),
             .specialized_structs = std.StringHashMap([]const u8).init(allocator),
             .specialized_enums = std.StringHashMap([]const u8).init(allocator),
             .specialized_impls = std.StringHashMap([]const u8).init(allocator),
             .specialized_funcs = std.StringHashMap([]const u8).init(allocator),
-            .new_decls = std.ArrayList(*ast.Node).init(allocator),
+            .new_decls = std.array_list.Managed(*ast.Node).init(allocator),
             .last_missing_template = null,
         };
     }
@@ -99,7 +100,7 @@ pub const Monomorphizer = struct {
             .user_defined => |u| u,
             else => return MonomorphizeError.MonomorphizeError,
         };
-        var names = std.ArrayList([]const u8).init(self.allocator);
+        var names = std.array_list.Managed([]const u8).init(self.allocator);
         for (ud.generics) |generic_ty| {
             const generic_ud = switch (generic_ty.*) {
                 .user_defined => |u| u,
@@ -119,7 +120,7 @@ pub const Monomorphizer = struct {
             };
             if (!std.mem.eql(u8, target_ud.name, base_name) or target_ud.generics.len != args.len) continue;
 
-            var key_buf = std.ArrayList(u8).init(self.allocator);
+            var key_buf = std.array_list.Managed(u8).init(self.allocator);
             try key_buf.appendSlice(mangled_name);
             try key_buf.appendSlice("|impl|");
             if (template.trait_name) |trait_name| try key_buf.appendSlice(trait_name) else try key_buf.appendSlice("inherent");
@@ -154,7 +155,7 @@ pub const Monomorphizer = struct {
         self.last_missing_template = null;
         if (program.* != .program) return MonomorphizeError.MonomorphizeError;
 
-        var regular_decls = std.ArrayList(*ast.Node).init(self.allocator);
+        var regular_decls = std.array_list.Managed(*ast.Node).init(self.allocator);
         errdefer regular_decls.deinit();
 
         // 1. Separate templates from concrete declarations
@@ -230,7 +231,7 @@ pub const Monomorphizer = struct {
         switch (node.*) {
             .program => unreachable,
             .struct_decl => |s| {
-                var new_fields = std.ArrayList(ast.Field).init(self.allocator);
+                var new_fields = std.array_list.Managed(ast.Field).init(self.allocator);
                 for (s.fields) |f| {
                     const new_ty = try self.specializeType(f.ty);
                     try new_fields.append(.{ .name = f.name, .ty = new_ty });
@@ -249,12 +250,12 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .type_alias_decl => |a| {
-                var new_components = std.ArrayList(ast.TypeAliasComponent).init(self.allocator);
+                var new_components = std.array_list.Managed(ast.TypeAliasComponent).init(self.allocator);
                 for (a.components) |component| {
                     switch (component) {
                         .ty => |ty| try new_components.append(.{ .ty = try self.specializeType(ty) }),
                         .inline_struct => |fields| {
-                            var new_fields = std.ArrayList(ast.Field).init(self.allocator);
+                            var new_fields = std.array_list.Managed(ast.Field).init(self.allocator);
                             for (fields) |f| {
                                 try new_fields.append(.{ .name = f.name, .ty = try self.specializeType(f.ty) });
                             }
@@ -267,9 +268,9 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .enum_decl => |e| {
-                var new_variants = std.ArrayList(ast.EnumVariant).init(self.allocator);
+                var new_variants = std.array_list.Managed(ast.EnumVariant).init(self.allocator);
                 for (e.variants) |variant| {
-                    var new_fields = std.ArrayList(ast.Field).init(self.allocator);
+                    var new_fields = std.array_list.Managed(ast.Field).init(self.allocator);
                     for (variant.fields) |f| {
                         const new_ty = try self.specializeType(f.ty);
                         try new_fields.append(.{ .name = f.name, .ty = new_ty });
@@ -281,9 +282,9 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .trait_decl => |t| {
-                var new_methods = std.ArrayList(ast.TraitMethod).init(self.allocator);
+                var new_methods = std.array_list.Managed(ast.TraitMethod).init(self.allocator);
                 for (t.methods) |method| {
-                    var new_params = std.ArrayList(ast.Param).init(self.allocator);
+                    var new_params = std.array_list.Managed(ast.Param).init(self.allocator);
                     for (method.params) |p| {
                         const new_ty = try self.specializeType(p.ty);
                         try new_params.append(.{ .name = p.name, .ty = new_ty, .is_borrow = p.is_borrow, .is_move = p.is_move });
@@ -310,7 +311,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .func_decl => |f| {
-                var new_params = std.ArrayList(ast.Param).init(self.allocator);
+                var new_params = std.array_list.Managed(ast.Param).init(self.allocator);
                 for (f.params) |p| {
                     const new_ty = try self.specializeType(p.ty);
                     try new_params.append(.{ .name = p.name, .ty = new_ty, .is_borrow = p.is_borrow, .is_move = p.is_move });
@@ -507,7 +508,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .generic_func_ref => |ref| {
-                var spec_generics = std.ArrayList(*ast.Type).init(self.allocator);
+                var spec_generics = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (ref.generics) |g| {
                     try spec_generics.append(try self.specializeType(g));
                 }
@@ -525,7 +526,7 @@ pub const Monomorphizer = struct {
                 const new_cond = try self.specializeNode(ife.cond);
                 var new_chain: ?[]const ast.IfLetCond = null;
                 if (ife.let_chain) |chain| {
-                    var items = std.ArrayList(ast.IfLetCond).init(self.allocator);
+                    var items = std.array_list.Managed(ast.IfLetCond).init(self.allocator);
                     for (chain) |cond| {
                         try items.append(.{ .pattern = cond.pattern, .value = try self.specializeNode(cond.value) });
                     }
@@ -546,7 +547,7 @@ pub const Monomorphizer = struct {
             },
             .switch_expr => |swe| {
                 const new_val = try self.specializeNode(swe.val);
-                var new_cases = std.ArrayList(ast.Case).init(self.allocator);
+                var new_cases = std.array_list.Managed(ast.Case).init(self.allocator);
                 for (swe.cases) |case| {
                     const new_pattern = try self.specializeNode(case.pattern);
                     const new_body = try self.specializeBlock(case.body);
@@ -563,7 +564,7 @@ pub const Monomorphizer = struct {
             },
             .match_expr => |mat| {
                 const new_val = try self.specializeNode(mat.val);
-                var new_cases = std.ArrayList(ast.MatchCase).init(self.allocator);
+                var new_cases = std.array_list.Managed(ast.MatchCase).init(self.allocator);
                 for (mat.cases) |case| {
                     const new_guard = if (case.guard) |guard| try self.specializeNode(guard) else null;
                     const new_body = try self.specializeBlock(case.body);
@@ -641,7 +642,7 @@ pub const Monomorphizer = struct {
             },
             .struct_literal => |lit| {
                 const new_ty = try self.specializeType(lit.ty);
-                var new_fields = std.ArrayList(ast.StructLiteralField).init(self.allocator);
+                var new_fields = std.array_list.Managed(ast.StructLiteralField).init(self.allocator);
                 for (lit.fields) |field| {
                     try new_fields.append(.{
                         .name = field.name,
@@ -659,7 +660,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .enum_literal => |lit| {
-                var new_fields = std.ArrayList(ast.EnumLiteralField).init(self.allocator);
+                var new_fields = std.array_list.Managed(ast.EnumLiteralField).init(self.allocator);
                 for (lit.fields) |field| {
                     try new_fields.append(.{ .name = field.name, .value = try self.specializeNode(field.value) });
                 }
@@ -668,7 +669,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .closure_literal => |lit| {
-                var new_params = std.ArrayList(ast.Param).init(self.allocator);
+                var new_params = std.array_list.Managed(ast.Param).init(self.allocator);
                 for (lit.params) |p| {
                     try new_params.append(.{ .name = p.name, .ty = try self.specializeType(p.ty), .is_borrow = p.is_borrow, .is_move = p.is_move });
                 }
@@ -678,7 +679,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .array_literal => |lit| {
-                var new_elements = std.ArrayList(*ast.Node).init(self.allocator);
+                var new_elements = std.array_list.Managed(*ast.Node).init(self.allocator);
                 for (lit.elements) |elem| {
                     try new_elements.append(try self.specializeNode(elem));
                 }
@@ -692,7 +693,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .tuple_literal => |lit| {
-                var new_elements = std.ArrayList(*ast.Node).init(self.allocator);
+                var new_elements = std.array_list.Managed(*ast.Node).init(self.allocator);
                 for (lit.elements) |elem| {
                     try new_elements.append(try self.specializeNode(elem));
                 }
@@ -723,11 +724,11 @@ pub const Monomorphizer = struct {
             },
             .call_expr => |call| {
                 if (call.generics.len > 0 and !self.func_templates.contains(call.func_name)) {
-                    var new_args = std.ArrayList(*ast.Node).init(self.allocator);
+                    var new_args = std.array_list.Managed(*ast.Node).init(self.allocator);
                     for (call.args) |arg| {
                         try new_args.append(try self.specializeNode(arg));
                     }
-                    var new_generics = std.ArrayList(*ast.Type).init(self.allocator);
+                    var new_generics = std.array_list.Managed(*ast.Type).init(self.allocator);
                     for (call.generics) |g| {
                         try new_generics.append(try self.specializeType(g));
                     }
@@ -755,7 +756,7 @@ pub const Monomorphizer = struct {
                         try self.instantiateFunction(mangled_name, template, call.generics);
                     }
 
-                    var new_args = std.ArrayList(*ast.Node).init(self.allocator);
+                    var new_args = std.array_list.Managed(*ast.Node).init(self.allocator);
                     for (call.args) |arg| {
                         try new_args.append(try self.specializeNode(arg));
                     }
@@ -781,7 +782,7 @@ pub const Monomorphizer = struct {
                             try self.instantiateFunction(mangled_name, template, inferred_args);
                         }
 
-                        var new_args = std.ArrayList(*ast.Node).init(self.allocator);
+                        var new_args = std.array_list.Managed(*ast.Node).init(self.allocator);
                         for (call.args) |arg| {
                             try new_args.append(try self.specializeNode(arg));
                         }
@@ -802,7 +803,7 @@ pub const Monomorphizer = struct {
                 }
 
                 // Ordinary function call
-                var new_args = std.ArrayList(*ast.Node).init(self.allocator);
+                var new_args = std.array_list.Managed(*ast.Node).init(self.allocator);
                 for (call.args) |arg| {
                     try new_args.append(try self.specializeNode(arg));
                 }
@@ -862,7 +863,7 @@ pub const Monomorphizer = struct {
                 return ty;
             },
             .tuple_literal => |tuple| {
-                var elems = std.ArrayList(*ast.Type).init(self.allocator);
+                var elems = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (tuple.elements) |elem| {
                     try elems.append((try self.inferNodeTypeShallow(elem)) orelse return null);
                 }
@@ -1020,7 +1021,7 @@ pub const Monomorphizer = struct {
     }
 
     fn specializeBlock(self: *Monomorphizer, block: []const *ast.Node) MonomorphizeError![]const *ast.Node {
-        var new_block = std.ArrayList(*ast.Node).init(self.allocator);
+        var new_block = std.array_list.Managed(*ast.Node).init(self.allocator);
         for (block) |stmt| {
             try new_block.append(try self.specializeNode(stmt));
         }
@@ -1050,7 +1051,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .tuple => |tuple| {
-                var new_elems = std.ArrayList(*ast.Type).init(self.allocator);
+                var new_elems = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (tuple.elems) |elem| {
                     try new_elems.append(try self.specializeType(elem));
                 }
@@ -1065,7 +1066,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .closure => |closure| {
-                var new_params = std.ArrayList(*ast.Type).init(self.allocator);
+                var new_params = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (closure.params) |p| {
                     try new_params.append(try self.specializeType(p));
                 }
@@ -1075,7 +1076,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .fn_ptr => |fn_ptr| {
-                var new_params = std.ArrayList(*ast.Type).init(self.allocator);
+                var new_params = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (fn_ptr.params) |p| {
                     try new_params.append(try self.specializeType(p));
                 }
@@ -1086,7 +1087,7 @@ pub const Monomorphizer = struct {
             },
             .user_defined => |ud| {
                 if (ud.generics.len > 0) {
-                    var spec_args = std.ArrayList(*ast.Type).init(self.allocator);
+                    var spec_args = std.array_list.Managed(*ast.Type).init(self.allocator);
                     for (ud.generics) |g| {
                         try spec_args.append(try self.specializeType(g));
                     }
@@ -1147,7 +1148,7 @@ pub const Monomorphizer = struct {
             return try self.specializeNode(value);
         }
 
-        var spec_fields = std.ArrayList(ast.EnumLiteralField).init(self.allocator);
+        var spec_fields = std.array_list.Managed(ast.EnumLiteralField).init(self.allocator);
         for (lit.fields) |field| {
             try spec_fields.append(.{
                 .name = field.name,
@@ -1167,7 +1168,7 @@ pub const Monomorphizer = struct {
     }
 
     fn getMangledStructName(self: *Monomorphizer, base: []const u8, generics: []const *ast.Type) MonomorphizeError![]const u8 {
-        var name_buf = std.ArrayList(u8).init(self.allocator);
+        var name_buf = std.array_list.Managed(u8).init(self.allocator);
         try name_buf.appendSlice(base);
         for (generics) |g| {
             try name_buf.append('_');
@@ -1177,7 +1178,7 @@ pub const Monomorphizer = struct {
     }
 
     fn getMangledFuncName(self: *Monomorphizer, base: []const u8, generics: []const *ast.Type) MonomorphizeError![]const u8 {
-        var name_buf = std.ArrayList(u8).init(self.allocator);
+        var name_buf = std.array_list.Managed(u8).init(self.allocator);
         try name_buf.appendSlice(base);
         for (generics) |g| {
             try name_buf.append('_');
@@ -1186,7 +1187,7 @@ pub const Monomorphizer = struct {
         return try name_buf.toOwnedSlice();
     }
 
-    fn appendTypeName(self: *Monomorphizer, buf: *std.ArrayList(u8), ty: *ast.Type) MonomorphizeError!void {
+    fn appendTypeName(self: *Monomorphizer, buf: *std.array_list.Managed(u8), ty: *ast.Type) MonomorphizeError!void {
         switch (ty.*) {
             .infer => try buf.appendSlice("infer"),
             .primitive => |p| {
@@ -1220,7 +1221,7 @@ pub const Monomorphizer = struct {
             },
             .array => |arr| {
                 try buf.appendSlice("arr");
-                try buf.writer().print("{}", .{arr.len});
+                sio.managedPrint(buf, "{}", .{arr.len}) catch return MonomorphizeError.OutOfMemory;
                 try buf.append('_');
                 try self.appendTypeName(buf, arr.elem);
             },
@@ -1270,7 +1271,7 @@ pub const Monomorphizer = struct {
         try self.specialized_structs.put(mangled_name, try self.allocator.dupe(u8, mangled_name));
 
         // Create specialized fields
-        var spec_fields = std.ArrayList(ast.Field).init(self.allocator);
+        var spec_fields = std.array_list.Managed(ast.Field).init(self.allocator);
         for (template.fields) |f| {
             const spec_ty = try self.substituteType(f.ty, template.generics, args);
             const fully_spec_ty = try self.specializeType(spec_ty);
@@ -1298,9 +1299,9 @@ pub const Monomorphizer = struct {
     fn instantiateEnum(self: *Monomorphizer, mangled_name: []const u8, template: *ast.EnumDecl, args: []const *ast.Type) MonomorphizeError!void {
         try self.specialized_enums.put(mangled_name, try self.allocator.dupe(u8, mangled_name));
 
-        var spec_variants = std.ArrayList(ast.EnumVariant).init(self.allocator);
+        var spec_variants = std.array_list.Managed(ast.EnumVariant).init(self.allocator);
         for (template.variants) |variant| {
-            var spec_fields = std.ArrayList(ast.Field).init(self.allocator);
+            var spec_fields = std.array_list.Managed(ast.Field).init(self.allocator);
             for (variant.fields) |field| {
                 const spec_ty = try self.substituteType(field.ty, template.generics, args);
                 const fully_spec_ty = try self.specializeType(spec_ty);
@@ -1332,7 +1333,7 @@ pub const Monomorphizer = struct {
         try self.specialized_funcs.put(mangled_name, try self.allocator.dupe(u8, mangled_name));
 
         // Create specialized params
-        var spec_params = std.ArrayList(ast.Param).init(self.allocator);
+        var spec_params = std.array_list.Managed(ast.Param).init(self.allocator);
         for (template.params) |p| {
             const spec_ty = try self.substituteType(p.ty, template.generics, args);
             const fully_spec_ty = try self.specializeType(spec_ty);
@@ -1395,7 +1396,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .tuple => |tuple| {
-                var spec_elems = std.ArrayList(*ast.Type).init(self.allocator);
+                var spec_elems = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (tuple.elems) |elem| {
                     try spec_elems.append(try self.substituteType(elem, params, args));
                 }
@@ -1410,7 +1411,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .closure => |closure| {
-                var spec_params = std.ArrayList(*ast.Type).init(self.allocator);
+                var spec_params = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (closure.params) |p| {
                     try spec_params.append(try self.substituteType(p, params, args));
                 }
@@ -1420,7 +1421,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .fn_ptr => |fn_ptr| {
-                var spec_params = std.ArrayList(*ast.Type).init(self.allocator);
+                var spec_params = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (fn_ptr.params) |p| {
                     try spec_params.append(try self.substituteType(p, params, args));
                 }
@@ -1438,7 +1439,7 @@ pub const Monomorphizer = struct {
                 }
 
                 // If not, recursively substitute its generic arguments
-                var spec_args = std.ArrayList(*ast.Type).init(self.allocator);
+                var spec_args = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (ud.generics) |g| {
                     try spec_args.append(try self.substituteType(g, params, args));
                 }
@@ -1455,7 +1456,7 @@ pub const Monomorphizer = struct {
     }
 
     fn substituteBlock(self: *Monomorphizer, block: []const *ast.Node, params: []const []const u8, args: []const *ast.Type) MonomorphizeError![]const *ast.Node {
-        var spec_block = std.ArrayList(*ast.Node).init(self.allocator);
+        var spec_block = std.array_list.Managed(*ast.Node).init(self.allocator);
         for (block) |stmt| {
             try spec_block.append(try self.substituteNode(stmt, params, args));
         }
@@ -1472,7 +1473,7 @@ pub const Monomorphizer = struct {
             .overload_decl => unreachable,
             .impl_decl => unreachable,
             .func_decl => |f| {
-                var spec_params = std.ArrayList(ast.Param).init(self.allocator);
+                var spec_params = std.array_list.Managed(ast.Param).init(self.allocator);
                 for (f.params) |p| {
                     try spec_params.append(.{
                         .name = p.name,
@@ -1633,7 +1634,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .generic_func_ref => |ref| {
-                var spec_generics = std.ArrayList(*ast.Type).init(self.allocator);
+                var spec_generics = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (ref.generics) |g| {
                     try spec_generics.append(try self.substituteType(g, params, args));
                 }
@@ -1645,7 +1646,7 @@ pub const Monomorphizer = struct {
                 const spec_cond = try self.substituteNode(ife.cond, params, args);
                 var spec_chain: ?[]const ast.IfLetCond = null;
                 if (ife.let_chain) |chain| {
-                    var items = std.ArrayList(ast.IfLetCond).init(self.allocator);
+                    var items = std.array_list.Managed(ast.IfLetCond).init(self.allocator);
                     for (chain) |cond| {
                         try items.append(.{ .pattern = cond.pattern, .value = try self.substituteNode(cond.value, params, args) });
                     }
@@ -1666,7 +1667,7 @@ pub const Monomorphizer = struct {
             },
             .switch_expr => |swe| {
                 const spec_val = try self.substituteNode(swe.val, params, args);
-                var spec_cases = std.ArrayList(ast.Case).init(self.allocator);
+                var spec_cases = std.array_list.Managed(ast.Case).init(self.allocator);
                 for (swe.cases) |case| {
                     const spec_pattern = try self.substituteNode(case.pattern, params, args);
                     const spec_body = try self.substituteBlock(case.body, params, args);
@@ -1683,7 +1684,7 @@ pub const Monomorphizer = struct {
             },
             .match_expr => |mat| {
                 const spec_val = try self.substituteNode(mat.val, params, args);
-                var spec_cases = std.ArrayList(ast.MatchCase).init(self.allocator);
+                var spec_cases = std.array_list.Managed(ast.MatchCase).init(self.allocator);
                 for (mat.cases) |case| {
                     const spec_guard = if (case.guard) |guard| try self.substituteNode(guard, params, args) else null;
                     const spec_body = try self.substituteBlock(case.body, params, args);
@@ -1761,7 +1762,7 @@ pub const Monomorphizer = struct {
             },
             .struct_literal => |lit| {
                 const spec_ty = try self.substituteType(lit.ty, params, args);
-                var spec_fields = std.ArrayList(ast.StructLiteralField).init(self.allocator);
+                var spec_fields = std.array_list.Managed(ast.StructLiteralField).init(self.allocator);
                 for (lit.fields) |field| {
                     try spec_fields.append(.{
                         .name = field.name,
@@ -1779,7 +1780,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .enum_literal => |lit| {
-                var spec_fields = std.ArrayList(ast.EnumLiteralField).init(self.allocator);
+                var spec_fields = std.array_list.Managed(ast.EnumLiteralField).init(self.allocator);
                 for (lit.fields) |field| {
                     try spec_fields.append(.{ .name = field.name, .value = try self.substituteNode(field.value, params, args) });
                 }
@@ -1788,7 +1789,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .closure_literal => |lit| {
-                var spec_params = std.ArrayList(ast.Param).init(self.allocator);
+                var spec_params = std.array_list.Managed(ast.Param).init(self.allocator);
                 for (lit.params) |p| {
                     try spec_params.append(.{ .name = p.name, .ty = try self.substituteType(p.ty, params, args), .is_borrow = p.is_borrow, .is_move = p.is_move });
                 }
@@ -1798,7 +1799,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .array_literal => |lit| {
-                var spec_elements = std.ArrayList(*ast.Node).init(self.allocator);
+                var spec_elements = std.array_list.Managed(*ast.Node).init(self.allocator);
                 for (lit.elements) |elem| {
                     try spec_elements.append(try self.substituteNode(elem, params, args));
                 }
@@ -1812,7 +1813,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .tuple_literal => |lit| {
-                var spec_elements = std.ArrayList(*ast.Node).init(self.allocator);
+                var spec_elements = std.array_list.Managed(*ast.Node).init(self.allocator);
                 for (lit.elements) |elem| {
                     try spec_elements.append(try self.substituteNode(elem, params, args));
                 }
@@ -1842,11 +1843,11 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .call_expr => |call| {
-                var spec_generics = std.ArrayList(*ast.Type).init(self.allocator);
+                var spec_generics = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (call.generics) |g| {
                     try spec_generics.append(try self.substituteType(g, params, args));
                 }
-                var spec_args = std.ArrayList(*ast.Node).init(self.allocator);
+                var spec_args = std.array_list.Managed(*ast.Node).init(self.allocator);
                 for (call.args) |arg| {
                     try spec_args.append(try self.substituteNode(arg, params, args));
                 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const plugin_api = @import("plugin_api");
 const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
@@ -199,17 +200,14 @@ const plugin_commands = @import("plugin_commands.zig");
 
 pub const runSlaCommandImpl = plugin_commands.runSlaCommandImpl;
 
-fn anyWriterFromHostStream(stream: plugin_api.HostStream, storage: *plugin_api.HostStream) std.io.AnyWriter {
-    storage.* = stream;
-    return .{ .context = storage, .writeFn = struct {
-        fn write(ctx: *const anyopaque, bytes: []const u8) anyerror!usize {
-            const hs = @as(*const plugin_api.HostStream, @ptrCast(@alignCast(ctx)));
-            const write_all = hs.write_all orelse return error.WriteFailed;
-            if (write_all(hs.ctx, bytes.ptr, bytes.len) != @intFromEnum(plugin_api.AbiStatus.ok)) return error.WriteFailed;
-            return bytes.len;
-        }
-    }.write };
-}
+const HostStreamSink = struct {
+    stream: plugin_api.HostStream,
+
+    pub fn writeAll(self: HostStreamSink, bytes: []const u8) !void {
+        const wa = self.stream.write_all orelse return error.WriteFailed;
+        if (wa(self.stream.ctx, bytes.ptr, bytes.len) != @intFromEnum(plugin_api.AbiStatus.ok)) return error.WriteFailed;
+    }
+};
 
 fn runSlaCommandAbi(
     ctx: *const plugin_api.Context,
@@ -230,12 +228,18 @@ fn runSlaCommandAbi(
         args[i] = std.mem.span(argv[i]);
     }
 
-    var stdout_storage = stdout;
-    var stderr_storage = stderr;
-    const stdout_writer = anyWriterFromHostStream(stdout, &stdout_storage);
-    const stderr_writer = anyWriterFromHostStream(stderr, &stderr_storage);
+    var out_fw = sio.ForwardWriter(HostStreamSink).init(.{ .stream = stdout });
+    var err_fw = sio.ForwardWriter(HostStreamSink).init(.{ .stream = stderr });
+    const stdout_writer = out_fw.writer();
+    const stderr_writer = err_fw.writer();
 
-    const result = runSlaCommandImpl(&local_ctx, args, stdout_writer, stderr_writer) catch return @intFromEnum(plugin_api.AbiStatus.failed);
+    const result = runSlaCommandImpl(&local_ctx, args, stdout_writer, stderr_writer) catch {
+        stdout_writer.flush() catch {};
+        stderr_writer.flush() catch {};
+        return @intFromEnum(plugin_api.AbiStatus.failed);
+    };
+    stdout_writer.flush() catch {};
+    stderr_writer.flush() catch {};
     if (result) |code| {
         out_code.* = code;
         return @intFromEnum(plugin_api.AbiStatus.ok);

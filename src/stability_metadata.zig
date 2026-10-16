@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 
 pub const schema_json =
     \\
@@ -87,12 +88,12 @@ pub const ValidationReport = struct {
     label_count: usize = 0,
     artifact_count: usize = 0,
     evidence_count: usize = 0,
-    errors: std.ArrayList([]u8),
+    errors: std.array_list.Managed([]u8),
 
     pub fn init(allocator: std.mem.Allocator) ValidationReport {
         return .{
             .allocator = allocator,
-            .errors = std.ArrayList([]u8).init(allocator),
+            .errors = std.array_list.Managed([]u8).init(allocator),
         };
     }
 
@@ -305,7 +306,7 @@ fn isValidEvidenceStatus(status: []const u8) bool {
         std.mem.eql(u8, status, "unknown");
 }
 
-pub fn writeReportJson(writer: std.io.AnyWriter, report: *const ValidationReport) !void {
+pub fn writeReportJson(writer: *std.Io.Writer, report: *const ValidationReport) !void {
     try writer.writeAll("{\"status\":");
     try writeJsonString(writer, if (report.valid) "ok" else "error");
     try writer.print(",\"valid\":{},\"labels\":{d},\"artifacts\":{d},\"evidence\":{d},\"errors\":[", .{
@@ -321,7 +322,7 @@ pub fn writeReportJson(writer: std.io.AnyWriter, report: *const ValidationReport
     try writer.writeAll("]}\n");
 }
 
-pub fn writeReportText(writer: std.io.AnyWriter, report: *const ValidationReport) !void {
+pub fn writeReportText(writer: *std.Io.Writer, report: *const ValidationReport) !void {
     if (report.valid) {
         try writer.writeAll("stability metadata manifest ok\n");
     } else {
@@ -337,7 +338,7 @@ pub fn writeReportText(writer: std.io.AnyWriter, report: *const ValidationReport
     }
 }
 
-fn writeJsonString(writer: std.io.AnyWriter, value: []const u8) !void {
+fn writeJsonString(writer: *std.Io.Writer, value: []const u8) !void {
     try writer.writeByte('"');
     for (value) |c| {
         switch (c) {

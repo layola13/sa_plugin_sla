@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 const contract_parser = @import("contract_parser.zig");
 const type_checker = @import("type_checker.zig");
@@ -95,7 +96,7 @@ pub const Options = struct {
 pub const Codegen = struct {
     allocator: std.mem.Allocator,
     tc: *type_checker.TypeChecker,
-    out: std.ArrayList(u8),
+    out: std.array_list.Managed(u8),
     tmp_idx: usize,
     label_idx: usize,
     string_idx: usize,
@@ -145,14 +146,14 @@ pub const Codegen = struct {
     future_state_vtables: std.StringHashMap([]const u8),
     future_readiness: std.StringHashMap(lowering_rules.FutureReadiness),
     executor_task_counts: std.StringHashMap(usize),
-    binding_aliases: std.StringHashMap(std.ArrayList([]const u8)),
+    binding_aliases: std.StringHashMap(std.array_list.Managed([]const u8)),
     let_binding_aliases: std.AutoHashMap(*const ast.Node, []const u8),
     injected_address_bindings: std.StringHashMap([]const u8),
-    loop_continue_labels: std.ArrayList([]const u8),
-    loop_break_labels: std.ArrayList([]const u8),
-    loop_body_local_scopes: std.ArrayList(std.ArrayList([]const u8)),
-    loop_body_block_depths: std.ArrayList(usize),
-    current_expr_later_nodes: std.ArrayList(*const ast.Node),
+    loop_continue_labels: std.array_list.Managed([]const u8),
+    loop_break_labels: std.array_list.Managed([]const u8),
+    loop_body_local_scopes: std.array_list.Managed(std.array_list.Managed([]const u8)),
+    loop_body_block_depths: std.array_list.Managed(usize),
+    current_expr_later_nodes: std.array_list.Managed(*const ast.Node),
     current_block: ?[]const *ast.Node = null,
     current_stmt_index: usize = 0,
     current_async: bool,
@@ -165,6 +166,12 @@ pub const Codegen = struct {
         return initWithOptions(allocator, tc, .{});
     }
 
+    /// NOTE(Zig 0.17): `Managed(u8).writer().print` was removed; format
+    /// directly into `self.out` via the sio compat layer.
+    fn outPrint(self: *Codegen, comptime fmt: []const u8, args: anytype) !void {
+        try sio.managedPrint(&self.out, fmt, args);
+    }
+
     pub fn initWithOptions(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker, options: Options) Codegen {
         var injected_address_bindings = std.StringHashMap([]const u8).init(allocator);
         for (options.injected_address_bindings) |binding| {
@@ -173,7 +180,7 @@ pub const Codegen = struct {
         return .{
             .allocator = allocator,
             .tc = tc,
-            .out = std.ArrayList(u8).init(allocator),
+            .out = std.array_list.Managed(u8).init(allocator),
             .tmp_idx = 0,
             .label_idx = 0,
             .string_idx = 0,
@@ -223,14 +230,14 @@ pub const Codegen = struct {
             .future_state_vtables = std.StringHashMap([]const u8).init(allocator),
             .future_readiness = std.StringHashMap(lowering_rules.FutureReadiness).init(allocator),
             .executor_task_counts = std.StringHashMap(usize).init(allocator),
-            .binding_aliases = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
+            .binding_aliases = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
             .let_binding_aliases = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .injected_address_bindings = injected_address_bindings,
-            .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
-            .loop_break_labels = std.ArrayList([]const u8).init(allocator),
-            .loop_body_local_scopes = std.ArrayList(std.ArrayList([]const u8)).init(allocator),
-            .loop_body_block_depths = std.ArrayList(usize).init(allocator),
-            .current_expr_later_nodes = std.ArrayList(*const ast.Node).init(allocator),
+            .loop_continue_labels = std.array_list.Managed([]const u8).init(allocator),
+            .loop_break_labels = std.array_list.Managed([]const u8).init(allocator),
+            .loop_body_local_scopes = std.array_list.Managed(std.array_list.Managed([]const u8)).init(allocator),
+            .loop_body_block_depths = std.array_list.Managed(usize).init(allocator),
+            .current_expr_later_nodes = std.array_list.Managed(*const ast.Node).init(allocator),
             .current_async = false,
             .current_async_return_ty = null,
             .async_pending_return_emitted = false,
@@ -337,7 +344,7 @@ pub const Codegen = struct {
         const alias = try self.newTmp();
         var entry = self.binding_aliases.getOrPut(name) catch return CodegenError.OutOfMemory;
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+            entry.value_ptr.* = std.array_list.Managed([]const u8).init(self.allocator);
         }
         entry.value_ptr.append(alias) catch return CodegenError.OutOfMemory;
         return alias;
@@ -352,7 +359,7 @@ pub const Codegen = struct {
     fn pushBindingAliasTo(self: *Codegen, name: []const u8, alias: []const u8) CodegenError!void {
         var entry = self.binding_aliases.getOrPut(name) catch return CodegenError.OutOfMemory;
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+            entry.value_ptr.* = std.array_list.Managed([]const u8).init(self.allocator);
         }
         entry.value_ptr.append(alias) catch return CodegenError.OutOfMemory;
     }
@@ -392,14 +399,14 @@ pub const Codegen = struct {
         self: *Codegen,
         macro_decl: *const ast.MacroDecl,
         body: []const *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
-        var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
+        var scoped_aliases = std.array_list.Managed([]const u8).init(self.allocator);
         const SavedLocalType = struct {
             name: []const u8,
             old_ty: ?*const ast.Type,
         };
-        var scoped_types = std.ArrayList(SavedLocalType).init(self.allocator);
+        var scoped_types = std.array_list.Managed(SavedLocalType).init(self.allocator);
         defer {
             var type_i = scoped_types.items.len;
             while (type_i > 0) {
@@ -450,7 +457,7 @@ pub const Codegen = struct {
                     try self.pushBindingAliasTo(for_stmt.var_name, alias);
                     try scoped_aliases.append(for_stmt.var_name);
                     const counter_slot = std.fmt.allocPrint(self.allocator, "{s}_slot", .{alias}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc 8\n", .{counter_slot}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc 8\n", .{counter_slot}) catch return CodegenError.CodegenError;
                     var for_copy = for_stmt;
                     for_copy.var_name = alias;
                     var node = ast.Node{ .for_stmt = for_copy };
@@ -466,13 +473,13 @@ pub const Codegen = struct {
         self: *Codegen,
         macro_decl: *const ast.MacroDecl,
         body: []const *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         if (body.len == 0 or body[body.len - 1].* != .expr_stmt) return CodegenError.CodegenError;
 
-        var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
+        var scoped_aliases = std.array_list.Managed([]const u8).init(self.allocator);
         const SavedLocalType = struct { name: []const u8, old_ty: ?*const ast.Type };
-        var scoped_types = std.ArrayList(SavedLocalType).init(self.allocator);
+        var scoped_types = std.array_list.Managed(SavedLocalType).init(self.allocator);
         defer {
             var type_i = scoped_types.items.len;
             while (type_i > 0) {
@@ -522,7 +529,7 @@ pub const Codegen = struct {
         if (value_expr.* == .identifier and value_ty.* == .primitive) {
             try self.emitPrimitiveCopy(result, value_reg, value_ty);
         } else {
-            self.out.writer().print("    {s} = {s}\n", .{ result, value_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = {s}\n", .{ result, value_reg }) catch return CodegenError.CodegenError;
         }
         if (self.tc.cleanups.get(last)) |list| {
             for (list.items) |name| try self.emitRelease(name);
@@ -534,13 +541,13 @@ pub const Codegen = struct {
         self: *Codegen,
         macro_decl: *const ast.MacroDecl,
         call: *const ast.CallExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (macro_decl.params.len != call.args.len) return CodegenError.CodegenError;
 
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var arg_types = std.ArrayList(?*const ast.Type).init(self.allocator);
+        var arg_types = std.array_list.Managed(?*const ast.Type).init(self.allocator);
         defer arg_types.deinit();
         for (call.args) |arg| {
             const arg_ty = self.resolvedTypeForExpr(arg);
@@ -553,10 +560,10 @@ pub const Codegen = struct {
             old_expr: ?*const ast.Node,
             old_ty: ?*const ast.Type,
         };
-        var saved_args = std.ArrayList(SavedArg).init(self.allocator);
+        var saved_args = std.array_list.Managed(SavedArg).init(self.allocator);
         defer saved_args.deinit();
 
-        var aliased_params = std.ArrayList([]const u8).init(self.allocator);
+        var aliased_params = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             var i = aliased_params.items.len;
             while (i > 0) {
@@ -666,7 +673,7 @@ pub const Codegen = struct {
         defer self.allocator.free(vt_name);
         const lowered = try self.loweredFuncSymbol(func_name);
         defer self.allocator.free(lowered);
-        self.out.writer().print("@const {s} = vtable {{ call = @{s} }}\n", .{ vt_name, lowered }) catch return CodegenError.CodegenError;
+        self.outPrint("@const {s} = vtable {{ call = @{s} }}\n", .{ vt_name, lowered }) catch return CodegenError.CodegenError;
     }
 
     fn emitTraitVTableDecl(self: *Codegen, decl: *const ast.ImplDecl) CodegenError!void {
@@ -675,10 +682,10 @@ pub const Codegen = struct {
         const vt_name = try self.vtableName(trait_name, type_name);
         defer self.allocator.free(vt_name);
 
-        self.out.writer().print("@const {s} = vtable {{ ", .{vt_name}) catch return CodegenError.CodegenError;
+        self.outPrint("@const {s} = vtable {{ ", .{vt_name}) catch return CodegenError.CodegenError;
         var first = true;
         try self.emitTraitVTableEntries(trait_name, type_name, &first);
-        self.out.writer().print(" }}\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint(" }}\n", .{}) catch return CodegenError.CodegenError;
     }
 
     fn emitTraitVTableEntries(self: *Codegen, trait_name: []const u8, type_name: []const u8, first: *bool) CodegenError!void {
@@ -698,39 +705,39 @@ pub const Codegen = struct {
             if (self.tc.funcs.get(mangled)) |impl_method| {
                 if (impl_method.is_decl_only) continue;
             }
-            if (!first.*) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            if (!first.*) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
             first.* = false;
             const lowered = try self.loweredFuncSymbol(mangled);
             defer self.allocator.free(lowered);
-            self.out.writer().print("{s} = @{s}", .{ method.name, lowered }) catch return CodegenError.CodegenError;
+            self.outPrint("{s} = @{s}", .{ method.name, lowered }) catch return CodegenError.CodegenError;
         }
     }
 
-    fn genDynBorrowCoercionArg(self: *Codegen, arg: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genDynBorrowCoercionArg(self: *Codegen, arg: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const source_expr = if (arg.* == .borrow_expr) arg.borrow_expr.expr else arg;
         const source_ty = self.tc.expr_types.get(source_expr) orelse return CodegenError.CodegenError;
         const source_reg = try self.genExpr(source_expr, hoisted_allocs);
         const fat_reg = try self.newTmp();
-        self.out.writer().print("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
         if (dynTraitName(source_ty)) |_| {
             const data_reg = try self.newTmp();
             const vtable_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+Dyn_data as ptr\n", .{ data_reg, source_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+Dyn_vtable as ptr\n", .{ vtable_reg, source_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+Dyn_vtable, {s} as ptr\n", .{ fat_reg, vtable_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Dyn_data as ptr\n", .{ data_reg, source_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Dyn_vtable as ptr\n", .{ vtable_reg, source_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+Dyn_vtable, {s} as ptr\n", .{ fat_reg, vtable_reg }) catch return CodegenError.CodegenError;
         } else {
             const type_name = concreteTypeName(source_ty) orelse return CodegenError.CodegenError;
             const vt_name = try self.vtableName(trait_name, type_name);
             defer self.allocator.free(vt_name);
-            self.out.writer().print("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, source_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+Dyn_vtable, &{s} as ptr\n", .{ fat_reg, vt_name }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, source_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+Dyn_vtable, &{s} as ptr\n", .{ fat_reg, vt_name }) catch return CodegenError.CodegenError;
             if (callArgNeedsRelease(source_expr)) try self.emitRelease(source_reg);
         }
         return fat_reg;
     }
 
-    fn genDynBoxCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genDynBoxCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
         const inner_ty = boxInnerType(expr_ty) orelse return CodegenError.CodegenError;
         const type_name = concreteTypeName(inner_ty) orelse return CodegenError.CodegenError;
@@ -739,17 +746,17 @@ pub const Codegen = struct {
 
         const box_reg = try self.genExpr(expr, hoisted_allocs);
         const data_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+Box_value as ptr\n", .{ data_reg, box_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Box_value as ptr\n", .{ data_reg, box_reg }) catch return CodegenError.CodegenError;
         const fat_reg = try self.newTmp();
-        self.out.writer().print("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+Dyn_vtable, &{s} as ptr\n", .{ fat_reg, vt_name }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+Dyn_vtable, &{s} as ptr\n", .{ fat_reg, vt_name }) catch return CodegenError.CodegenError;
         try self.emitRelease(data_reg);
         try self.emitRelease(box_reg);
         return fat_reg;
     }
 
-    fn genDynRcCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genDynRcCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (expr.* != .call_expr) return CodegenError.CodegenError;
         const call = expr.call_expr;
         if (call.args.len != 1) return CodegenError.CodegenError;
@@ -761,18 +768,18 @@ pub const Codegen = struct {
 
         const data_reg = try self.genExpr(call.args[0], hoisted_allocs);
         const fat_reg = try self.newTmp();
-        self.out.writer().print("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+Dyn_vtable, &{s} as ptr\n", .{ fat_reg, vt_name }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+Dyn_vtable, &{s} as ptr\n", .{ fat_reg, vt_name }) catch return CodegenError.CodegenError;
         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(data_reg);
 
         const rc_reg = try self.newTmp();
-        self.out.writer().print("    EXPAND RC_NEW {s}, {s}\n", .{ rc_reg, fat_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND RC_NEW {s}, {s}\n", .{ rc_reg, fat_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(fat_reg);
         return rc_reg;
     }
 
-    fn genDynCoercionExpr(self: *Codegen, expr: *ast.Node, plan: lowering_rules.DynCoercionPlan, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genDynCoercionExpr(self: *Codegen, expr: *ast.Node, plan: lowering_rules.DynCoercionPlan, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (plan.isBoxToDyn()) {
             return try self.genDynBoxCoercionExpr(expr, plan.trait_name, hoisted_allocs);
         }
@@ -783,15 +790,15 @@ pub const Codegen = struct {
     }
 
     fn emitIntConst(self: *Codegen, target: []const u8, value: i64) CodegenError!void {
-        self.out.writer().print("    {s} = {}\n", .{ target, value }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = {}\n", .{ target, value }) catch return CodegenError.CodegenError;
     }
 
     fn emitFloatConst(self: *Codegen, target: []const u8, value: f64) CodegenError!void {
         if (std.math.isFinite(value) and @floor(value) == value) {
-            self.out.writer().print("    {s} = {d}.0\n", .{ target, value }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = {d}.0\n", .{ target, value }) catch return CodegenError.CodegenError;
             return;
         }
-        self.out.writer().print("    {s} = {d}\n", .{ target, value }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = {d}\n", .{ target, value }) catch return CodegenError.CodegenError;
     }
 
     fn genLiteralValue(self: *Codegen, lit: ast.Literal) CodegenError![]const u8 {
@@ -806,12 +813,12 @@ pub const Codegen = struct {
                 // C string (raw `ptr` CSTR scans terminate at the first zero byte).
                 // Explicit-length slice users use `escapedStringByteLen(v)`, which
                 // excludes this terminator, so visible output is unchanged.
-                self.out.writer().print("    @const {s} = utf8:\"{s}\\0\"\n", .{ label, v }) catch return CodegenError.CodegenError;
+                self.outPrint("    @const {s} = utf8:\"{s}\\0\"\n", .{ label, v }) catch return CodegenError.CodegenError;
                 const len_reg = try self.newTmp();
                 try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(v))));
                 self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ reg, label, len_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ reg, label, len_reg }) catch return CodegenError.CodegenError;
                 try self.emitRelease(len_reg);
             },
         }
@@ -835,7 +842,7 @@ pub const Codegen = struct {
                 _ = self.borrow_source_temps.remove(resolved_name);
                 if (borrow_temp_release.release_borrow_value and !self.consumed_bindings.contains(resolved_name)) {
                     self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
                 }
                 try self.emitRelease(source_temp);
                 return;
@@ -847,59 +854,59 @@ pub const Codegen = struct {
             const release_plan = lowering_rules.planRefCellHandleRelease(has_owner_temp);
             if (release_plan.consume_handle_value) self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             if (release_plan.release_dynamic_borrow) {
-                self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
             }
-            if (release_plan.consume_handle_value) self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            if (release_plan.consume_handle_value) self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             if (handle.cell_release_temp) |temp| {
                 if (release_plan.release_owner_temps) try self.emitRelease(temp);
             }
             return;
         }
         if (self.mutex_guard_handles.get(resolved_name)) |handle| {
-            self.out.writer().print("    EXPAND MUTEX_UNLOCK {s}\n", .{handle.mutex_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND MUTEX_UNLOCK {s}\n", .{handle.mutex_reg}) catch return CodegenError.CodegenError;
             try self.releaseTemporaryHandleRegister(handle.mutex_reg);
             _ = self.mutex_guard_handles.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
-            self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             return;
         }
         if (self.mutex_lock_results.get(resolved_name)) |handle| {
-            self.out.writer().print("    EXPAND MUTEX_UNLOCK {s}\n", .{handle.mutex_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND MUTEX_UNLOCK {s}\n", .{handle.mutex_reg}) catch return CodegenError.CodegenError;
             try self.releaseTemporaryHandleRegister(handle.mutex_reg);
             _ = self.mutex_lock_results.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
-            self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             return;
         }
         if (self.rwlock_guard_handles.get(resolved_name)) |handle| {
             if (handle.is_write) {
-                self.out.writer().print("    EXPAND RWLOCK_RELEASE_WRITE {s}\n", .{handle.lock_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND RWLOCK_RELEASE_WRITE {s}\n", .{handle.lock_reg}) catch return CodegenError.CodegenError;
             } else {
-                self.out.writer().print("    EXPAND RWLOCK_RELEASE_READ {s}\n", .{handle.lock_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND RWLOCK_RELEASE_READ {s}\n", .{handle.lock_reg}) catch return CodegenError.CodegenError;
             }
             try self.releaseTemporaryHandleRegister(handle.lock_reg);
             _ = self.rwlock_guard_handles.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
-            self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             return;
         }
         if (self.rwlock_lock_results.get(resolved_name)) |handle| {
             if (handle.is_write) {
-                self.out.writer().print("    EXPAND RWLOCK_RELEASE_WRITE {s}\n", .{handle.lock_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND RWLOCK_RELEASE_WRITE {s}\n", .{handle.lock_reg}) catch return CodegenError.CodegenError;
             } else {
-                self.out.writer().print("    EXPAND RWLOCK_RELEASE_READ {s}\n", .{handle.lock_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND RWLOCK_RELEASE_READ {s}\n", .{handle.lock_reg}) catch return CodegenError.CodegenError;
             }
             try self.releaseTemporaryHandleRegister(handle.lock_reg);
             _ = self.rwlock_lock_results.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
-            self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             return;
         }
         if (self.file_bindings.contains(resolved_name)) {
             const close_status = try self.newTmp();
-            self.out.writer().print("    EXPAND FS_CLOSE {s}, {s}\n", .{ close_status, resolved_name }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND FS_CLOSE {s}, {s}\n", .{ close_status, resolved_name }) catch return CodegenError.CodegenError;
             try self.emitRelease(close_status);
-            self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             _ = self.file_bindings.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
@@ -909,7 +916,7 @@ pub const Codegen = struct {
         }
         if (self.metadata_bindings.contains(resolved_name)) {
             const close_status = try self.newTmp();
-            self.out.writer().print("    EXPAND FS_METADATA_FREE {s}, {s}\n", .{ close_status, resolved_name }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND FS_METADATA_FREE {s}, {s}\n", .{ close_status, resolved_name }) catch return CodegenError.CodegenError;
             try self.emitRelease(close_status);
             _ = self.metadata_bindings.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
@@ -918,7 +925,7 @@ pub const Codegen = struct {
         if (self.metadata_open_results.contains(resolved_name)) {
             _ = self.metadata_open_results.remove(resolved_name);
         }
-        var handles_to_release = std.ArrayList([]const u8).init(self.allocator);
+        var handles_to_release = std.array_list.Managed([]const u8).init(self.allocator);
         defer handles_to_release.deinit();
         var handle_iter = self.refcell_borrow_handles.iterator();
         while (handle_iter.next()) |entry| {
@@ -935,7 +942,7 @@ pub const Codegen = struct {
                 const release_plan = lowering_rules.planRefCellHandleRelease(has_owner_temp);
                 if (release_plan.consume_handle_value) self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
                 if (release_plan.release_dynamic_borrow) {
-                    self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
                 }
                 if (handle.cell_release_temp) |temp| {
                     if (release_plan.release_owner_temps) try self.emitRelease(temp);
@@ -954,43 +961,43 @@ pub const Codegen = struct {
         if (self.consumed_bindings.contains(resolved_name)) return;
         if (self.mpsc_sender_bindings.contains(resolved_name)) return;
         if (self.mpsc_receiver_bindings.contains(resolved_name)) {
-            self.out.writer().print("    EXPAND MPSC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND MPSC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
         }
         if (self.string_buf_bindings.contains(resolved_name)) {
-            self.out.writer().print("    EXPAND STRING_BUF_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND STRING_BUF_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
         }
         if (self.hashmap_bindings.contains(resolved_name)) {
-            self.out.writer().print("    EXPAND MAP_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND MAP_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
         }
         if (self.btree_map_bindings.contains(resolved_name)) {
-            self.out.writer().print("    EXPAND BTREE_MAP_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND BTREE_MAP_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
         }
         if (self.hashset_bindings.contains(resolved_name)) {
-            self.out.writer().print("    EXPAND SET_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND SET_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
         }
         if (self.btree_set_bindings.contains(resolved_name)) {
-            self.out.writer().print("    EXPAND BTREE_SET_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND BTREE_SET_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
         }
-        self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
         self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
         _ = self.future_state_vtables.remove(resolved_name);
         _ = self.future_readiness.remove(resolved_name);
         if (self.task_future_objects.get(resolved_name)) |future_obj| {
             _ = self.task_future_objects.remove(resolved_name);
             if (!self.consumed_bindings.contains(future_obj)) {
-                self.out.writer().print("    !{s}\n", .{future_obj}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{future_obj}) catch return CodegenError.CodegenError;
                 self.consumed_bindings.put(future_obj, {}) catch return CodegenError.OutOfMemory;
             }
         }
@@ -1028,7 +1035,7 @@ pub const Codegen = struct {
     }
 
     fn pushLoopBodyLocalScope(self: *Codegen) CodegenError!void {
-        self.loop_body_local_scopes.append(std.ArrayList([]const u8).init(self.allocator)) catch return CodegenError.OutOfMemory;
+        self.loop_body_local_scopes.append(std.array_list.Managed([]const u8).init(self.allocator)) catch return CodegenError.OutOfMemory;
         self.loop_body_block_depths.append(0) catch return CodegenError.OutOfMemory;
     }
 
@@ -1059,7 +1066,7 @@ pub const Codegen = struct {
         self.loop_body_local_scopes.items[scope_index].append(name) catch return CodegenError.OutOfMemory;
     }
 
-    fn cleanupListContainsName(self: *Codegen, list: ?*const std.ArrayList([]const u8), name: []const u8) bool {
+    fn cleanupListContainsName(self: *Codegen, list: ?*const std.array_list.Managed([]const u8), name: []const u8) bool {
         const cleanup_list = list orelse return false;
         const resolved_name = self.resolveBindingName(name);
         for (cleanup_list.items) |item| {
@@ -1072,7 +1079,7 @@ pub const Codegen = struct {
         const resolved_name = self.resolveBindingName(name);
         if (self.local_binding_types.get(resolved_name)) |ty| {
             if (force_consumed_primitive and ty.* == .primitive and self.consumed_bindings.contains(resolved_name)) {
-                self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
                 return;
             }
         }
@@ -1089,7 +1096,7 @@ pub const Codegen = struct {
         return false;
     }
 
-    fn emitActiveLoopBodyLocalCleanups(self: *Codegen, skip_list: ?*const std.ArrayList([]const u8), force_consumed_primitive: bool) CodegenError!void {
+    fn emitActiveLoopBodyLocalCleanups(self: *Codegen, skip_list: ?*const std.array_list.Managed([]const u8), force_consumed_primitive: bool) CodegenError!void {
         if (self.loop_body_local_scopes.items.len == 0) return;
         const scope = &self.loop_body_local_scopes.items[self.loop_body_local_scopes.items.len - 1];
         var i = scope.items.len;
@@ -1205,7 +1212,7 @@ pub const Codegen = struct {
     fn ensureResultSlotRefCellSlot(self: *Codegen, slot: []const u8) CodegenError![]const u8 {
         if (self.result_slot_refcell_slots.get(slot)) |existing| return existing;
         const cell_slot = try self.newTmp();
-        self.out.writer().print("    {s} = alloc 8\n", .{cell_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc 8\n", .{cell_slot}) catch return CodegenError.CodegenError;
         self.result_slot_refcell_slots.put(slot, cell_slot) catch return CodegenError.OutOfMemory;
         return cell_slot;
     }
@@ -1225,7 +1232,7 @@ pub const Codegen = struct {
         if (refcell_store.storesBorrowHandleCompanion()) {
             const handle = refcell_handle.?;
             const meta = try self.ensureResultSlotRefCellHandle(slot, handle.kind);
-            self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ meta.cell_slot, handle.cell_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, {s} as ptr\n", .{ meta.cell_slot, handle.cell_reg }) catch return CodegenError.CodegenError;
             _ = self.refcell_borrow_handles.remove(src);
             const cleanup_plan = lowering_rules.planRefCellCompanionStoreCleanup(
                 if (handle.cell_release_temp) |temp| !std.mem.eql(u8, temp, src) else false,
@@ -1238,6 +1245,15 @@ pub const Codegen = struct {
             }
         }
         try self.transferResultSlotValueState(slot, src, true);
+        // Runtime counterpart of the ownership move into the slot (mirrors
+        // the SAB backend `emitMoveForSlotTransfer`): retire a temporary
+        // source alias with `^src` (frees nothing) so the verifier does not
+        // report the branch allocation live at function exit. Named bindings
+        // stay live.
+        if (!self.consumed_bindings.contains(src) and std.mem.startsWith(u8, src, "tmp_")) {
+            self.outPrint("    ^{s}\n", .{src}) catch return CodegenError.CodegenError;
+            try self.markConsumedBinding(src);
+        }
     }
 
     fn loadResultSlotTransferredValueState(self: *Codegen, dst: []const u8, slot: []const u8, target_ty: *const ast.Type) CodegenError!void {
@@ -1253,7 +1269,7 @@ pub const Codegen = struct {
                 _ = self.result_slot_refcell_slots.fetchRemove(slot);
                 const cell_reg = try self.newTmp();
                 const restore_plan = lowering_rules.planRefCellCompanionRestore();
-                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.value.cell_slot }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.value.cell_slot }) catch return CodegenError.CodegenError;
                 self.refcell_borrow_handles.put(dst, .{
                     .cell_reg = cell_reg,
                     .kind = entry.value.kind,
@@ -1272,8 +1288,8 @@ pub const Codegen = struct {
     fn releaseResultSlotRefCellHandle(self: *Codegen, slot: []const u8, remove_companion: bool) CodegenError!bool {
         if (self.result_slot_refcell_handles.get(slot)) |entry| {
             const cell_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.cell_slot }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(entry.kind), cell_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.cell_slot }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(entry.kind), cell_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(cell_reg);
             if (remove_companion) {
                 _ = self.result_slot_refcell_handles.remove(slot);
@@ -1288,7 +1304,7 @@ pub const Codegen = struct {
     fn releaseTemporaryHandleRegister(self: *Codegen, handle_reg: []const u8) CodegenError!void {
         if (!isTemporaryRegisterName(handle_reg)) return;
         if (self.consumed_bindings.contains(handle_reg)) return;
-        self.out.writer().print("    !{s}\n", .{handle_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{handle_reg}) catch return CodegenError.CodegenError;
         self.consumed_bindings.put(handle_reg, {}) catch return CodegenError.OutOfMemory;
     }
 
@@ -1414,7 +1430,7 @@ pub const Codegen = struct {
         var iter = pre_handles.iterator();
         while (iter.next()) |entry| {
             const cell_slot = try self.newTmp();
-            self.out.writer().print("    {s} = alloc 8\n", .{cell_slot}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = alloc 8\n", .{cell_slot}) catch return CodegenError.CodegenError;
             slots.put(entry.key_ptr.*, .{
                 .cell_slot = cell_slot,
                 .kind = entry.value_ptr.kind,
@@ -1430,7 +1446,7 @@ pub const Codegen = struct {
         var iter = slots.iterator();
         while (iter.next()) |entry| {
             if (handles.get(entry.key_ptr.*)) |handle| {
-                self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ entry.value_ptr.cell_slot, handle.cell_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+0, {s} as ptr\n", .{ entry.value_ptr.cell_slot, handle.cell_reg }) catch return CodegenError.CodegenError;
             }
         }
     }
@@ -1457,7 +1473,7 @@ pub const Codegen = struct {
             if (action.isMergeDynamicOwner()) {
                 const cell_reg = try self.newTmp();
                 const restore_plan = lowering_rules.planRefCellCompanionRestore();
-                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.value_ptr.cell_slot }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.value_ptr.cell_slot }) catch return CodegenError.CodegenError;
                 self.refcell_borrow_handles.put(key, .{
                     .cell_reg = cell_reg,
                     .kind = then_handle.?.kind,
@@ -1560,16 +1576,16 @@ pub const Codegen = struct {
     fn emitExternDecl(self: *Codegen, f: *const ast.FuncDecl) CodegenError!void {
         const lowered_name = try self.loweredFuncSymbol(f.name);
         defer self.allocator.free(lowered_name);
-        self.out.writer().print("@extern {s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        self.outPrint("@extern {s}(", .{lowered_name}) catch return CodegenError.CodegenError;
         for (f.params, 0..) |p, i| {
-            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
             const prefix: []const u8 = self.abiParamPrefix(p);
-            self.out.writer().print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
         }
         if (isVoidType(f.ret_ty)) {
-            self.out.writer().print(") -> void\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint(") -> void\n", .{}) catch return CodegenError.CodegenError;
         } else {
-            self.out.writer().print(") -> {s}\n", .{abiReturnTypeString(f.ret_ty)}) catch return CodegenError.CodegenError;
+            self.outPrint(") -> {s}\n", .{abiReturnTypeString(f.ret_ty)}) catch return CodegenError.CodegenError;
         }
     }
 
@@ -1793,7 +1809,7 @@ pub const Codegen = struct {
 
         try self.collectThreadClosureCapturesInExpr(closure.body, &captures, &locals);
 
-        var ordered = std.ArrayList(ThreadCapture).init(self.allocator);
+        var ordered = std.array_list.Managed(ThreadCapture).init(self.allocator);
         errdefer ordered.deinit();
         var iter = captures.iterator();
         var offset: usize = 16;
@@ -1844,7 +1860,7 @@ pub const Codegen = struct {
         return lowering_rules.isPanicBuiltinName(call.func_name);
     }
 
-    fn genCallStmt(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn genCallStmt(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         if (lowering_rules.isPrintlnCall(call.*)) {
             try self.emitPrintln(call, hoisted_allocs);
             return;
@@ -1857,8 +1873,8 @@ pub const Codegen = struct {
             if (lowering_rules.isMemForgetCall(call.*)) {
                 if (call.args.len != 1) return CodegenError.CodegenError;
                 const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                self.out.writer().print("    EXPAND MEM_FORGET_U64 {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND MEM_FORGET_U64 {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
                 if (rootIdentifier(call.args[0])) |name| {
                     self.consumed_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
                 }
@@ -1868,11 +1884,11 @@ pub const Codegen = struct {
             defer self.allocator.free(method_key);
             if (self.tc.funcs.get(method_key)) |func| {
                 if (isVoidType(func.ret_ty)) {
-                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_regs.deinit();
-                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                     defer arg_release_regs.deinit();
-                    var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_consume_regs.deinit();
                     for (call.args, 0..) |arg, i| {
                         const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
@@ -1893,12 +1909,12 @@ pub const Codegen = struct {
                     }
                     const lowered_method = try self.loweredFuncSymbol(method_key);
                     defer self.allocator.free(lowered_method);
-                    self.out.writer().print("    call @{s}(", .{lowered_method}) catch return CodegenError.CodegenError;
+                    self.outPrint("    call @{s}(", .{lowered_method}) catch return CodegenError.CodegenError;
                     for (arg_regs.items, 0..) |arg_reg, i| {
-                        if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                        if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
                     }
-                    self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
                     try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, null);
                     return;
                 }
@@ -1912,11 +1928,11 @@ pub const Codegen = struct {
                     var method_buf: [256]u8 = undefined;
                     const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ curr.user_defined.name, call.func_name }) catch return CodegenError.CodegenError;
                     if (self.tc.funcs.get(method_key)) |func| {
-                        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_regs.deinit();
-                        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                         defer arg_release_regs.deinit();
-                        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_consume_regs.deinit();
                         for (call.args, 0..) |arg, i| {
                             const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
@@ -1937,23 +1953,23 @@ pub const Codegen = struct {
                         }
                         const lowered_method = try self.loweredFuncSymbol(method_key);
                         defer self.allocator.free(lowered_method);
-                        self.out.writer().print("    call @{s}(", .{lowered_method}) catch return CodegenError.CodegenError;
+                        self.outPrint("    call @{s}(", .{lowered_method}) catch return CodegenError.CodegenError;
                         for (arg_regs.items, 0..) |ar, i| {
-                            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
+                            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}", .{ar}) catch return CodegenError.CodegenError;
                         }
-                        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                        self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
                         try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
                         return;
                     }
                 }
             }
         }
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer arg_release_regs.deinit();
-        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_consume_regs.deinit();
         const resolved_func_name = self.tc.resolveFunctionAlias(call.func_name);
         const maybe_func = self.tc.funcs.get(resolved_func_name);
@@ -1978,12 +1994,12 @@ pub const Codegen = struct {
 
         const lowered_name = try self.loweredFuncSymbol(resolved_func_name);
         defer self.allocator.free(lowered_name);
-        self.out.writer().print("    call @{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        self.outPrint("    call @{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
         for (arg_regs.items, 0..) |ar, i| {
-            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
+            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}", .{ar}) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
         try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, resolved_func_name);
     }
 
@@ -1991,13 +2007,13 @@ pub const Codegen = struct {
         self: *Codegen,
         call: *const ast.CallExpr,
         ext: contract_parser.ExternalFunction,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer arg_release_regs.deinit();
-        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_consume_regs.deinit();
 
         for (call.args, 0..) |arg, i| {
@@ -2026,16 +2042,16 @@ pub const Codegen = struct {
         const fallible_reg = try self.newTmp();
         const lowered_call = try self.loweredFuncSymbol(call.func_name);
         defer self.allocator.free(lowered_call);
-        self.out.writer().print("    {s} = call @{s}(", .{ fallible_reg, lowered_call }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = call @{s}(", .{ fallible_reg, lowered_call }) catch return CodegenError.CodegenError;
         for (arg_regs.items, 0..) |arg_reg, i| {
-            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
         try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
 
         const payload_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{
+        self.outPrint("    {s} = load {s}+{} as {s}\n", .{
             payload_reg,
             fallible_reg,
             lowering_rules.abiFalliblePayloadOffset(ext.ret_ty),
@@ -2049,13 +2065,13 @@ pub const Codegen = struct {
         self: *Codegen,
         call: *const ast.CallExpr,
         ext: contract_parser.ExternalFunction,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer arg_release_regs.deinit();
-        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_consume_regs.deinit();
 
         for (call.args, 0..) |arg, i| {
@@ -2084,12 +2100,12 @@ pub const Codegen = struct {
         const reg = try self.newTmp();
         const lowered_call = try self.loweredFuncSymbol(call.func_name);
         defer self.allocator.free(lowered_call);
-        self.out.writer().print("    {s} = call @{s}(", .{ reg, lowered_call }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = call @{s}(", .{ reg, lowered_call }) catch return CodegenError.CodegenError;
         for (arg_regs.items, 0..) |arg_reg, i| {
-            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
         try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
         return reg;
     }
@@ -2099,11 +2115,11 @@ pub const Codegen = struct {
     /// CapabilityMismatch outside `@main` bodies, so it must not be used.
     fn emitPrintlnNewline(self: *Codegen) CodegenError!void {
         const nl_label = try self.newStringConst();
-        self.out.writer().print("    @const {s} = utf8:\"\\n\"\n", .{nl_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    call @sa_print_bytes(&{s}, 1)\n", .{nl_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    @const {s} = utf8:\"\\n\"\n", .{nl_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    call @sa_print_bytes(&{s}, 1)\n", .{nl_label}) catch return CodegenError.CodegenError;
     }
 
-    fn emitPrintln(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn emitPrintln(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         if (call.args.len == 0 or call.args[0].* != .literal or call.args[0].literal != .string_val) {
             // #4b: a single string-like/format-string argument (e.g. the
             // `println(format(...))` shape templates desugar to) prints its
@@ -2117,10 +2133,10 @@ pub const Codegen = struct {
                         const slice_reg = try self.newTmp();
                         const ptr_reg = try self.newTmp();
                         const len_reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, string_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND STRING_PTR {s}, {s}\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND STRING_LEN {s}, {s}\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, string_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_PTR {s}, {s}\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_LEN {s}, {s}\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(ptr_reg);
                         try self.emitRelease(len_reg);
                         try self.emitRelease(slice_reg);
@@ -2132,9 +2148,9 @@ pub const Codegen = struct {
                         const slice_reg = try self.genExpr(arg, hoisted_allocs);
                         const ptr_reg = try self.newTmp();
                         const len_reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND STRING_PTR {s}, {s}\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND STRING_LEN {s}, {s}\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_PTR {s}, {s}\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_LEN {s}, {s}\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(ptr_reg);
                         try self.emitRelease(len_reg);
                         if (callArgNeedsRelease(arg)) try self.emitRelease(slice_reg);
@@ -2155,8 +2171,8 @@ pub const Codegen = struct {
             while (i < fmt.len and !(fmt[i] == '{' and i + 1 < fmt.len and fmt[i + 1] == '}')) : (i += 1) {}
             if (i > start) {
                 const label = try self.newStringConst();
-                self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, fmt[start..i] }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    call @sa_print_bytes(&{s}, {})\n", .{ label, i - start }) catch return CodegenError.CodegenError;
+                self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, fmt[start..i] }) catch return CodegenError.CodegenError;
+                self.outPrint("    call @sa_print_bytes(&{s}, {})\n", .{ label, i - start }) catch return CodegenError.CodegenError;
             }
             if (i >= fmt.len) break;
             if (arg_idx >= call.args.len) break;
@@ -2166,8 +2182,8 @@ pub const Codegen = struct {
             if (arg.* == .literal and arg.literal == .string_val) {
                 const s = arg.literal.string_val;
                 const label = try self.newStringConst();
-                self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, s }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    call @sa_print_bytes(&{s}, {})\n", .{ label, escapedStringByteLen(s) }) catch return CodegenError.CodegenError;
+                self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, s }) catch return CodegenError.CodegenError;
+                self.outPrint("    call @sa_print_bytes(&{s}, {})\n", .{ label, escapedStringByteLen(s) }) catch return CodegenError.CodegenError;
             } else {
                 if (arg_ty) |ty| {
                     if (isFormatStringType(ty)) {
@@ -2175,10 +2191,10 @@ pub const Codegen = struct {
                         const slice_reg = try self.newTmp();
                         const ptr_reg = try self.newTmp();
                         const len_reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, string_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND STRING_PTR {s}, {s}\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND STRING_LEN {s}, {s}\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, string_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_PTR {s}, {s}\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_LEN {s}, {s}\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(ptr_reg);
                         try self.emitRelease(len_reg);
                         try self.emitRelease(slice_reg);
@@ -2191,9 +2207,9 @@ pub const Codegen = struct {
                         const slice_reg = try self.genExpr(arg, hoisted_allocs);
                         const ptr_reg = try self.newTmp();
                         const len_reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND STRING_PTR {s}, {s}\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND STRING_LEN {s}, {s}\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_PTR {s}, {s}\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_LEN {s}, {s}\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(ptr_reg);
                         try self.emitRelease(len_reg);
                         if (callArgNeedsRelease(arg)) try self.emitRelease(slice_reg);
@@ -2204,20 +2220,20 @@ pub const Codegen = struct {
                     if (borrowedPrimitiveType(ty)) |inner_ty| {
                         const ptr_reg = try self.genExpr(arg, hoisted_allocs);
                         const val_reg = try self.newTmp();
-                        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ val_reg, ptr_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ val_reg, ptr_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
                         switch (inner_ty.*) {
                             .primitive => |p| switch (p) {
                                 .integer, .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize => {
                                     const fmt_buf = try self.newTmp();
                                     const data_reg = try self.newTmp();
                                     const len_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const print_ptr = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = {s}\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(print_ptr);
                                     try self.emitRelease(len_reg);
                                 },
@@ -2225,13 +2241,13 @@ pub const Codegen = struct {
                                     const fmt_buf = try self.newTmp();
                                     const data_reg = try self.newTmp();
                                     const len_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = call @sa_fmt_f64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_f64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const print_ptr = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = {s}\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(print_ptr);
                                     try self.emitRelease(len_reg);
                                 },
@@ -2239,13 +2255,13 @@ pub const Codegen = struct {
                                     const fmt_buf = try self.newTmp();
                                     const data_reg = try self.newTmp();
                                     const len_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = call @sa_fmt_bool({s})\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_bool({s})\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const print_ptr = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = {s}\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(print_ptr);
                                     try self.emitRelease(len_reg);
                                 },
@@ -2262,20 +2278,20 @@ pub const Codegen = struct {
                     if (boxInnerType(ty)) |inner_ty| {
                         const box_reg = try self.genExpr(arg, hoisted_allocs);
                         const val_reg = try self.newTmp();
-                        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ val_reg, box_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ val_reg, box_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
                         switch (inner_ty.*) {
                             .primitive => |p| switch (p) {
                                 .integer, .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize => {
                                     const fmt_buf = try self.newTmp();
                                     const data_reg = try self.newTmp();
                                     const len_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const ptr_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(ptr_reg);
                                     try self.emitRelease(len_reg);
                                 },
@@ -2283,13 +2299,13 @@ pub const Codegen = struct {
                                     const fmt_buf = try self.newTmp();
                                     const data_reg = try self.newTmp();
                                     const len_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = call @sa_fmt_f64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_f64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const ptr_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(ptr_reg);
                                     try self.emitRelease(len_reg);
                                 },
@@ -2297,13 +2313,13 @@ pub const Codegen = struct {
                                     const fmt_buf = try self.newTmp();
                                     const data_reg = try self.newTmp();
                                     const len_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = call @sa_fmt_bool({s})\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_bool({s})\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const ptr_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(ptr_reg);
                                     try self.emitRelease(len_reg);
                                 },
@@ -2324,13 +2340,13 @@ pub const Codegen = struct {
                                 const fmt_buf = try self.newTmp();
                                 const data_reg = try self.newTmp();
                                 const len_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
                                 try self.emitRelease(len_reg);
                                 if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
@@ -2340,13 +2356,13 @@ pub const Codegen = struct {
                                 const fmt_buf = try self.newTmp();
                                 const data_reg = try self.newTmp();
                                 const len_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = call @sa_fmt_f64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = call @sa_fmt_f64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
                                 try self.emitRelease(len_reg);
                                 if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
@@ -2356,13 +2372,13 @@ pub const Codegen = struct {
                                 const fmt_buf = try self.newTmp();
                                 const data_reg = try self.newTmp();
                                 const len_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = call @sa_fmt_bool({s})\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = call @sa_fmt_bool({s})\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
                                 try self.emitRelease(len_reg);
                                 if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
@@ -2370,33 +2386,33 @@ pub const Codegen = struct {
                             else => {
                                 const val_reg = try self.genExpr(arg, hoisted_allocs);
                                 const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
                             },
                         },
                         else => {
                             const val_reg = try self.genExpr(arg, hoisted_allocs);
                             const ptr_reg = try self.newTmp();
-                            self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
                         },
                     }
                 } else {
                     const val_reg = try self.genExpr(arg, hoisted_allocs);
                     const ptr_reg = try self.newTmp();
-                    self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
                 }
             }
             i += 2;
         }
         const nl_label = try self.newStringConst();
-        self.out.writer().print("    @const {s} = utf8:\"\\n\"\n", .{nl_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    call @sa_print_bytes(&{s}, 1)\n", .{nl_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    @const {s} = utf8:\"\\n\"\n", .{nl_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    call @sa_print_bytes(&{s}, 1)\n", .{nl_label}) catch return CodegenError.CodegenError;
     }
 
     fn sanitizeTestName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
-        var out = std.ArrayList(u8).init(self.allocator);
+        var out = std.array_list.Managed(u8).init(self.allocator);
         for (name) |c| {
             switch (c) {
                 '(', ')' => out.append('-') catch return CodegenError.OutOfMemory,
@@ -2510,8 +2526,8 @@ pub const Codegen = struct {
 
     fn appendExternLoweredCallArgCleanups(
         self: *Codegen,
-        release_regs: *std.ArrayList(?[]const u8),
-        consume_regs: *std.ArrayList([]const u8),
+        release_regs: *std.array_list.Managed(?[]const u8),
+        consume_regs: *std.array_list.Managed([]const u8),
         lowered_arg: LoweredCallArg,
         param: ?contract_parser.Param,
         call_arg_reg: []const u8,
@@ -2757,8 +2773,8 @@ pub const Codegen = struct {
         }
     }
 
-    fn appendHexEscapedByte(buf: *std.ArrayList(u8), byte: u8) CodegenError!void {
-        buf.writer().print("\\x{x:0>2}", .{byte}) catch return CodegenError.CodegenError;
+    fn appendHexEscapedByte(buf: *std.array_list.Managed(u8), byte: u8) CodegenError!void {
+        sio.managedPrint(buf, "\\x{x:0>2}", .{byte}) catch return CodegenError.CodegenError;
     }
 
     fn constLiteralNode(node: *const ast.Node) ?*const ast.Node {
@@ -2772,7 +2788,7 @@ pub const Codegen = struct {
     fn literalHexBytes(self: *Codegen, node: *const ast.Node, ty: *const ast.Type) CodegenError![]const u8 {
         const literal_node = constLiteralNode(node) orelse return CodegenError.CodegenError;
         const literal = literal_node.literal;
-        var buf = std.ArrayList(u8).init(self.allocator);
+        var buf = std.array_list.Managed(u8).init(self.allocator);
         errdefer buf.deinit();
 
         switch (ty.*) {
@@ -2941,24 +2957,24 @@ pub const Codegen = struct {
             .literal => |lit| switch (lit) {
                 .int_val, .float_val, .bool_val => {},
                 .string_val => |value| {
-                    self.out.writer().print("@const {s} = utf8:\"{s}\"\n", .{ c.name, value }) catch return CodegenError.CodegenError;
+                    self.outPrint("@const {s} = utf8:\"{s}\"\n", .{ c.name, value }) catch return CodegenError.CodegenError;
                 },
             },
             .array_literal => |array| {
                 const const_ty = c.ty orelse self.tc.expr_types.get(c.value) orelse return CodegenError.CodegenError;
                 if (const_ty.* != .array) return CodegenError.CodegenError;
-                self.out.writer().print("@const {s} = struct {{ ", .{c.name}) catch return CodegenError.CodegenError;
+                self.outPrint("@const {s} = struct {{ ", .{c.name}) catch return CodegenError.CodegenError;
                 for (array.elements, 0..) |elem, i| {
-                    if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+                    if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
                     const bytes = try self.literalHexBytes(elem, const_ty.array.elem);
                     defer self.allocator.free(bytes);
-                    self.out.writer().print("f{}: {} = hex:{s}", .{ i, typeSize(const_ty.array.elem), bytes }) catch return CodegenError.CodegenError;
+                    self.outPrint("f{}: {} = hex:{s}", .{ i, typeSize(const_ty.array.elem), bytes }) catch return CodegenError.CodegenError;
                 }
-                self.out.writer().print(" }}\n", .{}) catch return CodegenError.CodegenError;
+                self.outPrint(" }}\n", .{}) catch return CodegenError.CodegenError;
             },
             .call_expr => |call| {
                 if (std.mem.eql(u8, call.func_name, "RAW_WAKER_VTABLE_NEW") and call.args.len == 4) {
-                    self.out.writer().print("@const {s} = vtable {{ clone = ", .{c.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("@const {s} = vtable {{ clone = ", .{c.name}) catch return CodegenError.CodegenError;
                     for (call.args, 0..) |arg, i| {
                         if (arg.* != .identifier) return CodegenError.CodegenError;
                         const lowered = try self.loweredFuncSymbol(arg.identifier);
@@ -2970,11 +2986,11 @@ pub const Codegen = struct {
                                 3 => "drop",
                                 else => return CodegenError.CodegenError,
                             };
-                            self.out.writer().print(", {s} = ", .{field_name}) catch return CodegenError.CodegenError;
+                            self.outPrint(", {s} = ", .{field_name}) catch return CodegenError.CodegenError;
                         }
-                        self.out.writer().print("@{s}", .{lowered}) catch return CodegenError.CodegenError;
+                        self.outPrint("@{s}", .{lowered}) catch return CodegenError.CodegenError;
                     }
-                    self.out.writer().print(" }}\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint(" }}\n", .{}) catch return CodegenError.CodegenError;
                     return;
                 }
                 return CodegenError.CodegenError;
@@ -3054,21 +3070,21 @@ pub const Codegen = struct {
     fn emitFormatPushConstBytes(self: *Codegen, out_reg: []const u8, bytes: []const u8) CodegenError!void {
         if (bytes.len == 0) return;
         const label = try self.newStringConst();
-        self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, bytes }) catch return CodegenError.CodegenError;
+        self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, bytes }) catch return CodegenError.CodegenError;
         const ptr_reg = try self.newTmp();
-        self.out.writer().print("    {s} = &{s}\n", .{ ptr_reg, label }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = &{s}\n", .{ ptr_reg, label }) catch return CodegenError.CodegenError;
         const tag = try self.newTmp();
-        self.out.writer().print("    EXPAND FORMAT_PUSH_BYTES {s}, {s}, {s}, {}\n", .{ tag, out_reg, ptr_reg, escapedStringByteLen(bytes) }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND FORMAT_PUSH_BYTES {s}, {s}, {s}, {}\n", .{ tag, out_reg, ptr_reg, escapedStringByteLen(bytes) }) catch return CodegenError.CodegenError;
         try self.emitRelease(ptr_reg);
     }
 
-    fn emitFormatPushStringLike(self: *Codegen, out_reg: []const u8, arg: *ast.Node, ty: *const ast.Type, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn emitFormatPushStringLike(self: *Codegen, out_reg: []const u8, arg: *ast.Node, ty: *const ast.Type, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         const tag = try self.newTmp();
         if (isFormatStringType(ty)) {
             const string_reg = try self.genExpr(arg, hoisted_allocs);
             const slice_reg = try self.newTmp();
-            self.out.writer().print("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, string_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND FORMAT_PUSH_SLICE {s}, {s}, {s}\n", .{ tag, out_reg, slice_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, string_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND FORMAT_PUSH_SLICE {s}, {s}, {s}\n", .{ tag, out_reg, slice_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(slice_reg);
             if (callArgNeedsRelease(arg)) try self.emitRelease(string_reg);
             return;
@@ -3077,10 +3093,10 @@ pub const Codegen = struct {
         if (arg.* == .literal and arg.literal == .string_val) {
             const value = arg.literal.string_val;
             const label = try self.newStringConst();
-            self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
+            self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
             const ptr_reg = try self.newTmp();
-            self.out.writer().print("    {s} = &{s}\n", .{ ptr_reg, label }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND FORMAT_PUSH_BYTES {s}, {s}, {s}, {}\n", .{ tag, out_reg, ptr_reg, escapedStringByteLen(value) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = &{s}\n", .{ ptr_reg, label }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND FORMAT_PUSH_BYTES {s}, {s}, {s}, {}\n", .{ tag, out_reg, ptr_reg, escapedStringByteLen(value) }) catch return CodegenError.CodegenError;
             try self.emitRelease(ptr_reg);
             return;
         }
@@ -3088,15 +3104,15 @@ pub const Codegen = struct {
         if (ty.* == .primitive and ty.primitive == .raw_ptr) {
             const ptr_reg = try self.genExpr(arg, hoisted_allocs);
             const len_reg = try self.newTmp();
-            self.out.writer().print("    EXPAND CSTR_LEN {s}, {s}\n", .{ len_reg, ptr_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND FORMAT_PUSH_BYTES {s}, {s}, {s}, {s}\n", .{ tag, out_reg, ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND CSTR_LEN {s}, {s}\n", .{ len_reg, ptr_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND FORMAT_PUSH_BYTES {s}, {s}, {s}, {s}\n", .{ tag, out_reg, ptr_reg, len_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(len_reg);
             if (callArgNeedsRelease(arg)) try self.emitRelease(ptr_reg);
             return;
         }
 
         const slice_reg = try self.genExpr(arg, hoisted_allocs);
-        self.out.writer().print("    EXPAND FORMAT_PUSH_SLICE {s}, {s}, {s}\n", .{ tag, out_reg, slice_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND FORMAT_PUSH_SLICE {s}, {s}, {s}\n", .{ tag, out_reg, slice_reg }) catch return CodegenError.CodegenError;
         if (callArgNeedsRelease(arg)) try self.emitRelease(slice_reg);
     }
 
@@ -3108,15 +3124,15 @@ pub const Codegen = struct {
         owner_needs_release: bool,
     };
 
-    fn genStringLikePathRegs(self: *Codegen, arg: *ast.Node, ty: *const ast.Type, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!StringLikePathRegs {
+    fn genStringLikePathRegs(self: *Codegen, arg: *ast.Node, ty: *const ast.Type, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!StringLikePathRegs {
         if (isFormatStringType(ty)) {
             const owner_reg = try self.genExpr(arg, hoisted_allocs);
             const slice_reg = try self.newTmp();
             const ptr_reg = try self.newTmp();
             const len_reg = try self.newTmp();
-            self.out.writer().print("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, owner_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+Slice_ptr as ptr\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, owner_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Slice_ptr as ptr\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
             return .{
                 .owner_reg = owner_reg,
                 .slice_reg = slice_reg,
@@ -3129,8 +3145,8 @@ pub const Codegen = struct {
         const slice_reg = try self.genExpr(arg, hoisted_allocs);
         const ptr_reg = try self.newTmp();
         const len_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+Slice_ptr as ptr\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Slice_ptr as ptr\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
         return .{
             .owner_reg = slice_reg,
             .slice_reg = slice_reg,
@@ -3149,7 +3165,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn emitFormatPushArg(self: *Codegen, out_reg: []const u8, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn emitFormatPushArg(self: *Codegen, out_reg: []const u8, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         const ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
         if (isStringLikeType(ty)) {
             try self.emitFormatPushStringLike(out_reg, arg, ty, hoisted_allocs);
@@ -3165,13 +3181,13 @@ pub const Codegen = struct {
         const tag = try self.newTmp();
         const suffix = lowering_rules.debugFormatSuffix(ty) orelse return CodegenError.CodegenError;
         if (std.mem.eql(u8, suffix, "U64")) {
-            self.out.writer().print("    EXPAND FORMAT_PUSH_U64 {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND FORMAT_PUSH_U64 {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
         } else if (std.mem.eql(u8, suffix, "F64")) {
-            self.out.writer().print("    EXPAND FORMAT_PUSH_F64 {s}, {s}, {s}, 10\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND FORMAT_PUSH_F64 {s}, {s}, {s}, 10\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
         } else if (std.mem.eql(u8, suffix, "BOOL")) {
-            self.out.writer().print("    EXPAND FORMAT_PUSH_BOOL {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND FORMAT_PUSH_BOOL {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
         } else {
-            self.out.writer().print("    EXPAND FORMAT_PUSH_I64 {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND FORMAT_PUSH_I64 {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
         }
     }
 
@@ -3571,7 +3587,7 @@ pub const Codegen = struct {
         bin: *const ast.BinaryExpr,
         left_ty: *const ast.Type,
         right_ty: *const ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         const left_struct = self.structDeclForType(left_ty);
         const right_struct = self.structDeclForType(right_ty);
@@ -3583,7 +3599,7 @@ pub const Codegen = struct {
         if (struct_decl.is_opaque or struct_decl.is_union) return null;
 
         const result = try self.newTmp();
-        self.out.writer().print("    {s} = alloc {}\n", .{ result, structSize(struct_decl) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ result, structSize(struct_decl) }) catch return CodegenError.CodegenError;
 
         if (left_struct != null and right_struct != null) {
             if (left_struct.? != right_struct.? or !(bin.op == .add or bin.op == .sub)) return null;
@@ -3595,10 +3611,10 @@ pub const Codegen = struct {
                 const lhs = try self.newTmp();
                 const rhs = try self.newTmp();
                 const value = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ value, op, lhs, rhs }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s} {s}, {s}\n", .{ value, op, lhs, rhs }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
             }
             if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
             if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
@@ -3614,9 +3630,9 @@ pub const Codegen = struct {
                 const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
                 const rhs = try self.newTmp();
                 const value = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = sub {s}, {s}\n", .{ value, zeroLiteralForType(field.ty), rhs }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = sub {s}, {s}\n", .{ value, zeroLiteralForType(field.ty), rhs }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
             }
             if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
             return result;
@@ -3630,9 +3646,9 @@ pub const Codegen = struct {
                 const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
                 const lhs = try self.newTmp();
                 const value = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = mul {s}, {s}\n", .{ value, lhs, scalar }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = mul {s}, {s}\n", .{ value, lhs, scalar }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
             }
             if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
             if (callArgNeedsRelease(bin.right)) try self.emitRelease(scalar);
@@ -3647,9 +3663,9 @@ pub const Codegen = struct {
                 const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
                 const rhs = try self.newTmp();
                 const value = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = mul {s}, {s}\n", .{ value, scalar, rhs }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = mul {s}, {s}\n", .{ value, scalar, rhs }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
             }
             if (callArgNeedsRelease(bin.left)) try self.emitRelease(scalar);
             if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
@@ -3664,7 +3680,7 @@ pub const Codegen = struct {
         bin: *const ast.BinaryExpr,
         left_ty: *const ast.Type,
         right_ty: *const ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         if (!(bin.op == .eq or bin.op == .ne)) return null;
         const left_struct = self.structDeclForType(left_ty) orelse return null;
@@ -3679,12 +3695,12 @@ pub const Codegen = struct {
             const lhs = try self.newTmp();
             const rhs = try self.newTmp();
             const eq_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = eq {s}, {s}\n", .{ eq_reg, lhs, rhs }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = eq {s}, {s}\n", .{ eq_reg, lhs, rhs }) catch return CodegenError.CodegenError;
             if (acc) |prev| {
                 const next = try self.newTmp();
-                self.out.writer().print("    {s} = and {s}, {s}\n", .{ next, prev, eq_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = and {s}, {s}\n", .{ next, prev, eq_reg }) catch return CodegenError.CodegenError;
                 acc = next;
             } else {
                 acc = eq_reg;
@@ -3694,13 +3710,13 @@ pub const Codegen = struct {
         const result = try self.newTmp();
         if (acc) |eq_all| {
             if (bin.op == .eq) {
-                self.out.writer().print("    {s} = or {s}, 0\n", .{ result, eq_all }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = or {s}, 0\n", .{ result, eq_all }) catch return CodegenError.CodegenError;
             } else {
-                self.out.writer().print("    {s} = ne {s}, 1\n", .{ result, eq_all }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = ne {s}, 1\n", .{ result, eq_all }) catch return CodegenError.CodegenError;
             }
         } else {
             const empty_value: i32 = if (bin.op == .eq) 1 else 0;
-            self.out.writer().print("    {s} = {}\n", .{ result, empty_value }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = {}\n", .{ result, empty_value }) catch return CodegenError.CodegenError;
         }
         if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
         if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
@@ -3712,7 +3728,7 @@ pub const Codegen = struct {
         bin: *const ast.BinaryExpr,
         left_ty: *const ast.Type,
         right_ty: *const ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         if (!(bin.op == .lt or bin.op == .le or bin.op == .gt or bin.op == .ge)) return null;
         const left_struct = self.structDeclForType(left_ty) orelse return null;
@@ -3736,26 +3752,26 @@ pub const Codegen = struct {
                 .gt, .ge => "sgt",
                 else => unreachable,
             };
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ cmp, cmp_op, lhs, rhs }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = eq {s}, {s}\n", .{ eq_reg, lhs, rhs }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = {s} {s}, {s}\n", .{ cmp, cmp_op, lhs, rhs }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = eq {s}, {s}\n", .{ eq_reg, lhs, rhs }) catch return CodegenError.CodegenError;
 
             const term = if (eq_prefix) |prefix| blk: {
                 const t = try self.newTmp();
-                self.out.writer().print("    {s} = and {s}, {s}\n", .{ t, prefix, cmp }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = and {s}, {s}\n", .{ t, prefix, cmp }) catch return CodegenError.CodegenError;
                 break :blk t;
             } else cmp;
 
             order_acc = if (order_acc) |prev| blk: {
                 const next = try self.newTmp();
-                self.out.writer().print("    {s} = or {s}, {s}\n", .{ next, prev, term }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = or {s}, {s}\n", .{ next, prev, term }) catch return CodegenError.CodegenError;
                 break :blk next;
             } else term;
 
             eq_prefix = if (eq_prefix) |prefix| blk: {
                 const next = try self.newTmp();
-                self.out.writer().print("    {s} = and {s}, {s}\n", .{ next, prefix, eq_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = and {s}, {s}\n", .{ next, prefix, eq_reg }) catch return CodegenError.CodegenError;
                 break :blk next;
             } else eq_reg;
         }
@@ -3764,13 +3780,13 @@ pub const Codegen = struct {
         if (order_acc) |ordered| {
             if (bin.op == .le or bin.op == .ge) {
                 const eq_all = eq_prefix orelse return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = or {s}, {s}\n", .{ result, ordered, eq_all }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = or {s}, {s}\n", .{ result, ordered, eq_all }) catch return CodegenError.CodegenError;
             } else {
-                self.out.writer().print("    {s} = or {s}, 0\n", .{ result, ordered }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = or {s}, 0\n", .{ result, ordered }) catch return CodegenError.CodegenError;
             }
         } else {
             const empty_value: i32 = if (bin.op == .le or bin.op == .ge) 1 else 0;
-            self.out.writer().print("    {s} = {}\n", .{ result, empty_value }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = {}\n", .{ result, empty_value }) catch return CodegenError.CodegenError;
         }
         if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
         if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
@@ -3778,13 +3794,13 @@ pub const Codegen = struct {
     }
 
     fn emitOrderingStore(self: *Codegen, target: []const u8, value_literal: []const u8) CodegenError!void {
-        self.out.writer().print("    store {s}+0, {s} as i64\n", .{ target, value_literal }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as i64\n", .{ target, value_literal }) catch return CodegenError.CodegenError;
     }
 
     fn genOrderingStructFromRaw(self: *Codegen, raw_value: []const u8) CodegenError![]const u8 {
         const result = try self.newTmp();
-        self.out.writer().print("    {s} = alloc 8\n", .{result}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as i64\n", .{ result, raw_value }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc 8\n", .{result}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as i64\n", .{ result, raw_value }) catch return CodegenError.CodegenError;
         return result;
     }
 
@@ -3803,25 +3819,25 @@ pub const Codegen = struct {
             const greater_label = try self.newLabel("L_SPACESHIP_FLOAT_GREATER");
             const equal_label = try self.newLabel("L_SPACESHIP_FLOAT_EQUAL");
             const done_label = try self.newLabel("L_SPACESHIP_FLOAT_DONE");
-            self.out.writer().print("    {s} = fcmp_lt {s}, {s}\n", .{ less, left_reg, right_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ less, less_label, greater_check_label }) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{less_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = add 0, CMP_ORDERING_LESS\n", .{raw}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{greater_check_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = fcmp_gt {s}, {s}\n", .{ greater, left_reg, right_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ greater, greater_label, equal_label }) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{greater_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = add 0, CMP_ORDERING_GREATER\n", .{raw}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{equal_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = add 0, CMP_ORDERING_EQUAL\n", .{raw}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = fcmp_lt {s}, {s}\n", .{ less, left_reg, right_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ less, less_label, greater_check_label }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{less_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add 0, CMP_ORDERING_LESS\n", .{raw}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{greater_check_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = fcmp_gt {s}, {s}\n", .{ greater, left_reg, right_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ greater, greater_label, equal_label }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{greater_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add 0, CMP_ORDERING_GREATER\n", .{raw}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{equal_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add 0, CMP_ORDERING_EQUAL\n", .{raw}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
             return raw;
         }
 
         const macro_name: []const u8 = if (isUnsignedIntegerType(ty)) "CMP_COMPARE_U64" else "CMP_COMPARE_I64";
-        self.out.writer().print("    EXPAND {s} {s}, {s}, {s}\n", .{ macro_name, raw, left_reg, right_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ macro_name, raw, left_reg, right_reg }) catch return CodegenError.CodegenError;
         return raw;
     }
 
@@ -3830,7 +3846,7 @@ pub const Codegen = struct {
         bin: *const ast.BinaryExpr,
         left_ty: *const ast.Type,
         right_ty: *const ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         if (bin.op != .spaceship) return null;
         const plan = lowering_rules.planSpaceship(
@@ -3854,7 +3870,7 @@ pub const Codegen = struct {
 
         const result = try self.newTmp();
         const done_label = try self.newLabel("L_SPACESHIP_STRUCT_DONE");
-        self.out.writer().print("    {s} = alloc 8\n", .{result}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc 8\n", .{result}) catch return CodegenError.CodegenError;
         try self.emitOrderingStore(result, "CMP_ORDERING_EQUAL");
         for (left_struct.fields) |field| {
             const layout = fieldLayout(left_struct, field.name) orelse return CodegenError.CodegenError;
@@ -3868,22 +3884,22 @@ pub const Codegen = struct {
             const next_label = try self.newLabel("L_SPACESHIP_STRUCT_NEXT");
             const less_op: []const u8 = if (isUnsignedIntegerType(field.ty)) "ult" else "slt";
             const greater_op: []const u8 = if (isUnsignedIntegerType(field.ty)) "ugt" else "sgt";
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ less, less_op, lhs, rhs }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ less, less_label, greater_check_label }) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{less_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = {s} {s}, {s}\n", .{ less, less_op, lhs, rhs }) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ less, less_label, greater_check_label }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{less_label}) catch return CodegenError.CodegenError;
             try self.emitOrderingStore(result, "CMP_ORDERING_LESS");
-            self.out.writer().print("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{greater_check_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ greater, greater_op, lhs, rhs }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ greater, greater_label, next_label }) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{greater_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{greater_check_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = {s} {s}, {s}\n", .{ greater, greater_op, lhs, rhs }) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ greater, greater_label, next_label }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{greater_label}) catch return CodegenError.CodegenError;
             try self.emitOrderingStore(result, "CMP_ORDERING_GREATER");
-            self.out.writer().print("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{next_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{next_label}) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
         if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
         if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
         return result;
@@ -3892,17 +3908,17 @@ pub const Codegen = struct {
     fn genCopyValueInto(self: *Codegen, target: []const u8, source_reg: []const u8, ty: *const ast.Type) CodegenError!void {
         const struct_decl = self.structDeclForType(ty) orelse return CodegenError.CodegenError;
         if (!self.typeHasCopyDerive(ty) or struct_decl.is_opaque or struct_decl.is_union) return CodegenError.CodegenError;
-        self.out.writer().print("    {s} = alloc {}\n", .{ target, structSize(struct_decl) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ target, structSize(struct_decl) }) catch return CodegenError.CodegenError;
         for (struct_decl.fields) |field| {
             const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
             const field_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ field_reg, source_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ field_reg, source_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
             if (self.structDeclForType(field.ty) != null) {
                 const copied_field = try self.newTmp();
                 try self.genCopyValueInto(copied_field, field_reg, field.ty);
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied_field, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied_field, layout.ty_str }) catch return CodegenError.CodegenError;
             } else {
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, field_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, field_reg, layout.ty_str }) catch return CodegenError.CodegenError;
             }
         }
     }
@@ -3912,17 +3928,17 @@ pub const Codegen = struct {
         if (!self.typeIsShallowCopyCallArgValue(ty, 0) or struct_decl.is_opaque or struct_decl.is_union) return CodegenError.CodegenError;
 
         const target = try self.newTmp();
-        self.out.writer().print("    {s} = alloc {}\n", .{ target, structSize(struct_decl) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ target, structSize(struct_decl) }) catch return CodegenError.CodegenError;
         for (struct_decl.fields) |field| {
             const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
             const field_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ field_reg, source_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ field_reg, source_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
             if (lowering_rules.shallowCopyCallArgFieldShouldRecurse(self.structDeclForType(field.ty) != null, field.ty)) {
                 const copied_field = try self.genShallowCopyCallArgValue(field_reg, field.ty);
-                self.out.writer().print("    store {s}+{}, ^{s} as {s}\n", .{ target, layout.offset, copied_field, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, ^{s} as {s}\n", .{ target, layout.offset, copied_field, layout.ty_str }) catch return CodegenError.CodegenError;
                 try self.emitRelease(field_reg);
             } else {
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, field_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, field_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                 try self.emitRelease(field_reg);
             }
         }
@@ -3933,7 +3949,7 @@ pub const Codegen = struct {
         if (ty.* != .primitive) return CodegenError.CodegenError;
         if (std.mem.eql(u8, typeString(ty), "u64")) return value_reg;
         const bits = try self.newTmp();
-        self.out.writer().print("    {s} = {s} as u64\n", .{ bits, value_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = {s} as u64\n", .{ bits, value_reg }) catch return CodegenError.CodegenError;
         return bits;
     }
 
@@ -3947,18 +3963,18 @@ pub const Codegen = struct {
         for (struct_decl.fields) |field| {
             const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
             const field_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ field_reg, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ field_reg, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
             const field_hash = try self.genHashValue(field_reg, field.ty);
             const mixed = try self.newTmp();
             const next = try self.newTmp();
-            self.out.writer().print("    {s} = xor {s}, {s}\n", .{ mixed, hash_reg, field_hash }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = mul {s}, 1099511628211\n", .{ next, mixed }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = xor {s}, {s}\n", .{ mixed, hash_reg, field_hash }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = mul {s}, 1099511628211\n", .{ next, mixed }) catch return CodegenError.CodegenError;
             hash_reg = next;
         }
         return hash_reg;
     }
 
-    fn genHashCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genHashCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (call.args.len != 1) return CodegenError.CodegenError;
         const ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -3982,17 +3998,17 @@ pub const Codegen = struct {
             try self.emitFormatPushConstBytes(out_reg, ": ");
             const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
             const field_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ field_reg, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ field_reg, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
             try self.genDebugValue(out_reg, field_reg, field.ty);
         }
         try self.emitFormatPushConstBytes(out_reg, " }");
     }
 
-    fn genDebugCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genDebugCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (call.args.len != 1) return CodegenError.CodegenError;
         const ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
         const out_reg = try self.newTmp();
-        self.out.writer().print("    EXPAND FORMAT_BEGIN {s}, 128\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND FORMAT_BEGIN {s}, 128\n", .{out_reg}) catch return CodegenError.CodegenError;
         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
         try self.genDebugValue(out_reg, value_reg, ty);
         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
@@ -4023,13 +4039,13 @@ pub const Codegen = struct {
 
     fn genEnumPatternCheck(self: *Codegen, decl: *const ast.EnumDecl, pattern: ast.EnumPattern, value_reg: []const u8, branch_flag: []const u8) CodegenError!void {
         const tag_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as i64\n", .{ tag_reg, value_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as i64\n", .{ tag_reg, value_reg }) catch return CodegenError.CodegenError;
         const tag = enumVariantValue(decl, pattern.variant_name) orelse return CodegenError.CodegenError;
         const tag_const = try self.newTmp();
         try self.emitIntConst(tag_const, tag);
-        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ branch_flag, tag_reg, tag_const }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{tag_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{tag_const}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = eq {s}, {s}\n", .{ branch_flag, tag_reg, tag_const }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{tag_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{tag_const}) catch return CodegenError.CodegenError;
     }
 
     fn genEnumPatternBindings(self: *Codegen, decl: *const ast.EnumDecl, pattern: ast.EnumPattern, value_reg: []const u8) CodegenError!void {
@@ -4038,7 +4054,7 @@ pub const Codegen = struct {
         for (pattern.bindings, variant.fields) |binding, field| {
             const target = try self.pushBindingAlias(binding);
             const layout = enumFieldLayout(variant, field.name) orelse return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ target, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ target, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
         }
     }
 
@@ -4057,7 +4073,7 @@ pub const Codegen = struct {
     }
 
     fn emitArrayFillMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print(
+        self.outPrint(
             \\
             \\[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
             \\    call @sa_mem_set(&%array_ptr, %value, %length)
@@ -4067,7 +4083,7 @@ pub const Codegen = struct {
     }
 
     fn emitHashMapMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print(
+        self.outPrint(
             \\
             \\[MACRO] SLA_MAP_TRY_GET_OPTION %out_opt, %map_reg, %key_reg
             \\    EXPAND MAP_TRY_GET __sla_map_get_ok_%out_opt, __sla_map_get_ptr_%out_opt, %map_reg, %key_reg
@@ -4105,7 +4121,7 @@ pub const Codegen = struct {
     }
 
     fn emitBTreeMapMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print(
+        self.outPrint(
             \\
             \\[MACRO] SLA_BTREE_MAP_INSERT_OPTION_U64 %out_opt, %map_reg, %key_reg, %value_reg
             \\    EXPAND BTREE_MAP_INSERT_OLD __sla_btree_insert_replaced_%out_opt, __sla_btree_insert_old_%out_opt, %map_reg, %key_reg, %value_reg
@@ -4185,7 +4201,7 @@ pub const Codegen = struct {
         if (expr.* == .literal and expr.literal == .string_val) return reg;
         if (isFormatStringType(ty)) {
             const slice_reg = try self.newTmp();
-            self.out.writer().print("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, reg }) catch return CodegenError.CodegenError;
             return slice_reg;
         }
         return reg;
@@ -4195,14 +4211,14 @@ pub const Codegen = struct {
         self: *Codegen,
         source: *ast.Node,
         separator: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else if (sliceElementType(source_ty)) |elem| elem else vecElementType(source_ty) orelse return CodegenError.CodegenError;
         if (!isStringLikeType(elem_ty) and !isFormatStringType(elem_ty)) return CodegenError.CodegenError;
 
         const out_reg = try self.newTmp();
-        self.out.writer().print("    EXPAND STRING_BUF_NEW {s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND STRING_BUF_NEW {s}\n", .{out_reg}) catch return CodegenError.CodegenError;
         self.string_buf_bindings.put(out_reg, {}) catch return CodegenError.OutOfMemory;
 
         const sep_ty = self.tc.expr_types.get(separator) orelse return CodegenError.CodegenError;
@@ -4217,23 +4233,23 @@ pub const Codegen = struct {
             const base_source_reg = try self.genExpr(source, hoisted_allocs);
             const base_reg = if (source.* == .identifier and self.global_const_bindings.contains(source.identifier)) blk: {
                 const addr_reg = try self.newTmp();
-                self.out.writer().print("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
                 break :blk addr_reg;
             } else base_source_reg;
 
             var i: usize = 0;
             while (i < arr.len) : (i += 1) {
                 if (i > 0) {
-                    self.out.writer().print("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, sep_slice }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, sep_slice }) catch return CodegenError.CodegenError;
                 }
                 const off_reg = try self.newTmp();
                 try self.emitIntConst(off_reg, @as(i64, @intCast(i * typeSize(arr.elem))));
                 const item_ptr = try self.newTmp();
-                self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
                 const item_reg = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
                 const item_slice = try self.emitStringLikeSlice(source, item_reg, elem_ty);
-                self.out.writer().print("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, item_slice }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, item_slice }) catch return CodegenError.CodegenError;
                 if (!std.mem.eql(u8, item_slice, item_reg)) try self.emitRelease(item_slice);
                 try self.emitRelease(off_reg);
                 try self.emitRelease(item_ptr);
@@ -4248,59 +4264,59 @@ pub const Codegen = struct {
         if (vecElementType(source_ty) != null) {
             const vec_reg = try self.genExpr(source, hoisted_allocs);
             const len_reg = try self.newTmp();
-            self.out.writer().print("    {s} = call @sa_vec_len(&{s})\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = call @sa_vec_len(&{s})\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
             const data_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
             const idx_slot = try self.newTmp();
-            self.out.writer().print("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
             const head_label = try self.newLabel("L_STRING_JOIN_VEC_HEAD");
             const body_label = try self.newLabel("L_STRING_JOIN_VEC_BODY");
             const end_label = try self.newLabel("L_STRING_JOIN_VEC_END");
-            self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
             const idx_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
             const more_reg = try self.newTmp();
-            self.out.writer().print("    {s} = ult {s}, {s}\n", .{ more_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ more_reg, body_label, end_label }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ult {s}, {s}\n", .{ more_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ more_reg, body_label, end_label }) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
             const has_sep = try self.newTmp();
-            self.out.writer().print("    {s} = ne {s}, 0\n", .{ has_sep, idx_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ne {s}, 0\n", .{ has_sep, idx_reg }) catch return CodegenError.CodegenError;
             const sep_label = try self.newLabel("L_STRING_JOIN_VEC_SEP");
             const item_label = try self.newLabel("L_STRING_JOIN_VEC_ITEM");
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ has_sep, sep_label, item_label }) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{sep_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, sep_slice }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    jmp {s}\n\n", .{item_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ has_sep, sep_label, item_label }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{sep_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, sep_slice }) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{item_label}) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("{s}:\n", .{item_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{has_sep}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{item_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{has_sep}) catch return CodegenError.CodegenError;
             const elem_size = typeSize(elem_ty);
             const off_reg = try self.newTmp();
-            self.out.writer().print("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, elem_size }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, elem_size }) catch return CodegenError.CodegenError;
             const item_ptr = try self.newTmp();
-            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, data_reg, off_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, data_reg, off_reg }) catch return CodegenError.CodegenError;
             const item_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(elem_ty) }) catch return CodegenError.CodegenError;
             const item_slice = try self.emitStringLikeSlice(source, item_reg, elem_ty);
-            self.out.writer().print("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, item_slice }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, item_slice }) catch return CodegenError.CodegenError;
             const next_idx = try self.newTmp();
-            self.out.writer().print("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
             if (!std.mem.eql(u8, item_slice, item_reg)) try self.emitRelease(item_slice);
             try self.emitRelease(off_reg);
             try self.emitRelease(item_ptr);
             try self.emitRelease(item_reg);
             try self.emitRelease(next_idx);
             try self.emitRelease(idx_reg);
-            self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
             try self.emitRelease(idx_reg);
             try self.emitRelease(len_reg);
             try self.emitRelease(data_reg);
@@ -4310,59 +4326,59 @@ pub const Codegen = struct {
 
         const slice_reg = try self.genExpr(source, hoisted_allocs);
         const base_ptr = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_ptr, slice_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_ptr, slice_reg }) catch return CodegenError.CodegenError;
         const len_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
         const idx_slot = try self.newTmp();
-        self.out.writer().print("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
         const head_label = try self.newLabel("L_STRING_JOIN_SLICE_HEAD");
         const body_label = try self.newLabel("L_STRING_JOIN_SLICE_BODY");
         const end_label = try self.newLabel("L_STRING_JOIN_SLICE_END");
-        self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
         const idx_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
         const done_reg = try self.newTmp();
-        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ done_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ done_reg, end_label, body_label }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = eq {s}, {s}\n", .{ done_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ done_reg, end_label, body_label }) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
         const has_sep = try self.newTmp();
-        self.out.writer().print("    {s} = ne {s}, 0\n", .{ has_sep, idx_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ne {s}, 0\n", .{ has_sep, idx_reg }) catch return CodegenError.CodegenError;
         const sep_label = try self.newLabel("L_STRING_JOIN_SLICE_SEP");
         const item_label = try self.newLabel("L_STRING_JOIN_SLICE_ITEM");
-        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ has_sep, sep_label, item_label }) catch return CodegenError.CodegenError;
-        self.out.writer().print("{s}:\n", .{sep_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, sep_slice }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    jmp {s}\n\n", .{item_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ has_sep, sep_label, item_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{sep_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, sep_slice }) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{item_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{item_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{has_sep}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{item_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{has_sep}) catch return CodegenError.CodegenError;
         const elem_size = typeSize(elem_ty);
         const off_reg = try self.newTmp();
-        self.out.writer().print("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, elem_size }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, elem_size }) catch return CodegenError.CodegenError;
         const item_ptr = try self.newTmp();
-        self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_ptr, off_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_ptr, off_reg }) catch return CodegenError.CodegenError;
         const item_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(elem_ty) }) catch return CodegenError.CodegenError;
         const item_slice = try self.emitStringLikeSlice(source, item_reg, elem_ty);
-        self.out.writer().print("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, item_slice }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND STRING_BUF_PUSH_STR {s}, {s}\n", .{ out_reg, item_slice }) catch return CodegenError.CodegenError;
         const next_idx = try self.newTmp();
-        self.out.writer().print("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
         if (!std.mem.eql(u8, item_slice, item_reg)) try self.emitRelease(item_slice);
         try self.emitRelease(off_reg);
         try self.emitRelease(item_ptr);
         try self.emitRelease(item_reg);
         try self.emitRelease(next_idx);
         try self.emitRelease(idx_reg);
-        self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
         try self.emitRelease(idx_reg);
         try self.emitRelease(base_ptr);
         try self.emitRelease(len_reg);
@@ -4373,14 +4389,14 @@ pub const Codegen = struct {
     fn genStringCollect(
         self: *Codegen,
         source: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else if (sliceElementType(source_ty)) |elem| elem else vecElementType(source_ty) orelse return CodegenError.CodegenError;
         if (!std.mem.eql(u8, typeString(elem_ty), "u8")) return CodegenError.CodegenError;
 
         const out_reg = try self.newTmp();
-        self.out.writer().print("    EXPAND STRING_BUF_NEW {s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND STRING_BUF_NEW {s}\n", .{out_reg}) catch return CodegenError.CodegenError;
         self.string_buf_bindings.put(out_reg, {}) catch return CodegenError.OutOfMemory;
 
         if (arrayType(source_ty)) |arr| {
@@ -4388,7 +4404,7 @@ pub const Codegen = struct {
             const base_source_reg = try self.genExpr(source, hoisted_allocs);
             const base_reg = if (source.* == .identifier and self.global_const_bindings.contains(source.identifier)) blk: {
                 const addr_reg = try self.newTmp();
-                self.out.writer().print("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
                 break :blk addr_reg;
             } else base_source_reg;
 
@@ -4397,10 +4413,10 @@ pub const Codegen = struct {
                 const off_reg = try self.newTmp();
                 try self.emitIntConst(off_reg, @as(i64, @intCast(i * elem_size)));
                 const item_ptr = try self.newTmp();
-                self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
                 const item_reg = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+0 as u8\n", .{ item_reg, item_ptr }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    EXPAND STRING_BUF_PUSH_BYTE {s}, {s}\n", .{ out_reg, item_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as u8\n", .{ item_reg, item_ptr }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND STRING_BUF_PUSH_BYTE {s}, {s}\n", .{ out_reg, item_reg }) catch return CodegenError.CodegenError;
                 try self.emitRelease(off_reg);
                 try self.emitRelease(item_ptr);
                 try self.emitRelease(item_reg);
@@ -4414,42 +4430,42 @@ pub const Codegen = struct {
         if (vecElementType(source_ty) != null) {
             const vec_reg = try self.genExpr(source, hoisted_allocs);
             const len_reg = try self.newTmp();
-            self.out.writer().print("    {s} = call @sa_vec_len(&{s})\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = call @sa_vec_len(&{s})\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
             const data_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
             const idx_slot = try self.newTmp();
-            self.out.writer().print("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
             const head_label = try self.newLabel("L_VEC_STRING_COLLECT_HEAD");
             const body_label = try self.newLabel("L_VEC_STRING_COLLECT_BODY");
             const end_label = try self.newLabel("L_VEC_STRING_COLLECT_END");
-            self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
             const idx_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
             const more_reg = try self.newTmp();
-            self.out.writer().print("    {s} = ult {s}, {s}\n", .{ more_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ more_reg, body_label, end_label }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ult {s}, {s}\n", .{ more_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ more_reg, body_label, end_label }) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
             const item_ptr = try self.newTmp();
-            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, data_reg, idx_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, data_reg, idx_reg }) catch return CodegenError.CodegenError;
             const item_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as u8\n", .{ item_reg, item_ptr }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND STRING_BUF_PUSH_BYTE {s}, {s}\n", .{ out_reg, item_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as u8\n", .{ item_reg, item_ptr }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND STRING_BUF_PUSH_BYTE {s}, {s}\n", .{ out_reg, item_reg }) catch return CodegenError.CodegenError;
             const next_idx = try self.newTmp();
-            self.out.writer().print("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
             try self.emitRelease(item_ptr);
             try self.emitRelease(item_reg);
             try self.emitRelease(next_idx);
             try self.emitRelease(idx_reg);
-            self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
             try self.emitRelease(idx_reg);
             try self.emitRelease(len_reg);
             try self.emitRelease(data_reg);
@@ -4459,42 +4475,42 @@ pub const Codegen = struct {
 
         const slice_reg = try self.genExpr(source, hoisted_allocs);
         const base_ptr = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_ptr, slice_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_ptr, slice_reg }) catch return CodegenError.CodegenError;
         const len_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
         const idx_slot = try self.newTmp();
-        self.out.writer().print("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
         const head_label = try self.newLabel("L_STRING_COLLECT_HEAD");
         const body_label = try self.newLabel("L_STRING_COLLECT_BODY");
         const end_label = try self.newLabel("L_STRING_COLLECT_END");
-        self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
         const idx_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
         const done_reg = try self.newTmp();
-        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ done_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ done_reg, end_label, body_label }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = eq {s}, {s}\n", .{ done_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ done_reg, end_label, body_label }) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
         const off_reg = try self.newTmp();
-        self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ off_reg, base_ptr, idx_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ off_reg, base_ptr, idx_reg }) catch return CodegenError.CodegenError;
         const item_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as u8\n", .{ item_reg, off_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    EXPAND STRING_BUF_PUSH_BYTE {s}, {s}\n", .{ out_reg, item_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as u8\n", .{ item_reg, off_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND STRING_BUF_PUSH_BYTE {s}, {s}\n", .{ out_reg, item_reg }) catch return CodegenError.CodegenError;
         const next_idx = try self.newTmp();
-        self.out.writer().print("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
         try self.emitRelease(off_reg);
         try self.emitRelease(item_reg);
         try self.emitRelease(next_idx);
         try self.emitRelease(idx_reg);
-        self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
         try self.emitRelease(idx_reg);
         try self.emitRelease(base_ptr);
         try self.emitRelease(len_reg);
@@ -6744,29 +6760,29 @@ pub const Codegen = struct {
         var iter = self.thread_spawn_helpers.valueIterator();
         while (iter.next()) |helper| {
             if (helper.inline_join) continue;
-            self.out.writer().print("@const {s} = vtable {{ call = @{s} }}\n", .{ helper.vtable_name, helper.worker_name }) catch return CodegenError.CodegenError;
+            self.outPrint("@const {s} = vtable {{ call = @{s} }}\n", .{ helper.vtable_name, helper.worker_name }) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
 
         var fn_iter = self.thread_spawn_helpers.valueIterator();
         while (fn_iter.next()) |helper| {
             if (helper.inline_join) continue;
-            self.out.writer().print("@ffi_wrapper {s}(*slot: ptr):\nL_ENTRY:\n", .{helper.spawn_name}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    worker_vt = &{s}\n", .{helper.vtable_name}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    worker_fn = load worker_vt+0 as ptr\n", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    worker_raw = *worker_fn\n", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    worker_safe = assume_safe worker_raw\n", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND THREAD_SPAWN handle, *worker_safe, *slot\n", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store slot+0, handle as i32\n", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !handle\n    !worker_safe\n    !worker_raw\n    !worker_fn\n    !worker_vt\n    !slot\n    return\n\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@ffi_wrapper {s}(*slot: ptr):\nL_ENTRY:\n", .{helper.spawn_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    worker_vt = &{s}\n", .{helper.vtable_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    worker_fn = load worker_vt+0 as ptr\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("    worker_raw = *worker_fn\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("    worker_safe = assume_safe worker_raw\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND THREAD_SPAWN handle, *worker_safe, *slot\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("    store slot+0, handle as i32\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("    !handle\n    !worker_safe\n    !worker_raw\n    !worker_fn\n    !worker_vt\n    !slot\n    return\n\n", .{}) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("@{s}(&slot: ptr) -> i32:\nL_ENTRY:\n", .{helper.worker_name}) catch return CodegenError.CodegenError;
+            self.outPrint("@{s}(&slot: ptr) -> i32:\nL_ENTRY:\n", .{helper.worker_name}) catch return CodegenError.CodegenError;
             for (helper.captures) |capture| {
                 const capture_reg = try self.newTmp();
-                self.out.writer().print("    {s} = load slot+{} as ptr\n", .{ capture_reg, capture.offset }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load slot+{} as ptr\n", .{ capture_reg, capture.offset }) catch return CodegenError.CodegenError;
                 self.thread_capture_regs.put(capture.name, capture_reg) catch return CodegenError.OutOfMemory;
             }
-            var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+            var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
             defer hoisted_allocs.deinit();
             try self.seedThreadCaptureBindingTypes(helper.captures);
             if (isVoidType(helper.ret_ty)) {
@@ -6781,7 +6797,7 @@ pub const Codegen = struct {
                     _ = self.thread_capture_regs.remove(capture.name);
                 }
                 self.clearThreadCaptureBindingTypes(helper.captures);
-                self.out.writer().print("    !slot\n    return 0\n\n", .{}) catch return CodegenError.CodegenError;
+                self.outPrint("    !slot\n    return 0\n\n", .{}) catch return CodegenError.CodegenError;
                 continue;
             }
             const value_reg = try self.genExpr(helper.closure.body, &hoisted_allocs);
@@ -6789,17 +6805,17 @@ pub const Codegen = struct {
                 _ = self.thread_capture_regs.remove(capture.name);
             }
             self.clearThreadCaptureBindingTypes(helper.captures);
-            self.out.writer().print("    store slot+8, {s} as {s}\n", .{ value_reg, typeString(helper.ret_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    store slot+8, {s} as {s}\n", .{ value_reg, typeString(helper.ret_ty) }) catch return CodegenError.CodegenError;
             if (helper.ret_ty.* == .primitive and helper.ret_ty.primitive == .i32) {
-                self.out.writer().print("    !slot\n    return {s}\n\n", .{value_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    !slot\n    return {s}\n\n", .{value_reg}) catch return CodegenError.CodegenError;
             } else {
-                self.out.writer().print("    !{s}\n    !slot\n    return 0\n\n", .{value_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n    !slot\n    return 0\n\n", .{value_reg}) catch return CodegenError.CodegenError;
             }
         }
     }
 
     fn emitFutureTaskHelpers(self: *Codegen) CodegenError!void {
-        self.out.writer().print(
+        self.outPrint(
             \\@const SLA_READY_FUTURE_VT = vtable {{ poll = @sla_future_ready_poll }}
             \\@const SLA_DEFER_READY_FUTURE_VT = vtable {{ poll = @sla_future_defer_ready_poll }}
             \\@const SLA_JOIN2_FUTURE_VT = vtable {{ poll = @sla_future_join2_poll }}
@@ -7027,73 +7043,73 @@ pub const Codegen = struct {
             }
         }
         if (self.use_plain_time_sleep_ms_abi) {
-            self.out.writer().print("@extern sa_time_sleep_ms(ms: u64) -> i32\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@extern sa_time_sleep_ms(ms: u64) -> i32\n", .{}) catch return CodegenError.CodegenError;
         }
 
-        self.out.writer().print("@import \"sa_std/string.sa\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/string_format.sa\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/io/print.sai\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/fmt.sai\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/core/panic.sa\"\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("@import \"sa_std/string.sa\"\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("@import \"sa_std/string_format.sa\"\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("@import \"sa_std/io/print.sai\"\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("@import \"sa_std/fmt.sai\"\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("@import \"sa_std/core/panic.sa\"\n", .{}) catch return CodegenError.CodegenError;
 
         try self.emitArrayFillMacros();
         if (self.programNeedsCmpMacros(program)) {
-            self.out.writer().print("@import \"sa_std/cmp.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/cmp.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsOptionMacros(program)) {
-            self.out.writer().print("@import \"sa_std/core/option.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/core/option.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsResultMacros(program)) {
-            self.out.writer().print("@import \"sa_std/core/result.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/core/result.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsMpscMacros(program)) {
-            self.out.writer().print("@import \"sa_std/sync/mpsc.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/sync/mpsc.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsRcMacros(program)) {
-            self.out.writer().print("@import \"sa_std/core/rc.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/core/rc.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsVecDequeMacros(program)) {
-            self.out.writer().print("@import \"sa_std/vec_deque.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/vec_deque.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsHashMapMacros(program)) {
-            self.out.writer().print("@import \"sa_std/hashmap.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/hashmap.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsBTreeMapMacros(program)) {
-            self.out.writer().print("@import \"sa_std/btree_map.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/btree_map.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsHashSetMacros(program)) {
-            self.out.writer().print("@import \"sa_std/hashset.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/hashset.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsBTreeSetMacros(program)) {
-            self.out.writer().print("@import \"sa_std/btree_set.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/btree_set.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsAtomicMacros(program)) {
-            self.out.writer().print("@import \"sa_std/sync/atomic.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/sync/atomic.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsCellMacros(program)) {
-            self.out.writer().print("@import \"sa_std/core/cell.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/core/cell.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (lowering_rules.programNeedsRefCellRuntime(self.tc, program)) {
-            self.out.writer().print("@import \"sa_std/core/refcell.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/core/refcell.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (programNeedsBoxMacros(program)) {
-            self.out.writer().print("@import \"sa_std/core/box.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/core/box.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsVecMacros(program)) {
-            self.out.writer().print("@import \"sa_std/vec.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/vec.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (programNeedsIterMacros(program)) {
-            self.out.writer().print("@import \"sa_std/iter.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/iter.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsTraitObjectMacros(program)) {
-            self.out.writer().print("@import \"sa_std/core/trait_object.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/core/trait_object.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (programNeedsAsyncMacros(program)) {
-            self.out.writer().print("@import \"sa_std/core/future.sa\"\n", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("@import \"sa_std/core/task.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/core/future.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/core/task.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsFfiCstrMacros(program)) {
-            self.out.writer().print("@import \"sa_std/ffi.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("@import \"sa_std/ffi.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
 
         if (self.programNeedsHashMapMacros(program)) {
@@ -7267,15 +7283,15 @@ pub const Codegen = struct {
                 path = path[idx..];
             } else if (std.mem.indexOf(u8, path, ".sa/std/")) |idx| {
                 const suffix = path[idx + ".sa/std/".len ..];
-                self.out.writer().print("@import \"sa_std/{s}\"\n", .{suffix}) catch return CodegenError.CodegenError;
+                self.outPrint("@import \"sa_std/{s}\"\n", .{suffix}) catch return CodegenError.CodegenError;
                 return;
             } else if (std.mem.indexOf(u8, path, "sci/sa_std/")) |idx| {
                 const suffix = path[idx + "sci/sa_std/".len ..];
-                self.out.writer().print("@import \"sa_std/{s}\"\n", .{suffix}) catch return CodegenError.CodegenError;
+                self.outPrint("@import \"sa_std/{s}\"\n", .{suffix}) catch return CodegenError.CodegenError;
                 return;
             }
         }
-        self.out.writer().print("@import \"{s}\"\n", .{path}) catch return CodegenError.CodegenError;
+        self.outPrint("@import \"{s}\"\n", .{path}) catch return CodegenError.CodegenError;
     }
 
     fn genMacroDecl(self: *Codegen, m: *const ast.MacroDecl) CodegenError!void {
@@ -7286,18 +7302,18 @@ pub const Codegen = struct {
         }
         self.macro_locals.clearRetainingCapacity();
 
-        self.out.writer().print("[MACRO] {s}", .{m.name}) catch return CodegenError.CodegenError;
+        self.outPrint("[MACRO] {s}", .{m.name}) catch return CodegenError.CodegenError;
         for (m.params) |p| {
-            self.out.writer().print(" %{s}", .{p}) catch return CodegenError.CodegenError;
+            self.outPrint(" %{s}", .{p}) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
 
         // Perform Alpha-conversion for local variables declared in macro body
         // and map macro parameters to %param
         for (m.body) |stmt| {
             try self.genMacroStmt(stmt, m);
         }
-        self.out.writer().print("[END_MACRO]\n\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("[END_MACRO]\n\n", .{}) catch return CodegenError.CodegenError;
     }
 
     fn genMacroStmt(self: *Codegen, stmt: *ast.Node, m: *const ast.MacroDecl) CodegenError!void {
@@ -7307,7 +7323,7 @@ pub const Codegen = struct {
             .let_stmt => |let| {
                 const mangled = try self.newMacroLocal(m.name, let.name);
                 const val_reg = try self.genMacroExpr(let.value, m);
-                self.out.writer().print("    {s} = {s}\n", .{ mangled, val_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s}\n", .{ mangled, val_reg }) catch return CodegenError.CodegenError;
             },
             .assign_stmt => |assign| {
                 const val_reg = try self.genMacroExpr(assign.value, m);
@@ -7315,32 +7331,32 @@ pub const Codegen = struct {
                     const target_name = assign.target.identifier;
                     for (m.params) |p| {
                         if (std.mem.eql(u8, target_name, p)) {
-                            self.out.writer().print("    !%{s}\n", .{p}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    %{s} = {s}\n", .{ p, val_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    !%{s}\n", .{p}) catch return CodegenError.CodegenError;
+                            self.outPrint("    %{s} = {s}\n", .{ p, val_reg }) catch return CodegenError.CodegenError;
                             return;
                         }
                     }
                     if (self.macro_locals.get(target_name)) |mangled| {
-                        self.out.writer().print("    !{s}\n", .{mangled}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = {s}\n", .{ mangled, val_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{mangled}) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = {s}\n", .{ mangled, val_reg }) catch return CodegenError.CodegenError;
                         return;
                     }
                 }
                 const target_reg = try self.genMacroExpr(assign.target, m);
-                self.out.writer().print("    {s} = {s}\n", .{ target_reg, val_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s}\n", .{ target_reg, val_reg }) catch return CodegenError.CodegenError;
             },
             .release_stmt => |rel| {
                 var is_param = false;
                 for (m.params) |p| {
                     if (std.mem.eql(u8, rel.var_name, p)) {
-                        self.out.writer().print("    !%{s}\n", .{p}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !%{s}\n", .{p}) catch return CodegenError.CodegenError;
                         is_param = true;
                         break;
                     }
                 }
                 if (!is_param) {
                     // Assume it's a macro local
-                    self.out.writer().print("    !{s}_{s}_uniq_0\n", .{ m.name, rel.var_name }) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}_{s}_uniq_0\n", .{ m.name, rel.var_name }) catch return CodegenError.CodegenError;
                 }
             },
             .expr_stmt => |expr| {
@@ -7360,11 +7376,11 @@ pub const Codegen = struct {
                     .bool_val => |v| try self.emitIntConst(reg, if (v) 1 else 0),
                     .string_val => |v| {
                         const label = try self.newStringConst();
-                        self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, v }) catch return CodegenError.CodegenError;
+                        self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, v }) catch return CodegenError.CodegenError;
                         const len_reg = try self.newTmp();
                         try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(v))));
-                        self.out.writer().print("    {s} = alloc Slice_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ reg, label, len_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = alloc Slice_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ reg, label, len_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(len_reg);
                     },
                 }
@@ -7388,7 +7404,7 @@ pub const Codegen = struct {
             .borrow_expr => |borrow| {
                 const inner = try self.genMacroExpr(borrow.expr, m);
                 const reg = try self.newTmp();
-                self.out.writer().print("    {s} = &{s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = &{s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
                 return reg;
             },
             .binary_expr => |bin| {
@@ -7398,7 +7414,7 @@ pub const Codegen = struct {
                 const r = try self.genMacroExpr(bin.right, m);
                 const reg = try self.newTmp();
                 const op = binaryOpName(bin.op, left_ty, right_ty) orelse return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ reg, op, l, r }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s} {s}, {s}\n", .{ reg, op, l, r }) catch return CodegenError.CodegenError;
                 return reg;
             },
             else => return "tmp_macro_res",
@@ -7473,36 +7489,36 @@ pub const Codegen = struct {
         // Emit function signature
         const lowered_name = try self.loweredFuncSymbol(name);
         defer self.allocator.free(lowered_name);
-        self.out.writer().print("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        self.outPrint("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
         for (f.params, 0..) |p, i| {
-            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
             const prefix: []const u8 = self.abiParamPrefix(p);
-            self.out.writer().print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
         }
         const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
         const ret_type_str = abiReturnTypeString(async_return_plan.abi_ret_ty);
         if (isVoidType(f.ret_ty) and !f.is_async) {
-            self.out.writer().print("):\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("):\n", .{}) catch return CodegenError.CodegenError;
         } else {
-            self.out.writer().print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
+            self.outPrint(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
         // 1. Loop allocation hoisting pre-pass
         // Detect all stack allocations inside for loops in this function body
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
 
-        var loop_counter_slots = std.ArrayList([]const u8).init(self.allocator);
+        var loop_counter_slots = std.array_list.Managed([]const u8).init(self.allocator);
         defer loop_counter_slots.deinit();
         try self.collectLoopCounterSlots(f.body, &loop_counter_slots);
 
         for (hoisted_allocs.items) |h_name| {
-            self.out.writer().print("    {s} = stack_alloc 16\n", .{h_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = stack_alloc 16\n", .{h_name}) catch return CodegenError.CodegenError;
         }
         for (loop_counter_slots.items) |slot_name| {
-            self.out.writer().print("    {s} = stack_alloc 8\n", .{slot_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = stack_alloc 8\n", .{slot_name}) catch return CodegenError.CodegenError;
             self.stack_alloc_bindings.put(slot_name, {}) catch return CodegenError.OutOfMemory;
         }
 
@@ -7512,31 +7528,31 @@ pub const Codegen = struct {
                 const raw_param = try self.newTmp();
                 const raw_ptr = try self.newTmp();
                 const raw_len = try self.newTmp();
-                self.out.writer().print("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
                 self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
-                self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{p.name}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ raw_ptr, raw_param }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = load {s}+8 as u64\n", .{ raw_len, raw_param }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ p.name, raw_ptr }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+8, {s} as u64\n", .{ p.name, raw_len }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{p.name}) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ raw_ptr, raw_param }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+8 as u64\n", .{ raw_len, raw_param }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+0, {s} as ptr\n", .{ p.name, raw_ptr }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+8, {s} as u64\n", .{ p.name, raw_len }) catch return CodegenError.CodegenError;
                 try self.emitRelease(raw_ptr);
                 try self.emitRelease(raw_len);
                 try self.emitRelease(raw_param);
             }
             if (!p.is_borrow and !p.is_move and self.bindingNeedsAddressableStorage(p.name, p.ty)) {
                 const raw_param = try self.newTmp();
-                self.out.writer().print("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
                 self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
-                self.out.writer().print("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
                 try self.emitRelease(raw_param);
             } else if (!p.is_borrow and !p.is_move and self.bindingNeedsAssignedValueSlot(p.name, p.ty)) {
                 const raw_param = try self.newTmp();
-                self.out.writer().print("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
                 self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
                 self.assigned_value_slots.put(p.name, {}) catch return CodegenError.OutOfMemory;
-                self.out.writer().print("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
             }
         }
 
@@ -7555,7 +7571,7 @@ pub const Codegen = struct {
                         tail_reg = try self.genReadyFutureI64(tail_reg);
                     }
                     try self.emitFunctionTailCleanups(f.body[f.body.len - 1], tail_expr);
-                    self.out.writer().print("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
                 }
             }
         } else {
@@ -7566,13 +7582,13 @@ pub const Codegen = struct {
             // The generated pending await returned from this async function.
         } else if (async_return_plan.wrap_ready_future and !tail_expr_return and !blockTerminates(f.body)) {
             const zero = try self.newTmp();
-            self.out.writer().print("    {s} = 0\n", .{zero}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = 0\n", .{zero}) catch return CodegenError.CodegenError;
             const future = try self.genReadyFutureI64(zero);
-            self.out.writer().print("    return {s}\n", .{future}) catch return CodegenError.CodegenError;
+            self.outPrint("    return {s}\n", .{future}) catch return CodegenError.CodegenError;
         } else if (isVoidType(f.ret_ty)) {
-            self.out.writer().print("    return\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("    return\n", .{}) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
     }
 
     fn genFuncDecl(self: *Codegen, f: *const ast.FuncDecl) CodegenError!void {
@@ -7620,33 +7636,33 @@ pub const Codegen = struct {
         try self.collectAddressableBindings(t.body);
 
         // Emit SA @test header:  @test [ignored] [should_panic] "name"():
-        self.out.writer().print("@test", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("@test", .{}) catch return CodegenError.CodegenError;
         if (t.is_ignored) {
-            self.out.writer().print(" ignored", .{}) catch return CodegenError.CodegenError;
+            self.outPrint(" ignored", .{}) catch return CodegenError.CodegenError;
         }
         if (t.should_panic) {
-            self.out.writer().print(" should_panic", .{}) catch return CodegenError.CodegenError;
+            self.outPrint(" should_panic", .{}) catch return CodegenError.CodegenError;
         }
         const test_name = try self.sanitizeTestName(t.name);
         defer self.allocator.free(test_name);
-        self.out.writer().print(" \"{s}\"():\n", .{test_name}) catch return CodegenError.CodegenError;
+        self.outPrint(" \"{s}\"():\n", .{test_name}) catch return CodegenError.CodegenError;
         const entry_label = try self.newLabel("L_TEST_ENTRY");
-        self.out.writer().print("{s}:\n", .{entry_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{entry_label}) catch return CodegenError.CodegenError;
 
         // Hoist any stack allocations inside the test body
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(t.body, &hoisted_allocs);
 
-        var loop_counter_slots = std.ArrayList([]const u8).init(self.allocator);
+        var loop_counter_slots = std.array_list.Managed([]const u8).init(self.allocator);
         defer loop_counter_slots.deinit();
         try self.collectLoopCounterSlots(t.body, &loop_counter_slots);
 
         for (hoisted_allocs.items) |h_name| {
-            self.out.writer().print("    {s} = stack_alloc 16\n", .{h_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = stack_alloc 16\n", .{h_name}) catch return CodegenError.CodegenError;
         }
         for (loop_counter_slots.items) |slot_name| {
-            self.out.writer().print("    {s} = stack_alloc 8\n", .{slot_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = stack_alloc 8\n", .{slot_name}) catch return CodegenError.CodegenError;
             self.stack_alloc_bindings.put(slot_name, {}) catch return CodegenError.OutOfMemory;
         }
 
@@ -7654,15 +7670,15 @@ pub const Codegen = struct {
         try self.genBlock(t.body, &hoisted_allocs);
 
         // Tests return void
-        self.out.writer().print("    return\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("    return\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
     }
 
-    fn collectHoistedAllocs(self: *Codegen, block: []const *ast.Node, list: *std.ArrayList([]const u8)) CodegenError!void {
+    fn collectHoistedAllocs(self: *Codegen, block: []const *ast.Node, list: *std.array_list.Managed([]const u8)) CodegenError!void {
         try self.collectHoistedAllocsInternal(block, list, false);
     }
 
-    fn appendUniqueName(self: *Codegen, list: *std.ArrayList([]const u8), name: []const u8) CodegenError!void {
+    fn appendUniqueName(self: *Codegen, list: *std.array_list.Managed([]const u8), name: []const u8) CodegenError!void {
         _ = self;
         for (list.items) |existing| {
             if (std.mem.eql(u8, existing, name)) return;
@@ -7670,7 +7686,7 @@ pub const Codegen = struct {
         list.append(name) catch return CodegenError.OutOfMemory;
     }
 
-    fn collectLoopCounterSlots(self: *Codegen, block: []const *ast.Node, list: *std.ArrayList([]const u8)) CodegenError!void {
+    fn collectLoopCounterSlots(self: *Codegen, block: []const *ast.Node, list: *std.array_list.Managed([]const u8)) CodegenError!void {
         for (block) |stmt| {
             switch (stmt.*) {
                 .for_stmt => |f| {
@@ -7711,7 +7727,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn collectLoopCounterSlotsInExpr(self: *Codegen, expr: *ast.Node, list: *std.ArrayList([]const u8)) CodegenError!void {
+    fn collectLoopCounterSlotsInExpr(self: *Codegen, expr: *ast.Node, list: *std.array_list.Managed([]const u8)) CodegenError!void {
         switch (expr.*) {
             .if_expr => |ife| {
                 try self.collectLoopCounterSlotsInExpr(ife.cond, list);
@@ -7771,7 +7787,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn collectHoistedAllocsInternal(self: *Codegen, block: []const *ast.Node, list: *std.ArrayList([]const u8), in_loop: bool) CodegenError!void {
+    fn collectHoistedAllocsInternal(self: *Codegen, block: []const *ast.Node, list: *std.array_list.Managed([]const u8), in_loop: bool) CodegenError!void {
         for (block) |stmt| {
             switch (stmt.*) {
                 .let_stmt => |let| {
@@ -7818,7 +7834,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn collectHoistedAllocsInExpr(self: *Codegen, expr: *ast.Node, list: *std.ArrayList([]const u8), in_loop: bool) CodegenError!void {
+    fn collectHoistedAllocsInExpr(self: *Codegen, expr: *ast.Node, list: *std.array_list.Managed([]const u8), in_loop: bool) CodegenError!void {
         switch (expr.*) {
             .if_expr => |ife| {
                 try self.collectHoistedAllocsInExpr(ife.cond, list, in_loop);
@@ -7908,7 +7924,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn genBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn genBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         self.enterBlockForLoopLocalTracking();
         defer self.leaveBlockForLoopLocalTracking();
 
@@ -7920,7 +7936,7 @@ pub const Codegen = struct {
             self.current_stmt_index = prev_stmt_index;
         }
 
-        var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
+        var scoped_aliases = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             var i = scoped_aliases.items.len;
             while (i > 0) {
@@ -7986,8 +8002,8 @@ pub const Codegen = struct {
         }
     }
 
-    fn genScopedBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
-        var scoped_var_aliases = std.ArrayList([]const u8).init(self.allocator);
+    fn genScopedBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
+        var scoped_var_aliases = std.array_list.Managed([]const u8).init(self.allocator);
         defer scoped_var_aliases.deinit();
 
         for (block) |stmt| {
@@ -8010,7 +8026,7 @@ pub const Codegen = struct {
         self: *Codegen,
         block: []const *ast.Node,
         target: []const u8,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (block.len == 0) return CodegenError.CodegenError;
 
@@ -8025,12 +8041,12 @@ pub const Codegen = struct {
         const value_ty = self.tc.expr_types.get(value_expr) orelse return CodegenError.CodegenError;
         if (value_expr.* == .identifier and value_ty.* == .primitive) {
             switch (value_ty.primitive) {
-                .boolean => self.out.writer().print("    {s} = or {s}, 0\n", .{ target, value_reg }) catch return CodegenError.CodegenError,
-                .f32, .f64, .float => self.out.writer().print("    {s} = add {s}, 0.0\n", .{ target, value_reg }) catch return CodegenError.CodegenError,
-                else => self.out.writer().print("    {s} = add {s}, 0\n", .{ target, value_reg }) catch return CodegenError.CodegenError,
+                .boolean => self.outPrint("    {s} = or {s}, 0\n", .{ target, value_reg }) catch return CodegenError.CodegenError,
+                .f32, .f64, .float => self.outPrint("    {s} = add {s}, 0.0\n", .{ target, value_reg }) catch return CodegenError.CodegenError,
+                else => self.outPrint("    {s} = add {s}, 0\n", .{ target, value_reg }) catch return CodegenError.CodegenError,
             }
         } else {
-            self.out.writer().print("    {s} = {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
         }
 
         if (!stmtTerminates(last)) {
@@ -8047,7 +8063,7 @@ pub const Codegen = struct {
         block: []const *ast.Node,
         target_ptr: []const u8,
         target_ty: *const ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (block.len == 0) return CodegenError.CodegenError;
 
@@ -8064,14 +8080,14 @@ pub const Codegen = struct {
         if (value_expr.* == .identifier and value_ty.* == .primitive) {
             const copied = try self.newTmp();
             switch (value_ty.primitive) {
-                .boolean => self.out.writer().print("    {s} = or {s}, 0\n", .{ copied, value_reg }) catch return CodegenError.CodegenError,
-                .f32, .f64, .float => self.out.writer().print("    {s} = add {s}, 0.0\n", .{ copied, value_reg }) catch return CodegenError.CodegenError,
-                else => self.out.writer().print("    {s} = add {s}, 0\n", .{ copied, value_reg }) catch return CodegenError.CodegenError,
+                .boolean => self.outPrint("    {s} = or {s}, 0\n", .{ copied, value_reg }) catch return CodegenError.CodegenError,
+                .f32, .f64, .float => self.outPrint("    {s} = add {s}, 0.0\n", .{ copied, value_reg }) catch return CodegenError.CodegenError,
+                else => self.outPrint("    {s} = add {s}, 0\n", .{ copied, value_reg }) catch return CodegenError.CodegenError,
             }
-            self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_ptr, copied, typeString(target_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_ptr, copied, typeString(target_ty) }) catch return CodegenError.CodegenError;
             try self.emitRelease(copied);
         } else {
-            self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_ptr, value_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_ptr, value_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
         }
         try self.storeResultSlotTransferredValueState(target_ptr, value_reg, target_ty, callArgNeedsRelease(value_expr));
 
@@ -8086,7 +8102,7 @@ pub const Codegen = struct {
 
     fn genReadyFutureI64(self: *Codegen, value_reg: []const u8) CodegenError![]const u8 {
         const future_reg = try self.newTmp();
-        self.out.writer().print("    EXPAND FUTURE_READY_STATE_NEW {s}, {s}\n", .{ future_reg, value_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND FUTURE_READY_STATE_NEW {s}, {s}\n", .{ future_reg, value_reg }) catch return CodegenError.CodegenError;
         self.future_state_vtables.put(future_reg, "SLA_READY_FUTURE_VT") catch return CodegenError.OutOfMemory;
         self.future_readiness.put(future_reg, .ready) catch return CodegenError.OutOfMemory;
         return future_reg;
@@ -8094,7 +8110,7 @@ pub const Codegen = struct {
 
     fn genPendingFuture(self: *Codegen) CodegenError![]const u8 {
         const future_reg = try self.newTmp();
-        self.out.writer().print("    EXPAND FUTURE_PENDING_STATE_NEW {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND FUTURE_PENDING_STATE_NEW {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
         self.future_state_vtables.put(future_reg, "SLA_READY_FUTURE_VT") catch return CodegenError.OutOfMemory;
         self.future_readiness.put(future_reg, .pending) catch return CodegenError.OutOfMemory;
         return future_reg;
@@ -8102,9 +8118,9 @@ pub const Codegen = struct {
 
     fn genDeferReadyFutureI64(self: *Codegen, value_reg: []const u8) CodegenError![]const u8 {
         const future_reg = try self.newTmp();
-        self.out.writer().print("    {s} = alloc 16\n", .{future_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{future_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+8, {s} as u64\n", .{ future_reg, value_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc 16\n", .{future_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{future_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+8, {s} as u64\n", .{ future_reg, value_reg }) catch return CodegenError.CodegenError;
         self.future_state_vtables.put(future_reg, "SLA_DEFER_READY_FUTURE_VT") catch return CodegenError.OutOfMemory;
         try self.recordFutureReadiness(future_reg, .unknown);
         return future_reg;
@@ -8145,8 +8161,8 @@ pub const Codegen = struct {
         const vt_reg = try self.newTmp();
         const future_obj = try self.newTmp();
         const vt_name = self.futureVTableForState(state_reg);
-        self.out.writer().print("    {s} = &{s}\n", .{ vt_reg, vt_name }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    EXPAND FUTURE_NEW {s}, {s}, {s}\n", .{ future_obj, state_reg, vt_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = &{s}\n", .{ vt_reg, vt_name }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND FUTURE_NEW {s}, {s}, {s}\n", .{ future_obj, state_reg, vt_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(vt_reg);
         return future_obj;
     }
@@ -8155,7 +8171,7 @@ pub const Codegen = struct {
         const left_future = try self.genFutureObjectForState(left_state);
         const right_future = try self.genFutureObjectForState(right_state);
         const join_state = try self.newTmp();
-        self.out.writer().print("    EXPAND FUTURE_JOIN2_STATE_NEW {s}, {s}, {s}\n", .{ join_state, left_future, right_future }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND FUTURE_JOIN2_STATE_NEW {s}, {s}, {s}\n", .{ join_state, left_future, right_future }) catch return CodegenError.CodegenError;
         self.future_state_vtables.put(join_state, "SLA_JOIN2_FUTURE_VT") catch return CodegenError.OutOfMemory;
         try self.recordFutureReadiness(join_state, lowering_rules.join2Readiness(self.futureReadinessForState(left_state), self.futureReadinessForState(right_state)));
         try self.emitRelease(left_future);
@@ -8167,7 +8183,7 @@ pub const Codegen = struct {
         const left_future = try self.genFutureObjectForState(left_state);
         const right_future = try self.genFutureObjectForState(right_state);
         const select_state = try self.newTmp();
-        self.out.writer().print("    EXPAND FUTURE_SELECT2_STATE_NEW {s}, {s}, {s}\n", .{ select_state, left_future, right_future }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND FUTURE_SELECT2_STATE_NEW {s}, {s}, {s}\n", .{ select_state, left_future, right_future }) catch return CodegenError.CodegenError;
         self.future_state_vtables.put(select_state, "SLA_SELECT2_FUTURE_VT") catch return CodegenError.OutOfMemory;
         try self.recordFutureReadiness(select_state, lowering_rules.select2Readiness(self.futureReadinessForState(left_state), self.futureReadinessForState(right_state)));
         try self.emitRelease(left_future);
@@ -8175,7 +8191,7 @@ pub const Codegen = struct {
         return select_state;
     }
 
-    fn genFutureRuntimeCall(self: *Codegen, future_plan: lowering_rules.FutureRuntimeCallPlan, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genFutureRuntimeCall(self: *Codegen, future_plan: lowering_rules.FutureRuntimeCallPlan, call: ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (future_plan.isReady()) {
             if (call.args.len != 1) return CodegenError.CodegenError;
             const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -8211,7 +8227,7 @@ pub const Codegen = struct {
             const pair_reg = try self.genExpr(call.args[0], hoisted_allocs);
             const value_reg = try self.newTmp();
             const macro_name = future_plan.pairMacroName() orelse return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(pair_reg);
             return value_reg;
         }
@@ -8220,22 +8236,22 @@ pub const Codegen = struct {
             const either_reg = try self.genExpr(call.args[0], hoisted_allocs);
             const value_reg = try self.newTmp();
             const macro_name = future_plan.eitherValueMacroName() orelse return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, either_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, either_reg }) catch return CodegenError.CodegenError;
             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(either_reg);
             return value_reg;
         }
         return CodegenError.CodegenError;
     }
 
-    fn genTaskRuntimeCall(self: *Codegen, task_plan: lowering_rules.TaskRuntimeCallPlan, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genTaskRuntimeCall(self: *Codegen, task_plan: lowering_rules.TaskRuntimeCallPlan, call: ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (task_plan.isNew()) {
             if (call.args.len != 1) return CodegenError.CodegenError;
             const state_reg = try self.genExpr(call.args[0], hoisted_allocs);
             const ctx = try self.newTmp();
             const task = try self.newTmp();
             const future_obj = try self.genFutureObjectForState(state_reg);
-            self.out.writer().print("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND TASK_NEW {s}, {s}, {s}\n", .{ task, future_obj, ctx }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND TASK_NEW {s}, {s}, {s}\n", .{ task, future_obj, ctx }) catch return CodegenError.CodegenError;
             try self.emitRelease(ctx);
             // The state object was moved into the future wrapper above; forget
             // the source reg like every sibling branch does for its consumed
@@ -8250,9 +8266,9 @@ pub const Codegen = struct {
             const poll_reg = try self.newTmp();
             const tag_reg = try self.newTmp();
             const ready_reg = try self.newTmp();
-            self.out.writer().print("    EXPAND TASK_POLL {s}, {s}\n", .{ poll_reg, task_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND TASK_POLL {s}, {s}\n", .{ poll_reg, task_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(tag_reg);
             try self.emitRelease(poll_reg);
             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
@@ -8262,7 +8278,7 @@ pub const Codegen = struct {
             if (call.args.len != 1) return CodegenError.CodegenError;
             const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
             const ready_reg = try self.newTmp();
-            self.out.writer().print("    EXPAND TASK_IS_READY {s}, {s}\n", .{ ready_reg, task_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND TASK_IS_READY {s}, {s}\n", .{ ready_reg, task_reg }) catch return CodegenError.CodegenError;
             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
             return ready_reg;
         }
@@ -8270,7 +8286,7 @@ pub const Codegen = struct {
             if (call.args.len != 1) return CodegenError.CodegenError;
             const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
             const value_reg = try self.newTmp();
-            self.out.writer().print("    EXPAND TASK_RESULT {s}, {s}\n", .{ value_reg, task_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND TASK_RESULT {s}, {s}\n", .{ value_reg, task_reg }) catch return CodegenError.CodegenError;
             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
             return value_reg;
         }
@@ -8278,7 +8294,7 @@ pub const Codegen = struct {
             if (call.args.len != 1) return CodegenError.CodegenError;
             const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
             const state_reg = try self.newTmp();
-            self.out.writer().print("    EXPAND TASK_STATE {s}, {s}\n", .{ state_reg, task_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND TASK_STATE {s}, {s}\n", .{ state_reg, task_reg }) catch return CodegenError.CodegenError;
             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
             return state_reg;
         }
@@ -8357,15 +8373,15 @@ pub const Codegen = struct {
             if (scalar.awaited_coeff == 1) {
                 current_reg = awaited_reg;
             } else if (scalar.awaited_coeff == -1) {
-                self.out.writer().print("    {s} = sub 0, {s}\n", .{ awaited_scaled, awaited_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = sub 0, {s}\n", .{ awaited_scaled, awaited_reg }) catch return CodegenError.CodegenError;
                 current_reg = awaited_scaled;
                 release_awaited_scaled = true;
             } else {
                 const abs_coeff = if (scalar.awaited_coeff < 0) -scalar.awaited_coeff else scalar.awaited_coeff;
-                self.out.writer().print("    {s} = mul {s}, {}\n", .{ awaited_abs, awaited_reg, abs_coeff }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = mul {s}, {}\n", .{ awaited_abs, awaited_reg, abs_coeff }) catch return CodegenError.CodegenError;
                 release_awaited_abs = true;
                 if (scalar.awaited_coeff < 0) {
-                    self.out.writer().print("    {s} = sub 0, {s}\n", .{ awaited_scaled, awaited_abs }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = sub 0, {s}\n", .{ awaited_scaled, awaited_abs }) catch return CodegenError.CodegenError;
                     current_reg = awaited_scaled;
                     release_awaited_scaled = true;
                 } else {
@@ -8379,18 +8395,18 @@ pub const Codegen = struct {
             var captured_term: []const u8 = addend_reg;
             const abs_coeff = if (scalar.captured_coeff < 0) -scalar.captured_coeff else scalar.captured_coeff;
             if (abs_coeff != 1) {
-                self.out.writer().print("    {s} = mul {s}, {}\n", .{ captured_abs, addend_reg, abs_coeff }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = mul {s}, {}\n", .{ captured_abs, addend_reg, abs_coeff }) catch return CodegenError.CodegenError;
                 captured_term = captured_abs;
                 release_captured_abs = true;
             }
             if (current_reg) |current| {
                 const sum_dest = if (scalar.captured2_coeff == 0 and scalar.immediate == 0) result_reg else expr_sum;
                 const op: []const u8 = if (scalar.captured_coeff < 0) "sub" else "add";
-                self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ sum_dest, op, current, captured_term }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s} {s}, {s}\n", .{ sum_dest, op, current, captured_term }) catch return CodegenError.CodegenError;
                 current_reg = sum_dest;
                 release_expr_sum = scalar.captured2_coeff != 0 or scalar.immediate != 0;
             } else if (scalar.captured_coeff < 0) {
-                self.out.writer().print("    {s} = sub 0, {s}\n", .{ captured_scaled, captured_term }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = sub 0, {s}\n", .{ captured_scaled, captured_term }) catch return CodegenError.CodegenError;
                 current_reg = captured_scaled;
                 release_captured_scaled = true;
             } else {
@@ -8403,18 +8419,18 @@ pub const Codegen = struct {
             var captured_term: []const u8 = addend_reg;
             const abs_coeff = if (scalar.captured2_coeff < 0) -scalar.captured2_coeff else scalar.captured2_coeff;
             if (abs_coeff != 1) {
-                self.out.writer().print("    {s} = mul {s}, {}\n", .{ captured2_abs, addend_reg, abs_coeff }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = mul {s}, {}\n", .{ captured2_abs, addend_reg, abs_coeff }) catch return CodegenError.CodegenError;
                 captured_term = captured2_abs;
                 release_captured2_abs = true;
             }
             if (current_reg) |current| {
                 const sum_dest = if (scalar.immediate == 0) result_reg else expr_sum2;
                 const op: []const u8 = if (scalar.captured2_coeff < 0) "sub" else "add";
-                self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ sum_dest, op, current, captured_term }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s} {s}, {s}\n", .{ sum_dest, op, current, captured_term }) catch return CodegenError.CodegenError;
                 current_reg = sum_dest;
                 release_expr_sum2 = scalar.immediate != 0;
             } else if (scalar.captured2_coeff < 0) {
-                self.out.writer().print("    {s} = sub 0, {s}\n", .{ captured2_scaled, captured_term }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = sub 0, {s}\n", .{ captured2_scaled, captured_term }) catch return CodegenError.CodegenError;
                 current_reg = captured2_scaled;
                 release_captured2_scaled = true;
             } else {
@@ -8426,28 +8442,28 @@ pub const Codegen = struct {
             const current = current_reg orelse "0";
             const imm_abs = if (scalar.immediate < 0) -scalar.immediate else scalar.immediate;
             const op: []const u8 = if (scalar.immediate < 0) "sub" else "add";
-            self.out.writer().print("    {s} = {s} {s}, {}\n", .{ result_reg, op, current, imm_abs }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = {s} {s}, {}\n", .{ result_reg, op, current, imm_abs }) catch return CodegenError.CodegenError;
             current_reg = result_reg;
         }
 
         const current = current_reg orelse "0";
         if (!std.mem.eql(u8, current, result_reg)) {
-            self.out.writer().print("    {s} = add {s}, 0\n", .{ result_reg, current }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add {s}, 0\n", .{ result_reg, current }) catch return CodegenError.CodegenError;
         }
-        if (release_expr_sum) self.out.writer().print("    !{s}\n", .{expr_sum}) catch return CodegenError.CodegenError;
-        if (release_expr_sum2) self.out.writer().print("    !{s}\n", .{expr_sum2}) catch return CodegenError.CodegenError;
-        if (release_captured2_scaled) self.out.writer().print("    !{s}\n", .{captured2_scaled}) catch return CodegenError.CodegenError;
-        if (release_captured2_abs) self.out.writer().print("    !{s}\n", .{captured2_abs}) catch return CodegenError.CodegenError;
-        if (release_captured_scaled) self.out.writer().print("    !{s}\n", .{captured_scaled}) catch return CodegenError.CodegenError;
-        if (release_captured_abs) self.out.writer().print("    !{s}\n", .{captured_abs}) catch return CodegenError.CodegenError;
-        if (release_awaited_scaled) self.out.writer().print("    !{s}\n", .{awaited_scaled}) catch return CodegenError.CodegenError;
-        if (release_awaited_abs) self.out.writer().print("    !{s}\n", .{awaited_abs}) catch return CodegenError.CodegenError;
+        if (release_expr_sum) self.outPrint("    !{s}\n", .{expr_sum}) catch return CodegenError.CodegenError;
+        if (release_expr_sum2) self.outPrint("    !{s}\n", .{expr_sum2}) catch return CodegenError.CodegenError;
+        if (release_captured2_scaled) self.outPrint("    !{s}\n", .{captured2_scaled}) catch return CodegenError.CodegenError;
+        if (release_captured2_abs) self.outPrint("    !{s}\n", .{captured2_abs}) catch return CodegenError.CodegenError;
+        if (release_captured_scaled) self.outPrint("    !{s}\n", .{captured_scaled}) catch return CodegenError.CodegenError;
+        if (release_captured_abs) self.outPrint("    !{s}\n", .{captured_abs}) catch return CodegenError.CodegenError;
+        if (release_awaited_scaled) self.outPrint("    !{s}\n", .{awaited_scaled}) catch return CodegenError.CodegenError;
+        if (release_awaited_abs) self.outPrint("    !{s}\n", .{awaited_abs}) catch return CodegenError.CodegenError;
     }
 
     fn emitAsyncSingleAwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncSingleAwaitContinuationPlan) CodegenError!void {
         const vt_name = try self.asyncSingleAwaitVTableName(name);
         const poll_name = try self.asyncSingleAwaitPollName(name);
-        self.out.writer().print(
+        self.outPrint(
             \\@const {s} = vtable {{ poll = @{s} }}
             \\@{s}(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
             \\L_ENTRY:
@@ -8485,7 +8501,7 @@ pub const Codegen = struct {
             const reg_name: []const u8 = if (capture_idx == 0) "async_captured_addend" else "async_captured_addend2";
             switch (capture.storage) {
                 .scalar => {
-                    self.out.writer().print("    {s} = load data_slot+{} as u64\n", .{ reg_name, capture.offset }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load data_slot+{} as u64\n", .{ reg_name, capture.offset }) catch return CodegenError.CodegenError;
                     captured_addend_regs[capture_idx] = reg_name;
                 },
                 .copy_struct => {
@@ -8496,8 +8512,8 @@ pub const Codegen = struct {
                     if (!self.typeIsCopyStruct(capture_ty)) return CodegenError.CodegenError;
                     const layout = self.aggregateFieldLayout(capture_ty, field) orelse return CodegenError.CodegenError;
                     const ptr_reg: []const u8 = if (capture_idx == 0) "async_captured_struct" else "async_captured_struct2";
-                    self.out.writer().print("    {s} = load data_slot+{} as ptr\n", .{ ptr_reg, capture.offset }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg_name, ptr_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load data_slot+{} as ptr\n", .{ ptr_reg, capture.offset }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s}+{} as {s}\n", .{ reg_name, ptr_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
                     captured_addend_regs[capture_idx] = reg_name;
                     captured_storage_regs[capture_idx] = ptr_reg;
                 },
@@ -8506,20 +8522,20 @@ pub const Codegen = struct {
         const result_reg = if (plan.branch != null) "async_result" else plan.resultBindingName() orelse if (scalar.isIdentity()) plan.binding_name else "async_result";
         if (plan.branch) |branch| {
             const condition_op = asyncContinuationConditionOpName(branch.condition_op) orelse return CodegenError.CodegenError;
-            self.out.writer().print(
+            self.outPrint(
                 \\    async_branch_cond = {s} {s}, {}
                 \\    br async_branch_cond -> L_ASYNC_SINGLE_AWAIT_BRANCH_THEN, L_ASYNC_SINGLE_AWAIT_BRANCH_ELSE
                 \\L_ASYNC_SINGLE_AWAIT_BRANCH_THEN:
                 \\
             , .{ condition_op, plan.binding_name, branch.threshold }) catch return CodegenError.CodegenError;
             try self.emitAsyncContinuationScalarValue(branch.then_scalar, result_reg, plan.binding_name, captured_addend_regs, "async_then");
-            self.out.writer().print(
+            self.outPrint(
                 \\    jmp L_ASYNC_SINGLE_AWAIT_BRANCH_DONE
                 \\L_ASYNC_SINGLE_AWAIT_BRANCH_ELSE:
                 \\
             , .{}) catch return CodegenError.CodegenError;
             try self.emitAsyncContinuationScalarValue(branch.else_scalar, result_reg, plan.binding_name, captured_addend_regs, "async_else");
-            self.out.writer().print(
+            self.outPrint(
                 \\    jmp L_ASYNC_SINGLE_AWAIT_BRANCH_DONE
                 \\L_ASYNC_SINGLE_AWAIT_BRANCH_DONE:
                 \\
@@ -8527,27 +8543,27 @@ pub const Codegen = struct {
         } else {
             try self.emitAsyncContinuationScalarValue(scalar, result_reg, plan.binding_name, captured_addend_regs, "async");
         }
-        self.out.writer().print(
+        self.outPrint(
             \\    store async_inner_state+0, 2 as u64
             \\    store data_slot+0, 1 as u64
             \\    EXPAND POLL_SET_READY out_poll_slot, {s}
             \\
         , .{result_reg}) catch return CodegenError.CodegenError;
         if (!std.mem.eql(u8, result_reg, plan.binding_name)) {
-            self.out.writer().print("    !{s}\n", .{result_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{result_reg}) catch return CodegenError.CodegenError;
         }
-        if (plan.branch != null) self.out.writer().print("    !async_branch_cond\n", .{}) catch return CodegenError.CodegenError;
+        if (plan.branch != null) self.outPrint("    !async_branch_cond\n", .{}) catch return CodegenError.CodegenError;
         for (captured_addend_regs) |maybe_addend_reg| {
             if (maybe_addend_reg) |addend_reg| {
-                self.out.writer().print("    !{s}\n", .{addend_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{addend_reg}) catch return CodegenError.CodegenError;
             }
         }
         for (captured_storage_regs) |maybe_storage_reg| {
             if (maybe_storage_reg) |storage_reg| {
-                self.out.writer().print("    !{s}\n", .{storage_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{storage_reg}) catch return CodegenError.CodegenError;
             }
         }
-        self.out.writer().print(
+        self.outPrint(
             \\    !{s}
             \\    !async_inner_ready
             \\L_ASYNC_SINGLE_AWAIT_CLEAN:
@@ -8565,7 +8581,7 @@ pub const Codegen = struct {
     fn emitAsyncTwoAwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncTwoAwaitContinuationPlan) CodegenError!void {
         const vt_name = try self.asyncTwoAwaitVTableName(name);
         const poll_name = try self.asyncTwoAwaitPollName(name);
-        self.out.writer().print(
+        self.outPrint(
             \\@const {s} = vtable {{ poll = @{s} }}
             \\@{s}(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
             \\L_ENTRY:
@@ -8637,7 +8653,7 @@ pub const Codegen = struct {
             .immediate = plan.scalar.immediate,
         };
         try self.emitAsyncContinuationScalarValue(scalar, "async_two_result", plan.second_binding_name, .{ plan.first_binding_name, null }, "async_two");
-        self.out.writer().print(
+        self.outPrint(
             \\    store async_second_state+0, 2 as u64
             \\    store data_slot+0, 2 as u64
             \\    EXPAND POLL_SET_READY out_poll_slot, async_two_result
@@ -8663,7 +8679,7 @@ pub const Codegen = struct {
         defer self.allocator.free(vt_name);
         const poll_name = try self.asyncLinearAwaitPollName(name);
         defer self.allocator.free(poll_name);
-        const w = self.out.writer();
+        const w = sio.managedWriter(&self.out);
         w.print(
             \\@const {s} = vtable {{ poll = @{s} }}
             \\@{s}(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
@@ -8748,7 +8764,7 @@ pub const Codegen = struct {
     }
 
     fn emitAsyncLinearAwaitScalarReady(self: *Codegen, plan: lowering_rules.AsyncLinearAwaitContinuationPlan) CodegenError!void {
-        const w = self.out.writer();
+        const w = sio.managedWriter(&self.out);
         const acc0 = try self.newTmp();
         w.print("    {s} = {d}\n", .{ acc0, plan.scalar.immediate }) catch return CodegenError.CodegenError;
         var acc: []const u8 = acc0;
@@ -8783,7 +8799,7 @@ pub const Codegen = struct {
     fn emitAsyncJoin2AwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncJoin2AwaitContinuationPlan) CodegenError!void {
         const vt_name = try self.asyncJoin2AwaitVTableName(name);
         const poll_name = try self.asyncJoin2AwaitPollName(name);
-        self.out.writer().print(
+        self.outPrint(
             \\@const {s} = vtable {{ poll = @{s} }}
             \\@{s}(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
             \\L_ENTRY:
@@ -8818,7 +8834,7 @@ pub const Codegen = struct {
             .immediate = plan.scalar.immediate,
         };
         try self.emitAsyncContinuationScalarValue(scalar, "async_join_result", "async_pair_right", .{ "async_pair_left", null }, "async_join");
-        self.out.writer().print(
+        self.outPrint(
             \\    store data_slot+0, 1 as u64
             \\    EXPAND POLL_SET_READY out_poll_slot, async_join_result
             \\    !async_join_result
@@ -8845,18 +8861,18 @@ pub const Codegen = struct {
 
         const lowered_name = try self.loweredFuncSymbol(name);
         defer self.allocator.free(lowered_name);
-        self.out.writer().print("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        self.outPrint("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
         for (f.params, 0..) |p, i| {
-            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
             const prefix: []const u8 = self.abiParamPrefix(p);
-            self.out.writer().print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
         }
         const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
         const ret_type_str = abiReturnTypeString(async_return_plan.abi_ret_ty);
-        self.out.writer().print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
-        self.out.writer().print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
+        self.outPrint("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
         var captured_addends: [2]?[]const u8 = .{ null, null };
@@ -8879,9 +8895,9 @@ pub const Codegen = struct {
         }
         const inner_state = try self.genExpr(@constCast(plan.await_expr), &hoisted_allocs);
         const async_state = try self.newTmp();
-        self.out.writer().print("    {s} = alloc {}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+8, {s} as ptr\n", .{ async_state, inner_state }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+8, {s} as ptr\n", .{ async_state, inner_state }) catch return CodegenError.CodegenError;
         for (0..plan.capture_count) |capture_idx| {
             const capture = plan.captures[capture_idx] orelse return CodegenError.CodegenError;
             const addend_reg = captured_addends[capture_idx] orelse return CodegenError.CodegenError;
@@ -8889,14 +8905,14 @@ pub const Codegen = struct {
                 .scalar => "u64",
                 .copy_struct => "ptr",
             };
-            self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ async_state, capture.offset, addend_reg, store_ty }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ async_state, capture.offset, addend_reg, store_ty }) catch return CodegenError.CodegenError;
             if (capture.storage == .scalar) try self.emitRelease(addend_reg);
         }
         try self.emitRelease(inner_state);
         for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
-        self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
+        self.outPrint("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
     }
 
     fn genAsyncLinearAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncLinearAwaitContinuationPlan) CodegenError!void {
@@ -8904,7 +8920,7 @@ pub const Codegen = struct {
 
         const lowered_name = try self.loweredFuncSymbol(name);
         defer self.allocator.free(lowered_name);
-        const w = self.out.writer();
+        const w = sio.managedWriter(&self.out);
         w.print("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
         for (f.params, 0..) |p, i| {
             if (i > 0) w.print(", ", .{}) catch return CodegenError.CodegenError;
@@ -8916,7 +8932,7 @@ pub const Codegen = struct {
         w.print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
         w.print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
         var sub_states: [lowering_rules.AsyncLinearAwaitMax][]const u8 = undefined;
@@ -8946,7 +8962,7 @@ pub const Codegen = struct {
 
         const lowered_name = try self.loweredFuncSymbol(name);
         defer self.allocator.free(lowered_name);
-        const w = self.out.writer();
+        const w = sio.managedWriter(&self.out);
         w.print("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
         for (f.params, 0..) |p, i| {
             if (i > 0) w.print(", ", .{}) catch return CodegenError.CodegenError;
@@ -8958,7 +8974,7 @@ pub const Codegen = struct {
         w.print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
         w.print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
         for (f.body[0..plan.prefix_len]) |stmt| {
@@ -8989,9 +9005,9 @@ pub const Codegen = struct {
         // established textually in this helper, so an empty hoisted set
         // suffices here (mirrors poll helpers that never evaluate user AST
         // except through these stage expressions).
-        var helper_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var helper_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer helper_allocs.deinit();
-        const w = self.out.writer();
+        const w = sio.managedWriter(&self.out);
         w.print(
             \\@const {s} = vtable {{ poll = @{s} }}
             \\@{s}(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
@@ -9081,7 +9097,7 @@ pub const Codegen = struct {
     }
 
     fn emitAsyncGeneralAwaitScalarReady(self: *Codegen, plan: lowering_rules.AsyncGeneralAwaitContinuationPlan) CodegenError!void {
-        const w = self.out.writer();
+        const w = sio.managedWriter(&self.out);
         const acc0 = try self.newTmp();
         w.print("    {s} = {d}\n", .{ acc0, plan.scalar.immediate }) catch return CodegenError.CodegenError;
         var acc: []const u8 = acc0;
@@ -9118,34 +9134,34 @@ pub const Codegen = struct {
 
         const lowered_name = try self.loweredFuncSymbol(name);
         defer self.allocator.free(lowered_name);
-        self.out.writer().print("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        self.outPrint("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
         for (f.params, 0..) |p, i| {
-            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
             const prefix: []const u8 = self.abiParamPrefix(p);
-            self.out.writer().print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
         }
         const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
         const ret_type_str = abiReturnTypeString(async_return_plan.abi_ret_ty);
-        self.out.writer().print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
-        self.out.writer().print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
+        self.outPrint("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
         const first_state = try self.genExpr(@constCast(plan.first_await_expr), &hoisted_allocs);
         const second_state = try self.genExpr(@constCast(plan.second_await_expr), &hoisted_allocs);
         const async_state = try self.newTmp();
-        self.out.writer().print("    {s} = alloc {}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+8, {s} as ptr\n", .{ async_state, first_state }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+16, {s} as ptr\n", .{ async_state, second_state }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+24, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+8, {s} as ptr\n", .{ async_state, first_state }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+16, {s} as ptr\n", .{ async_state, second_state }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+24, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
         try self.emitRelease(second_state);
         try self.emitRelease(first_state);
         for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncTwoAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
-        self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
+        self.outPrint("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
     }
 
     fn genAsyncJoin2AwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncJoin2AwaitContinuationPlan) CodegenError!void {
@@ -9153,18 +9169,18 @@ pub const Codegen = struct {
 
         const lowered_name = try self.loweredFuncSymbol(name);
         defer self.allocator.free(lowered_name);
-        self.out.writer().print("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        self.outPrint("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
         for (f.params, 0..) |p, i| {
-            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
             const prefix: []const u8 = self.abiParamPrefix(p);
-            self.out.writer().print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
         }
         const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
         const ret_type_str = abiReturnTypeString(async_return_plan.abi_ret_ty);
-        self.out.writer().print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
-        self.out.writer().print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
+        self.outPrint("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
         // Leading input lets (join2 arguments bound to locals).
@@ -9173,29 +9189,29 @@ pub const Codegen = struct {
         }
         const join_state = try self.genExpr(@constCast(plan.await_expr), &hoisted_allocs);
         const async_state = try self.newTmp();
-        self.out.writer().print("    {s} = alloc {}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+8, {s} as ptr\n", .{ async_state, join_state }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+8, {s} as ptr\n", .{ async_state, join_state }) catch return CodegenError.CodegenError;
         try self.emitRelease(join_state);
         for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncJoin2AwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
-        self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
+        self.outPrint("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
     }
 
     fn genReadyPoll(self: *Codegen, value_reg: []const u8) CodegenError![]const u8 {
         const poll_reg = try self.newTmp();
-        self.out.writer().print("    EXPAND POLL_READY {s}, {s}\n", .{ poll_reg, value_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND POLL_READY {s}, {s}\n", .{ poll_reg, value_reg }) catch return CodegenError.CodegenError;
         return poll_reg;
     }
 
     fn genPendingPoll(self: *Codegen) CodegenError![]const u8 {
         const poll_reg = try self.newTmp();
-        self.out.writer().print("    EXPAND POLL_PENDING {s}\n", .{poll_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND POLL_PENDING {s}\n", .{poll_reg}) catch return CodegenError.CodegenError;
         return poll_reg;
     }
 
-    fn genPollRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
+    fn genPollRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!?[]const u8 {
         const plan = lowering_rules.planPollRuntimeCall(call) orelse return null;
         if (plan.isReady()) {
             if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
@@ -9213,7 +9229,7 @@ pub const Codegen = struct {
             const poll_reg = try self.genExpr(call.args[0], hoisted_allocs);
             const out_reg = try self.newTmp();
             const macro_name = plan.pollStatusMacroName() orelse return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, out_reg, poll_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND {s} {s}, {s}\n", .{ macro_name, out_reg, poll_reg }) catch return CodegenError.CodegenError;
             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(poll_reg);
             return out_reg;
         }
@@ -9221,14 +9237,14 @@ pub const Codegen = struct {
             if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
             const poll_reg = try self.genExpr(call.args[0], hoisted_allocs);
             const value_reg = try self.newTmp();
-            self.out.writer().print("    EXPAND POLL_VALUE {s}, {s}\n", .{ value_reg, poll_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND POLL_VALUE {s}, {s}\n", .{ value_reg, poll_reg }) catch return CodegenError.CodegenError;
             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(poll_reg);
             return value_reg;
         }
         return CodegenError.CodegenError;
     }
 
-    fn genExecutorRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
+    fn genExecutorRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!?[]const u8 {
         const plan = lowering_rules.planExecutorRuntimeCall(call) orelse return null;
         if (plan.isNew()) {
             if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
@@ -9245,12 +9261,12 @@ pub const Codegen = struct {
             } else if (tasks_plan.isVec()) {
                 tasks_ptr_reg = try self.newTmp();
                 release_tasks_ptr = true;
-                self.out.writer().print("    EXPAND VEC_AS_PTR {s}, {s}\n", .{ tasks_ptr_reg, tasks_owner_reg }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    EXPAND VEC_LEN {s}, {s}\n", .{ len_reg, tasks_owner_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND VEC_AS_PTR {s}, {s}\n", .{ tasks_ptr_reg, tasks_owner_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND VEC_LEN {s}, {s}\n", .{ len_reg, tasks_owner_reg }) catch return CodegenError.CodegenError;
             } else {
                 return CodegenError.CodegenError;
             }
-            self.out.writer().print("    EXPAND EXECUTOR_NEW {s}, {s}, {s}\n", .{ executor_reg, tasks_ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND EXECUTOR_NEW {s}, {s}, {s}\n", .{ executor_reg, tasks_ptr_reg, len_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(len_reg);
             if (release_tasks_ptr) try self.emitRelease(tasks_ptr_reg);
             return executor_reg;
@@ -9262,9 +9278,9 @@ pub const Codegen = struct {
             const poll_reg = try self.newTmp();
             const tag_reg = try self.newTmp();
             const ready_reg = try self.newTmp();
-            self.out.writer().print("    EXPAND EXECUTOR_POLL_ONE {s}, {s}, {s}\n", .{ poll_reg, executor_reg, index_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND EXECUTOR_POLL_ONE {s}, {s}, {s}\n", .{ poll_reg, executor_reg, index_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(tag_reg);
             try self.emitRelease(poll_reg);
             if (callArgNeedsRelease(call.args[1])) try self.emitRelease(index_reg);
@@ -9279,7 +9295,7 @@ pub const Codegen = struct {
                     if (self.executor_task_counts.get(self.resolveBindingName(call.args[0].identifier))) |count| break :blk_count count;
                 }
                 const count_reg = try self.newTmp();
-                self.out.writer().print("    EXPAND EXECUTOR_POLL_READY_COUNT {s}, {s}\n", .{ count_reg, executor_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND EXECUTOR_POLL_READY_COUNT {s}, {s}\n", .{ count_reg, executor_reg }) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(executor_reg);
                 return count_reg;
             };
@@ -9294,9 +9310,9 @@ pub const Codegen = struct {
         const tasks_reg = try self.newTmp();
         const count_slot = try self.newTmp();
 
-        self.out.writer().print("    {s} = load {s}+Executor_tasks as ptr\n", .{ tasks_reg, executor_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    {s} = stack_alloc 8\n", .{count_slot}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{count_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Executor_tasks as ptr\n", .{ tasks_reg, executor_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc 8\n", .{count_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{count_slot}) catch return CodegenError.CodegenError;
 
         for (0..task_count) |task_index| {
             const task_reg = try self.newTmp();
@@ -9305,23 +9321,23 @@ pub const Codegen = struct {
             const ready_reg = try self.newTmp();
             const ready_label = try self.newLabel("L_EXECUTOR_POLL_COUNT_READY");
             const next_label = try self.newLabel("L_EXECUTOR_POLL_COUNT_NEXT");
-            self.out.writer().print("    {s} = load {s}+{} as ptr\n", .{ task_reg, tasks_reg, task_index * 8 }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND TASK_POLL {s}, {s}\n", .{ poll_reg, task_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ready_reg, ready_label, next_label }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{} as ptr\n", .{ task_reg, tasks_reg, task_index * 8 }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND TASK_POLL {s}, {s}\n", .{ poll_reg, task_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ready_reg, ready_label, next_label }) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("{s}:\n", .{ready_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{ready_label}) catch return CodegenError.CodegenError;
             const count_reg = try self.newTmp();
             const next_count_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ count_reg, count_slot }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = add {s}, 1\n", .{ next_count_reg, count_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+0, {s} as u64\n", .{ count_slot, next_count_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as u64\n", .{ count_reg, count_slot }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add {s}, 1\n", .{ next_count_reg, count_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, {s} as u64\n", .{ count_slot, next_count_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(next_count_reg);
             try self.emitRelease(count_reg);
-            self.out.writer().print("    jmp {s}\n\n", .{next_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{next_label}) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("{s}:\n", .{next_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{next_label}) catch return CodegenError.CodegenError;
             try self.emitRelease(ready_reg);
             try self.emitRelease(tag_reg);
             try self.emitRelease(poll_reg);
@@ -9329,19 +9345,19 @@ pub const Codegen = struct {
         }
 
         const out_count_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ out_count_reg, count_slot }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as u64\n", .{ out_count_reg, count_slot }) catch return CodegenError.CodegenError;
         try self.emitRelease(tasks_reg);
         return out_count_reg;
     }
 
-    fn genFormatCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genFormatCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (call.args.len == 0 or call.args[0].* != .literal or call.args[0].literal != .string_val) return CodegenError.CodegenError;
         const fmt = call.args[0].literal.string_val;
         const out_reg = try self.newTmp();
         const capacity = escapedStringByteLen(fmt) + (call.args.len - 1) * 24;
-        self.out.writer().print("    EXPAND FORMAT_BEGIN {s}, {}\n", .{ out_reg, capacity }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND FORMAT_BEGIN {s}, {}\n", .{ out_reg, capacity }) catch return CodegenError.CodegenError;
 
-        var literal = std.ArrayList(u8).init(self.allocator);
+        var literal = std.array_list.Managed(u8).init(self.allocator);
         defer literal.deinit();
         var arg_idx: usize = 1;
         var i: usize = 0;
@@ -9377,7 +9393,7 @@ pub const Codegen = struct {
         return out_reg;
     }
 
-    fn genCallArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genCallArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (lowering_rules.prefixedIdentifierCallArg(arg)) |prefixed| {
             return std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefixed.prefix, self.resolveBindingName(prefixed.name) }) catch return CodegenError.OutOfMemory;
         }
@@ -9415,7 +9431,7 @@ pub const Codegen = struct {
             const smart = lowering_rules.smartPointerType(param_ty) orelse return CodegenError.CodegenError;
             if (smart.kind != .arc) return CodegenError.CodegenError;
             const arg_name = lowered_arg.reg[1..];
-            self.out.writer().print("    !{s}\n", .{arg_name}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{arg_name}) catch return CodegenError.CodegenError;
             try self.markConsumedBinding(arg_name);
         }
     }
@@ -9483,7 +9499,7 @@ pub const Codegen = struct {
 
     fn genVecCloneValue(self: *Codegen, source_reg: []const u8, elem_ty: *const ast.Type) CodegenError![]const u8 {
         const out = try self.newTmp();
-        self.out.writer().print(
+        self.outPrint(
             "    EXPAND VEC_CLONE {s}, {s}, {}\n",
             .{ out, source_reg, self.vecElementSlotSize(elem_ty) },
         ) catch return CodegenError.CodegenError;
@@ -9506,7 +9522,7 @@ pub const Codegen = struct {
     fn emitPrimitiveCopy(self: *Codegen, target: []const u8, source: []const u8, ty: *const ast.Type) CodegenError!void {
         if (ty.* != .primitive) return CodegenError.CodegenError;
         switch (ty.primitive) {
-            .boolean => self.out.writer().print("    {s} = or {s}, 0\n", .{ target, source }) catch return CodegenError.CodegenError,
+            .boolean => self.outPrint("    {s} = or {s}, 0\n", .{ target, source }) catch return CodegenError.CodegenError,
             .f32, .f64, .float => {
                 // Floats need the `fadd` opcode, not integer `add`. Emitting
                 // `add src, 0.0` makes the backend fold it as an integer identity
@@ -9516,14 +9532,14 @@ pub const Codegen = struct {
                 // `value + 0.0` lowering that produces an independent copy.
                 const zero = try self.newTmp();
                 try self.emitFloatConst(zero, 0.0);
-                self.out.writer().print("    {s} = fadd {s}, {s}\n", .{ target, source, zero }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = fadd {s}, {s}\n", .{ target, source, zero }) catch return CodegenError.CodegenError;
                 try self.emitRelease(zero);
             },
-            else => self.out.writer().print("    {s} = add {s}, 0\n", .{ target, source }) catch return CodegenError.CodegenError,
+            else => self.outPrint("    {s} = add {s}, 0\n", .{ target, source }) catch return CodegenError.CodegenError,
         }
     }
 
-    fn genBranchConditionReg(self: *Codegen, cond: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genBranchConditionReg(self: *Codegen, cond: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const cond_reg = try self.genExpr(cond, hoisted_allocs);
         const cond_ty = self.tc.expr_types.get(cond) orelse return CodegenError.CodegenError;
         if (cond.* == .identifier and cond_ty.* == .primitive) {
@@ -9547,7 +9563,7 @@ pub const Codegen = struct {
     fn emitForgetMovedValue(self: *Codegen, reg: []const u8) CodegenError!void {
         if (std.mem.startsWith(u8, reg, "&")) return;
         if (std.mem.startsWith(u8, reg, "^")) return try self.markConsumedBinding(reg[1..]);
-        self.out.writer().print("    ^{s}\n", .{reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    ^{s}\n", .{reg}) catch return CodegenError.CodegenError;
         try self.markConsumedBinding(reg);
     }
 
@@ -9563,8 +9579,8 @@ pub const Codegen = struct {
 
     fn appendLoweredCallArgCleanups(
         self: *Codegen,
-        release_regs: *std.ArrayList(?[]const u8),
-        consume_regs: *std.ArrayList([]const u8),
+        release_regs: *std.array_list.Managed(?[]const u8),
+        consume_regs: *std.array_list.Managed([]const u8),
         lowered_arg: LoweredCallArg,
     ) CodegenError!void {
         release_regs.append(self.plannedCallArgReleaseReg(lowered_arg)) catch return CodegenError.OutOfMemory;
@@ -9642,7 +9658,7 @@ pub const Codegen = struct {
         arg: *ast.Node,
         param: ?ast.Param,
         materialization: lowering_rules.CallArgMaterializationPlan,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!LoweredCallArg {
         if (materialization.isRawPointerStringLiteral()) {
             return blk: {
@@ -9768,7 +9784,7 @@ pub const Codegen = struct {
     fn genPlannedCallArg(
         self: *Codegen,
         arg: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
         options: CallArgLoweringOptions,
     ) CodegenError!LoweredCallArg {
         const copy_struct_value = options.include_copy_struct_value and
@@ -9812,7 +9828,7 @@ pub const Codegen = struct {
         self: *Codegen,
         arg: *ast.Node,
         param: ast.Param,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!LoweredCallArg {
         return try self.genPlannedCallArg(arg, hoisted_allocs, .{
             .param = param,
@@ -9825,7 +9841,7 @@ pub const Codegen = struct {
         self: *Codegen,
         lowering: lowering_rules.StaticCallLoweringPlan,
         call: *const ast.CallExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
         auto_borrow_receiver: bool,
     ) CodegenError![]const u8 {
         const plan = lowering.call;
@@ -9833,11 +9849,11 @@ pub const Codegen = struct {
         const func = self.tc.funcs.get(symbol) orelse return CodegenError.CodegenError;
         if (func.params.len != plan.arg_count or func.params.len != call.args.len) return CodegenError.CodegenError;
 
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        var release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer release_regs.deinit();
-        var consume_regs = std.ArrayList([]const u8).init(self.allocator);
+        var consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer consume_regs.deinit();
 
         for (call.args, 0..) |arg, i| {
@@ -9857,15 +9873,15 @@ pub const Codegen = struct {
         const lowered_symbol = try self.loweredFuncSymbol(symbol);
         defer self.allocator.free(lowered_symbol);
         if (lowering.result.returns_void) {
-            self.out.writer().print("    call @{s}(", .{lowered_symbol}) catch return CodegenError.CodegenError;
+            self.outPrint("    call @{s}(", .{lowered_symbol}) catch return CodegenError.CodegenError;
         } else {
-            self.out.writer().print("    {s} = call @{s}(", .{ reg, lowered_symbol }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = call @{s}(", .{ reg, lowered_symbol }) catch return CodegenError.CodegenError;
         }
         for (arg_regs.items, 0..) |arg_reg, i| {
-            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
 
         try self.emitLoweredCallArgCleanups(release_regs.items, consume_regs.items, null);
         return reg;
@@ -9896,29 +9912,29 @@ pub const Codegen = struct {
         }).shape;
     }
 
-    fn genImportedMacroMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+    fn genImportedMacroMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!LoweredCallArg {
         const value_reg = try self.genExpr(arg, hoisted_allocs);
         const arg_ty = try self.importedMacroArgType(arg);
         const slot = try self.newTmp();
         self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
-        self.out.writer().print("    {s} = stack_alloc {}\n", .{ slot, typeSize(arg_ty) }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ slot, value_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc {}\n", .{ slot, typeSize(arg_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as {s}\n", .{ slot, value_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
         if (self.importedMacroValueArgNeedsRelease(arg, value_reg)) try self.emitRelease(value_reg);
         return .{ .reg = slot, .release_after_call = false };
     }
 
-    fn genImportedMacroAddressExpressionMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+    fn genImportedMacroAddressExpressionMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!LoweredCallArg {
         const arg_ty = try self.importedMacroArgType(arg);
         const slot = try self.newTmp();
         self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
-        self.out.writer().print("    {s} = stack_alloc {}\n", .{ slot, typeSize(arg_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc {}\n", .{ slot, typeSize(arg_ty) }) catch return CodegenError.CodegenError;
 
         const value_reg = switch (try self.importedMacroArgAddressShape(arg)) {
             .field => blk: {
                 const projection = try self.genFieldAddress(&arg.field_expr, hoisted_allocs);
                 try self.rememberAddressProjectionSource(projection);
                 const loaded = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ loaded, projection.ptr, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as {s}\n", .{ loaded, projection.ptr, typeString(arg_ty) }) catch return CodegenError.CodegenError;
                 try self.emitRelease(projection.ptr);
                 break :blk loaded;
             },
@@ -9926,14 +9942,14 @@ pub const Codegen = struct {
                 const address = try self.genIndexAddress(&arg.index_expr, hoisted_allocs);
                 try self.rememberIndexAddressSource(address);
                 const loaded = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ loaded, address.ptr, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as {s}\n", .{ loaded, address.ptr, typeString(arg_ty) }) catch return CodegenError.CodegenError;
                 try self.emitRelease(address.ptr);
                 break :blk loaded;
             },
             .deref_borrow_or_pointer => blk: {
                 const source = try self.genExpr(arg.deref_expr.expr, hoisted_allocs);
                 const loaded = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ loaded, source, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as {s}\n", .{ loaded, source, typeString(arg_ty) }) catch return CodegenError.CodegenError;
                 if (exprResultNeedsRelease(arg.deref_expr.expr)) try self.emitRelease(source);
                 break :blk loaded;
             },
@@ -9941,12 +9957,12 @@ pub const Codegen = struct {
             else => return CodegenError.CodegenError,
         };
 
-        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ slot, value_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as {s}\n", .{ slot, value_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
         if (self.importedMacroValueArgNeedsRelease(arg, value_reg)) try self.emitRelease(value_reg);
         return .{ .reg = slot, .release_after_call = false };
     }
 
-    fn genImportedMacroAddressExpressionArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+    fn genImportedMacroAddressExpressionArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!LoweredCallArg {
         const address_reg = switch (try self.importedMacroArgAddressShape(arg)) {
             .field => blk: {
                 const projection = try self.genFieldAddress(&arg.field_expr, hoisted_allocs);
@@ -9961,7 +9977,7 @@ pub const Codegen = struct {
             .deref_borrow_or_pointer => blk: {
                 const source = try self.genExpr(arg.deref_expr.expr, hoisted_allocs);
                 const addr = try self.newTmp();
-                self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
                 const temp_plan = lowering_rules.planBorrowAddressTemps(exprResultNeedsRelease(arg.deref_expr.expr), false);
                 if (temp_plan.track_primary_temp) {
                     self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
@@ -10006,7 +10022,7 @@ pub const Codegen = struct {
     fn genImportedMacroFnObjectArg(
         self: *Codegen,
         arg: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?LoweredCallArg {
         _ = hoisted_allocs;
         if (arg.* != .identifier) return null;
@@ -10017,9 +10033,9 @@ pub const Codegen = struct {
         const obj = try self.newTmp();
         const vt_name = try self.fnPtrVTableName(arg.identifier);
         defer self.allocator.free(vt_name);
-        self.out.writer().print("    {s} = alloc 16\n", .{obj}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as ptr\n", .{obj}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+8, &{s} as ptr\n", .{ obj, vt_name }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc 16\n", .{obj}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as ptr\n", .{obj}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+8, &{s} as ptr\n", .{ obj, vt_name }) catch return CodegenError.CodegenError;
         return .{ .reg = obj, .release_after_call = false };
     }
 
@@ -10028,7 +10044,7 @@ pub const Codegen = struct {
         plan: lowering_rules.ImportedMacroCallPlan,
         call_arg_index: usize,
         arg: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!LoweredCallArg {
         if (try self.genImportedMacroFnObjectArg(arg, hoisted_allocs)) |fn_obj| return fn_obj;
         const arg_ty = try self.importedMacroArgType(arg);
@@ -10057,7 +10073,7 @@ pub const Codegen = struct {
         self: *Codegen,
         call: *const ast.CallExpr,
         plan: lowering_rules.ImportedMacroCallPlan,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         if (!self.use_plain_time_sleep_ms_abi) return null;
 
@@ -10065,7 +10081,7 @@ pub const Codegen = struct {
             if (!plan.expression_output or call.args.len != 1) return CodegenError.CodegenError;
             const lowered_arg = try self.genImportedMacroArg(plan, 0, call.args[0], hoisted_allocs);
             const reg = try self.newTmp();
-            self.out.writer().print("    {s} = mul {s}, 1000000\n", .{ reg, lowered_arg.reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = mul {s}, 1000000\n", .{ reg, lowered_arg.reg }) catch return CodegenError.CodegenError;
             if (self.plannedCallArgReleaseReg(lowered_arg)) |release_reg| try self.emitRelease(release_reg);
             return reg;
         }
@@ -10078,11 +10094,11 @@ pub const Codegen = struct {
             const has_remainder = try self.newTmp();
             const rounded_millis = try self.newTmp();
             const status = try self.newTmp();
-            self.out.writer().print("    {s} = div {s}, 1000000\n", .{ millis, lowered_arg.reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = rem {s}, 1000000\n", .{ remainder, lowered_arg.reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = ne {s}, 0\n", .{ has_remainder, remainder }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = add {s}, {s}\n", .{ rounded_millis, millis, has_remainder }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = call @sa_time_sleep_ms({s})\n", .{ status, rounded_millis }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = div {s}, 1000000\n", .{ millis, lowered_arg.reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = rem {s}, 1000000\n", .{ remainder, lowered_arg.reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ne {s}, 0\n", .{ has_remainder, remainder }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add {s}, {s}\n", .{ rounded_millis, millis, has_remainder }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = call @sa_time_sleep_ms({s})\n", .{ status, rounded_millis }) catch return CodegenError.CodegenError;
             try self.emitRelease(status);
             try self.emitRelease(rounded_millis);
             try self.emitRelease(has_remainder);
@@ -10095,12 +10111,12 @@ pub const Codegen = struct {
         return null;
     }
 
-    fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (try self.genPlainTimeMacroCall(call, plan, hoisted_allocs)) |reg| return reg;
         const reg = if (plan.expression_output) try self.newTmp() else "return_ty_sentinel";
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        var release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer release_regs.deinit();
         for (call.args, 0..) |arg, i| {
             const lowered_arg = try self.genImportedMacroArg(plan, i, arg, hoisted_allocs);
@@ -10121,18 +10137,18 @@ pub const Codegen = struct {
             release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
         }
 
-        self.out.writer().print("    EXPAND {s}", .{plan.macro_name}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND {s}", .{plan.macro_name}) catch return CodegenError.CodegenError;
         if (plan.expression_output) {
-            self.out.writer().print(" {s}", .{reg}) catch return CodegenError.CodegenError;
+            self.outPrint(" {s}", .{reg}) catch return CodegenError.CodegenError;
         }
         for (arg_regs.items, 0..) |arg_reg, i| {
             if (plan.expression_output or i > 0) {
-                self.out.writer().print(", {s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                self.outPrint(", {s}", .{arg_reg}) catch return CodegenError.CodegenError;
             } else {
-                self.out.writer().print(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                self.outPrint(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
             }
         }
-        self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
 
         for (release_regs.items) |release_reg| {
             if (release_reg) |arg_reg| try self.emitRelease(arg_reg);
@@ -10141,7 +10157,7 @@ pub const Codegen = struct {
         return reg;
     }
 
-    fn genArrayBorrowToSliceInto(self: *Codegen, target: []const u8, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
+    fn genArrayBorrowToSliceInto(self: *Codegen, target: []const u8, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!?[]const u8 {
         if (arg.* != .borrow_expr) return CodegenError.CodegenError;
         const inner = arg.borrow_expr.expr;
         const inner_ty = self.resolvedTypeForExpr(inner) orelse return CodegenError.CodegenError;
@@ -10150,41 +10166,41 @@ pub const Codegen = struct {
         const base_source_reg = try self.genExpr(inner, hoisted_allocs);
         const base_reg = if (inner.* == .identifier and self.global_const_bindings.contains(inner.identifier)) blk: {
             const addr_reg = try self.newTmp();
-            self.out.writer().print("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
             break :blk addr_reg;
         } else base_source_reg;
 
         const len_reg = try self.newTmp();
         try self.emitIntConst(len_reg, @as(i64, @intCast(arr.len)));
         self.stack_alloc_bindings.put(target, {}) catch return CodegenError.OutOfMemory;
-        self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{target}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ target, base_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{target}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ target, base_reg, len_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(len_reg);
         if (!std.mem.eql(u8, base_reg, base_source_reg)) try self.emitRelease(base_reg);
         return if (exprResultNeedsRelease(inner)) base_source_reg else null;
     }
 
-    fn genArrayBorrowToSliceArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+    fn genArrayBorrowToSliceArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!LoweredCallArg {
         const slice_reg = try self.newTmp();
         const base_release_reg = try self.genArrayBorrowToSliceInto(slice_reg, arg, hoisted_allocs);
         const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{slice_reg}) catch return CodegenError.OutOfMemory;
         return .{ .reg = borrow_arg, .release_after_call = false, .release_reg = base_release_reg };
     }
 
-    fn genOwnedStringLiteral(self: *Codegen, value: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genOwnedStringLiteral(self: *Codegen, value: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         _ = hoisted_allocs;
         const label = try self.newStringConst();
-        self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
+        self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
         const len_reg = try self.newTmp();
         try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(value))));
         const bytes_reg = try self.newTmp();
         self.stack_alloc_bindings.put(bytes_reg, {}) catch return CodegenError.OutOfMemory;
-        self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{bytes_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ bytes_reg, label, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{bytes_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ bytes_reg, label, len_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(len_reg);
         const string_reg = try self.newTmp();
         self.string_buf_bindings.put(string_reg, {}) catch return CodegenError.OutOfMemory;
-        self.out.writer().print("    EXPAND STRING_BUF_FROM_UTF8_UNCHECKED {s}, {s}\n", .{ string_reg, bytes_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND STRING_BUF_FROM_UTF8_UNCHECKED {s}, {s}\n", .{ string_reg, bytes_reg }) catch return CodegenError.CodegenError;
         return string_reg;
     }
 
@@ -10193,9 +10209,9 @@ pub const Codegen = struct {
         // Append a NUL so a `ptr` argument can also be scanned as a C string
         // (CSTR_LEN terminates at the first zero byte); explicit-length users
         // pass `escapedStringByteLen(value)`, which excludes this terminator.
-        self.out.writer().print("    @const {s} = utf8:\"{s}\\0\"\n", .{ label, value }) catch return CodegenError.CodegenError;
+        self.outPrint("    @const {s} = utf8:\"{s}\\0\"\n", .{ label, value }) catch return CodegenError.CodegenError;
         const ptr_reg = try self.newTmp();
-        self.out.writer().print("    {s} = &{s}\n", .{ ptr_reg, label }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = &{s}\n", .{ ptr_reg, label }) catch return CodegenError.CodegenError;
         return ptr_reg;
     }
 
@@ -10265,7 +10281,7 @@ pub const Codegen = struct {
 
     fn genLoadSlotValue(self: *Codegen, ptr_reg: []const u8, ty: *const ast.Type) CodegenError![]const u8 {
         const loaded = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ loaded, ptr_reg, typeString(ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ loaded, ptr_reg, typeString(ty) }) catch return CodegenError.CodegenError;
         if (self.slotCopyStructType(ty)) |copy_ty| {
             if (self.typeIsCopyStruct(copy_ty)) {
                 const copied = try self.newTmp();
@@ -10369,7 +10385,7 @@ pub const Codegen = struct {
         return false;
     }
 
-    fn genHashMapKeyReg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genHashMapKeyReg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (arg.* == .literal and arg.literal == .string_val) {
             const value = arg.literal.string_val;
             if (self.hashmap_key_slots.get(value)) |slot| return slot;
@@ -10379,24 +10395,24 @@ pub const Codegen = struct {
             self.hashmap_key_slots.put(value, owned_slot) catch return CodegenError.OutOfMemory;
 
             const label = try self.newStringConst();
-            self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
+            self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
             const len_reg = try self.newTmp();
             try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(value))));
             self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
-            self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{slot}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ slot, label, len_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{slot}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ slot, label, len_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(len_reg);
             return slot;
         }
         return try self.genExpr(arg, hoisted_allocs);
     }
 
-    fn genHashMapValueSlot(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genHashMapValueSlot(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const value_reg = try self.genExpr(arg, hoisted_allocs);
         const slot = try self.newTmp();
         self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
-        self.out.writer().print("    {s} = stack_alloc 8\n", .{slot}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as u64\n", .{ slot, value_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc 8\n", .{slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u64\n", .{ slot, value_reg }) catch return CodegenError.CodegenError;
         if (callArgNeedsRelease(arg)) try self.emitRelease(value_reg);
         return slot;
     }
@@ -10412,7 +10428,7 @@ pub const Codegen = struct {
         return lowering_rules.isStackAllocNode(node);
     }
 
-    fn genStmt(self: *Codegen, stmt: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn genStmt(self: *Codegen, stmt: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         switch (stmt.*) {
             .let_stmt => |let| {
                 // If it is a hoisted loop allocation, we bypass stack_alloc emission since it is pre-allocated
@@ -10449,46 +10465,46 @@ pub const Codegen = struct {
                 }
                 try self.markOwnedCollectionBinding(let.name, let_ty);
                 if (is_hoisted) {
-                    self.out.writer().print("    // Hoisted stack slot {s} initialized\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    // Hoisted stack slot {s} initialized\n", .{let.name}) catch return CodegenError.CodegenError;
                 } else if (let.value.* == .call_expr and let.value.call_expr.associated_target != null and std.mem.eql(u8, let.value.call_expr.associated_target.?, "AtomicI32") and std.mem.eql(u8, let.value.call_expr.func_name, "new")) {
                     const call = &let.value.call_expr;
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc AtomicI32_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND ATOMIC_I32_INIT {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc AtomicI32_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND ATOMIC_I32_INIT {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                 } else if (let.value.* == .call_expr and let.value.call_expr.associated_target != null and std.mem.eql(u8, let.value.call_expr.associated_target.?, "AtomicUsize") and std.mem.eql(u8, let.value.call_expr.func_name, "new")) {
                     const call = &let.value.call_expr;
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc AtomicUsize_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND ATOMIC_USIZE_INIT {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc AtomicUsize_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND ATOMIC_USIZE_INIT {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                 } else if (let.value.* == .call_expr and let.value.call_expr.associated_target != null and std.mem.eql(u8, let.value.call_expr.associated_target.?, "AtomicPtr") and std.mem.eql(u8, let.value.call_expr.func_name, "new")) {
                     const call = &let.value.call_expr;
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc AtomicPtr_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND ATOMIC_PTR_INIT {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc AtomicPtr_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND ATOMIC_PTR_INIT {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                 } else if (let.value.* == .call_expr and let.value.call_expr.associated_target != null and std.mem.eql(u8, let.value.call_expr.associated_target.?, "Cell") and std.mem.eql(u8, let.value.call_expr.func_name, "new")) {
                     const call = &let.value.call_expr;
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc Cell_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND CELL_SET {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc Cell_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND CELL_SET {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                 } else if (let.value.* == .call_expr and lowering_rules.isManuallyDropNewCall(let.value.call_expr)) {
                     const call = &let.value.call_expr;
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc ManuallyDropU64_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND MANUALLY_DROP_U64_NEW {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc ManuallyDropU64_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND MANUALLY_DROP_U64_NEW {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                 } else if (let.value.* == .borrow_expr and sliceElementType(let_ty) != null) {
                     const borrowed_ty = self.tc.expr_types.get(let.value) orelse return CodegenError.CodegenError;
@@ -10496,42 +10512,42 @@ pub const Codegen = struct {
                         _ = try self.genArrayBorrowToSliceInto(let.name, let.value, hoisted_allocs);
                     } else {
                         const val_reg = try self.genExpr(let.value, hoisted_allocs);
-                        self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }
                 } else if (self.bindingNeedsAddressableStorage(let.name, let_ty) and !isStackAllocCall(let.value)) {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
                 } else if (self.bindingNeedsAssignedValueSlot(let.name, let_ty) and !isStackAllocCall(let.value)) {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.assigned_value_slots.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
                     if (self.refcell_borrow_handles.contains(val_reg)) {
                         try self.storeResultSlotTransferredValueState(let.name, val_reg, let_ty, callArgNeedsRelease(let.value));
                     } else if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
                     if (self.storedIdentifierNeedsRelease(let.value, let_ty)) try self.markConsumedBinding(val_reg);
                 } else if (isStackAllocCall(let.value)) {
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ let.name, self.stackAllocSize(&let.value.call_expr) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc {}\n", .{ let.name, self.stackAllocSize(&let.value.call_expr) }) catch return CodegenError.CodegenError;
                 } else if (let.value.* == .literal and let.value.literal == .string_val) {
                     const value = let.value.literal.string_val;
                     const label = try self.newStringConst();
-                    self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
+                    self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
                     const len_reg = try self.newTmp();
                     try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(value))));
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ let.name, label, len_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ let.name, label, len_reg }) catch return CodegenError.CodegenError;
                     try self.emitRelease(len_reg);
                 } else if (let.value.* == .closure_literal) {
                     try self.closure_bindings.put(let.name, &let.value.closure_literal);
-                    self.out.writer().print("    {s} = 0\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = 0\n", .{let.name}) catch return CodegenError.CodegenError;
                 } else if (let.value.* == .struct_literal) {
                     try self.genStructLiteralInto(let.name, &let.value.struct_literal, hoisted_allocs);
                 } else if (let.value.* == .enum_literal) {
@@ -10547,7 +10563,7 @@ pub const Codegen = struct {
                     try self.genCopyValueInto(let.name, source_reg, let_ty);
                 } else if (lowering_rules.planDynCoercion(self.tc, let.value)) |plan| {
                     const val_reg = try self.genDynCoercionExpr(let.value, plan, hoisted_allocs);
-                    self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
@@ -10647,7 +10663,7 @@ pub const Codegen = struct {
                         try self.emitPrimitiveCopy(let.name, val_reg, let_ty);
                         if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
                     } else {
-                        self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }
                 }
             },
@@ -10656,7 +10672,7 @@ pub const Codegen = struct {
                 const slot_name = self.resolveBindingName(v.name);
                 self.stack_alloc_bindings.put(slot_name, {}) catch return CodegenError.OutOfMemory;
                 self.addressable_bindings.put(slot_name, {}) catch return CodegenError.OutOfMemory;
-                self.out.writer().print("    {s} = stack_alloc {}\n", .{ slot_name, typeSize(v.ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = stack_alloc {}\n", .{ slot_name, typeSize(v.ty) }) catch return CodegenError.CodegenError;
             },
             .let_else_stmt => |let| {
                 const value_reg = try self.genExpr(let.value, hoisted_allocs);
@@ -10670,14 +10686,14 @@ pub const Codegen = struct {
                 if (enum_decl) |decl| {
                     try self.genEnumPatternCheck(decl, let.pattern, value_reg, branch_flag);
                 } else if (patternUsesResultMacros(let.pattern)) {
-                    self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
                 } else {
-                    self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
                 }
                 if (success_on_true) {
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, success_label, else_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ branch_flag, success_label, else_label }) catch return CodegenError.CodegenError;
                 } else {
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, else_label, success_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ branch_flag, else_label, success_label }) catch return CodegenError.CodegenError;
                 }
 
                 var pre_else_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
@@ -10687,39 +10703,39 @@ pub const Codegen = struct {
                 var pre_else_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
                 defer pre_else_refcell_handles.deinit();
 
-                self.out.writer().print("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(let.value)) try self.emitRelease(value_reg);
                 try self.genBlock(let.else_block, hoisted_allocs);
                 if (!blockTerminates(let.else_block)) {
-                    self.out.writer().print("    jmp {s}\n", .{cont_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n", .{cont_label}) catch return CodegenError.CodegenError;
                 }
-                self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+                self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
                 try self.restoreConsumedBindings(&pre_else_consumed);
                 try self.restoreBorrowSourceTemps(&pre_else_borrow_sources);
                 try self.restoreRefCellBorrowHandles(&pre_else_refcell_handles);
 
-                self.out.writer().print("{s}:\n", .{success_label}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{success_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
                 if (enum_decl) |decl| {
                     try self.genEnumPatternBindings(decl, let.pattern, value_reg);
                 } else if (std.mem.eql(u8, let.pattern.variant_name, "Some") and let.pattern.bindings.len == 1) {
                     const binding = let.pattern.bindings[0];
                     const target = try self.pushBindingAlias(binding);
-                    self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
                 } else if (std.mem.eql(u8, let.pattern.variant_name, "Ok") and let.pattern.bindings.len == 1) {
                     const binding = let.pattern.bindings[0];
                     const target = try self.pushBindingAlias(binding);
-                    self.out.writer().print("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
                 } else if (std.mem.eql(u8, let.pattern.variant_name, "Err") and let.pattern.bindings.len == 1) {
                     const binding = let.pattern.bindings[0];
                     const target = try self.pushBindingAlias(binding);
-                    self.out.writer().print("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
                 }
                 if (callArgNeedsRelease(let.value)) try self.emitRelease(value_reg);
-                self.out.writer().print("    jmp {s}\n\n", .{cont_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n\n", .{cont_label}) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{cont_label}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{cont_label}) catch return CodegenError.CodegenError;
             },
             .let_destructure_stmt => |let| {
                 if (let.value.* == .call_expr) {
@@ -10731,14 +10747,14 @@ pub const Codegen = struct {
                         // thread, and tx.send() expands to &<channel reg>.
                         // Emit into a dedicated temp and alias both ends to it.
                         const chan_reg = try self.newTmp();
-                        self.out.writer().print("    {s} = 0\n", .{let.names[0]}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND MPSC_NEW {s}, 1024\n", .{chan_reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = 0\n", .{let.names[0]}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND MPSC_NEW {s}, 1024\n", .{chan_reg}) catch return CodegenError.CodegenError;
                         self.mpsc_sender_bindings.put(let.names[0], {}) catch return CodegenError.OutOfMemory;
                         self.mpsc_sender_channels.put(let.names[0], chan_reg) catch return CodegenError.OutOfMemory;
                         self.mpsc_sender_channels.put(let.names[1], chan_reg) catch return CodegenError.OutOfMemory;
                         self.mpsc_receiver_bindings.put(chan_reg, {}) catch return CodegenError.OutOfMemory;
                         const rx_alias = try self.pushBindingAlias(let.names[1]);
-                        self.out.writer().print("    {s} = add {s}, 0\n", .{ rx_alias, chan_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = add {s}, 0\n", .{ rx_alias, chan_reg }) catch return CodegenError.CodegenError;
                         return;
                     }
                 }
@@ -10749,19 +10765,19 @@ pub const Codegen = struct {
                     const base_ptr = try self.newTmp();
                     const len_reg = try self.newTmp();
                     if (value_ty.* == .array) {
-                        self.out.writer().print("    {s} = &{s}\n", .{ base_ptr, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = &{s}\n", .{ base_ptr, value_reg }) catch return CodegenError.CodegenError;
                         try self.emitIntConst(len_reg, @as(i64, @intCast(value_ty.array.len)));
                     } else {
-                        self.out.writer().print("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_ptr, value_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_ptr, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, value_reg }) catch return CodegenError.CodegenError;
                     }
                     const elem_size = typeSize(elem_ty);
                     var offset: usize = 0;
                     for (let.names) |name| {
                         const reg = try self.newTmp();
-                        self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, base_ptr, offset, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+{} as {s}\n", .{ reg, base_ptr, offset, typeString(elem_ty) }) catch return CodegenError.CodegenError;
                         if (!lowering_rules.isDiscardName(name)) {
-                            self.out.writer().print("    {s} = {s}\n", .{ name, reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = {s}\n", .{ name, reg }) catch return CodegenError.CodegenError;
                         }
                         offset += elem_size;
                     }
@@ -10771,21 +10787,21 @@ pub const Codegen = struct {
                             try self.emitRelease(len_reg);
                             if (let.rest_alias) |rest_alias| {
                                 if (!lowering_rules.isDiscardName(rest_alias)) {
-                                    self.out.writer().print("    {s} = {s}\n", .{ rest_alias, base_ptr }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = {s}\n", .{ rest_alias, base_ptr }) catch return CodegenError.CodegenError;
                                 }
                             }
                             return;
                         }
                         const rest_ptr = try self.newTmp();
-                        self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ rest_ptr, base_ptr, offset }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = ptr_add {s}, {}\n", .{ rest_ptr, base_ptr, offset }) catch return CodegenError.CodegenError;
                         const rest_len = try self.newTmp();
-                        self.out.writer().print("    {s} = sub {s}, {}\n", .{ rest_len, len_reg, let.names.len }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = sub {s}, {}\n", .{ rest_len, len_reg, let.names.len }) catch return CodegenError.CodegenError;
                         self.stack_alloc_bindings.put(rest_name, {}) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{rest_name}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ rest_name, rest_ptr, rest_len }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{rest_name}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ rest_name, rest_ptr, rest_len }) catch return CodegenError.CodegenError;
                         if (let.rest_alias) |rest_alias| {
                             if (!lowering_rules.isDiscardName(rest_alias)) {
-                                self.out.writer().print("    {s} = {s}\n", .{ rest_alias, rest_name }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = {s}\n", .{ rest_alias, rest_name }) catch return CodegenError.CodegenError;
                             }
                         }
                         try self.emitRelease(rest_ptr);
@@ -10797,7 +10813,7 @@ pub const Codegen = struct {
                     if (value_ty.* != .tuple) return CodegenError.CodegenError;
                     for (let.names, 0..) |name, i| {
                         const layout = tupleFieldLayout(value_ty.tuple, i) orelse return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ name, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+{} as {s}\n", .{ name, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
                     }
                 }
                 if (!let.is_slice) {
@@ -10813,14 +10829,14 @@ pub const Codegen = struct {
                 if (self.bindingNeedsAddressableStorage(c.name, const_ty)) {
                     const val_reg = try self.genExpr(c.value, hoisted_allocs);
                     self.stack_alloc_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ c.name, typeSize(const_ty) }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ c.name, val_reg, typeString(const_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc {}\n", .{ c.name, typeSize(const_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ c.name, val_reg, typeString(const_ty) }) catch return CodegenError.CodegenError;
                 } else if (isStackAllocCall(c.value)) {
                     self.stack_alloc_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ c.name, self.stackAllocSize(&c.value.call_expr) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc {}\n", .{ c.name, self.stackAllocSize(&c.value.call_expr) }) catch return CodegenError.CodegenError;
                 } else if (c.value.* == .closure_literal) {
                     try self.closure_bindings.put(c.name, &c.value.closure_literal);
-                    self.out.writer().print("    {s} = 0\n", .{c.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = 0\n", .{c.name}) catch return CodegenError.CodegenError;
                 } else if (c.value.* == .struct_literal) {
                     try self.genStructLiteralInto(c.name, &c.value.struct_literal, hoisted_allocs);
                 } else if (c.value.* == .enum_literal) {
@@ -10836,7 +10852,7 @@ pub const Codegen = struct {
                     try self.genCopyValueInto(c.name, source_reg, const_ty);
                 } else if (lowering_rules.planDynCoercion(self.tc, c.value)) |plan| {
                     const val_reg = try self.genDynCoercionExpr(c.value, plan, hoisted_allocs);
-                    self.out.writer().print("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(c.value, hoisted_allocs);
                     if (self.task_future_objects.get(val_reg)) |future_obj| {
@@ -10864,7 +10880,7 @@ pub const Codegen = struct {
                         _ = self.mpsc_sender_channels.remove(val_reg);
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
-                    self.out.writer().print("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
                 }
             },
             .assign_stmt => |assign| {
@@ -10879,7 +10895,7 @@ pub const Codegen = struct {
                     };
                     const target_reg = try self.genExpr(assign.target.deref_expr.expr, hoisted_allocs);
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
-                    self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_reg, val_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_reg, val_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
                     const target_lifecycle = lowering_rules.planDerefAssignmentTargetLifecycle(
                         assign.target.deref_expr.expr.* != .identifier,
                         self.refcell_borrow_handles.contains(target_reg),
@@ -10903,23 +10919,23 @@ pub const Codegen = struct {
                             const in_bounds_reg = try self.newTmp();
                             const hit_label = try self.newLabel("L_VEC_INDEX_FIELD_ASSIGN_OK");
                             const miss_label = try self.newLabel("L_VEC_INDEX_FIELD_ASSIGN_OOB");
-                            self.out.writer().print("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    panic(87)\n\n", .{}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
+                            self.outPrint("    panic(87)\n\n", .{}) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
                             const data_reg = try self.newTmp();
                             const offset_reg = try self.newTmp();
                             const slot_reg = try self.newTmp();
                             const owner_reg = try self.newTmp();
-                            self.out.writer().print("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ owner_reg, slot_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = load {s}+0 as ptr\n", .{ owner_reg, slot_reg }) catch return CodegenError.CodegenError;
                             const val_reg = try self.genExpr(assign.value, hoisted_allocs);
-                            self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ owner_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ owner_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                             try self.emitForgetMovedValue(owner_reg);
                             try self.emitRelease(slot_reg);
                             try self.emitRelease(offset_reg);
@@ -10941,12 +10957,12 @@ pub const Codegen = struct {
                     if (curr_ty.* == .tuple) {
                         const index = std.fmt.parseInt(usize, field.field_name, 10) catch return CodegenError.CodegenError;
                         const layout = tupleFieldLayout(curr_ty.tuple, index) orelse return CodegenError.CodegenError;
-                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ base_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}+{}, {s} as {s}\n", .{ base_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                     } else {
                         if (curr_ty.* != .user_defined) return CodegenError.CodegenError;
                         const struct_decl = self.tc.structs.get(curr_ty.user_defined.name) orelse return CodegenError.CodegenError;
                         const layout = fieldLayout(struct_decl, field.field_name) orelse return CodegenError.CodegenError;
-                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ base_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}+{}, {s} as {s}\n", .{ base_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                     }
                     if (self.fieldBaseResultNeedsRelease(field.expr, base_reg)) try self.emitRelease(base_reg);
                     try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
@@ -10964,11 +10980,11 @@ pub const Codegen = struct {
                     const stored_val_reg = if (assign.value.* == .move_expr and std.mem.startsWith(u8, val_reg, "^")) val_reg[1..] else val_reg;
                     const target_name = self.resolveBindingName(assign.target.identifier);
                     if (self.bindingStorageAddress(target_name)) |address| {
-                        self.out.writer().print("    store {s}, {s} as {s}\n", .{ address, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}, {s} as {s}\n", .{ address, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                     } else if (self.assigned_value_slots.contains(target_name)) {
                         _ = try self.releaseResultSlotRefCellHandle(target_name, false);
-                        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         if (self.refcell_borrow_handles.contains(stored_val_reg)) {
                             try self.storeResultSlotTransferredValueState(target_name, stored_val_reg, target_ty, callArgNeedsRelease(assign.value));
                             try self.markConsumedBinding(stored_val_reg);
@@ -10980,18 +10996,18 @@ pub const Codegen = struct {
                         }
                         _ = self.consumed_bindings.remove(target_name);
                     } else if (self.addressable_bindings.contains(target_name) or self.stack_alloc_bindings.contains(target_name)) {
-                        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                     } else {
                         try self.emitRelease(assign.target.identifier);
                         if (assign.value.* == .identifier and target_ty.* == .primitive) {
                             switch (target_ty.primitive) {
-                                .boolean => self.out.writer().print("    {s} = or {s}, 0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
-                                .f32, .f64, .float => self.out.writer().print("    {s} = add {s}, 0.0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
-                                else => self.out.writer().print("    {s} = add {s}, 0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
+                                .boolean => self.outPrint("    {s} = or {s}, 0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
+                                .f32, .f64, .float => self.outPrint("    {s} = add {s}, 0.0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
+                                else => self.outPrint("    {s} = add {s}, 0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
                             }
                         } else {
-                            self.out.writer().print("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
                         }
                         if (self.refcell_borrow_handles.contains(stored_val_reg)) {
                             try self.transferResultSlotValueState(target_name, stored_val_reg, true);
@@ -11005,7 +11021,7 @@ pub const Codegen = struct {
                 } else {
                     const target_reg = try self.genExpr(assign.target, hoisted_allocs);
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
-                    self.out.writer().print("    {s} = {s}\n", .{ target_reg, val_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = {s}\n", .{ target_reg, val_reg }) catch return CodegenError.CodegenError;
                 }
             },
             .return_stmt => |ret| {
@@ -11017,7 +11033,7 @@ pub const Codegen = struct {
                 if (self.current_async) {
                     if (val_reg == null) {
                         const zero = try self.newTmp();
-                        self.out.writer().print("    {s} = 0\n", .{zero}) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = 0\n", .{zero}) catch return CodegenError.CodegenError;
                         val_reg = zero;
                     }
                     val_reg = try self.genReadyFutureI64(val_reg.?);
@@ -11034,9 +11050,9 @@ pub const Codegen = struct {
                     }
                 }
                 if (val_reg) |vr| {
-                    self.out.writer().print("    return {s}\n", .{vr}) catch return CodegenError.CodegenError;
+                    self.outPrint("    return {s}\n", .{vr}) catch return CodegenError.CodegenError;
                 } else {
-                    self.out.writer().print("    return\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint("    return\n", .{}) catch return CodegenError.CodegenError;
                 }
             },
             .for_stmt => |f| {
@@ -11072,9 +11088,9 @@ pub const Codegen = struct {
                     const lowered_len = try self.loweredFuncSymbol(protocol_len_key.?);
                     defer self.allocator.free(lowered_len);
                     if (protocol_len_func.?.params.len > 0 and protocol_len_func.?.params[0].is_borrow) {
-                        self.out.writer().print("    {s} = call @{s}(&{s})\n", .{ len_reg, lowered_len, start_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = call @{s}(&{s})\n", .{ len_reg, lowered_len, start_reg }) catch return CodegenError.CodegenError;
                     } else {
-                        self.out.writer().print("    {s} = call @{s}({s})\n", .{ len_reg, lowered_len, start_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = call @{s}({s})\n", .{ len_reg, lowered_len, start_reg }) catch return CodegenError.CodegenError;
                     }
                     protocol_len_reg = len_reg;
                 }
@@ -11083,53 +11099,53 @@ pub const Codegen = struct {
                 defer self.allocator.free(counter_slot);
 
                 if (end_reg != null) {
-                    self.out.writer().print("    store {s}+0, {s} as i64\n", .{ counter_slot, start_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{start_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as i64\n", .{ counter_slot, start_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{start_reg}) catch return CodegenError.CodegenError;
                 } else {
-                    self.out.writer().print("    store {s}+0, 0 as i64\n", .{counter_slot}) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, 0 as i64\n", .{counter_slot}) catch return CodegenError.CodegenError;
                 }
-                self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{loop_head}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{loop_head}) catch return CodegenError.CodegenError;
                 const index_reg = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+0 as i64\n", .{ index_reg, counter_slot }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as i64\n", .{ index_reg, counter_slot }) catch return CodegenError.CodegenError;
                 const is_less = try self.newTmp();
                 if (end_reg) |er| {
-                    self.out.writer().print("    {s} = slt {s}, {s}\n", .{ is_less, index_reg, er }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = slt {s}, {s}\n", .{ is_less, index_reg, er }) catch return CodegenError.CodegenError;
                 } else {
                     if (source_arr) |arr| {
-                        self.out.writer().print("    {s} = slt {s}, {}\n", .{ is_less, index_reg, arr.len }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = slt {s}, {}\n", .{ is_less, index_reg, arr.len }) catch return CodegenError.CodegenError;
                     } else if (protocol_len_reg) |len_reg| {
-                        self.out.writer().print("    {s} = slt {s}, {s}\n", .{ is_less, index_reg, len_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = slt {s}, {s}\n", .{ is_less, index_reg, len_reg }) catch return CodegenError.CodegenError;
                     } else return CodegenError.CodegenError;
                 }
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_less, loop_body, loop_cond_false }) catch return CodegenError.CodegenError;
+                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_less, loop_body, loop_cond_false }) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{loop_body}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{is_less}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{loop_body}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{is_less}) catch return CodegenError.CodegenError;
                 if (end_reg != null) {
-                    self.out.writer().print("    {s} = add {s}, 0\n", .{ f.var_name, index_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = add {s}, 0\n", .{ f.var_name, index_reg }) catch return CodegenError.CodegenError;
                 } else {
                     if (source_arr) |arr| {
                         const elem_size = typeSize(arr.elem);
                         const byte_offset = try self.newTmp();
                         if (elem_size == 1) {
-                            self.out.writer().print("    {s} = {s}\n", .{ byte_offset, index_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = {s}\n", .{ byte_offset, index_reg }) catch return CodegenError.CodegenError;
                         } else {
-                            self.out.writer().print("    {s} = mul {s}, {}\n", .{ byte_offset, index_reg, elem_size }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = mul {s}, {}\n", .{ byte_offset, index_reg, elem_size }) catch return CodegenError.CodegenError;
                         }
                         const elem_ptr = try self.newTmp();
-                        self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ elem_ptr, start_reg, byte_offset }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ f.var_name, elem_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ elem_ptr, start_reg, byte_offset }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ f.var_name, elem_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
                         try self.emitRelease(byte_offset);
                         try self.emitRelease(elem_ptr);
                     } else if (protocol_at_key) |at_key| {
                         const lowered_at = try self.loweredFuncSymbol(at_key);
                         defer self.allocator.free(lowered_at);
                         if (protocol_at_func.?.params.len > 0 and protocol_at_func.?.params[0].is_borrow) {
-                            self.out.writer().print("    {s} = call @{s}(&{s}, {s})\n", .{ f.var_name, lowered_at, start_reg, index_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = call @{s}(&{s}, {s})\n", .{ f.var_name, lowered_at, start_reg, index_reg }) catch return CodegenError.CodegenError;
                         } else {
-                            self.out.writer().print("    {s} = call @{s}({s}, {s})\n", .{ f.var_name, lowered_at, start_reg, index_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = call @{s}({s}, {s})\n", .{ f.var_name, lowered_at, start_reg, index_reg }) catch return CodegenError.CodegenError;
                         }
                     } else {
                         return CodegenError.CodegenError;
@@ -11149,38 +11165,38 @@ pub const Codegen = struct {
                 if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources);
 
                 if (!blockTerminates(f.body)) {
-                    self.out.writer().print("{s}:\n", .{loop_continue}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{loop_continue}) catch return CodegenError.CodegenError;
                     const next_i = try self.newTmp();
-                    self.out.writer().print("    {s} = add {s}, 1\n", .{ next_i, index_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    store {s}+0, {s} as i64\n", .{ counter_slot, next_i }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{next_i}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{f.var_name}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = add {s}, 1\n", .{ next_i, index_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as i64\n", .{ counter_slot, next_i }) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{next_i}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{f.var_name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
                 }
 
                 if (loop_control.has_continue) {
-                    self.out.writer().print("{s}:\n", .{loop_continue_from_stmt}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{loop_continue_from_stmt}) catch return CodegenError.CodegenError;
                     const next_i_from_continue = try self.newTmp();
-                    self.out.writer().print("    {s} = add {s}, 1\n", .{ next_i_from_continue, index_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    store {s}+0, {s} as i64\n", .{ counter_slot, next_i_from_continue }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{next_i_from_continue}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = add {s}, 1\n", .{ next_i_from_continue, index_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as i64\n", .{ counter_slot, next_i_from_continue }) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{next_i_from_continue}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
                 }
 
                 if (loop_control.has_break) {
-                    self.out.writer().print("{s}:\n", .{loop_break_cleanup}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    jmp {s}\n\n", .{loop_exit}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{loop_break_cleanup}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n\n", .{loop_exit}) catch return CodegenError.CodegenError;
                 }
 
-                self.out.writer().print("{s}:\n", .{loop_cond_false}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{is_less}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    jmp {s}\n\n", .{loop_exit}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{loop_cond_false}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{is_less}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n\n", .{loop_exit}) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{loop_exit}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{loop_exit}) catch return CodegenError.CodegenError;
                 if (self.tc.cleanups.get(stmt)) |list| {
                     for (list.items) |c_var| {
                         try self.emitRelease(c_var);
@@ -11199,31 +11215,31 @@ pub const Codegen = struct {
                 const loop_cond_false = try self.newLabel("L_WHILE_COND_FALSE");
                 const loop_exit = try self.newLabel("L_WHILE_EXIT");
 
-                self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{loop_head}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{loop_head}) catch return CodegenError.CodegenError;
                 const cond_reg = try self.genBranchConditionReg(w.cond, hoisted_allocs);
                 if (w.let_pattern) |pattern| {
                     const branch_flag = try self.newTmp();
                     const enum_decl = try self.enumDeclForPatternValue(w.cond, pattern);
-                    var scoped_bindings = std.ArrayList([]const u8).init(self.allocator);
+                    var scoped_bindings = std.array_list.Managed([]const u8).init(self.allocator);
                     defer scoped_bindings.deinit();
                     const success_on_true = enum_decl != null or std.mem.eql(u8, pattern.variant_name, "Some") or std.mem.eql(u8, pattern.variant_name, "Ok");
                     if (enum_decl) |decl| {
                         try self.genEnumPatternCheck(decl, pattern, cond_reg, branch_flag);
                     } else if (patternUsesResultMacros(pattern)) {
-                        self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, cond_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, cond_reg }) catch return CodegenError.CodegenError;
                     } else {
-                        self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, cond_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, cond_reg }) catch return CodegenError.CodegenError;
                     }
                     if (success_on_true) {
-                        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, loop_body, loop_cond_false }) catch return CodegenError.CodegenError;
+                        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ branch_flag, loop_body, loop_cond_false }) catch return CodegenError.CodegenError;
                     } else {
-                        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, loop_cond_false, loop_body }) catch return CodegenError.CodegenError;
+                        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ branch_flag, loop_cond_false, loop_body }) catch return CodegenError.CodegenError;
                     }
 
-                    self.out.writer().print("{s}:\n", .{loop_body}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{loop_body}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
                     if (enum_decl) |decl| {
                         try self.genEnumPatternBindings(decl, pattern, cond_reg);
                         for (pattern.bindings) |binding| {
@@ -11233,17 +11249,17 @@ pub const Codegen = struct {
                         const binding = pattern.bindings[0];
                         const target = try self.pushBindingAlias(binding);
                         scoped_bindings.append(binding) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ target, cond_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ target, cond_reg }) catch return CodegenError.CodegenError;
                     } else if (std.mem.eql(u8, pattern.variant_name, "Ok") and pattern.bindings.len == 1) {
                         const binding = pattern.bindings[0];
                         const target = try self.pushBindingAlias(binding);
                         scoped_bindings.append(binding) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ target, cond_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ target, cond_reg }) catch return CodegenError.CodegenError;
                     } else if (std.mem.eql(u8, pattern.variant_name, "Err") and pattern.bindings.len == 1) {
                         const binding = pattern.bindings[0];
                         const target = try self.pushBindingAlias(binding);
                         scoped_bindings.append(binding) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ target, cond_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ target, cond_reg }) catch return CodegenError.CodegenError;
                     }
                     try self.emitRelease(cond_reg);
                     self.loop_continue_labels.append(loop_head) catch return CodegenError.OutOfMemory;
@@ -11266,24 +11282,24 @@ pub const Codegen = struct {
                         }
                         try self.emitActiveLoopBodyLocalCleanups(null, false);
                         try self.emitLoopBodyTopLevelLocalCleanups(w.body);
-                        self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
                     }
                     for (scoped_bindings.items) |binding| {
                         self.popBindingAlias(binding);
                     }
 
-                    self.out.writer().print("{s}:\n", .{loop_cond_false}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{loop_cond_false}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
                     try self.emitRelease(cond_reg);
-                    self.out.writer().print("    jmp {s}\n\n", .{loop_exit}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n\n", .{loop_exit}) catch return CodegenError.CodegenError;
 
-                    self.out.writer().print("{s}:\n", .{loop_exit}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{loop_exit}) catch return CodegenError.CodegenError;
                     return;
                 }
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ cond_reg, loop_body, loop_cond_false }) catch return CodegenError.CodegenError;
+                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ cond_reg, loop_body, loop_cond_false }) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{loop_body}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{loop_body}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
                 self.loop_continue_labels.append(loop_head) catch return CodegenError.OutOfMemory;
                 self.loop_break_labels.append(loop_exit) catch return CodegenError.OutOfMemory;
                 try self.pushLoopBodyLocalScope();
@@ -11299,14 +11315,14 @@ pub const Codegen = struct {
                 if (!blockTerminates(w.body)) {
                     try self.emitActiveLoopBodyLocalCleanups(null, false);
                     try self.emitLoopBodyTopLevelLocalCleanups(w.body);
-                    self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
                 }
 
-                self.out.writer().print("{s}:\n", .{loop_cond_false}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    jmp {s}\n\n", .{loop_exit}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{loop_cond_false}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n\n", .{loop_exit}) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{loop_exit}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{loop_exit}) catch return CodegenError.CodegenError;
             },
             .break_stmt => {
                 const cleanup_list = self.tc.cleanups.getPtr(stmt);
@@ -11322,7 +11338,7 @@ pub const Codegen = struct {
                 try self.emitActiveLoopBodyLocalCleanups(cleanup_list, true);
                 if (self.loop_break_labels.items.len == 0) return CodegenError.CodegenError;
                 const break_label = self.loop_break_labels.items[self.loop_break_labels.items.len - 1];
-                self.out.writer().print("    jmp {s}\n", .{break_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n", .{break_label}) catch return CodegenError.CodegenError;
             },
             .continue_stmt => {
                 const cleanup_list = self.tc.cleanups.getPtr(stmt);
@@ -11338,7 +11354,7 @@ pub const Codegen = struct {
                 try self.emitActiveLoopBodyLocalCleanups(cleanup_list, true);
                 if (self.loop_continue_labels.items.len == 0) return CodegenError.CodegenError;
                 const continue_label = self.loop_continue_labels.items[self.loop_continue_labels.items.len - 1];
-                self.out.writer().print("    jmp {s}\n", .{continue_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n", .{continue_label}) catch return CodegenError.CodegenError;
             },
             .release_stmt => |rel| {
                 try self.emitRelease(self.resolveBindingName(rel.var_name));
@@ -11376,12 +11392,12 @@ pub const Codegen = struct {
         self: *Codegen,
         target: []const u8,
         lit: *const ast.StructLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (lit.ty.* != .user_defined) return CodegenError.CodegenError;
         const struct_decl = self.structDeclForType(lit.ty) orelse return CodegenError.CodegenError;
 
-        self.out.writer().print("    {s} = alloc {}\n", .{ target, structSize(struct_decl) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ target, structSize(struct_decl) }) catch return CodegenError.CodegenError;
 
         if (lit.update_expr) |update_expr| {
             const update_reg = try self.genExpr(update_expr, hoisted_allocs);
@@ -11391,18 +11407,18 @@ pub const Codegen = struct {
                 const layout = self.aggregateFieldLayout(lit.ty, decl_field.name) orelse return CodegenError.CodegenError;
                 const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
                 const loaded_reg = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ loaded_reg, update_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ loaded_reg, update_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
                 if (transfer.isDirect()) {
-                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, loaded_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, loaded_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                     if (plan.release_loaded) try self.emitRelease(loaded_reg);
                 } else if (transfer.isDeepCopy()) {
                     const copied = try self.newTmp();
                     try self.genCopyValueInto(copied, loaded_reg, plan.field_ty);
-                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
                     if (plan.release_loaded) try self.emitRelease(loaded_reg);
                 } else if (transfer.isMove()) {
                     const move_reg = if (std.mem.startsWith(u8, loaded_reg, "^")) loaded_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{loaded_reg});
-                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                 } else unreachable;
             }
             if (callArgNeedsRelease(update_expr)) try self.emitRelease(update_reg);
@@ -11424,8 +11440,8 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const slot_reg = try self.newTmp();
-                        self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ slot_reg, target, layout.offset }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND MANUALLY_DROP_U64_NEW {s}, {s}\n", .{ slot_reg, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = ptr_add {s}, {}\n", .{ slot_reg, target, layout.offset }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND MANUALLY_DROP_U64_NEW {s}, {s}\n", .{ slot_reg, value_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(slot_reg);
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         continue;
@@ -11435,10 +11451,10 @@ pub const Codegen = struct {
                     const source_reg = try self.genExpr(literal_field.value, hoisted_allocs);
                     const copied = try self.newTmp();
                     try self.genCopyValueInto(copied, source_reg, field_ty.?);
-                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(literal_field.value, hoisted_allocs);
-                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(literal_field.value)) try self.emitRelease(val_reg);
                 }
             }
@@ -11464,8 +11480,8 @@ pub const Codegen = struct {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const slot_reg = try self.newTmp();
-                    self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ slot_reg, target, layout.offset }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND MANUALLY_DROP_U64_NEW {s}, {s}\n", .{ slot_reg, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = ptr_add {s}, {}\n", .{ slot_reg, target, layout.offset }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND MANUALLY_DROP_U64_NEW {s}, {s}\n", .{ slot_reg, value_reg }) catch return CodegenError.CodegenError;
                     try self.emitRelease(slot_reg);
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     continue;
@@ -11475,16 +11491,16 @@ pub const Codegen = struct {
                 const source_reg = try self.genExpr(value, hoisted_allocs);
                 const copied = try self.newTmp();
                 try self.genCopyValueInto(copied, source_reg, plan.field_ty);
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(value)) try self.emitRelease(source_reg);
             } else if (transfer.isDirect()) {
                 const val_reg = try self.genExpr(value, hoisted_allocs);
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(value)) try self.emitRelease(val_reg);
             } else if (transfer.isMove()) {
                 const val_reg = try self.genExpr(value, hoisted_allocs);
                 const move_reg = if (std.mem.startsWith(u8, val_reg, "^")) val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg});
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                 try self.markMovedExprBinding(value, val_reg);
             } else unreachable;
         }
@@ -11494,7 +11510,7 @@ pub const Codegen = struct {
         self: *Codegen,
         target: []const u8,
         lit: *const ast.ArrayLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (lit.elements.len == 0) return CodegenError.CodegenError;
         const first_ty = self.tc.expr_types.get(lit.elements[0]) orelse return CodegenError.CodegenError;
@@ -11502,10 +11518,10 @@ pub const Codegen = struct {
         const elem_ty_str = typeString(first_ty);
         const total_size = @max(elem_size * lit.elements.len, 1);
 
-        self.out.writer().print("    {s} = alloc {}\n", .{ target, total_size }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ target, total_size }) catch return CodegenError.CodegenError;
         for (lit.elements, 0..) |elem, i| {
             const val_reg = try self.genExpr(elem, hoisted_allocs);
-            self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, val_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, val_reg, elem_ty_str }) catch return CodegenError.CodegenError;
             if (callArgNeedsRelease(elem)) try self.emitRelease(val_reg);
         }
     }
@@ -11515,21 +11531,21 @@ pub const Codegen = struct {
         target: []const u8,
         node: *const ast.Node,
         lit: *const ast.RepeatArrayLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         const array_ty = self.tc.expr_types.get(node) orelse return CodegenError.CodegenError;
         const arr = arrayType(array_ty) orelse return CodegenError.CodegenError;
         const elem_size = typeSize(arr.elem);
         const total_size = @max(elem_size * arr.len, 1);
-        self.out.writer().print("    {s} = alloc {}\n", .{ target, total_size }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ target, total_size }) catch return CodegenError.CodegenError;
 
         const value_reg = try self.genExpr(lit.value, hoisted_allocs);
         if (arr.elem.* == .primitive and arr.elem.primitive == .u8) {
-            self.out.writer().print("    EXPAND SLA_ARRAY_FILL_U8 {s}, {s}, {}\n", .{ target, value_reg, arr.len }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND SLA_ARRAY_FILL_U8 {s}, {s}, {}\n", .{ target, value_reg, arr.len }) catch return CodegenError.CodegenError;
         } else {
             const elem_ty_str = typeString(arr.elem);
             for (0..arr.len) |i| {
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, value_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, value_reg, elem_ty_str }) catch return CodegenError.CodegenError;
             }
         }
         if (callArgNeedsRelease(lit.value)) try self.emitRelease(value_reg);
@@ -11539,19 +11555,19 @@ pub const Codegen = struct {
         self: *Codegen,
         target: []const u8,
         lit: *const ast.TupleLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
-        var elems = std.ArrayList(*ast.Type).init(self.allocator);
+        var elems = std.array_list.Managed(*ast.Type).init(self.allocator);
         for (lit.elements) |elem| {
             try elems.append(self.tc.expr_types.get(elem) orelse return CodegenError.CodegenError);
         }
         const tuple = ast.TupleType{ .elems = try elems.toOwnedSlice() };
 
-        self.out.writer().print("    {s} = alloc {}\n", .{ target, tupleSize(tuple) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ target, tupleSize(tuple) }) catch return CodegenError.CodegenError;
         for (lit.elements, 0..) |elem, i| {
             const layout = tupleFieldLayout(tuple, i) orelse return CodegenError.CodegenError;
             const val_reg = try self.genExpr(elem, hoisted_allocs);
-            self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
         }
     }
 
@@ -11559,21 +11575,21 @@ pub const Codegen = struct {
         self: *Codegen,
         target: []const u8,
         lit: *const ast.EnumLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         // Synthetic Option has no declared enum: Option::None lowers to the
         // std None constructor, exactly like bare None (see OPTION_NEW_NONE
         // emission below). Keeps SA-text/SAB parity for the same acceptance.
         if (std.mem.eql(u8, lit.enum_name, "Option") and std.mem.eql(u8, lit.variant_name, "None") and lit.fields.len == 0) {
-            self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{target}) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND OPTION_NEW_NONE {s}\n", .{target}) catch return CodegenError.CodegenError;
             return;
         }
         const decl = self.tc.enums.get(lit.enum_name) orelse return CodegenError.CodegenError;
         const tag = enumVariantValue(decl, lit.variant_name) orelse return CodegenError.CodegenError;
         const variant = enumVariant(decl, lit.variant_name) orelse return CodegenError.CodegenError;
 
-        self.out.writer().print("    {s} = alloc {}\n", .{ target, enumSize(decl) }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {} as i64\n", .{ target, tag }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = alloc {}\n", .{ target, enumSize(decl) }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {} as i64\n", .{ target, tag }) catch return CodegenError.CodegenError;
 
         for (variant.fields) |field| {
             var literal_value: ?*ast.Node = null;
@@ -11586,11 +11602,11 @@ pub const Codegen = struct {
             const value = literal_value orelse return CodegenError.CodegenError;
             const layout = enumFieldLayout(variant, field.name) orelse return CodegenError.CodegenError;
             const val_reg = try self.genExpr(value, hoisted_allocs);
-            self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
         }
     }
 
-    fn genMatchExpr(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genMatchExpr(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (mat.cases.len == 0) return CodegenError.CodegenError;
         const val_reg = try self.genExpr(mat.val, hoisted_allocs);
         const val_ty = self.tc.expr_types.get(mat.val) orelse return CodegenError.CodegenError;
@@ -11603,7 +11619,7 @@ pub const Codegen = struct {
         const value_match = !isVoidType(expr_ty);
         const result_slot = if (value_match) blk: {
             const slot = try self.newTmp();
-            self.out.writer().print("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
             try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
             break :blk slot;
         } else null;
@@ -11617,9 +11633,9 @@ pub const Codegen = struct {
                 break;
             }
         }
-        var check_labels = std.ArrayList([]const u8).init(self.allocator);
-        var case_labels = std.ArrayList([]const u8).init(self.allocator);
-        var cond_regs = std.ArrayList([]const u8).init(self.allocator);
+        var check_labels = std.array_list.Managed([]const u8).init(self.allocator);
+        var case_labels = std.array_list.Managed([]const u8).init(self.allocator);
+        var cond_regs = std.array_list.Managed([]const u8).init(self.allocator);
 
         for (mat.cases, 0..) |_, i| {
             check_labels.append(try std.fmt.allocPrint(self.allocator, "L_MATCH_CHECK_{}_{}", .{ i, self.label_idx })) catch return CodegenError.OutOfMemory;
@@ -11627,49 +11643,49 @@ pub const Codegen = struct {
         }
         self.label_idx += 1;
 
-        self.out.writer().print("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
 
         for (mat.cases, 0..) |case, i| {
-            self.out.writer().print("{s}:\n", .{check_labels.items[i]}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{check_labels.items[i]}) catch return CodegenError.CodegenError;
             if (i > 0) {
-                self.out.writer().print("    !{s}\n", .{cond_regs.items[i - 1]}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{cond_regs.items[i - 1]}) catch return CodegenError.CodegenError;
             }
             const tag_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as i64\n", .{ tag_reg, val_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as i64\n", .{ tag_reg, val_reg }) catch return CodegenError.CodegenError;
             const tag = enumVariantValue(decl, case.pattern.variant_name) orelse return CodegenError.CodegenError;
             const tag_const = try self.newTmp();
             try self.emitIntConst(tag_const, tag);
             const cond = try self.newTmp();
             cond_regs.append(cond) catch return CodegenError.OutOfMemory;
-            self.out.writer().print("    {s} = eq {s}, {s}\n", .{ cond, tag_reg, tag_const }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{tag_reg}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{tag_const}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = eq {s}, {s}\n", .{ cond, tag_reg, tag_const }) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{tag_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{tag_const}) catch return CodegenError.CodegenError;
             const next_label = if (i + 1 < mat.cases.len) check_labels.items[i + 1] else no_match_label;
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ cond, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ cond, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
 
-            self.out.writer().print("{s}:\n", .{case_labels.items[i]}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{case_labels.items[i]}) catch return CodegenError.CodegenError;
             const variant = enumVariant(decl, case.pattern.variant_name) orelse return CodegenError.CodegenError;
             for (case.pattern.bindings, variant.fields) |binding, field| {
                 const layout = enumFieldLayout(variant, field.name) orelse return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ binding, val_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ binding, val_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
             }
             if (case.guard) |guard| {
                 const body_label = try self.newLabel("L_MATCH_GUARD_BODY");
                 const fail_label = try self.newLabel("L_MATCH_GUARD_FAIL");
                 const guard_reg = try self.genExpr(guard, hoisted_allocs);
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ guard_reg, body_label, fail_label }) catch return CodegenError.CodegenError;
+                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ guard_reg, body_label, fail_label }) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{fail_label}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{fail_label}) catch return CodegenError.CodegenError;
                 try self.emitRelease(guard_reg);
                 for (case.pattern.bindings) |binding| {
                     try self.emitRelease(binding);
                 }
-                self.out.writer().print("    jmp {s}\n\n", .{next_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n\n", .{next_label}) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
                 try self.emitRelease(guard_reg);
             }
-            self.out.writer().print("    !{s}\n", .{cond}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{cond}) catch return CodegenError.CodegenError;
             if (value_match and !blockTerminates(case.body)) {
                 try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty, hoisted_allocs);
             } else {
@@ -11681,22 +11697,22 @@ pub const Codegen = struct {
                         try self.emitRelease(binding);
                     }
                 }
-                self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
             }
-            self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
         }
 
-        self.out.writer().print("{s}:\n", .{no_match_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{no_match_label}) catch return CodegenError.CodegenError;
         if (cond_regs.items.len > 0) {
-            self.out.writer().print("    !{s}\n", .{cond_regs.items[cond_regs.items.len - 1]}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{cond_regs.items[cond_regs.items.len - 1]}) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print("    panic(1)\n\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("    panic(1)\n\n", .{}) catch return CodegenError.CodegenError;
         if (has_fallthrough_case) {
-            self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
         }
         if (result_slot) |slot| {
             const reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
             try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
             try self.emitRelease(slot);
             return reg;
@@ -11704,12 +11720,12 @@ pub const Codegen = struct {
         return try self.newTmp();
     }
 
-    fn genOptionMatchExpr(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, val_reg: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genOptionMatchExpr(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, val_reg: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
         const value_match = !isVoidType(expr_ty);
         const result_slot = if (value_match) blk: {
             const slot = try self.newTmp();
-            self.out.writer().print("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
             try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
             break :blk slot;
         } else null;
@@ -11724,9 +11740,9 @@ pub const Codegen = struct {
             }
         }
 
-        var check_labels = std.ArrayList([]const u8).init(self.allocator);
-        var case_labels = std.ArrayList([]const u8).init(self.allocator);
-        var cond_regs = std.ArrayList([]const u8).init(self.allocator);
+        var check_labels = std.array_list.Managed([]const u8).init(self.allocator);
+        var case_labels = std.array_list.Managed([]const u8).init(self.allocator);
+        var cond_regs = std.array_list.Managed([]const u8).init(self.allocator);
 
         for (mat.cases, 0..) |_, i| {
             check_labels.append(try std.fmt.allocPrint(self.allocator, "L_OPTION_MATCH_CHECK_{}_{}", .{ i, self.label_idx })) catch return CodegenError.OutOfMemory;
@@ -11734,59 +11750,59 @@ pub const Codegen = struct {
         }
         self.label_idx += 1;
 
-        self.out.writer().print("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
 
         for (mat.cases, 0..) |case, i| {
-            self.out.writer().print("{s}:\n", .{check_labels.items[i]}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{check_labels.items[i]}) catch return CodegenError.CodegenError;
             if (i > 0) {
-                self.out.writer().print("    !{s}\n", .{cond_regs.items[i - 1]}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{cond_regs.items[i - 1]}) catch return CodegenError.CodegenError;
             }
             const branch_flag = try self.newTmp();
             cond_regs.append(branch_flag) catch return CodegenError.OutOfMemory;
             if (patternUsesResultMacros(case.pattern)) {
-                self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, val_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, val_reg }) catch return CodegenError.CodegenError;
             } else {
-                self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, val_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, val_reg }) catch return CodegenError.CodegenError;
             }
             const next_label = if (i + 1 < mat.cases.len) check_labels.items[i + 1] else no_match_label;
             if (std.mem.eql(u8, case.pattern.variant_name, "Some")) {
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
+                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ branch_flag, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
             } else if (std.mem.eql(u8, case.pattern.variant_name, "None")) {
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, next_label, case_labels.items[i] }) catch return CodegenError.CodegenError;
+                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ branch_flag, next_label, case_labels.items[i] }) catch return CodegenError.CodegenError;
             } else if (std.mem.eql(u8, case.pattern.variant_name, "Ok")) {
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
+                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ branch_flag, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
             } else if (std.mem.eql(u8, case.pattern.variant_name, "Err")) {
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, next_label, case_labels.items[i] }) catch return CodegenError.CodegenError;
+                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ branch_flag, next_label, case_labels.items[i] }) catch return CodegenError.CodegenError;
             } else {
                 return CodegenError.CodegenError;
             }
 
-            self.out.writer().print("{s}:\n", .{case_labels.items[i]}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{case_labels.items[i]}) catch return CodegenError.CodegenError;
             if (std.mem.eql(u8, case.pattern.variant_name, "Some") and case.pattern.bindings.len == 1) {
-                self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
             } else if (std.mem.eql(u8, case.pattern.variant_name, "Ok") and case.pattern.bindings.len == 1) {
-                self.out.writer().print("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
             } else if (std.mem.eql(u8, case.pattern.variant_name, "Err") and case.pattern.bindings.len == 1) {
-                self.out.writer().print("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
             }
             if (case.guard) |guard| {
                 const body_label = try self.newLabel("L_OPTION_MATCH_GUARD_BODY");
                 const fail_label = try self.newLabel("L_OPTION_MATCH_GUARD_FAIL");
                 const guard_reg = try self.genExpr(guard, hoisted_allocs);
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ guard_reg, body_label, fail_label }) catch return CodegenError.CodegenError;
+                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ guard_reg, body_label, fail_label }) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{fail_label}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{fail_label}) catch return CodegenError.CodegenError;
                 try self.emitRelease(guard_reg);
                 for (case.pattern.bindings) |binding| {
                     try self.emitRelease(binding);
                 }
-                self.out.writer().print("    jmp {s}\n\n", .{next_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n\n", .{next_label}) catch return CodegenError.CodegenError;
 
-                self.out.writer().print("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
                 try self.emitRelease(guard_reg);
-                self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
             } else {
-                self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
             }
             if (value_match and !blockTerminates(case.body)) {
                 try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty, hoisted_allocs);
@@ -11797,22 +11813,22 @@ pub const Codegen = struct {
                 for (case.pattern.bindings) |binding| {
                     try self.emitRelease(binding);
                 }
-                self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
             }
-            self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
         }
 
-        self.out.writer().print("{s}:\n", .{no_match_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{no_match_label}) catch return CodegenError.CodegenError;
         if (cond_regs.items.len > 0) {
-            self.out.writer().print("    !{s}\n", .{cond_regs.items[cond_regs.items.len - 1]}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{cond_regs.items[cond_regs.items.len - 1]}) catch return CodegenError.CodegenError;
         }
-        self.out.writer().print("    panic(1)\n\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("    panic(1)\n\n", .{}) catch return CodegenError.CodegenError;
         if (has_fallthrough_case) {
-            self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
         }
         if (result_slot) |slot| {
             const reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
             try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
             try self.emitRelease(slot);
             return reg;
@@ -11823,19 +11839,19 @@ pub const Codegen = struct {
     fn genIndexAddress(
         self: *Codegen,
         idx: *const ast.IndexExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!IndexAddress {
         const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
 
         if (sliceElementType(target_ty)) |elem_ty| {
             const slice_reg = try self.genExpr(idx.target, hoisted_allocs);
             const base_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_reg, slice_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_reg, slice_reg }) catch return CodegenError.CodegenError;
             const index_reg = try self.genExpr(idx.index, hoisted_allocs);
             const offset_reg = try self.newTmp();
-            self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
             const ptr_reg = try self.newTmp();
-            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(offset_reg);
             try self.emitRelease(base_reg);
             if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
@@ -11853,15 +11869,15 @@ pub const Codegen = struct {
         const base_source_reg = try self.genExpr(idx.target, hoisted_allocs);
         const base_tmp = if (idx.target.* == .identifier and self.global_const_bindings.contains(idx.target.identifier)) blk: {
             const addr_reg = try self.newTmp();
-            self.out.writer().print("    {s} = &{s}\n", .{ addr_reg, idx.target.identifier }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = &{s}\n", .{ addr_reg, idx.target.identifier }) catch return CodegenError.CodegenError;
             break :blk addr_reg;
         } else null;
         const base_reg = base_tmp orelse base_source_reg;
         const index_reg = try self.genExpr(idx.index, hoisted_allocs);
         const offset_reg = try self.newTmp();
-        self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, typeSize(arr.elem) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, typeSize(arr.elem) }) catch return CodegenError.CodegenError;
         const ptr_reg = try self.newTmp();
-        self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(offset_reg);
         if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
         return .{
@@ -11908,7 +11924,7 @@ pub const Codegen = struct {
     fn genFieldAddress(
         self: *Codegen,
         field: *const ast.FieldExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!AddressProjection {
         const expr_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
         const layout = try self.fieldAddressLayout(expr_ty, field.field_name);
@@ -11917,7 +11933,7 @@ pub const Codegen = struct {
             const nested_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
             if (std.mem.eql(u8, typeString(nested_ty), "ptr")) {
                 const loaded = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ loaded, nested.ptr }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ loaded, nested.ptr }) catch return CodegenError.CodegenError;
                 try self.emitRelease(nested.ptr);
                 if (nested.source_temp) |source_temp| {
                     self.borrow_source_temps.put(loaded, source_temp) catch return CodegenError.OutOfMemory;
@@ -11928,7 +11944,7 @@ pub const Codegen = struct {
             break :blk nested.ptr;
         } else try self.genExpr(field.expr, hoisted_allocs);
         const ptr = try self.newTmp();
-        self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ ptr, base, layout.offset }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {}\n", .{ ptr, base, layout.offset }) catch return CodegenError.CodegenError;
         const base_is_resolved_binding = field.expr.* == .identifier and
             std.mem.eql(u8, base, self.resolveBindingName(field.expr.identifier));
         const track_source_temp = lowering_rules.fieldAddressProjectionTracksSourceTemp(
@@ -11946,16 +11962,16 @@ pub const Codegen = struct {
     fn genVecOwnerReceiver(
         self: *Codegen,
         target: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!VecReceiver {
         if (target.* == .field_expr) {
             const projection = try self.genFieldAddress(&target.field_expr, hoisted_allocs);
             try self.rememberAddressProjectionSource(projection);
             const owner = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ owner, projection.ptr }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as ptr\n", .{ owner, projection.ptr }) catch return CodegenError.CodegenError;
             try self.emitRelease(projection.ptr);
             const borrowed = try self.newTmp();
-            self.out.writer().print("    {s} = &{s}\n", .{ borrowed, owner }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = &{s}\n", .{ borrowed, owner }) catch return CodegenError.CodegenError;
             return .{ .reg = borrowed, .release_reg = borrowed, .consume_reg = owner };
         }
 
@@ -11970,7 +11986,7 @@ pub const Codegen = struct {
         self: *Codegen,
         idx: *const ast.IndexExpr,
         value: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
         if (vecElementType(target_ty)) |elem_ty| {
@@ -11982,20 +11998,20 @@ pub const Codegen = struct {
             const in_bounds_reg = try self.newTmp();
             const hit_label = try self.newLabel("L_VEC_INDEX_ASSIGN_OK");
             const miss_label = try self.newLabel("L_VEC_INDEX_ASSIGN_OOB");
-            self.out.writer().print("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    panic(87)\n\n", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    panic(87)\n\n", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
             const data_reg = try self.newTmp();
             const offset_reg = try self.newTmp();
             const ptr_reg = try self.newTmp();
-            self.out.writer().print("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+0, {s} as u64\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, {s} as u64\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(ptr_reg);
             try self.emitRelease(offset_reg);
             try self.emitRelease(data_reg);
@@ -12008,7 +12024,7 @@ pub const Codegen = struct {
         }
         const addr = try self.genIndexAddress(idx, hoisted_allocs);
         const val_reg = try self.genExpr(value, hoisted_allocs);
-        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ addr.ptr, val_reg, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as {s}\n", .{ addr.ptr, val_reg, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
         try self.finishIndexAddress(addr);
         try self.finishStoredValueAfterSlotStore(value, addr.elem_ty, val_reg);
     }
@@ -12017,7 +12033,7 @@ pub const Codegen = struct {
         self: *Codegen,
         idx: *const ast.IndexExpr,
         elem_ty: *ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const vec_receiver = try self.genVecOwnerReceiver(idx.target, hoisted_allocs);
         const vec_reg = vec_receiver.reg;
@@ -12026,19 +12042,19 @@ pub const Codegen = struct {
         const in_bounds_reg = try self.newTmp();
         const hit_label = try self.newLabel("L_VEC_INDEX_OK");
         const miss_label = try self.newLabel("L_VEC_INDEX_OOB");
-        self.out.writer().print("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
-        self.out.writer().print("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    panic(32)\n\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    panic(32)\n\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
         const data_reg = try self.newTmp();
         const offset_reg = try self.newTmp();
         const ptr_reg = try self.newTmp();
-        self.out.writer().print("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
         const reg = try self.genLoadSlotValue(ptr_reg, elem_ty);
         try self.emitRelease(ptr_reg);
         try self.emitRelease(offset_reg);
@@ -12053,7 +12069,7 @@ pub const Codegen = struct {
     fn genSliceExpr(
         self: *Codegen,
         slc: *const ast.SliceExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const target_ty = self.tc.expr_types.get(slc.target) orelse return CodegenError.CodegenError;
         const arr = arrayType(target_ty) orelse return CodegenError.CodegenError;
@@ -12064,13 +12080,13 @@ pub const Codegen = struct {
         const base_source_reg = try self.genExpr(slc.target, hoisted_allocs);
         const base_reg = if (slc.target.* == .identifier and self.global_const_bindings.contains(slc.target.identifier)) blk: {
             const addr_reg = try self.newTmp();
-            self.out.writer().print("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
             break :blk addr_reg;
         } else base_source_reg;
         const offset_reg = try self.newTmp();
         try self.emitIntConst(offset_reg, @as(i64, @intCast(@as(usize, @intCast(start)) * typeSize(arr.elem))));
         const ptr_reg = try self.newTmp();
-        self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(offset_reg);
         if (!std.mem.eql(u8, base_reg, base_source_reg)) try self.emitRelease(base_reg);
         return ptr_reg;
@@ -12079,7 +12095,7 @@ pub const Codegen = struct {
     fn genArrayIterSum(
         self: *Codegen,
         source: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const arr = arrayType(source_ty) orelse return CodegenError.CodegenError;
@@ -12093,7 +12109,7 @@ pub const Codegen = struct {
         const base_source_reg = try self.genExpr(source, hoisted_allocs);
         const base_reg = if (source.* == .identifier and self.global_const_bindings.contains(source.identifier)) blk: {
             const addr_reg = try self.newTmp();
-            self.out.writer().print("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
             break :blk addr_reg;
         } else base_source_reg;
         var acc_reg = try self.newTmp();
@@ -12104,11 +12120,11 @@ pub const Codegen = struct {
             const off_reg = try self.newTmp();
             try self.emitIntConst(off_reg, @as(i64, @intCast(i * elem_size)));
             const item_ptr = try self.newTmp();
-            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
             const item_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
             const next_acc = try self.newTmp();
-            self.out.writer().print("    {s} = add {s}, {s}\n", .{ next_acc, acc_reg, item_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add {s}, {s}\n", .{ next_acc, acc_reg, item_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(off_reg);
             try self.emitRelease(item_ptr);
             try self.emitRelease(item_reg);
@@ -12124,7 +12140,7 @@ pub const Codegen = struct {
     fn genSliceIterSum(
         self: *Codegen,
         source: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const elem_ty = sliceElementType(source_ty) orelse return CodegenError.CodegenError;
@@ -12132,45 +12148,45 @@ pub const Codegen = struct {
 
         const slice_reg = try self.genExpr(source, hoisted_allocs);
         const base_ptr = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_ptr, slice_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_ptr, slice_reg }) catch return CodegenError.CodegenError;
         const len_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
 
         const acc_slot = try self.newTmp();
-        self.out.writer().print("    {s} = stack_alloc {}\n", .{ acc_slot, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as {s}\n", .{ acc_slot, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc {}\n", .{ acc_slot, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as {s}\n", .{ acc_slot, typeString(elem_ty) }) catch return CodegenError.CodegenError;
         const idx_slot = try self.newTmp();
-        self.out.writer().print("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
 
         const head_label = try self.newLabel("L_SLICE_SUM_HEAD");
         const body_label = try self.newLabel("L_SLICE_SUM_BODY");
         const done_label = try self.newLabel("L_SLICE_SUM_DONE");
-        self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
         const idx_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
         const at_end = try self.newTmp();
-        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ at_end, idx_reg, len_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ at_end, done_label, body_label }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = eq {s}, {s}\n", .{ at_end, idx_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ at_end, done_label, body_label }) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{at_end}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{at_end}) catch return CodegenError.CodegenError;
         const off_reg = try self.newTmp();
-        self.out.writer().print("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, elem_size }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, elem_size }) catch return CodegenError.CodegenError;
         const item_ptr = try self.newTmp();
-        self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_ptr, off_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_ptr, off_reg }) catch return CodegenError.CodegenError;
         const item_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(elem_ty) }) catch return CodegenError.CodegenError;
         const acc_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ acc_reg, acc_slot, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ acc_reg, acc_slot, typeString(elem_ty) }) catch return CodegenError.CodegenError;
         const next_acc = try self.newTmp();
-        self.out.writer().print("    {s} = add {s}, {s}\n", .{ next_acc, acc_reg, item_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ acc_slot, next_acc, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = add {s}, {s}\n", .{ next_acc, acc_reg, item_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as {s}\n", .{ acc_slot, next_acc, typeString(elem_ty) }) catch return CodegenError.CodegenError;
         const next_idx = try self.newTmp();
-        self.out.writer().print("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
         try self.emitRelease(off_reg);
         try self.emitRelease(item_ptr);
         try self.emitRelease(item_reg);
@@ -12178,13 +12194,13 @@ pub const Codegen = struct {
         try self.emitRelease(next_acc);
         try self.emitRelease(next_idx);
         try self.emitRelease(idx_reg);
-        self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{at_end}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{at_end}) catch return CodegenError.CodegenError;
         try self.emitRelease(idx_reg);
         const result_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ result_reg, acc_slot, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ result_reg, acc_slot, typeString(elem_ty) }) catch return CodegenError.CodegenError;
         if (callArgNeedsRelease(source)) try self.emitRelease(slice_reg);
         try self.emitRelease(base_ptr);
         try self.emitRelease(len_reg);
@@ -12195,7 +12211,7 @@ pub const Codegen = struct {
         self: *Codegen,
         source: *ast.Node,
         mapper: *const ast.ClosureLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const arr = arrayType(source_ty) orelse return CodegenError.CodegenError;
@@ -12210,7 +12226,7 @@ pub const Codegen = struct {
         const base_source_reg = try self.genExpr(source, hoisted_allocs);
         const base_reg = if (source.* == .identifier and self.global_const_bindings.contains(source.identifier)) blk: {
             const addr_reg = try self.newTmp();
-            self.out.writer().print("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
             break :blk addr_reg;
         } else base_source_reg;
         var acc_reg = try self.newTmp();
@@ -12221,12 +12237,12 @@ pub const Codegen = struct {
             const off_reg = try self.newTmp();
             try self.emitIntConst(off_reg, @as(i64, @intCast(i * elem_size)));
             const item_ptr = try self.newTmp();
-            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
             const item_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
             const mapped_reg = try self.genInlineClosureUnary(mapper, item_reg, hoisted_allocs);
             const next_acc = try self.newTmp();
-            self.out.writer().print("    {s} = add {s}, {s}\n", .{ next_acc, acc_reg, mapped_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add {s}, {s}\n", .{ next_acc, acc_reg, mapped_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(off_reg);
             try self.emitRelease(item_ptr);
             try self.emitRelease(item_reg);
@@ -12245,7 +12261,7 @@ pub const Codegen = struct {
         self: *Codegen,
         source: *ast.Node,
         filter_lit: *const ast.ClosureLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const arr = arrayType(source_ty) orelse return CodegenError.CodegenError;
@@ -12259,40 +12275,40 @@ pub const Codegen = struct {
         const base_source_reg = try self.genExpr(source, hoisted_allocs);
         const base_reg = if (source.* == .identifier and self.global_const_bindings.contains(source.identifier)) blk: {
             const addr_reg = try self.newTmp();
-            self.out.writer().print("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
             break :blk addr_reg;
         } else base_source_reg;
         const acc_slot = try self.newTmp();
-        self.out.writer().print("    {s} = stack_alloc {}\n", .{ acc_slot, typeSize(arr.elem) }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as {s}\n", .{ acc_slot, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc {}\n", .{ acc_slot, typeSize(arr.elem) }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as {s}\n", .{ acc_slot, typeString(arr.elem) }) catch return CodegenError.CodegenError;
 
         var i: usize = 0;
         while (i < arr.len) : (i += 1) {
             const off_reg = try self.newTmp();
             try self.emitIntConst(off_reg, @as(i64, @intCast(i * elem_size)));
             const item_ptr = try self.newTmp();
-            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
             const item_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
             const keep_reg = try self.genInlineClosureUnary(filter_lit, item_reg, hoisted_allocs);
             const then_label = try self.newLabel("L_FILTER_KEEP");
             const else_label = try self.newLabel("L_FILTER_SKIP");
             const merge_label = try self.newLabel("L_FILTER_MERGE");
-            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ keep_reg, then_label, else_label }) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{then_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{keep_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ keep_reg, then_label, else_label }) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{then_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{keep_reg}) catch return CodegenError.CodegenError;
             const acc_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ acc_reg, acc_slot, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ acc_reg, acc_slot, typeString(arr.elem) }) catch return CodegenError.CodegenError;
             const next_acc = try self.newTmp();
-            self.out.writer().print("    {s} = add {s}, {s}\n", .{ next_acc, acc_reg, item_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ acc_slot, next_acc, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = add {s}, {s}\n", .{ next_acc, acc_reg, item_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, {s} as {s}\n", .{ acc_slot, next_acc, typeString(arr.elem) }) catch return CodegenError.CodegenError;
             try self.emitRelease(acc_reg);
             try self.emitRelease(next_acc);
-            self.out.writer().print("    jmp {s}\n\n", .{merge_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{keep_reg}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    jmp {s}\n\n", .{merge_label}) catch return CodegenError.CodegenError;
-            self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{merge_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
+            self.outPrint("    !{s}\n", .{keep_reg}) catch return CodegenError.CodegenError;
+            self.outPrint("    jmp {s}\n\n", .{merge_label}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
             try self.emitRelease(off_reg);
             try self.emitRelease(item_ptr);
             try self.emitRelease(item_reg);
@@ -12301,7 +12317,7 @@ pub const Codegen = struct {
         if (callArgNeedsRelease(source)) try self.emitRelease(base_reg);
         if (!std.mem.eql(u8, base_reg, base_source_reg)) try self.emitRelease(base_reg);
         const result_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ result_reg, acc_slot, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ result_reg, acc_slot, typeString(arr.elem) }) catch return CodegenError.CodegenError;
         return result_reg;
     }
 
@@ -12310,7 +12326,7 @@ pub const Codegen = struct {
         source: *ast.Node,
         init_expr: *ast.Node,
         folder: *const ast.ClosureLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const arr = arrayType(source_ty) orelse return CodegenError.CodegenError;
@@ -12320,13 +12336,13 @@ pub const Codegen = struct {
         const base_source_reg = try self.genExpr(source, hoisted_allocs);
         const base_reg = if (source.* == .identifier and self.global_const_bindings.contains(source.identifier)) blk: {
             const addr_reg = try self.newTmp();
-            self.out.writer().print("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = &{s}\n", .{ addr_reg, base_source_reg }) catch return CodegenError.CodegenError;
             break :blk addr_reg;
         } else base_source_reg;
         const init_reg = try self.genExpr(init_expr, hoisted_allocs);
         const acc_slot = try self.newTmp();
-        self.out.writer().print("    {s} = stack_alloc {}\n", .{ acc_slot, typeSize(acc_ty) }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ acc_slot, init_reg, typeString(acc_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc {}\n", .{ acc_slot, typeSize(acc_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as {s}\n", .{ acc_slot, init_reg, typeString(acc_ty) }) catch return CodegenError.CodegenError;
         if (callArgNeedsRelease(init_expr)) try self.emitRelease(init_reg);
 
         var i: usize = 0;
@@ -12334,13 +12350,13 @@ pub const Codegen = struct {
             const off_reg = try self.newTmp();
             try self.emitIntConst(off_reg, @as(i64, @intCast(i * elem_size)));
             const item_ptr = try self.newTmp();
-            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ item_ptr, base_reg, off_reg }) catch return CodegenError.CodegenError;
             const item_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, item_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
             const acc_reg = try self.newTmp();
-            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ acc_reg, acc_slot, typeString(acc_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ acc_reg, acc_slot, typeString(acc_ty) }) catch return CodegenError.CodegenError;
             const next_acc = try self.genInlineClosureBinary(folder, acc_reg, item_reg, hoisted_allocs);
-            self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ acc_slot, next_acc, typeString(acc_ty) }) catch return CodegenError.CodegenError;
+            self.outPrint("    store {s}+0, {s} as {s}\n", .{ acc_slot, next_acc, typeString(acc_ty) }) catch return CodegenError.CodegenError;
             try self.emitRelease(off_reg);
             try self.emitRelease(item_ptr);
             try self.emitRelease(item_reg);
@@ -12351,7 +12367,7 @@ pub const Codegen = struct {
         if (callArgNeedsRelease(source)) try self.emitRelease(base_reg);
         if (!std.mem.eql(u8, base_reg, base_source_reg)) try self.emitRelease(base_reg);
         const result_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ result_reg, acc_slot, typeString(acc_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ result_reg, acc_slot, typeString(acc_ty) }) catch return CodegenError.CodegenError;
         return result_reg;
     }
 
@@ -12359,10 +12375,10 @@ pub const Codegen = struct {
         self: *Codegen,
         lit: *const ast.ClosureLiteral,
         arg_reg: []const u8,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         if (lit.params.len != 1) return CodegenError.CodegenError;
-        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        var saved = std.array_list.Managed(SavedClosureParam).init(self.allocator);
         defer saved.deinit();
         saved.append(.{ .name = lit.params[0].name, .old = self.closure_param_regs.get(lit.params[0].name) }) catch return CodegenError.OutOfMemory;
         self.closure_param_regs.put(lit.params[0].name, arg_reg) catch return CodegenError.OutOfMemory;
@@ -12373,7 +12389,7 @@ pub const Codegen = struct {
     fn genInlineClosureNullary(
         self: *Codegen,
         lit: *const ast.ClosureLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         if (lit.params.len != 0) return CodegenError.CodegenError;
         return try self.genExpr(lit.body, hoisted_allocs);
@@ -12384,10 +12400,10 @@ pub const Codegen = struct {
         lit: *const ast.ClosureLiteral,
         left_reg: []const u8,
         right_reg: []const u8,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         if (lit.params.len != 2) return CodegenError.CodegenError;
-        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        var saved = std.array_list.Managed(SavedClosureParam).init(self.allocator);
         defer saved.deinit();
         saved.append(.{ .name = lit.params[0].name, .old = self.closure_param_regs.get(lit.params[0].name) }) catch return CodegenError.OutOfMemory;
         saved.append(.{ .name = lit.params[1].name, .old = self.closure_param_regs.get(lit.params[1].name) }) catch return CodegenError.OutOfMemory;
@@ -12399,14 +12415,14 @@ pub const Codegen = struct {
 
     fn genVecDequeRotateLeft(self: *Codegen, deque_reg: []const u8, count_reg: []const u8) CodegenError![]const u8 {
         const len_reg = try self.newTmp();
-        self.out.writer().print("    EXPAND VEC_DEQUE_LEN {s}, {s}\n", .{ len_reg, deque_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND VEC_DEQUE_LEN {s}, {s}\n", .{ len_reg, deque_reg }) catch return CodegenError.CodegenError;
         const idx_slot = try self.newTmp();
-        self.out.writer().print("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
         const pop_slot = try self.newTmp();
-        self.out.writer().print("    {s} = stack_alloc 8\n", .{pop_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc 8\n", .{pop_slot}) catch return CodegenError.CodegenError;
         const empty_reg = try self.newTmp();
-        self.out.writer().print("    {s} = eq {s}, 0\n", .{ empty_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = eq {s}, 0\n", .{ empty_reg, len_reg }) catch return CodegenError.CodegenError;
 
         const run_label = try self.newLabel("L_VEC_DEQUE_ROTATE_RUN");
         const empty_label = try self.newLabel("L_VEC_DEQUE_ROTATE_EMPTY");
@@ -12417,61 +12433,61 @@ pub const Codegen = struct {
         const done_label = try self.newLabel("L_VEC_DEQUE_ROTATE_DONE");
         const end_label = try self.newLabel("L_VEC_DEQUE_ROTATE_END");
 
-        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ empty_reg, empty_label, run_label }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ empty_reg, empty_label, run_label }) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{empty_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{empty_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{empty_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{empty_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{run_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{empty_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{run_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{empty_reg}) catch return CodegenError.CodegenError;
         const shift_reg = try self.newTmp();
-        self.out.writer().print("    {s} = urem {s}, {s}\n", .{ shift_reg, count_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = urem {s}, {s}\n", .{ shift_reg, count_reg, len_reg }) catch return CodegenError.CodegenError;
         const no_move_reg = try self.newTmp();
-        self.out.writer().print("    {s} = eq {s}, 0\n", .{ no_move_reg, shift_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ no_move_reg, no_move_label, init_label }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = eq {s}, 0\n", .{ no_move_reg, shift_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ no_move_reg, no_move_label, init_label }) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{no_move_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{no_move_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{shift_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{no_move_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{no_move_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{shift_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{init_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{no_move_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{init_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{no_move_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
         const idx_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
         const done_reg = try self.newTmp();
-        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ done_reg, idx_reg, shift_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ done_reg, done_label, body_label }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = eq {s}, {s}\n", .{ done_reg, idx_reg, shift_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ done_reg, done_label, body_label }) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
         const pop_ok = try self.newTmp();
         const popped = try self.newTmp();
-        self.out.writer().print("    {s} = call @sa_vec_deque_try_pop_front(&{s}, &{s})\n", .{ pop_ok, deque_reg, pop_slot }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ popped, pop_slot }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{pop_ok}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ deque_reg, popped }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{popped}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = call @sa_vec_deque_try_pop_front(&{s}, &{s})\n", .{ pop_ok, deque_reg, pop_slot }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as u64\n", .{ popped, pop_slot }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{pop_ok}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ deque_reg, popped }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{popped}) catch return CodegenError.CodegenError;
         const next_idx = try self.newTmp();
-        self.out.writer().print("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{next_idx}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{idx_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{next_idx}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{idx_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{idx_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{shift_reg}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{done_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{idx_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{shift_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-        self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{len_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{len_reg}) catch return CodegenError.CodegenError;
         const reg = try self.newTmp();
         try self.emitIntConst(reg, 0);
         return reg;
@@ -12481,46 +12497,46 @@ pub const Codegen = struct {
         self: *Codegen,
         source: *ast.Node,
         mapper: ?*const ast.ClosureLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const elem_ty = vecElementType(source_ty) orelse return CodegenError.CodegenError;
         const vec_reg = try self.genExpr(source, hoisted_allocs);
         const len_reg = try self.newTmp();
-        self.out.writer().print("    {s} = call @sa_vec_len(&{s})\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = call @sa_vec_len(&{s})\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
         const data_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
         const sum_ty = if (mapper) |lit| self.tc.expr_types.get(lit.body) orelse return CodegenError.CodegenError else elem_ty;
         const acc_slot = try self.newTmp();
-        self.out.writer().print("    {s} = stack_alloc 8\n", .{acc_slot}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as {s}\n", .{ acc_slot, typeString(sum_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc 8\n", .{acc_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as {s}\n", .{ acc_slot, typeString(sum_ty) }) catch return CodegenError.CodegenError;
         const idx_slot = try self.newTmp();
-        self.out.writer().print("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
         const head_label = try self.newLabel("L_VEC_SUM_HEAD");
         const body_label = try self.newLabel("L_VEC_SUM_BODY");
         const end_label = try self.newLabel("L_VEC_SUM_END");
-        self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
         const idx_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
         const more_reg = try self.newTmp();
-        self.out.writer().print("    {s} = ult {s}, {s}\n", .{ more_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ more_reg, body_label, end_label }) catch return CodegenError.CodegenError;
-        self.out.writer().print("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ult {s}, {s}\n", .{ more_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ more_reg, body_label, end_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
         const acc_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ acc_reg, acc_slot, typeString(sum_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ acc_reg, acc_slot, typeString(sum_ty) }) catch return CodegenError.CodegenError;
         const off_reg = try self.newTmp();
-        self.out.writer().print("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
         const slot_reg = try self.newTmp();
-        self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, off_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, off_reg }) catch return CodegenError.CodegenError;
         const item_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ item_reg, slot_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, slot_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
         const mapped_reg = if (mapper) |lit| try self.genInlineClosureUnary(lit, item_reg, hoisted_allocs) else item_reg;
         const next_acc = try self.newTmp();
-        self.out.writer().print("    {s} = add {s}, {s}\n", .{ next_acc, acc_reg, mapped_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ acc_slot, next_acc, typeString(sum_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = add {s}, {s}\n", .{ next_acc, acc_reg, mapped_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as {s}\n", .{ acc_slot, next_acc, typeString(sum_ty) }) catch return CodegenError.CodegenError;
         try self.emitRelease(off_reg);
         try self.emitRelease(slot_reg);
         try self.emitRelease(item_reg);
@@ -12528,17 +12544,17 @@ pub const Codegen = struct {
         try self.emitRelease(next_acc);
         if (mapper != null and !std.mem.eql(u8, mapped_reg, item_reg)) try self.emitRelease(mapped_reg);
         const next_idx = try self.newTmp();
-        self.out.writer().print("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
         try self.emitRelease(next_idx);
         try self.emitRelease(idx_reg);
-        self.out.writer().print("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-        self.out.writer().print("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
         try self.emitRelease(len_reg);
         try self.emitRelease(data_reg);
         const result_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ result_reg, acc_slot, typeString(sum_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ result_reg, acc_slot, typeString(sum_ty) }) catch return CodegenError.CodegenError;
         if (callArgNeedsRelease(source)) try self.emitRelease(vec_reg);
         return result_reg;
     }
@@ -12565,17 +12581,17 @@ pub const Codegen = struct {
         self: *Codegen,
         lit: *const ast.ClosureLiteral,
         call: *const ast.CallExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         if (lit.params.len != call.args.len) return CodegenError.CodegenError;
 
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
         for (call.args) |arg| {
             arg_regs.append(try self.genExpr(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
         }
 
-        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        var saved = std.array_list.Managed(SavedClosureParam).init(self.allocator);
         defer saved.deinit();
         for (lit.params, arg_regs.items) |param, arg_reg| {
             saved.append(.{ .name = param.name, .old = self.closure_param_regs.get(param.name) }) catch return CodegenError.OutOfMemory;
@@ -12586,7 +12602,7 @@ pub const Codegen = struct {
         return try self.genExpr(lit.body, hoisted_allocs);
     }
 
-    fn genExpr(self: *Codegen, expr: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genExpr(self: *Codegen, expr: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         @setEvalBranchQuota(10000);
         switch (expr.*) {
             .literal => |lit| {
@@ -12595,7 +12611,7 @@ pub const Codegen = struct {
             .identifier => |name| {
                 if (lowering_rules.isOptionNoneName(name)) {
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     return reg;
                 }
                 if (self.thread_capture_regs.get(name)) |capture_reg| {
@@ -12606,7 +12622,7 @@ pub const Codegen = struct {
                     if (self.assigned_value_slots.contains(resolved_name)) {
                         const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                         const reg = try self.newTmp();
-                        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
                         return reg;
                     }
                     if (self.addressable_bindings.contains(resolved_name)) {
@@ -12618,13 +12634,13 @@ pub const Codegen = struct {
                         if (self.stack_alloc_bindings.contains(resolved_name)) {
                             const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                             const reg = try self.newTmp();
-                            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
                             return reg;
                         }
                         const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                         if (expr_ty.* == .primitive) {
                             const reg = try self.newTmp();
-                            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
                             return reg;
                         }
                         return resolved_name;
@@ -12640,13 +12656,13 @@ pub const Codegen = struct {
                 if (self.bindingStorageAddress(name)) |address| {
                     const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                     const reg = try self.newTmp();
-                    self.out.writer().print("    {s} = load {s} as {s}\n", .{ reg, address, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s} as {s}\n", .{ reg, address, typeString(expr_ty) }) catch return CodegenError.CodegenError;
                     return reg;
                 }
                 if (self.assigned_value_slots.contains(name)) {
                     const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                     const reg = try self.newTmp();
-                    self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
                     return reg;
                 }
                 if (self.tc.funcs.contains(name)) {
@@ -12655,7 +12671,7 @@ pub const Codegen = struct {
                         const reg = try self.newTmp();
                         const vt_name = try self.fnPtrVTableName(name);
                         defer self.allocator.free(vt_name);
-                        self.out.writer().print("    {s} = &{s}\n", .{ reg, vt_name }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = &{s}\n", .{ reg, vt_name }) catch return CodegenError.CodegenError;
                         return reg;
                     }
                 }
@@ -12672,7 +12688,7 @@ pub const Codegen = struct {
                     if (expr_ty) |resolved_ty| {
                         if (resolved_ty.* == .primitive) {
                             const reg = try self.newTmp();
-                            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, name, typeString(resolved_ty) }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, name, typeString(resolved_ty) }) catch return CodegenError.CodegenError;
                             return reg;
                         }
                     }
@@ -12701,7 +12717,7 @@ pub const Codegen = struct {
                 const r = try self.genExpr(bin.right, hoisted_allocs);
                 const reg = try self.newTmp();
                 const op = binaryOpName(bin.op, left_ty, right_ty) orelse return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ reg, op, l, r }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s} {s}, {s}\n", .{ reg, op, l, r }) catch return CodegenError.CodegenError;
                 if (self.exprResultRegNeedsRelease(bin.left)) try self.emitRelease(l);
                 if (self.exprResultRegNeedsRelease(bin.right)) try self.emitRelease(r);
                 return reg;
@@ -12720,7 +12736,7 @@ pub const Codegen = struct {
                         const projection = try self.genFieldAddress(&borrow.expr.field_expr, hoisted_allocs);
                         try self.rememberAddressProjectionSource(projection);
                         const owner = try self.newTmp();
-                        self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ owner, projection.ptr }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+0 as ptr\n", .{ owner, projection.ptr }) catch return CodegenError.CodegenError;
                         try self.emitRelease(projection.ptr);
                         return owner;
                     }
@@ -12738,12 +12754,12 @@ pub const Codegen = struct {
                             const resolved_name = self.resolveBindingName(borrowed_name);
                             if (self.assigned_value_slots.contains(resolved_name)) {
                                 const addr = try self.newTmp();
-                                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ addr, resolved_name }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ addr, resolved_name }) catch return CodegenError.CodegenError;
                                 return addr;
                             }
                             if (self.addressable_bindings.contains(borrowed_name) or self.addressable_bindings.contains(resolved_name)) {
                                 const addr = try self.newTmp();
-                                self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, resolved_name }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = ptr_add {s}, 0\n", .{ addr, resolved_name }) catch return CodegenError.CodegenError;
                                 return addr;
                             }
                         }
@@ -12751,7 +12767,7 @@ pub const Codegen = struct {
                     .deref_borrow_or_pointer => {
                         const source = try self.genExpr(borrow.expr.deref_expr.expr, hoisted_allocs);
                         const addr = try self.newTmp();
-                        self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
                         const temp_plan = lowering_rules.planBorrowAddressTemps(exprResultNeedsRelease(borrow.expr.deref_expr.expr), false);
                         if (temp_plan.track_primary_temp) {
                             self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
@@ -12763,7 +12779,7 @@ pub const Codegen = struct {
                         const projection = try self.genFieldAddress(&borrow.expr.field_expr, hoisted_allocs);
                         if (lowering_rules.structFieldIsPointerBacked(field_ty)) {
                             const loaded = try self.newTmp();
-                            self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ loaded, projection.ptr }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = load {s}+0 as ptr\n", .{ loaded, projection.ptr }) catch return CodegenError.CodegenError;
                             try self.emitRelease(projection.ptr);
                             if (projection.source_temp) |source_temp| {
                                 self.borrow_source_temps.put(loaded, source_temp) catch return CodegenError.OutOfMemory;
@@ -12783,7 +12799,7 @@ pub const Codegen = struct {
                         if (self.macro_inline_depth > 0 and boxInnerType(source_ty) != null) {
                             const source = try self.genExpr(borrow.expr.deref_expr.expr, hoisted_allocs);
                             const addr = try self.newTmp();
-                            self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
                             const temp_plan = lowering_rules.planBorrowAddressTemps(exprResultNeedsRelease(borrow.expr.deref_expr.expr), false);
                             if (temp_plan.track_primary_temp) {
                                 self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
@@ -12803,11 +12819,11 @@ pub const Codegen = struct {
                                 const data_reg = try self.newTmp();
                                 const vtable_reg = try self.newTmp();
                                 const fat_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = load {s}+Dyn_data as ptr\n", .{ data_reg, inner }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = load {s}+Dyn_vtable as ptr\n", .{ vtable_reg, inner }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+Dyn_vtable, {s} as ptr\n", .{ fat_reg, vtable_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+Dyn_data as ptr\n", .{ data_reg, inner }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+Dyn_vtable as ptr\n", .{ vtable_reg, inner }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+Dyn_vtable, {s} as ptr\n", .{ fat_reg, vtable_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(data_reg);
                                 try self.emitRelease(vtable_reg);
                                 return fat_reg;
@@ -12819,7 +12835,7 @@ pub const Codegen = struct {
                     }
                 }
                 const reg = try self.newTmp();
-                self.out.writer().print("    {s} = &{s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = &{s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
                 if (exprResultNeedsRelease(borrow.expr)) {
                     self.borrow_source_temps.put(reg, inner) catch return CodegenError.OutOfMemory;
                 }
@@ -12835,12 +12851,12 @@ pub const Codegen = struct {
                 const reg = try self.newTmp();
                 const inner_ty = self.resolvedTypeForExpr(deref.expr) orelse return CodegenError.CodegenError;
                 if (rcInnerType(inner_ty) != null) {
-                    self.out.writer().print("    EXPAND RC_GET {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND RC_GET {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
                     if (exprResultNeedsRelease(deref.expr)) try self.emitRelease(inner);
                     return reg;
                 }
                 if (arcInnerType(inner_ty) != null) {
-                    self.out.writer().print("    EXPAND ARC_GET {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND ARC_GET {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
                     if (exprResultNeedsRelease(deref.expr)) try self.emitRelease(inner);
                     return reg;
                 }
@@ -12848,7 +12864,7 @@ pub const Codegen = struct {
                     if (dynTraitName(box_inner) != null) return inner;
                 }
                 const deref_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, inner, typeString(deref_ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, inner, typeString(deref_ty) }) catch return CodegenError.CodegenError;
                 if (deref.expr.* != .identifier and
                     (self.refcell_borrow_handles.contains(inner) or self.mutex_guard_handles.contains(inner) or self.rwlock_guard_handles.contains(inner)))
                 {
@@ -12895,14 +12911,14 @@ pub const Codegen = struct {
                     src_reg = copied;
                 }
                 const reg = try self.newTmp();
-                self.out.writer().print("    {s} = {s} as {s}\n", .{ reg, src_reg, typeString(cast.ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = {s} as {s}\n", .{ reg, src_reg, typeString(cast.ty) }) catch return CodegenError.CodegenError;
                 return reg;
             },
             .field_expr => |field| {
                 if (field.expr.* == .literal and field.expr.literal == .string_val and std.mem.eql(u8, field.field_name, "len")) {
                     const inner = try self.genExpr(field.expr, hoisted_allocs);
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND STRING_LEN {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND STRING_LEN {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
                     return reg;
                 }
                 const inner = try self.genExpr(field.expr, hoisted_allocs);
@@ -12915,7 +12931,7 @@ pub const Codegen = struct {
                 if (curr_ty.* == .tuple) {
                     const index = std.fmt.parseInt(usize, field.field_name, 10) catch return CodegenError.CodegenError;
                     const layout = tupleFieldLayout(curr_ty.tuple, index) orelse return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
                     if (self.fieldBaseResultNeedsRelease(field.expr, inner)) try self.emitRelease(inner);
                     return reg;
                 }
@@ -12965,12 +12981,12 @@ pub const Codegen = struct {
                 const layout = self.fieldLayoutForType(curr_ty, field.field_name) orelse return CodegenError.CodegenError;
                 for (struct_decl.fields) |decl_field| {
                     if (std.mem.eql(u8, decl_field.name, field.field_name) and manuallyDropInnerType(decl_field.ty) != null) {
-                        self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ reg, inner, layout.offset }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = ptr_add {s}, {}\n", .{ reg, inner, layout.offset }) catch return CodegenError.CodegenError;
                         if (self.fieldBaseResultNeedsRelease(field.expr, inner)) try self.emitRelease(inner);
                         return reg;
                     }
                 }
-                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
                 if (self.fieldBaseResultNeedsRelease(field.expr, inner)) try self.emitRelease(inner);
                 return reg;
             },
@@ -13024,7 +13040,7 @@ pub const Codegen = struct {
                 const plan = lowering_rules.planAwaitFutureWithReadiness(aw.expr, future_ty, self.current_async_return_ty, &self.future_readiness);
                 if (self.current_async and plan.pending_return_if_async) {
                     try self.emitAwaitPendingCleanups(expr);
-                    self.out.writer().print("    return {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    return {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
                     self.async_pending_return_emitted = true;
                     return future_reg;
                 }
@@ -13033,9 +13049,9 @@ pub const Codegen = struct {
                     const ctx = try self.newTmp();
                     const poll_reg = try self.newTmp();
                     const out_reg = try self.newTmp();
-                    self.out.writer().print("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND FUTURE_POLL {s}, {s}, {s}\n", .{ poll_reg, future_obj, ctx }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND POLL_VALUE {s}, {s}\n", .{ out_reg, poll_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND FUTURE_POLL {s}, {s}, {s}\n", .{ poll_reg, future_obj, ctx }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND POLL_VALUE {s}, {s}\n", .{ out_reg, poll_reg }) catch return CodegenError.CodegenError;
                     try self.emitRelease(poll_reg);
                     try self.emitRelease(ctx);
                     try self.emitRelease(future_obj);
@@ -13046,29 +13062,29 @@ pub const Codegen = struct {
                     const pending_reg = try self.newTmp();
                     const ready_label = try self.newLabel("L_AWAIT_READY");
                     const pending_label = try self.newLabel("L_AWAIT_PENDING");
-                    self.out.writer().print("    {s} = load {s}+ReadyFuture_state as u64\n", .{ state_reg, future_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = eq {s}, 0\n", .{ pending_reg, state_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ pending_reg, pending_label, ready_label }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{pending_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s}+ReadyFuture_state as u64\n", .{ state_reg, future_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = eq {s}, 0\n", .{ pending_reg, state_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ pending_reg, pending_label, ready_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{pending_label}) catch return CodegenError.CodegenError;
                     try self.emitAwaitPendingCleanups(expr);
-                    self.out.writer().print("    return {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{ready_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    return {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{ready_label}) catch return CodegenError.CodegenError;
                     try self.emitRelease(state_reg);
                     try self.emitRelease(pending_reg);
                     const out_reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND FUTURE_READY_STATE_INTO_INNER {s}, {s}\n", .{ out_reg, future_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND FUTURE_READY_STATE_INTO_INNER {s}, {s}\n", .{ out_reg, future_reg }) catch return CodegenError.CodegenError;
                     try self.emitRelease(future_reg);
                     return out_reg;
                 }
                 if (!plan.ready_state_inner) return CodegenError.CodegenError;
                 const out_reg = try self.newTmp();
-                self.out.writer().print("    EXPAND FUTURE_READY_STATE_INTO_INNER {s}, {s}\n", .{ out_reg, future_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND FUTURE_READY_STATE_INTO_INNER {s}, {s}\n", .{ out_reg, future_reg }) catch return CodegenError.CodegenError;
                 try self.emitRelease(future_reg);
                 return out_reg;
             },
             .closure_literal => {
                 const reg = try self.newTmp();
-                self.out.writer().print("    {s} = 0\n", .{reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = 0\n", .{reg}) catch return CodegenError.CodegenError;
                 return reg;
             },
             .index_expr => |idx| {
@@ -13080,14 +13096,14 @@ pub const Codegen = struct {
                     const found = try self.newTmp();
                     const hit_label = try self.newLabel("L_HASHMAP_INDEX_HIT");
                     const miss_label = try self.newLabel("L_HASHMAP_INDEX_MISS");
-                    self.out.writer().print("    EXPAND MAP_GET {s}, {s}, {s}\n", .{ value_ptr, map_reg, key_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = ne {s}, 0\n", .{ found, value_ptr }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ found, hit_label, miss_label }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    panic(404)\n\n", .{}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND MAP_GET {s}, {s}, {s}\n", .{ value_ptr, map_reg, key_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = ne {s}, 0\n", .{ found, value_ptr }) catch return CodegenError.CodegenError;
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ found, hit_label, miss_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
+                    self.outPrint("    panic(404)\n\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
                     const value_ty = self.resolvedTypeForExpr(expr) orelse hm.value;
                     const reg = try self.genLoadSlotValue(value_ptr, value_ty);
                     try self.emitRelease(value_ptr);
@@ -13101,15 +13117,15 @@ pub const Codegen = struct {
                     const found = try self.newTmp();
                     const hit_label = try self.newLabel("L_BTREE_MAP_INDEX_HIT");
                     const miss_label = try self.newLabel("L_BTREE_MAP_INDEX_MISS");
-                    self.out.writer().print("    EXPAND BTREE_MAP_TRY_GET {s}, {s}, {s}, {s}\n", .{ found, raw_value, map_reg, key_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ found, hit_label, miss_label }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    panic(404)\n\n", .{}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND BTREE_MAP_TRY_GET {s}, {s}, {s}, {s}\n", .{ found, raw_value, map_reg, key_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ found, hit_label, miss_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
+                    self.outPrint("    panic(404)\n\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
                     const reg = try self.newTmp();
-                    self.out.writer().print("    {s} = {s} as {s}\n", .{ reg, raw_value, typeString(bm.value) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = {s} as {s}\n", .{ reg, raw_value, typeString(bm.value) }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(idx.index)) try self.emitRelease(key_reg);
                     return reg;
                 }
@@ -13120,7 +13136,7 @@ pub const Codegen = struct {
                     const deque_reg = try self.genExpr(idx.target, hoisted_allocs);
                     const index_reg = try self.genExpr(idx.index, hoisted_allocs);
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND VEC_DEQUE_GET {s}, {s}, {s}\n", .{ reg, deque_reg, index_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND VEC_DEQUE_GET {s}, {s}, {s}\n", .{ reg, deque_reg, index_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
                     return reg;
                 }
@@ -13156,21 +13172,21 @@ pub const Codegen = struct {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
                 }
                 if (std.mem.eql(u8, call.func_name, "None") and call.associated_target == null) {
                     if (call.args.len != 0) return CodegenError.CodegenError;
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     return reg;
                 }
                 if (lowering_rules.isResultOkCall(call)) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
                 }
@@ -13178,14 +13194,14 @@ pub const Codegen = struct {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
                 }
                 if (lowering_rules.isPtrNullCall(call)) {
                     if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND PTR_NULL {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND PTR_NULL {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     return reg;
                 }
                 if (try self.genPollRuntimeCall(call, hoisted_allocs)) |poll_reg| return poll_reg;
@@ -13199,7 +13215,7 @@ pub const Codegen = struct {
                     const read_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                     const reg = try self.newTmp();
                     const macro_name = ptrReadVolatileMacroName(read_ty) orelse return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, reg, ptr_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND {s} {s}, {s}\n", .{ macro_name, reg, ptr_reg }) catch return CodegenError.CodegenError;
                     if (call.args[0].* == .borrow_expr) {
                         const borrowed = call.args[0].borrow_expr.expr;
                         const is_direct_slot = borrowed.* == .identifier and std.mem.eql(u8, ptr_reg, borrowed.identifier);
@@ -13212,13 +13228,13 @@ pub const Codegen = struct {
                     if (std.mem.eql(u8, target, "Option") and std.mem.eql(u8, call.func_name, "None")) {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
                     if (is_ptr_target and std.mem.eql(u8, call.func_name, "null")) {
                         if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND PTR_NULL {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND PTR_NULL {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
                     if (is_ptr_target and std.mem.eql(u8, call.func_name, "read_volatile")) {
@@ -13227,7 +13243,7 @@ pub const Codegen = struct {
                         const read_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                         const reg = try self.newTmp();
                         const macro_name = ptrReadVolatileMacroName(read_ty) orelse return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, reg, ptr_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND {s} {s}, {s}\n", .{ macro_name, reg, ptr_reg }) catch return CodegenError.CodegenError;
                         if (call.args[0].* == .borrow_expr) {
                             const borrowed = call.args[0].borrow_expr.expr;
                             const is_direct_slot = borrowed.* == .identifier and std.mem.eql(u8, ptr_reg, borrowed.identifier);
@@ -13244,8 +13260,8 @@ pub const Codegen = struct {
                     if (lowering_rules.isMemForgetCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                        self.out.writer().print("    EXPAND MEM_FORGET_U64 {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND MEM_FORGET_U64 {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
                         if (rootIdentifier(call.args[0])) |name| {
                             self.consumed_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
                         }
@@ -13256,8 +13272,8 @@ pub const Codegen = struct {
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    {s} = stack_alloc ManuallyDropU64_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND MANUALLY_DROP_U64_NEW {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = stack_alloc ManuallyDropU64_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND MANUALLY_DROP_U64_NEW {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
                     }
@@ -13265,7 +13281,7 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const slot_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND MANUALLY_DROP_U64_INTO_INNER {s}, {s}\n", .{ reg, slot_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND MANUALLY_DROP_U64_INTO_INNER {s}, {s}\n", .{ reg, slot_reg }) catch return CodegenError.CodegenError;
                         if (call.args[0].* == .identifier) {
                             self.consumed_bindings.put(call.args[0].identifier, {}) catch return CodegenError.OutOfMemory;
                         }
@@ -13276,23 +13292,23 @@ pub const Codegen = struct {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const chan = try self.newTmp();
                         const tuple = try self.newTmp();
-                        self.out.writer().print("    EXPAND MPSC_NEW {s}, 1024\n", .{chan}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = alloc 16\n", .{tuple}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ tuple, chan }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    store {s}+8, {s} as ptr\n", .{ tuple, chan }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND MPSC_NEW {s}, 1024\n", .{chan}) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = alloc 16\n", .{tuple}) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}+0, {s} as ptr\n", .{ tuple, chan }) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}+8, {s} as ptr\n", .{ tuple, chan }) catch return CodegenError.CodegenError;
                         return tuple;
                     }
                     if (lowering_rules.isThreadSpawnCall(call)) {
                         const helper = self.thread_spawn_helpers.get(expr) orelse return CodegenError.CodegenError;
                         const slot = try self.newTmp();
-                        self.out.writer().print("    {s} = alloc {}\n", .{ slot, helper.slot_size }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    store {s}+0, 0 as i32\n", .{slot}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    store {s}+8, 0 as {s}\n", .{ slot, typeString(helper.ret_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = alloc {}\n", .{ slot, helper.slot_size }) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}+0, 0 as i32\n", .{slot}) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}+8, 0 as {s}\n", .{ slot, typeString(helper.ret_ty) }) catch return CodegenError.CodegenError;
                         if (helper.inline_join) {
                             const value_reg = try self.genExpr(helper.closure.body, hoisted_allocs);
-                            self.out.writer().print("    store {s}+8, {s} as {s}\n", .{ slot, value_reg, typeString(helper.ret_ty) }) catch return CodegenError.CodegenError;
+                            self.outPrint("    store {s}+8, {s} as {s}\n", .{ slot, value_reg, typeString(helper.ret_ty) }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(helper.closure.body)) try self.emitRelease(value_reg);
-                            self.out.writer().print("    store {s}+0, -1 as i32\n", .{slot}) catch return CodegenError.CodegenError;
+                            self.outPrint("    store {s}+0, -1 as i32\n", .{slot}) catch return CodegenError.CodegenError;
                             self.inline_thread_handles.put(slot, {}) catch return CodegenError.OutOfMemory;
                             return slot;
                         }
@@ -13308,17 +13324,17 @@ pub const Codegen = struct {
                             // Store keeps a plain value write; emitForgetMovedValue
                             // then emits a SAB-style consume (`^name`) so branch
                             // merges agree when the else path also moves the local.
-                            self.out.writer().print("    store {s}+{}, {s} as ptr\n", .{ slot, capture.offset, capture_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    store {s}+{}, {s} as ptr\n", .{ slot, capture.offset, capture_reg }) catch return CodegenError.CodegenError;
                             if (capture.is_noncopy_payload) try self.emitForgetMovedValue(capture_reg);
                         }
-                        self.out.writer().print("    call @{s}(*{s})\n", .{ helper.spawn_name, slot }) catch return CodegenError.CodegenError;
+                        self.outPrint("    call @{s}(*{s})\n", .{ helper.spawn_name, slot }) catch return CodegenError.CodegenError;
                         return slot;
                     }
                     if (lowering_rules.isBoxNewCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND BOX_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND BOX_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
                         return reg;
                     }
@@ -13326,7 +13342,7 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const box_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND BOX_INTO_RAW {s}, {s}\n", .{ reg, box_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND BOX_INTO_RAW {s}, {s}\n", .{ reg, box_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(box_reg);
                         return reg;
                     }
@@ -13334,7 +13350,7 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const raw_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND BOX_FROM_RAW {s}, {s}\n", .{ reg, raw_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND BOX_FROM_RAW {s}, {s}\n", .{ reg, raw_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(raw_reg);
                         return reg;
                     }
@@ -13342,7 +13358,7 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND RC_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RC_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
                         return reg;
                     }
@@ -13350,7 +13366,7 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND ARC_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND ARC_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
                         return reg;
                     }
@@ -13359,8 +13375,8 @@ pub const Codegen = struct {
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    {s} = stack_alloc AtomicI32_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND ATOMIC_I32_INIT {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = stack_alloc AtomicI32_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND ATOMIC_I32_INIT {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
                     }
@@ -13369,8 +13385,8 @@ pub const Codegen = struct {
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    {s} = stack_alloc AtomicUsize_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND ATOMIC_USIZE_INIT {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = stack_alloc AtomicUsize_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND ATOMIC_USIZE_INIT {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
                     }
@@ -13379,8 +13395,8 @@ pub const Codegen = struct {
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    {s} = stack_alloc AtomicPtr_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND ATOMIC_PTR_INIT {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = stack_alloc AtomicPtr_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND ATOMIC_PTR_INIT {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
                     }
@@ -13389,8 +13405,8 @@ pub const Codegen = struct {
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    {s} = stack_alloc Cell_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND CELL_SET {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = stack_alloc Cell_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND CELL_SET {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
                     }
@@ -13398,7 +13414,7 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND REFCELL_U64_NEW {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND REFCELL_U64_NEW {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
                     }
@@ -13408,7 +13424,7 @@ pub const Codegen = struct {
                         if (!isI32LikeType(value_ty)) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND MUTEX_NEW_I32 {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND MUTEX_NEW_I32 {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
                     }
@@ -13418,7 +13434,7 @@ pub const Codegen = struct {
                         if (!isI32LikeType(value_ty)) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND RWLOCK_NEW_I32 {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RWLOCK_NEW_I32 {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
                     }
@@ -13434,21 +13450,21 @@ pub const Codegen = struct {
                         const ok_label = try self.newLabel("L_FILE_OPEN_OK");
                         const err_label = try self.newLabel("L_FILE_OPEN_ERR");
                         const end_label = try self.newLabel("L_FILE_OPEN_END");
-                        self.out.writer().print("    EXPAND FS_OPEN_READ {s}, {s}, {s}, {s}\n", .{ status_reg, file_reg, path_regs.ptr_reg, path_regs.len_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = eq {s}, SA_FS_OK\n", .{ ok_reg, status_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, file_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND FS_OPEN_READ {s}, {s}, {s}, {s}\n", .{ status_reg, file_reg, path_regs.ptr_reg, path_regs.len_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = eq {s}, SA_FS_OK\n", .{ ok_reg, status_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, file_reg }) catch return CodegenError.CodegenError;
                         // These branch-local temporaries must be consumed on both
                         // paths. Do not route through emitter cleanup tracking:
                         // it is intentionally shared while both arms are emitted.
-                        self.out.writer().print("    !{s}\n    !{s}\n", .{ status_reg, file_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, status_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    !{s}\n    !{s}\n", .{ status_reg, file_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n    !{s}\n", .{ status_reg, file_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, status_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n    !{s}\n", .{ status_reg, file_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                         try self.emitRelease(ok_reg);
                         try self.releaseStringLikePathRegs(path_regs);
                         self.file_open_results.put(result_reg, .{}) catch return CodegenError.OutOfMemory;
@@ -13466,20 +13482,20 @@ pub const Codegen = struct {
                         const ok_label = try self.newLabel("L_PATH_METADATA_OK");
                         const err_label = try self.newLabel("L_PATH_METADATA_ERR");
                         const end_label = try self.newLabel("L_PATH_METADATA_END");
-                        self.out.writer().print("    EXPAND FS_METADATA {s}, {s}, {s}, {s}\n", .{ status_reg, meta_reg, path_regs.ptr_reg, path_regs.len_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = eq {s}, SA_FS_OK\n", .{ ok_reg, status_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, meta_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND FS_METADATA {s}, {s}, {s}, {s}\n", .{ status_reg, meta_reg, path_regs.ptr_reg, path_regs.len_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = eq {s}, SA_FS_OK\n", .{ ok_reg, status_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, meta_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(status_reg);
                         try self.emitRelease(meta_reg);
-                        self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, status_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, status_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(status_reg);
                         try self.emitRelease(meta_reg);
-                        self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                         try self.emitRelease(ok_reg);
                         try self.releaseStringLikePathRegs(path_regs);
                         self.metadata_open_results.put(result_reg, .{}) catch return CodegenError.OutOfMemory;
@@ -13488,10 +13504,10 @@ pub const Codegen = struct {
                     if (std.mem.eql(u8, target, "VecDeque") and std.mem.eql(u8, call.func_name, "from")) {
                         if (call.args.len != 1 or call.args[0].* != .array_literal) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND VEC_DEQUE_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND VEC_DEQUE_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         for (call.args[0].array_literal.elements) |elem| {
                             const elem_reg = try self.genExpr(elem, hoisted_allocs);
-                            self.out.writer().print("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ reg, elem_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ reg, elem_reg }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(elem)) try self.emitRelease(elem_reg);
                         }
                         return reg;
@@ -13499,47 +13515,47 @@ pub const Codegen = struct {
                     if (std.mem.eql(u8, target, "VecDeque") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND VEC_DEQUE_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND VEC_DEQUE_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
                     if (std.mem.eql(u8, target, "HashMap") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND MAP_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND MAP_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
                     if (std.mem.eql(u8, target, "BTreeMap") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND BTREE_MAP_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND BTREE_MAP_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
                     if (std.mem.eql(u8, target, "HashSet") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND SET_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND SET_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
                     if (std.mem.eql(u8, target, "BTreeSet") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND BTREE_SET_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND BTREE_SET_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
                     if (std.mem.eql(u8, target, "Vec") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND VEC_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND VEC_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
                     const method_key = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ target, call.func_name });
                     defer self.allocator.free(method_key);
                     if (self.tc.funcs.contains(method_key)) {
-                        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_regs.deinit();
-                        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                         defer arg_release_regs.deinit();
-                        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_consume_regs.deinit();
                         const maybe_func = self.tc.funcs.get(method_key);
                         for (call.args, 0..) |arg, i| {
@@ -13564,26 +13580,26 @@ pub const Codegen = struct {
                         const reg = try self.newTmp();
                         const lowered_method = try self.loweredFuncSymbol(method_key);
                         defer self.allocator.free(lowered_method);
-                        self.out.writer().print("    {s} = call @{s}(", .{ reg, lowered_method }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = call @{s}(", .{ reg, lowered_method }) catch return CodegenError.CodegenError;
                         for (arg_regs.items, 0..) |arg_reg, i| {
-                            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
                         }
-                        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                        self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
                         try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, null);
                         return reg;
                     }
                 }
                 if (std.mem.eql(u8, call.func_name, "vec")) {
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND VEC_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND VEC_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     const vec_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                     const elem_ty = vecElementType(vec_ty) orelse return CodegenError.CodegenError;
                     const elem_size = self.vecElementSlotSize(elem_ty);
                     const elem_transfers_ownership = self.vecElementPushConsumesSource(elem_ty);
                     for (call.args) |arg| {
                         const arg_reg = try self.genExpr(arg, hoisted_allocs);
-                        self.out.writer().print("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ reg, arg_reg, elem_size }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ reg, arg_reg, elem_size }) catch return CodegenError.CodegenError;
                         if (elem_transfers_ownership) {
                             try self.emitForgetMovedValue(arg_reg);
                         } else if (self.callArgResultTempNeedsRelease(arg, arg_reg)) try self.emitRelease(arg_reg);
@@ -13602,7 +13618,7 @@ pub const Codegen = struct {
                             const recv = try self.genVecOwnerReceiver(call.args[0], hoisted_allocs);
                             const recv_reg = recv.reg;
                             const reg = try self.newTmp();
-                            self.out.writer().print("    {s} = load {s}+Vec_len as u64\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             if (recv.release_reg) |release_reg| try self.emitRelease(release_reg);
                             if (recv.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
                             return reg;
@@ -13610,35 +13626,35 @@ pub const Codegen = struct {
                         if (vecDequeElementType(ty) != null) {
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const reg = try self.newTmp();
-                            self.out.writer().print("    EXPAND VEC_DEQUE_LEN {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND VEC_DEQUE_LEN {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                             return reg;
                         }
                         if (hashMapTypes(ty) != null) {
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const reg = try self.newTmp();
-                            self.out.writer().print("    EXPAND MAP_LEN {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND MAP_LEN {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                             return reg;
                         }
                         if (btreeMapTypes(ty) != null) {
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const reg = try self.newTmp();
-                            self.out.writer().print("    EXPAND BTREE_MAP_LEN {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND BTREE_MAP_LEN {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                             return reg;
                         }
                         if (hashSetTypes(ty) != null) {
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const reg = try self.newTmp();
-                            self.out.writer().print("    EXPAND SET_LEN {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND SET_LEN {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                             return reg;
                         }
                         if (btreeSetTypes(ty) != null) {
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const reg = try self.newTmp();
-                            self.out.writer().print("    EXPAND BTREE_SET_LEN {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND BTREE_SET_LEN {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                             return reg;
                         }
@@ -13646,8 +13662,8 @@ pub const Codegen = struct {
                             const string_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const slice_reg = try self.newTmp();
                             const reg = try self.newTmp();
-                            self.out.writer().print("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, string_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    EXPAND STRING_LEN {s}, {s}\n", .{ reg, slice_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, string_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND STRING_LEN {s}, {s}\n", .{ reg, slice_reg }) catch return CodegenError.CodegenError;
                             try self.emitRelease(slice_reg);
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(string_reg);
                             return reg;
@@ -13655,7 +13671,7 @@ pub const Codegen = struct {
                     }
                     const inner = try self.genExpr(call.args[0], hoisted_allocs);
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND STRING_LEN {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND STRING_LEN {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
                     return reg;
                 }
                 if (lowering_rules.isStrEqCall(call) and call.args.len == 2) {
@@ -13665,16 +13681,16 @@ pub const Codegen = struct {
                     const right = try self.genExpr(call.args[1], hoisted_allocs);
                     const left_arg = if (isFormatStringType(left_ty)) blk: {
                         const view = try self.newTmp();
-                        self.out.writer().print("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ view, left }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ view, left }) catch return CodegenError.CodegenError;
                         break :blk view;
                     } else left;
                     const right_arg = if (isFormatStringType(right_ty)) blk: {
                         const view = try self.newTmp();
-                        self.out.writer().print("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ view, right }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ view, right }) catch return CodegenError.CodegenError;
                         break :blk view;
                     } else right;
                     const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND STR_EQ {s}, {s}, {s}\n", .{ reg, left_arg, right_arg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND STR_EQ {s}, {s}, {s}\n", .{ reg, left_arg, right_arg }) catch return CodegenError.CodegenError;
                     if (!std.mem.eql(u8, left_arg, left)) try self.emitRelease(left_arg);
                     if (!std.mem.eql(u8, right_arg, right)) try self.emitRelease(right_arg);
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(left);
@@ -13686,7 +13702,7 @@ pub const Codegen = struct {
                     const elem_ty = vecElementType(recv_ty) orelse return CodegenError.CodegenError;
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const arg_reg = try self.genExpr(call.args[1], hoisted_allocs);
-                    self.out.writer().print("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
                     // POD / shallow-copy elements (including pure enums and structs of
                     // them) must remain usable after push so patterns like
                     // `registry.infos.push(info); return (registry, info);` match the
@@ -13708,22 +13724,22 @@ pub const Codegen = struct {
                     const some_label = try self.newLabel("L_VEC_POP_SOME");
                     const none_label = try self.newLabel("L_VEC_POP_NONE");
                     const end_label = try self.newLabel("L_VEC_POP_END");
-                    self.out.writer().print("    {s} = alloc 8\n", .{value_slot}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = call @sa_vec_try_pop(&{s}, &{s})\n", .{ ok_reg, recv_reg, value_slot }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ value_reg, value_slot }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = alloc 8\n", .{value_slot}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = call @sa_vec_try_pop(&{s}, &{s})\n", .{ ok_reg, recv_reg, value_slot }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s}+0 as u64\n", .{ value_reg, value_slot }) catch return CodegenError.CodegenError;
                     try self.emitRelease(value_slot);
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, some_label, none_label }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ option_reg, value_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{option_reg}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, some_label, none_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ option_reg, value_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND OPTION_NEW_NONE {s}\n", .{option_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                     return option_reg;
                 }
@@ -13736,16 +13752,16 @@ pub const Codegen = struct {
                     const raw_reg = try self.newTmp();
                     const hit_label = try self.newLabel("L_VEC_REMOVE_OK");
                     const miss_label = try self.newLabel("L_VEC_REMOVE_OOB");
-                    self.out.writer().print("    EXPAND VEC_REMOVE {s}, {s}, {s}, {s}, {}\n", .{ ok_reg, raw_reg, recv_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    panic(86)\n\n", .{}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND VEC_REMOVE {s}, {s}, {s}, {s}, {}\n", .{ ok_reg, raw_reg, recv_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    panic(86)\n\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[1])) try self.emitRelease(index_reg);
                     if (std.mem.eql(u8, typeString(elem_ty), "u64")) return raw_reg;
                     const reg = try self.newTmp();
-                    self.out.writer().print("    {s} = {s} as {s}\n", .{ reg, raw_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = {s} as {s}\n", .{ reg, raw_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
                     return reg;
                 }
                 if ((lowering_rules.isIterOrIntoIterCall(call)) and call.args.len == 1) {
@@ -13756,7 +13772,7 @@ pub const Codegen = struct {
                     if (target_ty != null and optionInnerType(target_ty.?) != null) {
                         const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND OPTION_COPIED_U64 {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND OPTION_COPIED_U64 {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                         return reg;
                     }
@@ -13848,11 +13864,11 @@ pub const Codegen = struct {
                     const fn_ptr_ty = self.localBindingTypeForName(call.func_name) orelse return CodegenError.CodegenError;
                     if (fn_ptr_ty.* != .fn_ptr or fn_ptr_ty.fn_ptr.params.len != call.args.len) return CodegenError.CodegenError;
 
-                    var lowered_args = std.ArrayList(LoweredCallArg).init(self.allocator);
+                    var lowered_args = std.array_list.Managed(LoweredCallArg).init(self.allocator);
                     defer lowered_args.deinit();
-                    var release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    var release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                     defer release_regs.deinit();
-                    var consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer consume_regs.deinit();
                     for (call.args, fn_ptr_ty.fn_ptr.params) |arg, param_ty| {
                         const param = ast.Param{
@@ -13871,7 +13887,7 @@ pub const Codegen = struct {
                         try self.appendLoweredCallArgCleanups(&release_regs, &consume_regs, lowered_arg);
                     }
 
-                    var candidates = std.ArrayList([]const u8).init(self.allocator);
+                    var candidates = std.array_list.Managed([]const u8).init(self.allocator);
                     defer candidates.deinit();
                     var func_iter = self.tc.funcs.iterator();
                     while (func_iter.next()) |entry| {
@@ -13893,17 +13909,17 @@ pub const Codegen = struct {
                     const ret_reg = if (returns_void) "return_ty_sentinel" else try self.newTmp();
                     if (candidates.items.len == 0) {
                         const call_reg = try self.newTmp();
-                        self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ call_reg, fn_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+0 as ptr\n", .{ call_reg, fn_reg }) catch return CodegenError.CodegenError;
                         if (returns_void) {
-                            self.out.writer().print("    call_indirect {s}(", .{call_reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    call_indirect {s}(", .{call_reg}) catch return CodegenError.CodegenError;
                         } else {
-                            self.out.writer().print("    {s} = call_indirect {s}(", .{ ret_reg, call_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = call_indirect {s}(", .{ ret_reg, call_reg }) catch return CodegenError.CodegenError;
                         }
                         for (lowered_args.items, 0..) |lowered_arg, i| {
-                            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}", .{lowered_arg.reg}) catch return CodegenError.CodegenError;
+                            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}", .{lowered_arg.reg}) catch return CodegenError.CodegenError;
                         }
-                        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                        self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
                         try self.emitRelease(call_reg);
                     } else {
                         const end_label = try self.newLabel("L_FNPTR_CALL_END");
@@ -13919,25 +13935,25 @@ pub const Codegen = struct {
                                 if (inline_expr) |inline_value_expr| {
                                     if (!returns_void) {
                                         const inline_value = try self.genExpr(@constCast(inline_value_expr), hoisted_allocs);
-                                        self.out.writer().print("    {s} = add {s}, 0\n", .{ ret_reg, inline_value }) catch return CodegenError.CodegenError;
+                                        self.outPrint("    {s} = add {s}, 0\n", .{ ret_reg, inline_value }) catch return CodegenError.CodegenError;
                                         if (exprResultNeedsRelease(inline_value_expr)) try self.emitRelease(inline_value);
                                     } else {
                                         _ = try self.genExpr(@constCast(inline_value_expr), hoisted_allocs);
                                     }
                                     try self.emitFnPtrInlineMovedArgConsumes(lowered_args.items, fn_ptr_ty.fn_ptr.params);
                                 } else if (returns_void) {
-                                    self.out.writer().print("    call @{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    call @{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
                                 } else {
-                                    self.out.writer().print("    {s} = call @{s}(", .{ ret_reg, lowered_name }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @{s}(", .{ ret_reg, lowered_name }) catch return CodegenError.CodegenError;
                                 }
                                 if (inline_expr == null) {
                                     for (lowered_args.items, 0..) |lowered_arg, i| {
-                                        if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                                        self.out.writer().print("{s}", .{lowered_arg.reg}) catch return CodegenError.CodegenError;
+                                        if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+                                        self.outPrint("{s}", .{lowered_arg.reg}) catch return CodegenError.CodegenError;
                                     }
-                                    self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                                    self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
                                 }
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
                                 break;
                             }
                             const match_label = try self.newLabel("L_FNPTR_CALL_MATCH");
@@ -13946,11 +13962,11 @@ pub const Codegen = struct {
                             const is_match = try self.newTmp();
                             const vt_name = try self.fnPtrVTableName(candidate_name);
                             defer self.allocator.free(vt_name);
-                            self.out.writer().print("    {s} = &{s}\n", .{ vt_reg, vt_name }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_match, fn_reg, vt_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_match, match_label, next_label }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}:\n", .{match_label}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    !{s}\n    !{s}\n", .{ is_match, vt_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = &{s}\n", .{ vt_reg, vt_name }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = eq {s}, {s}\n", .{ is_match, fn_reg, vt_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_match, match_label, next_label }) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}:\n", .{match_label}) catch return CodegenError.CodegenError;
+                            self.outPrint("    !{s}\n    !{s}\n", .{ is_match, vt_reg }) catch return CodegenError.CodegenError;
                             const candidate_func = self.tc.funcs.get(candidate_name) orelse return CodegenError.CodegenError;
                             const inline_expr = if (self.fnPtrInlineCanConsumeMovedArgs(lowered_args.items, fn_ptr_ty.fn_ptr.params))
                                 self.fnPtrInlineCandidateExpr(candidate_func)
@@ -13959,29 +13975,29 @@ pub const Codegen = struct {
                             if (inline_expr) |inline_value_expr| {
                                 if (!returns_void) {
                                     const inline_value = try self.genExpr(@constCast(inline_value_expr), hoisted_allocs);
-                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ ret_reg, inline_value }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = add {s}, 0\n", .{ ret_reg, inline_value }) catch return CodegenError.CodegenError;
                                     if (exprResultNeedsRelease(inline_value_expr)) try self.emitRelease(inline_value);
                                 } else {
                                     _ = try self.genExpr(@constCast(inline_value_expr), hoisted_allocs);
                                 }
                                 try self.emitFnPtrInlineMovedArgConsumes(lowered_args.items, fn_ptr_ty.fn_ptr.params);
                             } else if (returns_void) {
-                                self.out.writer().print("    call @{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+                                self.outPrint("    call @{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
                             } else {
-                                self.out.writer().print("    {s} = call @{s}(", .{ ret_reg, lowered_name }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = call @{s}(", .{ ret_reg, lowered_name }) catch return CodegenError.CodegenError;
                             }
                             if (inline_expr == null) {
                                 for (lowered_args.items, 0..) |lowered_arg, i| {
-                                    if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("{s}", .{lowered_arg.reg}) catch return CodegenError.CodegenError;
+                                    if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+                                    self.outPrint("{s}", .{lowered_arg.reg}) catch return CodegenError.CodegenError;
                                 }
-                                self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                                self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
                             }
-                            self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}:\n", .{next_label}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    !{s}\n    !{s}\n", .{ is_match, vt_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}:\n", .{next_label}) catch return CodegenError.CodegenError;
+                            self.outPrint("    !{s}\n    !{s}\n", .{ is_match, vt_reg }) catch return CodegenError.CodegenError;
                         }
-                        self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                     }
                     try self.emitLoweredCallArgCleanups(release_regs.items, consume_regs.items, null);
                     return ret_reg;
@@ -13998,7 +14014,7 @@ pub const Codegen = struct {
                                 else
                                     try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 self.mpsc_sender_channels.put(reg, recv_reg) catch return CodegenError.OutOfMemory;
                                 self.mpsc_sender_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
                                 return reg;
@@ -14011,11 +14027,11 @@ pub const Codegen = struct {
                                     try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
                                 const send_value = try self.newTmp();
-                                self.out.writer().print("    {s} = add {s}, 0\n", .{ send_value, value_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND MPSC_SEND {s}, {s}\n", .{ recv_reg, send_value }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = add {s}, 0\n", .{ send_value, value_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND MPSC_SEND {s}, {s}\n", .{ recv_reg, send_value }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                                 const result_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, 0\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_OK {s}, 0\n", .{result_reg}) catch return CodegenError.CodegenError;
                                 return result_reg;
                             }
                         }
@@ -14024,9 +14040,9 @@ pub const Codegen = struct {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND MPSC_RECV {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND MPSC_RECV {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 const result_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, value_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, value_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(value_reg);
                                 return result_reg;
                             }
@@ -14039,14 +14055,14 @@ pub const Codegen = struct {
                                     const result_reg = try self.newTmp();
                                     const value = try self.newTmp();
                                     const ok_tag = try self.newTmp();
-                                    self.out.writer().print("    {s} = load {s}+8 as {s}\n", .{ value, recv_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    {s} = 0\n", .{ok_tag}) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    store {s}+0, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    store {s}+8, {s} as {s}\n", .{ result_reg, value, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    store {s}+16, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    !{s}\n", .{ok_tag}) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    !{s}\n", .{value}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = load {s}+8 as {s}\n", .{ value, recv_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = 0\n", .{ok_tag}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    store {s}+0, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    store {s}+8, {s} as {s}\n", .{ result_reg, value, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    store {s}+16, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    !{s}\n", .{ok_tag}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    !{s}\n", .{value}) catch return CodegenError.CodegenError;
                                     _ = self.inline_thread_handles.remove(recv_reg);
                                     try self.emitRelease(recv_reg);
                                     return result_reg;
@@ -14061,61 +14077,61 @@ pub const Codegen = struct {
                                 const ok_label = try self.newLabel("L_THREAD_JOIN_OK");
                                 const err_label = try self.newLabel("L_THREAD_JOIN_ERR");
                                 const end_label = try self.newLabel("L_THREAD_JOIN_END");
-                                self.out.writer().print("    {s} = load {s}+0 as i32\n", .{ handle, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = eq {s}, -1\n", .{ is_inline, handle }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_inline, inline_label, pthread_label }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{inline_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_inline}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+0 as i32\n", .{ handle, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = eq {s}, -1\n", .{ is_inline, handle }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_inline, inline_label, pthread_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{inline_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_inline}) catch return CodegenError.CodegenError;
                                 const inline_value = try self.newTmp();
-                                self.out.writer().print("    {s} = load {s}+8 as {s}\n", .{ inline_value, recv_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+8 as {s}\n", .{ inline_value, recv_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
                                 const inline_ok_tag = try self.newTmp();
-                                self.out.writer().print("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = 0\n", .{inline_ok_tag}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+0, {s} as u64\n", .{ result_reg, inline_ok_tag }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+8, {s} as {s}\n", .{ result_reg, inline_value, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+16, {s} as u64\n", .{ result_reg, inline_ok_tag }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{inline_ok_tag}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{inline_value}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{pthread_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_inline}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND THREAD_JOIN_STATUS {s}, {s}, *{s}\n", .{ status, handle, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND THREAD_DROP {s}\n", .{handle}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = eq {s}, 0\n", .{ is_ok, status }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_ok, ok_label, err_label }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = 0\n", .{inline_ok_tag}) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+0, {s} as u64\n", .{ result_reg, inline_ok_tag }) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+8, {s} as {s}\n", .{ result_reg, inline_value, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+16, {s} as u64\n", .{ result_reg, inline_ok_tag }) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{inline_ok_tag}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{inline_value}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{pthread_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_inline}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND THREAD_JOIN_STATUS {s}, {s}, *{s}\n", .{ status, handle, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND THREAD_DROP {s}\n", .{handle}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = eq {s}, 0\n", .{ is_ok, status }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_ok, ok_label, err_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
                                 const value = try self.newTmp();
-                                self.out.writer().print("    {s} = load {s}+8 as {s}\n", .{ value, recv_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+8 as {s}\n", .{ value, recv_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
                                 const ok_tag = try self.newTmp();
-                                self.out.writer().print("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = 0\n", .{ok_tag}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+0, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+8, {s} as {s}\n", .{ result_reg, value, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+16, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{ok_tag}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{value}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{status}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = 0\n", .{ok_tag}) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+0, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+8, {s} as {s}\n", .{ result_reg, value, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+16, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{ok_tag}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{value}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{status}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
                                 const err_value = try self.newTmp();
-                                self.out.writer().print("    {s} = add {s}, 0\n", .{ err_value, status }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = add {s}, 0\n", .{ err_value, status }) catch return CodegenError.CodegenError;
                                 const err_tag = try self.newTmp();
                                 const err_zero = try self.newTmp();
-                                self.out.writer().print("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = 1\n", .{err_tag}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = 0\n", .{err_zero}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+0, {s} as u64\n", .{ result_reg, err_tag }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+8, {s} as {s}\n", .{ result_reg, err_zero, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+16, {s} as i64\n", .{ result_reg, err_value }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{err_zero}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{err_tag}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{err_value}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{status}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{handle}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = 1\n", .{err_tag}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = 0\n", .{err_zero}) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+0, {s} as u64\n", .{ result_reg, err_tag }) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+8, {s} as {s}\n", .{ result_reg, err_zero, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+16, {s} as i64\n", .{ result_reg, err_value }) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{err_zero}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{err_tag}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{err_value}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{status}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{handle}) catch return CodegenError.CodegenError;
                                 try self.markConsumedBinding(recv_reg);
                                 return result_reg;
                             }
@@ -14126,9 +14142,9 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
                                 if (lowering_rules.isIsSomeCall(call)) {
-                                    self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else {
-                                    self.out.writer().print("    EXPAND OPTION_IS_NONE {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND OPTION_IS_NONE {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 }
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
@@ -14138,29 +14154,29 @@ pub const Codegen = struct {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_some = try self.newTmp();
-                                self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, recv_reg }) catch return CodegenError.CodegenError;
                                 const some_label = try self.newLabel("L_OPTION_MAP_SOME");
                                 const none_label = try self.newLabel("L_OPTION_MAP_NONE");
                                 const end_label = try self.newLabel("L_OPTION_MAP_END");
                                 const result_reg = try self.newTmp();
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
                                 const value_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 const mapped_reg = try self.genInlineClosureUnary(&call.args[1].closure_literal, value_reg, hoisted_allocs);
-                                self.out.writer().print("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ result_reg, mapped_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ result_reg, mapped_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(value_reg);
                                 if (!std.mem.eql(u8, mapped_reg, value_reg)) try self.emitRelease(mapped_reg);
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{result_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_NEW_NONE {s}\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
                             }
@@ -14168,36 +14184,36 @@ pub const Codegen = struct {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_some = try self.newTmp();
-                                self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, recv_reg }) catch return CodegenError.CodegenError;
                                 const some_label = try self.newLabel("L_OPTION_AND_THEN_SOME");
                                 const none_label = try self.newLabel("L_OPTION_AND_THEN_NONE");
                                 const end_label = try self.newLabel("L_OPTION_AND_THEN_END");
                                 const result_slot = try self.newTmp();
-                                self.out.writer().print("    {s} = stack_alloc 8\n", .{result_slot}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = stack_alloc 8\n", .{result_slot}) catch return CodegenError.CodegenError;
                                 try self.prepareResultSlotRefCellCompanion(result_slot, ty);
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
                                 const value_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 const chained_reg = try self.genInlineClosureUnary(&call.args[1].closure_literal, value_reg, hoisted_allocs);
-                                self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ result_slot, chained_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+0, {s} as ptr\n", .{ result_slot, chained_reg }) catch return CodegenError.CodegenError;
                                 try self.storeResultSlotTransferredValueState(result_slot, chained_reg, ty, true);
                                 try self.emitRelease(value_reg);
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
                                 const none_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{none_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ result_slot, none_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_NEW_NONE {s}\n", .{none_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+0, {s} as ptr\n", .{ result_slot, none_reg }) catch return CodegenError.CodegenError;
                                 try self.storeResultSlotTransferredValueState(result_slot, none_reg, ty, true);
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 const result_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ result_reg, result_slot }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ result_reg, result_slot }) catch return CodegenError.CodegenError;
                                 try self.loadResultSlotTransferredValueState(result_reg, result_slot, ty);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
@@ -14206,7 +14222,7 @@ pub const Codegen = struct {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND OPTION_UNWRAP {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_UNWRAP {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0]) and !isNonOwningPointerCarrierCastArg(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -14215,7 +14231,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const default_reg = try self.genExpr(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND OPTION_UNWRAP_OR {s}, {s}, {s}\n", .{ reg, recv_reg, default_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_UNWRAP_OR {s}, {s}, {s}\n", .{ reg, recv_reg, default_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(default_reg);
                                 return reg;
@@ -14224,34 +14240,34 @@ pub const Codegen = struct {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_some = try self.newTmp();
-                                self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, recv_reg }) catch return CodegenError.CodegenError;
                                 const some_label = try self.newLabel("L_OPTION_UNWRAP_OR_ELSE_SOME");
                                 const none_label = try self.newLabel("L_OPTION_UNWRAP_OR_ELSE_NONE");
                                 const end_label = try self.newLabel("L_OPTION_UNWRAP_OR_ELSE_END");
                                 const result_slot = try self.newTmp();
                                 const inner_ty = optionInnerType(ty) orelse return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = stack_alloc 8\n", .{result_slot}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = stack_alloc 8\n", .{result_slot}) catch return CodegenError.CodegenError;
                                 try self.prepareResultSlotRefCellCompanion(result_slot, inner_ty);
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
                                 const value_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ result_slot, value_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+0, {s} as {s}\n", .{ result_slot, value_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
                                 try self.storeResultSlotTransferredValueState(result_slot, value_reg, inner_ty, true);
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
                                 const default_reg = try self.genInlineClosureNullary(&call.args[1].closure_literal, hoisted_allocs);
-                                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ result_slot, default_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.outPrint("    store {s}+0, {s} as {s}\n", .{ result_slot, default_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
                                 try self.storeResultSlotTransferredValueState(result_slot, default_reg, inner_ty, true);
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, result_slot, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, result_slot, typeString(inner_ty) }) catch return CodegenError.CodegenError;
                                 try self.loadResultSlotTransferredValueState(reg, result_slot, inner_ty);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
@@ -14260,7 +14276,7 @@ pub const Codegen = struct {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND OPTION_UNWRAP_OR_DEFAULT {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND OPTION_UNWRAP_OR_DEFAULT {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -14272,15 +14288,15 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
                                 if (std.mem.eql(u8, call.func_name, "is_file")) {
-                                    self.out.writer().print("    EXPAND FS_METADATA_IS_FILE {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND FS_METADATA_IS_FILE {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else if (std.mem.eql(u8, call.func_name, "is_dir")) {
-                                    self.out.writer().print("    EXPAND FS_METADATA_IS_DIR {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND FS_METADATA_IS_DIR {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else if (std.mem.eql(u8, call.func_name, "is_symlink")) {
-                                    self.out.writer().print("    EXPAND FS_METADATA_IS_SYMLINK {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND FS_METADATA_IS_SYMLINK {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else if (std.mem.eql(u8, call.func_name, "modified_ms")) {
-                                    self.out.writer().print("    EXPAND FS_METADATA_MODIFIED_MS {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND FS_METADATA_MODIFIED_MS {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else {
-                                    self.out.writer().print("    EXPAND FS_METADATA_CREATED_MS {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND FS_METADATA_CREATED_MS {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 }
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
@@ -14291,7 +14307,7 @@ pub const Codegen = struct {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -14299,7 +14315,7 @@ pub const Codegen = struct {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND RESULT_IS_ERR {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_IS_ERR {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -14307,32 +14323,32 @@ pub const Codegen = struct {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_ok = try self.newTmp();
-                                self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ is_ok, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ is_ok, recv_reg }) catch return CodegenError.CodegenError;
                                 const ok_label = try self.newLabel("L_RESULT_MAP_OK");
                                 const err_label = try self.newLabel("L_RESULT_MAP_ERR");
                                 const end_label = try self.newLabel("L_RESULT_MAP_END");
                                 const result_reg = try self.newTmp();
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_ok, ok_label, err_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_ok, ok_label, err_label }) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
                                 const value_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 const mapped_reg = try self.genInlineClosureUnary(&call.args[1].closure_literal, value_reg, hoisted_allocs);
-                                self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, mapped_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, mapped_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(value_reg);
                                 if (!std.mem.eql(u8, mapped_reg, value_reg)) try self.emitRelease(mapped_reg);
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
                                 const err_value = try self.newTmp();
-                                self.out.writer().print("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ err_value, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, err_value }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ err_value, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, err_value }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(err_value);
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
-                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
                             }
@@ -14347,21 +14363,21 @@ pub const Codegen = struct {
                                 const ok_label = try self.newLabel("L_RESULT_UNWRAP_OK");
                                 const err_label = try self.newLabel("L_RESULT_UNWRAP_ERR");
                                 const end_label = try self.newLabel("L_RESULT_UNWRAP_END");
-                                self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ tag, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = eq {s}, 0\n", .{ is_ok, tag }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_ok, ok_label, err_label }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = load {s}+8 as {s}\n", .{ reg, recv_reg, typeString(ok_ty) }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{tag}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    panic(17)\n", .{}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = 0\n", .{reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{tag}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+0 as u64\n", .{ tag, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = eq {s}, 0\n", .{ is_ok, tag }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_ok, ok_label, err_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+8 as {s}\n", .{ reg, recv_reg, typeString(ok_ty) }) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{tag}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
+                                self.outPrint("    panic(17)\n", .{}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = 0\n", .{reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{tag}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 if (self.mutex_lock_results.get(recv_reg)) |handle| {
                                     self.mutex_guard_handles.put(reg, handle) catch return CodegenError.OutOfMemory;
                                     _ = self.mutex_lock_results.remove(recv_reg);
@@ -14387,7 +14403,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const default_reg = try self.genExpr(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND RESULT_UNWRAP_OR {s}, {s}, {s}\n", .{ reg, recv_reg, default_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_UNWRAP_OR {s}, {s}, {s}\n", .{ reg, recv_reg, default_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(default_reg);
                                 return reg;
@@ -14399,7 +14415,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ordering = try atomicOrderingToken(call.args[1]);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND ATOMIC_I32_LOAD {s}, {s}, {s}\n", .{ reg, recv_reg, ordering }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND ATOMIC_I32_LOAD {s}, {s}, {s}\n", .{ reg, recv_reg, ordering }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -14408,7 +14424,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
                                 const ordering = try atomicOrderingToken(call.args[2]);
-                                self.out.writer().print("    EXPAND ATOMIC_I32_STORE {s}, {s}, {s}\n", .{ recv_reg, value_reg, ordering }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND ATOMIC_I32_STORE {s}, {s}, {s}\n", .{ recv_reg, value_reg, ordering }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0]) and !isNonOwningPointerCarrierCastArg(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                                 return "return_ty_sentinel";
@@ -14419,7 +14435,7 @@ pub const Codegen = struct {
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
                                 const ordering = try atomicOrderingToken(call.args[2]);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND ATOMIC_I32_FETCH_ADD {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, value_reg, ordering }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND ATOMIC_I32_FETCH_ADD {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, value_reg, ordering }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0]) and !isNonOwningPointerCarrierCastArg(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                                 return reg;
@@ -14437,17 +14453,17 @@ pub const Codegen = struct {
                                 const ok_label = try self.newLabel("L_ATOMIC_CMPXCHG_OK");
                                 const err_label = try self.newLabel("L_ATOMIC_CMPXCHG_ERR");
                                 const end_label = try self.newLabel("L_ATOMIC_CMPXCHG_END");
-                                self.out.writer().print("    EXPAND ATOMIC_I32_COMPARE_EXCHANGE {s}, {s}, {s}, {s}, {s}, {s}, {s}\n", .{ old_reg, ok_reg, recv_reg, expected_reg, new_reg, success_ordering, failure_ordering }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, old_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, old_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND ATOMIC_I32_COMPARE_EXCHANGE {s}, {s}, {s}, {s}, {s}, {s}, {s}\n", .{ old_reg, ok_reg, recv_reg, expected_reg, new_reg, success_ordering, failure_ordering }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, old_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, old_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(expected_reg);
                                 if (callArgNeedsRelease(call.args[2])) try self.emitRelease(new_reg);
@@ -14461,7 +14477,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ordering = try atomicOrderingToken(call.args[1]);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND ATOMIC_USIZE_LOAD {s}, {s}, {s}\n", .{ reg, recv_reg, ordering }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND ATOMIC_USIZE_LOAD {s}, {s}, {s}\n", .{ reg, recv_reg, ordering }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0]) and !isNonOwningPointerCarrierCastArg(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -14470,7 +14486,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
                                 const ordering = try atomicOrderingToken(call.args[2]);
-                                self.out.writer().print("    EXPAND ATOMIC_USIZE_STORE {s}, {s}, {s}\n", .{ recv_reg, value_reg, ordering }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND ATOMIC_USIZE_STORE {s}, {s}, {s}\n", .{ recv_reg, value_reg, ordering }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0]) and !isNonOwningPointerCarrierCastArg(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                                 return "return_ty_sentinel";
@@ -14481,7 +14497,7 @@ pub const Codegen = struct {
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
                                 const ordering = try atomicOrderingToken(call.args[2]);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND ATOMIC_USIZE_FETCH_ADD {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, value_reg, ordering }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND ATOMIC_USIZE_FETCH_ADD {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, value_reg, ordering }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0]) and !isNonOwningPointerCarrierCastArg(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                                 return reg;
@@ -14493,7 +14509,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ordering = try atomicOrderingToken(call.args[1]);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND ATOMIC_PTR_LOAD {s}, {s}, {s}\n", .{ reg, recv_reg, ordering }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND ATOMIC_PTR_LOAD {s}, {s}, {s}\n", .{ reg, recv_reg, ordering }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -14503,7 +14519,7 @@ pub const Codegen = struct {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND CELL_GET {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND CELL_GET {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -14511,7 +14527,7 @@ pub const Codegen = struct {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
-                                self.out.writer().print("    EXPAND CELL_SET {s}, {s}\n", .{ recv_reg, value_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND CELL_SET {s}, {s}\n", .{ recv_reg, value_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                                 return "return_ty_sentinel";
@@ -14526,20 +14542,20 @@ pub const Codegen = struct {
                                 const err_label = try self.newLabel("L_REFCELL_BORROW_PANIC");
                                 const end_label = try self.newLabel("L_REFCELL_BORROW_END");
                                 const guard_plan = lowering_rules.planRefCellBorrowRuntimeGuard(borrow_plan);
-                                self.out.writer().print("    EXPAND {s} {s}, {s}, {s}\n", .{ borrow_plan.tryBorrowMacroName(), ok_reg, borrow_slot_reg, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, end_label, err_label }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                                if (guard_plan.release_status_on_conflict) self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    panic({})\n", .{guard_plan.conflict_panic_code}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-                                if (guard_plan.release_status_on_success) self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ borrow_plan.tryBorrowMacroName(), ok_reg, borrow_slot_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, end_label, err_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                                if (guard_plan.release_status_on_conflict) self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    panic({})\n", .{guard_plan.conflict_panic_code}) catch return CodegenError.CodegenError;
+                                self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                if (guard_plan.release_status_on_success) self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
                                 const borrow_result_plan = lowering_rules.planRefCellBorrowResult(.sa_text, borrow_plan.value_kind);
                                 const borrow_reg = if (borrow_result_plan.action.usesBorrowSlot())
                                     borrow_slot_reg
                                 else if (borrow_result_plan.action.loadsPointerPayload()) blk: {
                                     const payload_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ payload_reg, borrow_slot_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = load {s}+0 as ptr\n", .{ payload_reg, borrow_slot_reg }) catch return CodegenError.CodegenError;
                                     if (borrow_result_plan.release_borrow_slot_after_payload) try self.emitRelease(borrow_slot_reg);
                                     break :blk payload_reg;
                                 } else if (borrow_result_plan.action.takesPointerPayload())
@@ -14561,9 +14577,9 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const guard_reg = try self.newTmp();
                                 const result_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND MUTEX_LOCK {s}\n", .{recv_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = ptr_add {s}, Mutex_data\n", .{ guard_reg, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, guard_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND MUTEX_LOCK {s}\n", .{recv_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = ptr_add {s}, Mutex_data\n", .{ guard_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, guard_reg }) catch return CodegenError.CodegenError;
                                 self.mutex_lock_results.put(result_reg, .{ .mutex_reg = recv_reg }) catch return CodegenError.OutOfMemory;
                                 try self.emitRelease(guard_reg);
                                 if (call.args[0].* == .identifier) {
@@ -14585,20 +14601,20 @@ pub const Codegen = struct {
                                 const end_label = try self.newLabel("L_RWLOCK_RESULT_END");
                                 const is_write = std.mem.eql(u8, call.func_name, "write");
                                 if (is_write) {
-                                    self.out.writer().print("    EXPAND RWLOCK_TRY_WRITE_NOERR {s}, {s}, {s}\n", .{ ok_reg, lock_guard_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND RWLOCK_TRY_WRITE_NOERR {s}, {s}, {s}\n", .{ ok_reg, lock_guard_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else {
-                                    self.out.writer().print("    EXPAND RWLOCK_TRY_READ_NOERR {s}, {s}, {s}\n", .{ ok_reg, lock_guard_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND RWLOCK_TRY_READ_NOERR {s}, {s}, {s}\n", .{ ok_reg, lock_guard_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 }
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, 1\n", .{result_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = ptr_add {s}, RwLock_data\n", .{ guard_reg, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, guard_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_ERR {s}, 1\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = ptr_add {s}, RwLock_data\n", .{ guard_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, guard_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(guard_reg);
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 self.rwlock_lock_results.put(result_reg, .{ .lock_reg = recv_reg, .is_write = is_write }) catch return CodegenError.OutOfMemory;
                                 try self.emitRelease(ok_reg);
                                 try self.emitRelease(lock_guard_reg);
@@ -14611,8 +14627,8 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const copied = try self.newTmp();
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    {s} = add {s}, 0\n", .{ copied, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = {s} as i32\n", .{ reg, copied }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = add {s}, 0\n", .{ copied, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = {s} as i32\n", .{ reg, copied }) catch return CodegenError.CodegenError;
                                 return reg;
                             }
                         }
@@ -14620,16 +14636,16 @@ pub const Codegen = struct {
                             if (call.args.len != 1) return CodegenError.CodegenError;
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const reg = try self.newTmp();
-                            self.out.writer().print("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    EXPAND RC_CLONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND RC_CLONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
                             return reg;
                         }
                         if (arcInnerType(ty) != null and lowering_rules.isCloneCall(call)) {
                             if (call.args.len != 1) return CodegenError.CodegenError;
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const reg = try self.newTmp();
-                            self.out.writer().print("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    EXPAND ARC_CLONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND ARC_CLONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
                             return reg;
                         }
                         if (vecDequeElementType(ty) != null and std.mem.eql(u8, call.func_name, "rotate_left")) {
@@ -14644,7 +14660,7 @@ pub const Codegen = struct {
                             if (call.args.len != 2) return CodegenError.CodegenError;
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
-                            self.out.writer().print("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ recv_reg, value_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ recv_reg, value_reg }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                             return "return_ty_sentinel";
                         }
@@ -14657,19 +14673,19 @@ pub const Codegen = struct {
                             const some_label = try self.newLabel("L_VEC_DEQUE_POP_FRONT_SOME");
                             const none_label = try self.newLabel("L_VEC_DEQUE_POP_FRONT_NONE");
                             const end_label = try self.newLabel("L_VEC_DEQUE_POP_FRONT_END");
-                            self.out.writer().print("    EXPAND VEC_DEQUE_TRY_POP_FRONT {s}, {s}, {s}\n", .{ ok_reg, value_reg, recv_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, some_label, none_label }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ option_reg, value_reg }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{option_reg}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND VEC_DEQUE_TRY_POP_FRONT {s}, {s}, {s}\n", .{ ok_reg, value_reg, recv_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, some_label, none_label }) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
+                            self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ option_reg, value_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+                            self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND OPTION_NEW_NONE {s}\n", .{option_reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                             return option_reg;
                         }
@@ -14679,7 +14695,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 if (call.args[0].* == .identifier and self.global_const_bindings.contains(call.args[0].identifier)) {
                                     const addr_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = &{s}\n", .{ addr_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = &{s}\n", .{ addr_reg, recv_reg }) catch return CodegenError.CodegenError;
                                     return addr_reg;
                                 }
                                 return recv_reg;
@@ -14689,12 +14705,12 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
                                 if (arr.elem.* == .primitive and arr.elem.primitive == .u8) {
-                                    self.out.writer().print("    EXPAND SLA_ARRAY_FILL_U8 {s}, {s}, {}\n", .{ recv_reg, value_reg, arr.len }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND SLA_ARRAY_FILL_U8 {s}, {s}, {}\n", .{ recv_reg, value_reg, arr.len }) catch return CodegenError.CodegenError;
                                 } else {
                                     const elem_size = typeSize(arr.elem);
                                     const elem_ty_str = typeString(arr.elem);
                                     for (0..arr.len) |i| {
-                                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ recv_reg, elem_size * i, value_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                                        self.outPrint("    store {s}+{}, {s} as {s}\n", .{ recv_reg, elem_size * i, value_reg, elem_ty_str }) catch return CodegenError.CodegenError;
                                     }
                                 }
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
@@ -14707,9 +14723,9 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ptr_reg = try self.newTmp();
                                 if (isFormatStringType(ty)) {
-                                    self.out.writer().print("    EXPAND STRING_BUF_AS_PTR {s}, {s}\n", .{ ptr_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND STRING_BUF_AS_PTR {s}, {s}\n", .{ ptr_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else {
-                                    self.out.writer().print("    EXPAND STR_AS_PTR {s}, {s}\n", .{ ptr_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND STR_AS_PTR {s}, {s}\n", .{ ptr_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 }
                                 if (callArgNeedsRelease(call.args[0]) and !isNonOwningPointerCarrierCastArg(call.args[0])) try self.emitRelease(recv_reg);
                                 return ptr_reg;
@@ -14719,9 +14735,9 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const slice_reg = try self.newTmp();
                                 if (isFormatStringType(ty)) {
-                                    self.out.writer().print("    EXPAND STRING_BUF_AS_BYTES {s}, {s}\n", .{ slice_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND STRING_BUF_AS_BYTES {s}, {s}\n", .{ slice_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else {
-                                    self.out.writer().print("    EXPAND STR_AS_BYTES {s}, {s}\n", .{ slice_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND STR_AS_BYTES {s}, {s}\n", .{ slice_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 }
                                 return slice_reg;
                             }
@@ -14731,8 +14747,8 @@ pub const Codegen = struct {
                                 const status_reg = try self.newTmp();
                                 const flag_reg = try self.newTmp();
                                 const result_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND PATH_TRY_EXISTS {s}, {s}, {s}\n", .{ status_reg, flag_reg, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = eq {s}, 1\n", .{ result_reg, flag_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND PATH_TRY_EXISTS {s}, {s}, {s}\n", .{ status_reg, flag_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = eq {s}, 1\n", .{ result_reg, flag_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(status_reg);
                                 try self.emitRelease(flag_reg);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
@@ -14743,8 +14759,8 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const flag_reg = try self.newTmp();
                                 const result_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND PATH_IS_FILE {s}, {s}\n", .{ flag_reg, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = eq {s}, 1\n", .{ result_reg, flag_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND PATH_IS_FILE {s}, {s}\n", .{ flag_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = eq {s}, 1\n", .{ result_reg, flag_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(flag_reg);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
@@ -14754,8 +14770,8 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const flag_reg = try self.newTmp();
                                 const result_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND PATH_IS_DIR {s}, {s}\n", .{ flag_reg, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = eq {s}, 1\n", .{ result_reg, flag_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND PATH_IS_DIR {s}, {s}\n", .{ flag_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = eq {s}, 1\n", .{ result_reg, flag_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(flag_reg);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
@@ -14765,8 +14781,8 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const flag_reg = try self.newTmp();
                                 const result_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND PATH_IS_SYMLINK {s}, {s}\n", .{ flag_reg, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = eq {s}, 1\n", .{ result_reg, flag_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND PATH_IS_SYMLINK {s}, {s}\n", .{ flag_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = eq {s}, 1\n", .{ result_reg, flag_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(flag_reg);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
@@ -14783,20 +14799,20 @@ pub const Codegen = struct {
                                 const ok_label = try self.newLabel("L_PATH_METADATA_OK");
                                 const err_label = try self.newLabel("L_PATH_METADATA_ERR");
                                 const end_label = try self.newLabel("L_PATH_METADATA_END");
-                                self.out.writer().print("    EXPAND FS_METADATA {s}, {s}, {s}, {s}\n", .{ status_reg, meta_reg, path_regs.ptr_reg, path_regs.len_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = eq {s}, SA_FS_OK\n", .{ ok_reg, status_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, meta_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND FS_METADATA {s}, {s}, {s}, {s}\n", .{ status_reg, meta_reg, path_regs.ptr_reg, path_regs.len_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = eq {s}, SA_FS_OK\n", .{ ok_reg, status_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, meta_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(status_reg);
                                 try self.emitRelease(meta_reg);
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, status_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, status_reg }) catch return CodegenError.CodegenError;
                                 try self.emitRelease(status_reg);
                                 try self.emitRelease(meta_reg);
-                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ok_reg);
                                 try self.releaseStringLikePathRegs(path_regs);
                                 self.metadata_open_results.put(result_reg, .{}) catch return CodegenError.OutOfMemory;
@@ -14808,7 +14824,7 @@ pub const Codegen = struct {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = load {s}+Slice_ptr as ptr\n", .{ ptr_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = load {s}+Slice_ptr as ptr\n", .{ ptr_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0]) and !isNonOwningPointerCarrierCastArg(call.args[0])) try self.emitRelease(recv_reg);
                                 return ptr_reg;
                             }
@@ -14819,8 +14835,8 @@ pub const Codegen = struct {
                             const index_reg = try self.genExpr(call.args[1], hoisted_allocs);
                             const offset_reg = try self.newTmp();
                             const ptr_reg = try self.newTmp();
-                            self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, typeSize(ty.pointer) }) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, recv_reg, offset_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, typeSize(ty.pointer) }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, recv_reg, offset_reg }) catch return CodegenError.CodegenError;
                             try self.emitRelease(offset_reg);
                             if (callArgNeedsRelease(call.args[1])) try self.emitRelease(index_reg);
                             return ptr_reg;
@@ -14832,7 +14848,7 @@ pub const Codegen = struct {
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const value_slot = try self.genHashMapValueSlot(call.args[2], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND SLA_MAP_INSERT_OPTION_U64 {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg, value_slot }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND SLA_MAP_INSERT_OPTION_U64 {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg, value_slot }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
@@ -14842,7 +14858,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND SLA_MAP_TRY_GET_OPTION {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND SLA_MAP_TRY_GET_OPTION {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
@@ -14850,7 +14866,7 @@ pub const Codegen = struct {
                             if (lowering_rules.isClearCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                self.out.writer().print("    EXPAND MAP_CLEAR {s}\n", .{recv_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND MAP_CLEAR {s}\n", .{recv_reg}) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return "return_ty_sentinel";
                             }
@@ -14862,7 +14878,7 @@ pub const Codegen = struct {
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[2], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND SLA_BTREE_MAP_INSERT_OPTION_U64 {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg, value_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND SLA_BTREE_MAP_INSERT_OPTION_U64 {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg, value_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 if (callArgNeedsRelease(call.args[2])) try self.emitRelease(value_reg);
@@ -14873,7 +14889,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND SLA_BTREE_MAP_TRY_GET_OPTION {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND SLA_BTREE_MAP_TRY_GET_OPTION {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
@@ -14881,7 +14897,7 @@ pub const Codegen = struct {
                             if (lowering_rules.isClearCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                self.out.writer().print("    EXPAND BTREE_MAP_CLEAR {s}\n", .{recv_reg}) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND BTREE_MAP_CLEAR {s}\n", .{recv_reg}) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return "return_ty_sentinel";
                             }
@@ -14892,7 +14908,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND SET_INSERT {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND SET_INSERT {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
@@ -14902,7 +14918,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND SET_CONTAINS {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND SET_CONTAINS {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
@@ -14914,7 +14930,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND BTREE_SET_INSERT {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND BTREE_SET_INSERT {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
@@ -14924,7 +14940,7 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND BTREE_SET_CONTAINS {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    EXPAND BTREE_SET_CONTAINS {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
@@ -14942,11 +14958,11 @@ pub const Codegen = struct {
                     if (lowering_rules.planDynDispatchReceiver(recv_ty)) |receiver_plan| {
                         if (receiver_plan.needsRcGetDyn()) {
                             dyn_reg = try self.newTmp();
-                            self.out.writer().print("    EXPAND RC_GET {s}, {s}\n", .{ dyn_reg, recv_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND RC_GET {s}, {s}\n", .{ dyn_reg, recv_reg }) catch return CodegenError.CodegenError;
                         }
                     }
 
-                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_regs.deinit();
                     for (call.args[1..]) |arg| {
                         arg_regs.append(try self.genCallArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
@@ -14955,22 +14971,22 @@ pub const Codegen = struct {
                     const data_reg = try self.newTmp();
                     const vtable_reg = try self.newTmp();
                     const fn_reg = try self.newTmp();
-                    self.out.writer().print("    {s} = load {s}+Dyn_data as ptr\n", .{ data_reg, dyn_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = load {s}+Dyn_vtable as ptr\n", .{ vtable_reg, dyn_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = load {s}+{} as ptr\n", .{ fn_reg, vtable_reg, slot }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s}+Dyn_data as ptr\n", .{ data_reg, dyn_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s}+Dyn_vtable as ptr\n", .{ vtable_reg, dyn_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s}+{} as ptr\n", .{ fn_reg, vtable_reg, slot }) catch return CodegenError.CodegenError;
 
                     const ret_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                     const returns_void = isVoidType(ret_ty);
                     const out_reg = if (returns_void) "return_ty_sentinel" else try self.newTmp();
                     if (returns_void) {
-                        self.out.writer().print("    call_indirect {s}(&{s}", .{ fn_reg, data_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    call_indirect {s}(&{s}", .{ fn_reg, data_reg }) catch return CodegenError.CodegenError;
                     } else {
-                        self.out.writer().print("    {s} = call_indirect {s}(&{s}", .{ out_reg, fn_reg, data_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = call_indirect {s}(&{s}", .{ out_reg, fn_reg, data_reg }) catch return CodegenError.CodegenError;
                     }
                     for (arg_regs.items) |arg_reg| {
-                        self.out.writer().print(", {s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                        self.outPrint(", {s}", .{arg_reg}) catch return CodegenError.CodegenError;
                     }
-                    self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
 
                     try self.emitRelease(fn_reg);
                     try self.emitRelease(vtable_reg);
@@ -14987,10 +15003,10 @@ pub const Codegen = struct {
                     if (decl.is_opaque) return CodegenError.CodegenError;
                     if (decl.fields.len != call.args.len) return CodegenError.CodegenError;
                     const reg = try self.newTmp();
-                    self.out.writer().print("    {s} = alloc {}\n", .{ reg, structSize(decl) }) catch return CodegenError.CodegenError;
-                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    self.outPrint("    {s} = alloc {}\n", .{ reg, structSize(decl) }) catch return CodegenError.CodegenError;
+                    var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                     defer arg_release_regs.deinit();
-                    var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_consume_regs.deinit();
                     for (decl.fields, call.args) |field, arg| {
                         const layout = fieldLayout(decl, field.name) orelse return CodegenError.CodegenError;
@@ -14998,10 +15014,10 @@ pub const Codegen = struct {
                             const source_reg = try self.genExpr(arg, hoisted_allocs);
                             const copied = try self.newTmp();
                             try self.genCopyValueInto(copied, source_reg, field.ty);
-                            self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ reg, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ reg, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
                         } else {
                             const arg_reg = try self.genExpr(arg, hoisted_allocs);
-                            self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ reg, layout.offset, arg_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ reg, layout.offset, arg_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                             try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
                                 .reg = arg_reg,
                                 .release_after_call = callArgNeedsRelease(arg),
@@ -15022,11 +15038,11 @@ pub const Codegen = struct {
                             const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ curr.user_defined.name, call.func_name }) catch null;
                             if (method_key) |mk| {
                                 if (self.tc.funcs.contains(mk)) {
-                                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                                    var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                                     defer arg_regs.deinit();
-                                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                                    var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                                     defer arg_release_regs.deinit();
-                                    var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                                    var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                                     defer arg_consume_regs.deinit();
                                     const method_func = self.tc.funcs.get(mk);
                                     for (call.args, 0..) |arg, i| {
@@ -15060,12 +15076,12 @@ pub const Codegen = struct {
                                     const reg = try self.newTmp();
                                     const lowered_method = try self.loweredFuncSymbol(mk);
                                     defer self.allocator.free(lowered_method);
-                                    self.out.writer().print("    {s} = call @{s}(", .{ reg, lowered_method }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = call @{s}(", .{ reg, lowered_method }) catch return CodegenError.CodegenError;
                                     for (arg_regs.items, 0..) |ar, i| {
-                                        if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                                        self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
+                                        if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+                                        self.outPrint("{s}", .{ar}) catch return CodegenError.CodegenError;
                                     }
-                                    self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                                    self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
                                     try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
                                     return reg;
                                 }
@@ -15080,11 +15096,11 @@ pub const Codegen = struct {
                 }
 
                 if (self.tc.extern_funcs.contains(call.func_name) or self.tc.funcs.contains(call.func_name)) {
-                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_regs.deinit();
-                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                     defer arg_release_regs.deinit();
-                    var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_consume_regs.deinit();
                     const maybe_func = self.tc.funcs.get(call.func_name);
                     for (call.args, 0..) |arg, i| {
@@ -15118,12 +15134,12 @@ pub const Codegen = struct {
                     const reg = try self.newTmp();
                     const lowered_call = try self.loweredFuncSymbol(call.func_name);
                     defer self.allocator.free(lowered_call);
-                    self.out.writer().print("    {s} = call @{s}(", .{ reg, lowered_call }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = call @{s}(", .{ reg, lowered_call }) catch return CodegenError.CodegenError;
                     for (arg_regs.items, 0..) |ar, i| {
-                        if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
+                        if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}", .{ar}) catch return CodegenError.CodegenError;
                     }
-                    self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
                     try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
                     if (maybe_func) |func| {
                         if (lowering_rules.planAsyncJoin2AwaitContinuation(func) != null) {
@@ -15148,11 +15164,11 @@ pub const Codegen = struct {
 
                 if (call.associated_target) |target_name| {
                     if (std.mem.eql(u8, target_name, "str") and self.tc.funcs.contains(call.func_name)) {
-                        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_regs.deinit();
-                        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                         defer arg_release_regs.deinit();
-                        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_consume_regs.deinit();
                         const maybe_func = self.tc.funcs.get(call.func_name);
                         for (call.args, 0..) |arg, i| {
@@ -15186,12 +15202,12 @@ pub const Codegen = struct {
                         const reg = try self.newTmp();
                         const lowered_call = try self.loweredFuncSymbol(call.func_name);
                         defer self.allocator.free(lowered_call);
-                        self.out.writer().print("    {s} = call @{s}(", .{ reg, lowered_call }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = call @{s}(", .{ reg, lowered_call }) catch return CodegenError.CodegenError;
                         for (arg_regs.items, 0..) |ar, i| {
-                            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
+                            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+                            self.outPrint("{s}", .{ar}) catch return CodegenError.CodegenError;
                         }
-                        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                        self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
                         try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, null);
                         return reg;
                     }
@@ -15200,7 +15216,7 @@ pub const Codegen = struct {
                 // If it is standard stack_alloc, it might be hoisted
                 if (lowering_rules.isStackAllocCall(call)) {
                     const reg = try self.newTmp();
-                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ reg, self.stackAllocSize(&call) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = stack_alloc {}\n", .{ reg, self.stackAllocSize(&call) }) catch return CodegenError.CodegenError;
                     return reg;
                 }
 
@@ -15219,12 +15235,12 @@ pub const Codegen = struct {
                     };
                     if (panics) {
                         const err_reg = try self.newTmp();
-                        self.out.writer().print("    {s} = 1\n", .{err_reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, err_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = 1\n", .{err_reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, err_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(err_reg);
                     } else {
                         const ok_reg = try self.genExpr(body, hoisted_allocs);
-                        self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, ok_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, ok_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(body)) try self.emitRelease(ok_reg);
                     }
                     return result_reg;
@@ -15237,27 +15253,27 @@ pub const Codegen = struct {
                         const arg = call.args[0];
                         if (arg.* == .literal) {
                             switch (arg.literal) {
-                                .int_val => |v| self.out.writer().print("    panic({})\n", .{v}) catch return CodegenError.CodegenError,
-                                .bool_val => |v| self.out.writer().print("    panic({})\n", .{if (v) @as(u8, 1) else @as(u8, 0)}) catch return CodegenError.CodegenError,
+                                .int_val => |v| self.outPrint("    panic({})\n", .{v}) catch return CodegenError.CodegenError,
+                                .bool_val => |v| self.outPrint("    panic({})\n", .{if (v) @as(u8, 1) else @as(u8, 0)}) catch return CodegenError.CodegenError,
                                 .string_val => |msg| {
                                     const label = try self.newStringConst();
-                                    self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, msg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, msg }) catch return CodegenError.CodegenError;
                                     const len_reg = try self.newTmp();
                                     try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(msg))));
-                                    self.out.writer().print("    EXPAND PANIC_MSG 103, *{s}, {s}\n", .{ label, len_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    EXPAND PANIC_MSG 103, *{s}, {s}\n", .{ label, len_reg }) catch return CodegenError.CodegenError;
                                     try self.emitRelease(len_reg);
                                 },
                                 else => {
                                     const code_reg = try self.genExpr(arg, hoisted_allocs);
-                                    self.out.writer().print("    panic({s})\n", .{code_reg}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    panic({s})\n", .{code_reg}) catch return CodegenError.CodegenError;
                                 },
                             }
                         } else {
                             const code_reg = try self.genExpr(arg, hoisted_allocs);
-                            self.out.writer().print("    panic({s})\n", .{code_reg}) catch return CodegenError.CodegenError;
+                            self.outPrint("    panic({s})\n", .{code_reg}) catch return CodegenError.CodegenError;
                         }
                     } else {
-                        self.out.writer().print("    panic(1)\n", .{}) catch return CodegenError.CodegenError;
+                        self.outPrint("    panic(1)\n", .{}) catch return CodegenError.CodegenError;
                     }
                     return reg;
                 }
@@ -15277,17 +15293,17 @@ pub const Codegen = struct {
 
                 // Assume macro expansion call in Sla
                 const reg = try self.newTmp();
-                var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                 defer arg_regs.deinit();
                 for (call.args) |arg| {
                     const arg_reg = try self.genExpr(arg, hoisted_allocs);
                     try arg_regs.append(arg_reg);
                 }
-                self.out.writer().print("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
+                self.outPrint("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
                 for (arg_regs.items) |arg_reg| {
-                    self.out.writer().print(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
                 }
-                self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+                self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
                 return reg;
             },
             .if_expr => |ife| {
@@ -15296,7 +15312,7 @@ pub const Codegen = struct {
                     const value_if = !isVoidType(expr_ty);
                     const result_slot = if (value_if) try self.newTmp() else null;
                     if (result_slot) |slot| {
-                        self.out.writer().print("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
                         try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
                     }
 
@@ -15307,7 +15323,7 @@ pub const Codegen = struct {
                     const else_terminates = if (ife.else_block) |eb| blockTerminates(eb) else false;
                     const needs_merge = !then_terminates or !else_terminates;
 
-                    var acquired = std.ArrayList([]const u8).init(self.allocator);
+                    var acquired = std.array_list.Managed([]const u8).init(self.allocator);
                     defer acquired.deinit();
 
                     for (chain, 0..) |cond, i| {
@@ -15320,14 +15336,14 @@ pub const Codegen = struct {
                         if (enum_decl) |decl| {
                             try self.genEnumPatternCheck(decl, cond.pattern, value_reg, branch_flag);
                         } else if (patternUsesResultMacros(cond.pattern)) {
-                            self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
                         } else {
-                            self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
                         }
                         if (success_on_true) {
-                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, success_label, fail_label }) catch return CodegenError.CodegenError;
+                            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ branch_flag, success_label, fail_label }) catch return CodegenError.CodegenError;
                         } else {
-                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, fail_label, success_label }) catch return CodegenError.CodegenError;
+                            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ branch_flag, fail_label, success_label }) catch return CodegenError.CodegenError;
                         }
 
                         var fail_path_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
@@ -15337,19 +15353,19 @@ pub const Codegen = struct {
                         var fail_path_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
                         defer fail_path_refcell_handles.deinit();
 
-                        self.out.writer().print("{s}:\n", .{fail_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{fail_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(cond.value)) try self.emitRelease(value_reg);
                         for (acquired.items) |binding| {
                             try self.emitRelease(binding);
                         }
-                        self.out.writer().print("    jmp {s}\n\n", .{else_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n\n", .{else_label}) catch return CodegenError.CodegenError;
                         try self.restoreConsumedBindings(&fail_path_consumed);
                         try self.restoreBorrowSourceTemps(&fail_path_borrow_sources);
                         try self.restoreRefCellBorrowHandles(&fail_path_refcell_handles);
 
-                        self.out.writer().print("{s}:\n", .{success_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{success_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
                         if (enum_decl) |decl| {
                             try self.genEnumPatternBindings(decl, cond.pattern, value_reg);
                             for (cond.pattern.bindings) |binding| {
@@ -15358,17 +15374,17 @@ pub const Codegen = struct {
                         } else if (std.mem.eql(u8, cond.pattern.variant_name, "Some") and cond.pattern.bindings.len == 1) {
                             const binding = cond.pattern.bindings[0];
                             const target = try self.pushBindingAlias(binding);
-                            self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
                             try acquired.append(binding);
                         } else if (std.mem.eql(u8, cond.pattern.variant_name, "Ok") and cond.pattern.bindings.len == 1) {
                             const binding = cond.pattern.bindings[0];
                             const target = try self.pushBindingAlias(binding);
-                            self.out.writer().print("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
                             try acquired.append(binding);
                         } else if (std.mem.eql(u8, cond.pattern.variant_name, "Err") and cond.pattern.bindings.len == 1) {
                             const binding = cond.pattern.bindings[0];
                             const target = try self.pushBindingAlias(binding);
-                            self.out.writer().print("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
                             try acquired.append(binding);
                         }
                         if (callArgNeedsRelease(cond.value)) try self.emitRelease(value_reg);
@@ -15391,16 +15407,16 @@ pub const Codegen = struct {
                     if (ife.then_block.len > 0) {
                         if (self.tc.phi_cleanups.get(ife.then_block[ife.then_block.len - 1])) |list| {
                             for (list.items) |pv| {
-                                self.out.writer().print("    !{s}\n", .{pv}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{pv}) catch return CodegenError.CodegenError;
                             }
                         }
                     }
                     if (needs_merge and !then_terminates) {
-                        self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                     }
-                    self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
 
-                    self.out.writer().print("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
                     if (ife.else_block) |eb| {
                         if (value_if and !else_terminates) {
                             try self.genBlockTailValueStore(eb, result_slot.?, expr_ty, hoisted_allocs);
@@ -15410,22 +15426,22 @@ pub const Codegen = struct {
                         if (eb.len > 0) {
                             if (self.tc.phi_cleanups.get(eb[eb.len - 1])) |list| {
                                 for (list.items) |pv| {
-                                    self.out.writer().print("    !{s}\n", .{pv}) catch return CodegenError.CodegenError;
+                                    self.outPrint("    !{s}\n", .{pv}) catch return CodegenError.CodegenError;
                                 }
                             }
                         }
                     }
                     if (needs_merge and !else_terminates) {
-                        self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                     }
-                    self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
 
                     if (needs_merge) {
-                        self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
                     }
                     if (result_slot) |slot| {
                         const reg = try self.newTmp();
-                        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
                         try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
                         try self.emitRelease(slot);
                         return reg;
@@ -15438,7 +15454,7 @@ pub const Codegen = struct {
                 const value_if = !isVoidType(expr_ty);
                 const result_slot = if (value_if) try self.newTmp() else null;
                 if (result_slot) |slot| {
-                    self.out.writer().print("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
                     try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
                 }
                 const then_label = try self.newLabel("L_THEN");
@@ -15462,7 +15478,7 @@ pub const Codegen = struct {
                 defer branch_refcell_owner_slots.deinit();
                 if (needs_merge) try self.prepareRefCellBranchHandleOwnerMergeSlots(&pre_branch_refcell_handles, &branch_refcell_owner_slots);
 
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ cond_reg, then_label, else_label }) catch return CodegenError.CodegenError;
+                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ cond_reg, then_label, else_label }) catch return CodegenError.CodegenError;
 
                 var pre_then_mutex_guards = self.mutex_guard_handles.clone() catch return CodegenError.OutOfMemory;
                 defer pre_then_mutex_guards.deinit();
@@ -15481,8 +15497,8 @@ pub const Codegen = struct {
                 var pre_then_metadata_results = self.metadata_open_results.clone() catch return CodegenError.OutOfMemory;
                 defer pre_then_metadata_results.deinit();
 
-                self.out.writer().print("{s}:\n", .{then_label}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{then_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
                 if (value_if and !then_terminates) {
                     try self.genBlockTailValueStore(ife.then_block, result_slot.?, expr_ty, hoisted_allocs);
                 } else {
@@ -15492,15 +15508,15 @@ pub const Codegen = struct {
                 if (ife.then_block.len > 0) {
                     if (self.tc.phi_cleanups.get(ife.then_block[ife.then_block.len - 1])) |list| {
                         for (list.items) |pv| {
-                            self.out.writer().print("    !{s}\n", .{pv}) catch return CodegenError.CodegenError;
+                            self.outPrint("    !{s}\n", .{pv}) catch return CodegenError.CodegenError;
                         }
                     }
                 }
                 if (needs_merge and !then_terminates) {
                     try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &self.refcell_borrow_handles);
-                    self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                 }
-                self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+                self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
 
                 var then_branch_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
                 defer then_branch_borrow_sources.deinit();
@@ -15536,8 +15552,8 @@ pub const Codegen = struct {
                 var pre_else_metadata_results = self.metadata_open_results.clone() catch return CodegenError.OutOfMemory;
                 defer pre_else_metadata_results.deinit();
 
-                self.out.writer().print("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
                 if (ife.else_block) |eb| {
                     if (value_if and !else_terminates) {
                         try self.genBlockTailValueStore(eb, result_slot.?, expr_ty, hoisted_allocs);
@@ -15548,16 +15564,16 @@ pub const Codegen = struct {
                     if (eb.len > 0) {
                         if (self.tc.phi_cleanups.get(eb[eb.len - 1])) |list| {
                             for (list.items) |pv| {
-                                self.out.writer().print("    !{s}\n", .{pv}) catch return CodegenError.CodegenError;
+                                self.outPrint("    !{s}\n", .{pv}) catch return CodegenError.CodegenError;
                             }
                         }
                     }
                 }
                 if (needs_merge and !else_terminates) {
                     try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &self.refcell_borrow_handles);
-                    self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                 }
-                self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+                self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
 
                 var else_branch_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
                 defer else_branch_borrow_sources.deinit();
@@ -15572,7 +15588,7 @@ pub const Codegen = struct {
                 }
 
                 if (needs_merge) {
-                    self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
                 }
                 try self.setMergeRefCellBranchState(
                     then_terminates,
@@ -15593,7 +15609,7 @@ pub const Codegen = struct {
                 );
                 if (result_slot) |slot| {
                     const reg = try self.newTmp();
-                    self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
                     try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
                     try self.emitRelease(slot);
                     return reg;
@@ -15610,8 +15626,8 @@ pub const Codegen = struct {
                 const switch_val_ty = self.resolvedTypeForExpr(swe.val) orelse self.tc.expr_types.get(swe.val);
                 const switch_enum_decl = if (switch_val_ty) |ty| self.enumDeclForValueType(ty) else null;
 
-                var cases_labels = std.ArrayList([]const u8).init(self.allocator);
-                var check_labels = std.ArrayList([]const u8).init(self.allocator);
+                var cases_labels = std.array_list.Managed([]const u8).init(self.allocator);
+                var check_labels = std.array_list.Managed([]const u8).init(self.allocator);
 
                 for (swe.cases, 0..) |_, idx| {
                     const c_lbl = std.fmt.allocPrint(self.allocator, "L_CASE_{}_{}", .{ idx, self.label_idx }) catch return CodegenError.OutOfMemory;
@@ -15622,7 +15638,7 @@ pub const Codegen = struct {
                 self.label_idx += 1;
 
                 // Jump to first check
-                self.out.writer().print("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
+                self.outPrint("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
 
                 // Generate equality checking ladder
                 var previous_cond: ?[]const u8 = null;
@@ -15632,9 +15648,9 @@ pub const Codegen = struct {
                 var any_fallthrough = false;
                 var has_default = false;
                 for (swe.cases, 0..) |case, idx| {
-                    self.out.writer().print("{s}:\n", .{check_labels.items[idx]}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{check_labels.items[idx]}) catch return CodegenError.CodegenError;
                     if (previous_cond) |cond| {
-                        self.out.writer().print("    !{s}\n", .{cond}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{cond}) catch return CodegenError.CodegenError;
                         previous_cond = null;
                     }
                     const is_default = isSwitchDefaultPattern(case.pattern);
@@ -15647,52 +15663,52 @@ pub const Codegen = struct {
                                 if (lit.fields.len == 0 and enumNameMatchesDecl(lit.enum_name, decl.name)) {
                                     if (enumVariantValue(decl, lit.variant_name)) |tag| {
                                         const tag_reg = try self.newTmp();
-                                        self.out.writer().print("    {s} = load {s}+0 as i64\n", .{ tag_reg, val_reg }) catch return CodegenError.CodegenError;
+                                        self.outPrint("    {s} = load {s}+0 as i64\n", .{ tag_reg, val_reg }) catch return CodegenError.CodegenError;
                                         const tag_const = try self.newTmp();
                                         try self.emitIntConst(tag_const, tag);
-                                        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, tag_reg, tag_const }) catch return CodegenError.CodegenError;
-                                        self.out.writer().print("    !{s}\n", .{tag_reg}) catch return CodegenError.CodegenError;
-                                        self.out.writer().print("    !{s}\n", .{tag_const}) catch return CodegenError.CodegenError;
+                                        self.outPrint("    {s} = eq {s}, {s}\n", .{ is_eq, tag_reg, tag_const }) catch return CodegenError.CodegenError;
+                                        self.outPrint("    !{s}\n", .{tag_reg}) catch return CodegenError.CodegenError;
+                                        self.outPrint("    !{s}\n", .{tag_const}) catch return CodegenError.CodegenError;
                                     } else {
                                         const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
-                                        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
+                                        self.outPrint("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
                                         if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
                                     }
                                 } else {
                                     const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
-                                    self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
+                                    self.outPrint("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
                                     if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
                                 }
                             } else {
                                 const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
-                                self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
+                                self.outPrint("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
                                 if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
                             }
                         } else {
                             const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
-                            self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
                             if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
                         }
                     }
 
                     const next_chk = if (idx + 1 < swe.cases.len) check_labels.items[idx + 1] else merge_label;
                     if (is_default) {
-                        self.out.writer().print("    jmp {s}\n\n", .{cases_labels.items[idx]}) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n\n", .{cases_labels.items[idx]}) catch return CodegenError.CodegenError;
                     } else {
-                        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_eq, cases_labels.items[idx], next_chk }) catch return CodegenError.CodegenError;
+                        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_eq, cases_labels.items[idx], next_chk }) catch return CodegenError.CodegenError;
                         previous_cond = is_eq;
                     }
 
                     // Generate case body
-                    self.out.writer().print("{s}:\n", .{cases_labels.items[idx]}) catch return CodegenError.CodegenError;
-                    if (!is_default) self.out.writer().print("    !{s}\n", .{is_eq}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{cases_labels.items[idx]}) catch return CodegenError.CodegenError;
+                    if (!is_default) self.outPrint("    !{s}\n", .{is_eq}) catch return CodegenError.CodegenError;
                     if (val_needs_release and blockTerminates(case.body)) try self.emitRelease(val_reg);
                     try self.genBlock(case.body, hoisted_allocs);
                     if (!blockTerminates(case.body)) {
-                        self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                         any_fallthrough = true;
                     }
-                    self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
                 }
 
                 // The last non-default check branches to the merge label, so
@@ -15700,7 +15716,7 @@ pub const Codegen = struct {
                 const last_is_default = swe.cases.len > 0 and isSwitchDefaultPattern(swe.cases[swe.cases.len - 1].pattern);
                 const need_merge = any_fallthrough or !has_default or !last_is_default;
                 if (need_merge) {
-                    self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
                     if (val_needs_release) try self.emitRelease(val_reg);
                 }
                 const reg = try self.newTmp();
@@ -15712,45 +15728,45 @@ pub const Codegen = struct {
                 if (optionInnerType(inner_ty) != null) {
                     const inner_reg = try self.genExpr(trye.expr, hoisted_allocs);
                     const is_some = try self.newTmp();
-                    self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, inner_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, inner_reg }) catch return CodegenError.CodegenError;
 
                     const some_label = try self.newLabel("L_TRY_OPTION_SOME");
                     const none_label = try self.newLabel("L_TRY_OPTION_NONE");
 
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
 
-                    self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
                     try self.emitBranchScopedCleanupForNode(expr);
-                    self.out.writer().print("    return {s}\n\n", .{inner_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    return {s}\n\n", .{inner_reg}) catch return CodegenError.CodegenError;
 
-                    self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
                     const some_val = try self.newTmp();
-                    self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ some_val, inner_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{inner_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ some_val, inner_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{inner_reg}) catch return CodegenError.CodegenError;
                     return some_val;
                 }
                 if (resultOkType(inner_ty) != null) {
                     const inner_reg = try self.genExpr(trye.expr, hoisted_allocs);
                     const is_ok = try self.newTmp();
-                    self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ is_ok, inner_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ is_ok, inner_reg }) catch return CodegenError.CodegenError;
 
                     const ok_label = try self.newLabel("L_TRY_RESULT_OK");
                     const err_label = try self.newLabel("L_TRY_RESULT_ERR");
 
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_ok, ok_label, err_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_ok, ok_label, err_label }) catch return CodegenError.CodegenError;
 
-                    self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
                     try self.emitBranchScopedCleanupForNode(expr);
-                    self.out.writer().print("    return {s}\n\n", .{inner_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    return {s}\n\n", .{inner_reg}) catch return CodegenError.CodegenError;
 
-                    self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
                     const ok_val = try self.newTmp();
-                    self.out.writer().print("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ ok_val, inner_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{inner_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ ok_val, inner_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{inner_reg}) catch return CodegenError.CodegenError;
                     return ok_val;
                 }
                 const result_ty = lowering_rules.peelBorrowPointerType(inner_ty);
@@ -15761,27 +15777,27 @@ pub const Codegen = struct {
 
                 const inner_reg = try self.genExpr(trye.expr, hoisted_allocs);
                 const is_err = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ is_err, inner_reg, is_err_layout.offset, is_err_layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ is_err, inner_reg, is_err_layout.offset, is_err_layout.ty_str }) catch return CodegenError.CodegenError;
 
                 const ok_label = try self.newLabel("L_TRY_OK");
                 const err_label = try self.newLabel("L_TRY_ERR");
 
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_err, err_label, ok_label }) catch return CodegenError.CodegenError;
+                self.outPrint("    br {s} -> {s}, {s}\n\n", .{ is_err, err_label, ok_label }) catch return CodegenError.CodegenError;
 
                 // Error branch
-                self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{is_err}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{is_err}) catch return CodegenError.CodegenError;
 
                 try self.emitBranchScopedCleanupForNode(expr);
 
-                self.out.writer().print("    return {s}\n\n", .{inner_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    return {s}\n\n", .{inner_reg}) catch return CodegenError.CodegenError;
 
                 // Ok branch
-                self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{is_err}) catch return CodegenError.CodegenError;
+                self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{is_err}) catch return CodegenError.CodegenError;
                 const ok_val = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ ok_val, inner_reg, value_layout.offset, value_layout.ty_str }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{inner_reg}) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ ok_val, inner_reg, value_layout.offset, value_layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    !{s}\n", .{inner_reg}) catch return CodegenError.CodegenError;
                 return ok_val;
             },
             else => return CodegenError.CodegenError,

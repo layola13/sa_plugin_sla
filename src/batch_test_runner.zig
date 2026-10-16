@@ -34,15 +34,22 @@ fn log(
 }
 
 fn envUsize(name: []const u8) ?usize {
-    const val = std.process.getEnvVarOwned(std.heap.page_allocator, name) catch return null;
-    defer std.heap.page_allocator.free(val);
+    // NOTE(Zig 0.17): `std.process.getEnvVarOwned` was removed; read via
+    // `std.posix.getenv` (same approach as sci's sio.getEnvVarOwned) without
+    // importing sio (this is a standalone test_runner module).
+    const zkey = std.heap.page_allocator.dupeSentinel(u8, name, 0) catch return null;
+    defer std.heap.page_allocator.free(zkey);
+    const raw = std.posix.getenv(zkey) orelse return null;
+    const val = std.mem.span(raw);
     if (val.len == 0) return null;
     return std.fmt.parseUnsigned(usize, val, 10) catch null;
 }
 
 fn envFlag(name: []const u8) bool {
-    const val = std.process.getEnvVarOwned(std.heap.page_allocator, name) catch return false;
-    defer std.heap.page_allocator.free(val);
+    const zkey = std.heap.page_allocator.dupeSentinel(u8, name, 0) catch return false;
+    defer std.heap.page_allocator.free(zkey);
+    const raw = std.posix.getenv(zkey) orelse return false;
+    const val = std.mem.span(raw);
     return std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true");
 }
 

@@ -28,23 +28,12 @@ async fn job(x: i32) -> i32 {
     return w;
 }
 
-fn block_on(future: future<i32>) -> i32 {
-    let data: ptr = PTR_NULL();
-    let raw = RAW_WAKER_NEW(data, data);
-    let waker = WAKER_FROM_RAW(raw);
-    let context = CONTEXT_FROM_WAKER(waker);
-    let boxed = Box::new(future);
-    let future_ref = *boxed;
-    let pinned = stack_alloc();
-    PIN_MUT_NEW(pinned, future_ref);
-
+fn drive_job(x: i32) -> i32 {
+    let t = task::new(job(x));
     let deadline = pool_now_ns() + 2000000000;
     while pool_now_ns() < deadline {
-        let poll = FUTURE_READY_POLL_STATE(PIN_MUT_GET_MUT(pinned));
-        let ready = POLL_IS_READY(poll);
-        if ready == true {
-            let value: i32 = POLL_VALUE(poll);
-            return value;
+        if task::poll(t) == true {
+            return task::result(t);
         };
         THREAD_SLEEP_MS(1);
     }
@@ -56,8 +45,8 @@ fn get_cell(c: Arc<Mutex<i32> >) -> i32 {
     return *g;
 }
 
-fn pool_worker(f: future<i32>, out: Arc<Mutex<i32> >) {
-    let r = block_on(f);
+fn pool_worker(x: i32, out: Arc<Mutex<i32> >) {
+    let r = drive_job(x);
     let g = (*out).lock().unwrap();
     *g = r;
 }
@@ -66,16 +55,13 @@ fn thread_pool_await_total() -> i32 {
     let c1: Arc<Mutex<i32> > = Arc::new(Mutex::new(0));
     let c2: Arc<Mutex<i32> > = Arc::new(Mutex::new(0));
 
-    let fa = job(1);
-    let fb = job(2);
-
     let w_c1 = c1.clone();
-    let h1 = thread::spawn(^|| pool_worker(fa, w_c1));
+    let h1 = thread::spawn(^|| pool_worker(1, w_c1));
     let w_c2 = c2.clone();
-    let h2 = thread::spawn(^|| pool_worker(fb, w_c2));
+    let h2 = thread::spawn(^|| pool_worker(2, w_c2));
 
-    // main drives its own future concurrently
-    let local = block_on(job(3));
+    // main drives its own job concurrently
+    let local = drive_job(3);
 
     h1.join().unwrap();
     h2.join().unwrap();

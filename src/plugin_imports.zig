@@ -1,4 +1,6 @@
 const std = @import("std");
+const sio = @import("sio");
+const sla_rt = @import("sla_rt");
 const workspace = @import("workspace.zig");
 const host_paths = @import("host_paths.zig");
 
@@ -71,11 +73,11 @@ pub fn isSlaStdImport(path: []const u8) bool {
 }
 
 pub fn readImportFileIfExistsWithOutputPath(allocator: std.mem.Allocator, path: []const u8, output_path: []const u8) !?ResolvedImport {
-    const source = std.fs.cwd().readFileAlloc(allocator, path, max_import_bytes) catch |err| {
+    const source = sio.cwd().readFileAlloc(allocator, path, max_import_bytes) catch |err| {
         if (err == error.FileNotFound or err == error.NotDir or err == error.IsDir) return null;
         return err;
     };
-    const real_path_raw = std.fs.cwd().realpathAlloc(allocator, path) catch try allocator.dupe(u8, path);
+    const real_path_raw = sio.cwd().realpathAlloc(allocator, path) catch try allocator.dupe(u8, path);
     const real_path = try host_paths.normalizePathSlashes(allocator, real_path_raw);
     allocator.free(real_path_raw);
     return .{ .path = real_path, .output_path = try allocator.dupe(u8, output_path), .source = source };
@@ -99,7 +101,7 @@ fn readImportFromAncestorRoots(
     output_path: []const u8,
     roots: []const []const u8,
 ) !?ResolvedImport {
-    var current = std.fs.cwd().realpathAlloc(allocator, base_dir) catch try allocator.dupe(u8, base_dir);
+    var current = sio.cwd().realpathAlloc(allocator, base_dir) catch try allocator.dupe(u8, base_dir);
     defer allocator.free(current);
     while (true) {
         for (roots) |root| {
@@ -128,15 +130,15 @@ fn resolveSaStdImportFromBase(allocator: std.mem.Allocator, base_dir: []const u8
     const ancestor_roots = [_][]const u8{ "sa_std", "sci/sa_std" };
     if (try readImportFromAncestorRoots(allocator, base_dir, rel_path, import_path, &ancestor_roots)) |resolved| return resolved;
 
-    if (std.process.getEnvVarOwned(allocator, "SA_STD_DIR")) |env_root| {
+    if (sla_rt.getEnvOwned(allocator, "SA_STD_DIR")) |env_root| {
         if (try readImportFromRoot(allocator, env_root, rel_path, import_path)) |resolved| return resolved;
-    } else |_| {}
+    } else {}
 
-    if (std.process.getEnvVarOwned(allocator, "SCI_ROOT")) |sci_root| {
+    if (sla_rt.getEnvOwned(allocator, "SCI_ROOT")) |sci_root| {
         defer allocator.free(sci_root);
         const sci_sa_std_root = try std.fs.path.join(allocator, &.{ sci_root, "sa_std" });
         if (try readImportFromRoot(allocator, sci_sa_std_root, rel_path, import_path)) |resolved| return resolved;
-    } else |_| {}
+    } else {}
 
     if (host_paths.homeDirectory(allocator)) |home| {
         defer allocator.free(home);
@@ -173,9 +175,9 @@ fn resolveSlaStdImportFromBase(allocator: std.mem.Allocator, base_dir: []const u
     const ancestor_roots = [_][]const u8{ "sla_std", "sa_plugin_sla/sla_std", "sa_plugins/sa_plugin_sla/sla_std" };
     if (try readImportFromAncestorRoots(allocator, base_dir, rel_path, import_path, &ancestor_roots)) |resolved| return resolved;
 
-    if (std.process.getEnvVarOwned(allocator, "SLA_STD_DIR")) |env_root| {
+    if (sla_rt.getEnvOwned(allocator, "SLA_STD_DIR")) |env_root| {
         if (try readImportFromRoot(allocator, env_root, rel_path, import_path)) |resolved| return resolved;
-    } else |_| {}
+    } else {}
 
     if (host_paths.homeDirectory(allocator)) |home| {
         defer allocator.free(home);
@@ -280,7 +282,7 @@ pub fn appendResolvedImportFiles(
     base_dir: []const u8,
     raw_import_path: []const u8,
     exclude_path: ?[]const u8,
-    out: *std.ArrayList(ResolvedImport),
+    out: *std.array_list.Managed(ResolvedImport),
 ) !void {
     if (!isGlobImportPath(raw_import_path)) {
         const resolved = try resolveImportFile(allocator, base_dir, raw_import_path);
@@ -301,10 +303,10 @@ pub fn appendResolvedImportFiles(
     const dir_path = std.fs.path.dirname(pattern_path) orelse ".";
     const pattern_name = std.fs.path.basename(pattern_path);
 
-    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+    var dir = try sio.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
 
-    var matched_paths = std.ArrayList([]const u8).init(allocator);
+    var matched_paths = std.array_list.Managed([]const u8).init(allocator);
     var it = dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind != .file and entry.kind != .sym_link) continue;
@@ -334,7 +336,7 @@ pub fn resolveImportFiles(
     raw_import_path: []const u8,
     exclude_path: ?[]const u8,
 ) ![]ResolvedImport {
-    var out = std.ArrayList(ResolvedImport).init(allocator);
+    var out = std.array_list.Managed(ResolvedImport).init(allocator);
     try appendResolvedImportFiles(allocator, base_dir, raw_import_path, exclude_path, &out);
     std.mem.sort(ResolvedImport, out.items, {}, resolvedImportLessThan);
     return try out.toOwnedSlice();
@@ -374,20 +376,20 @@ test "resolve import by workspace package name" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("members/app/src");
-    try tmp.dir.makePath("members/protocol/src");
+    try tmp.dir.createDirPath(std.testing.io, "members/app/src");
+    try tmp.dir.createDirPath(std.testing.io, "members/protocol/src");
     const workspace_manifest =
         \\workspace {
         \\  members ["members/app", "members/protocol"]
         \\  default_member "app"
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "sa.mod", .data = workspace_manifest });
-    try tmp.dir.writeFile(.{ .sub_path = "members/app/sa.mod", .data = "package \"scodex-cli\"\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "members/protocol/sa.mod", .data = "package \"scodex-protocol\"\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "members/protocol/src/protocol.sla", .data = "fn protocol_ok() -> i32 { return 1; }\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sa.mod", .data = workspace_manifest });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "members/app/sa.mod", .data = "package \"scodex-cli\"\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "members/protocol/sa.mod", .data = "package \"scodex-protocol\"\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "members/protocol/src/protocol.sla", .data = "fn protocol_ok() -> i32 { return 1; }\n" });
 
-    const tmp_root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_root);
     const app_src = try std.fs.path.join(std.testing.allocator, &.{ tmp_root, "members", "app", "src" });
     defer std.testing.allocator.free(app_src);

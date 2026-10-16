@@ -55,5 +55,10 @@ tools/verify_demos_test.sh
 demos/workspace/members/app/src/main.sa
 demos/rosetta/01_hello_world/*.exe
 demos/rosetta/01_hello_world/*.exe.sa.bc
+# harness/session runtime state (per-session UUID dirs, trash, npm metadata)
+.codex-ultra/thread-skills/
+.codex-ultra/vm-trash/
+.opencode/package.json
+.opencode/package-lock.json
 demos/rosetta/01_hello_world/.claude/
 demos/rosetta/01_hello_world/.codex/

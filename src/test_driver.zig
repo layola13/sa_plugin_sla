@@ -1,6 +1,7 @@
 // test_driver.zig – standalone end-to-end compilation check for @test support.
 // Compile & run: zig run src/test_driver.zig
 const std = @import("std");
+const sio = @import("sio");
 const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
@@ -49,6 +50,8 @@ pub fn main() !void {
     defer cg.deinit();
     const sa_code = try cg.generate(specialized);
 
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("=== Generated SA code ===\n{s}\n", .{sa_code});
+    var obuf: [8192]u8 = undefined;
+    var ow = sio.getStdOut().writer(&obuf);
+    try ow.interface.print("=== Generated SA code ===\n{s}\n", .{sa_code});
+    try ow.interface.flush();
 }

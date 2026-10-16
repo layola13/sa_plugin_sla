@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
@@ -57,7 +58,7 @@ pub fn pruneTestsByFilter(allocator: std.mem.Allocator, program: *ast.Node, filt
     if (filter == null or filter.?.len == 0) return;
     if (program.* != .program) return error.InvalidProgram;
 
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         if (decl.* == .test_decl and !testMatchesFilter(&decl.test_decl, filter)) continue;
@@ -70,12 +71,12 @@ pub fn testFilterSelectsNoTests(
     allocator: std.mem.Allocator,
     file: []const u8,
     filter: ?[]const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
 ) !?bool {
     const pattern = filter orelse return null;
     if (pattern.len == 0) return null;
 
-    const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
+    const content = sio.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
         try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
         return null;
     };
@@ -126,7 +127,7 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
     defer reachable.deinit();
     var referenced_types = std.StringHashMap(void).init(allocator);
     defer referenced_types.deinit();
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     defer worklist.deinit();
     var scanned_symbol_roots = std.StringHashMap(void).init(allocator);
     defer scanned_symbol_roots.deinit();
@@ -203,7 +204,7 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
         try pruneKnownFalseBranchesInReachableDecls(allocator, program, &analysis, &reachable);
     }
 
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         switch (decl.*) {
@@ -222,7 +223,7 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
                     try filtered_decls.append(decl);
                     continue;
                 };
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (impl_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -251,7 +252,7 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
                     try filtered_decls.append(decl);
                     continue;
                 };
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (overload_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -291,7 +292,7 @@ fn pruneUnreachableFilteredTestDecls(
     if (program.* != .program) return error.InvalidProgram;
 
     var reachable = std.StringHashMap(void).init(allocator);
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     try reachable.ensureTotalCapacity(@intCast(program.program.decls.len));
     try worklist.ensureTotalCapacity(program.program.decls.len);
 
@@ -342,7 +343,7 @@ fn pruneUnreachableFilteredTestDecls(
         }
     }
 
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         switch (decl.*) {
@@ -375,7 +376,7 @@ fn pruneUnreachableFilteredTestDecls(
                     continue;
                 };
 
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (impl_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -401,7 +402,7 @@ fn pruneUnreachableFilteredTestDecls(
                     try filtered_decls.append(decl);
                     continue;
                 };
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (overload_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -437,7 +438,7 @@ fn pruneUnreachableEntryFunctionDecls(
     const entry = tc.funcs.get(entry_name) orelse return;
 
     var reachable = std.StringHashMap(void).init(allocator);
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     try reachable.ensureTotalCapacity(@intCast(program.program.decls.len));
     try worklist.ensureTotalCapacity(program.program.decls.len);
 
@@ -485,7 +486,7 @@ fn pruneUnreachableEntryFunctionDecls(
         }
     }
 
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         switch (decl.*) {
@@ -519,7 +520,7 @@ fn pruneUnreachableEntryFunctionDecls(
                     continue;
                 };
 
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (impl_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -545,7 +546,7 @@ fn pruneUnreachableEntryFunctionDecls(
                     try filtered_decls.append(decl);
                     continue;
                 };
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (overload_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -575,7 +576,7 @@ pub fn compileSlaToSaString(
     allocator: std.mem.Allocator,
     file: []const u8,
     output_file: ?[]const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
 ) !?[]const u8 {
     return compileSlaToSaStringWithOptions(allocator, file, output_file, stderr, defaultSlaCompileOptions());
 }
@@ -596,24 +597,24 @@ fn runSlaFrontend(
     mono: *monomorphizer_mod.Monomorphizer,
     tc: *type_checker_mod.TypeChecker,
     options: SlaCompileOptions,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
     profile: bool,
 ) !?*ast.Node {
-    var stage_start = std.time.nanoTimestamp();
-    const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
+    var stage_start = sio.nanoTimestamp();
+    const content = sio.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
         try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
         return null;
     };
     slaProfileStage(stderr, profile, "read source", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     const expanded_content = source_expand.expandForModulePath(allocator, file, content) catch |err| {
         try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
         return null;
     };
     slaProfileStage(stderr, profile, "source expand", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     const sla_base_dir = std.fs.path.dirname(file) orelse ".";
     // Check/compile roots skip test bodies for wall-clock. Test codegen must parse
     // them: otherwise prune/reachability never sees roots such as generic_func_ref
@@ -628,7 +629,7 @@ fn runSlaFrontend(
     };
     slaProfileStage(stderr, profile, "parse", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     var import_modules = if (options.load_reachable_imported_bodies_from_registry)
         SlaModuleTable.initWithParserOptions(allocator, .{
@@ -640,9 +641,9 @@ fn runSlaFrontend(
     else
         SlaModuleTable.init(allocator);
     defer import_modules.deinit();
-    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);
     defer root_import_groups.deinit();
-    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    var contract_imports = std.array_list.Managed(ResolvedImport).init(allocator);
     defer contract_imports.deinit();
     const expanded_prog = expandSlaImportsWithModuleTableUsingContractTypeChecker(allocator, prog, file, &primary_decls, .{
         .prune_for_test_codegen = options.prune_for_test_codegen,
@@ -655,14 +656,14 @@ fn runSlaFrontend(
     };
     slaProfileStage(stderr, profile, "import expand", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     pruneTestsByFilter(allocator, expanded_prog, options.test_filter) catch |err| {
         try stderr.print("Test Filter Error: failed to prune @test declarations: {}\n", .{err});
         return null;
     };
     slaProfileStage(stderr, profile, "test filter prune", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
         if (err == error.TemplateNotFound) {
@@ -678,7 +679,7 @@ fn runSlaFrontend(
     };
     slaProfileStage(stderr, profile, "monomorphize", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     if (!options.prune_for_test_codegen) {
         loadImportedContractsFromResolvedImports(tc, allocator, contract_imports.items) catch |err| {
             try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
@@ -687,7 +688,7 @@ fn runSlaFrontend(
     }
     slaProfileStage(stderr, profile, "load contracts", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     registerImportedFunctionAliasesFromResolvedImports(tc, allocator, root_import_groups.items, &import_modules) catch |err| {
         try stderr.print("Import Error: failed to register @import function aliases: {}\n", .{err});
         return null;
@@ -695,7 +696,7 @@ fn runSlaFrontend(
     slaProfileStage(stderr, profile, "import aliases", stage_start);
 
     if (options.prune_for_test_codegen) {
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog, &tc.imported_macros, &specialized_primary_decls, true, true) catch |err| {
             try stderr.print("Test Filter Error: failed to prune unreachable functions before type checking: {}\n", .{err});
             return null;
@@ -703,7 +704,7 @@ fn runSlaFrontend(
         slaProfileStage(stderr, profile, "pre-typecheck reachable decl filter", stage_start);
     }
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     tc.checkProgram(specialized_prog) catch |err| {
         try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
         return null;
@@ -711,8 +712,8 @@ fn runSlaFrontend(
     slaProfileStage(stderr, profile, "type check", stage_start);
 
     // Filter specialized_prog to only include primary declarations
-    stage_start = std.time.nanoTimestamp();
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    stage_start = sio.nanoTimestamp();
+    var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try filtered_decls.ensureTotalCapacity(specialized_prog.program.decls.len);
     for (specialized_prog.program.decls) |decl| {
         if (specialized_primary_decls.contains(decl)) {
@@ -729,7 +730,7 @@ pub fn compileSlaToSaStringWithOptions(
     allocator: std.mem.Allocator,
     file: []const u8,
     output_file: ?[]const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
     options: SlaCompileOptions,
 ) !?[]const u8 {
     const profile = slaProfileEnabled(allocator);
@@ -741,20 +742,23 @@ pub fn compileSlaToSaStringWithOptions(
 
     const specialized_prog = (try runSlaFrontend(allocator, file, &mono, &tc, options, stderr, profile)) orelse return null;
 
-    var stage_start = std.time.nanoTimestamp();
+    var stage_start = sio.nanoTimestamp();
     rewriteProgramImportsForOutput(allocator, specialized_prog, file, output_file) catch |err| {
         try stderr.print("Import Error: failed to rewrite @import paths for output: {}\n", .{err});
         return null;
     };
     slaProfileStage(stderr, profile, "rewrite imports", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     var cg = codegen_mod.Codegen.init(allocator, &tc);
     defer cg.deinit();
 
     const sa_code = cg.generate(specialized_prog) catch |err| {
         try stderr.print("Codegen Error: failed to generate SA code: {}\n", .{err});
-        if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace.*);
+        // NOTE(Zig 0.17): `@errorReturnTrace()` now yields `std.lang.StackTrace`,
+        // which `std.debug.dumpStackTrace` no longer accepts; dump the current
+        // trace instead (still inside the error path).
+        if (@errorReturnTrace()) |_| std.debug.dumpCurrentStackTrace(.{});
         return null;
     };
     slaProfileStage(stderr, profile, "sa codegen", stage_start);
@@ -765,14 +769,14 @@ fn compileSlaFileToSa(
     allocator: std.mem.Allocator,
     file: []const u8,
     output_file: ?[]const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
 ) !?[]const u8 {
     return compileSlaToSaString(allocator, file, output_file, stderr);
 }
 
 pub fn resolveWorkspaceSourcePath(
     allocator: std.mem.Allocator,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
     package_name: ?[]const u8,
 ) !?[]u8 {
     var resolution = sla_workspace.resolveFromCurrentDir(allocator, .{ .request = package_name }) catch |err| switch (err) {
@@ -807,7 +811,7 @@ pub fn resolveWorkspaceSourcePath(
 
 pub fn resolveSlaInputFile(
     allocator: std.mem.Allocator,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
     options: SlaCliOptions,
 ) !?[]u8 {
     if (options.source_file) |file| {
@@ -821,7 +825,7 @@ pub fn compileSlaFileToSab(
     allocator: std.mem.Allocator,
     file: []const u8,
     output_file: []const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
 ) !?[]u8 {
     return compileSlaFileToSabWithOptions(allocator, file, output_file, stderr, defaultSlaCompileOptions());
 }
@@ -830,7 +834,7 @@ pub fn compileSlaFileToSabWithOptions(
     allocator: std.mem.Allocator,
     file: []const u8,
     output_file: []const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
     options: SlaCompileOptions,
 ) !?[]u8 {
     // output_file is kept for API stability; the SAB-direct pipeline manages
@@ -845,7 +849,7 @@ pub fn compileSlaFileToSabWithOptions(
 
     const specialized_prog = (try runSlaFrontend(allocator, file, &mono, &tc, options, stderr, profile)) orelse return null;
 
-    var stage_start = std.time.nanoTimestamp();
+    var stage_start = sio.nanoTimestamp();
     if (options.prune_for_test_codegen) {
         pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog, &tc.imported_macros, null, true, false) catch |err| {
             try stderr.print("Test Filter Error: failed to prune syntactic unreachable declarations after type checking: {}\n", .{err});
@@ -854,14 +858,14 @@ pub fn compileSlaFileToSabWithOptions(
     }
     slaProfileStage(stderr, profile, "post-typecheck syntactic reachable decl filter", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     pruneUnreachableFilteredTestDecls(allocator, specialized_prog, &tc, options.test_filter, options.prune_for_test_codegen) catch |err| {
         try stderr.print("Test Filter Error: failed to prune unreachable declarations: {}\n", .{err});
         return null;
     };
     slaProfileStage(stderr, profile, "reachable decl filter", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     if (options.prune_for_entry_function) |entry_name| {
         pruneUnreachableEntryFunctionDecls(allocator, specialized_prog, &tc, entry_name) catch |err| {
             try stderr.print("Reachability Error: failed to prune unreachable executable declarations: {}\n", .{err});
@@ -870,7 +874,7 @@ pub fn compileSlaFileToSabWithOptions(
     }
     slaProfileStage(stderr, profile, "entry reachable decl filter", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
+    stage_start = sio.nanoTimestamp();
     const sab_bytes = sab_codegen_mod.generate(allocator, &tc, specialized_prog) catch |err| {
         slaProfileStage(stderr, profile, "sab direct codegen", stage_start);
         switch (err) {
@@ -889,7 +893,7 @@ pub fn compileSlaFileToSabOrSa(
     allocator: std.mem.Allocator,
     file: []const u8,
     output_file: []const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
 ) !?[]u8 {
     return compileSlaFileToSab(allocator, file, output_file, stderr);
 }
@@ -897,11 +901,11 @@ pub fn compileSlaFileToSabOrSa(
 pub fn maybeWriteSiblingSab(
     allocator: std.mem.Allocator,
     file: []const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
 ) !void {
     const sab_out = try defaultOutputPath(allocator, file, ".sla", ".sab");
     const sab_bytes = (try compileSlaFileToSabOrSa(allocator, file, sab_out, stderr)) orelse return error.InvalidFormat;
-    try std.fs.cwd().writeFile(.{ .sub_path = sab_out, .data = sab_bytes });
+    try sio.cwd().writeFile(.{ .sub_path = sab_out, .data = sab_bytes });
 }
 
 pub const CompiledTestInput = struct {
@@ -910,7 +914,7 @@ pub const CompiledTestInput = struct {
 };
 
 fn keepGeneratedSaTestInput(allocator: std.mem.Allocator) bool {
-    const value = std.process.getEnvVarOwned(allocator, "SLA_KEEP_TEST_SA") catch return false;
+    const value = sio.getEnvVarOwned(allocator, "SLA_KEEP_TEST_SA") catch return false;
     defer allocator.free(value);
     return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false") and !std.mem.eql(u8, value, "no");
 }
@@ -918,7 +922,7 @@ fn keepGeneratedSaTestInput(allocator: std.mem.Allocator) bool {
 pub fn compileSlaSabTestInput(
     allocator: std.mem.Allocator,
     file: []const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
     extra_args: []const []const u8,
     emit_sab_file: bool,
 ) !?CompiledTestInput {
@@ -941,7 +945,7 @@ pub fn compileSlaSabTestInput(
 pub fn compileSlaSaTestInput(
     allocator: std.mem.Allocator,
     file: []const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
     extra_args: []const []const u8,
     emit_sab_file: bool,
 ) !?CompiledTestInput {
@@ -956,7 +960,7 @@ pub fn compileSlaSaTestInput(
         .load_reachable_imported_bodies_from_registry = true,
     })) orelse return null;
 
-    std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
+    sio.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
         try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
         return null;
     };

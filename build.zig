@@ -2,15 +2,9 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    // System root / libc installation file for cross-compilation to targets
-    // without bundled libc (FreeBSD: extract base.txz, generate libc file;
-    // same pattern as sci/build.zig -Dsysroot/-Dlibc).
-    if (b.option([]const u8, "sysroot", "System root directory for cross-compilation (provides target libc headers/libs).")) |s| {
-        b.sysroot = s;
-    }
-    if (b.option([]const u8, "libc", "Custom libc installation file for cross-compilation targets without bundled libc.")) |l| {
-        b.libc_file = l;
-    }
+    // NOTE(Zig 0.17): the global `b.sysroot` / `b.libc_file` overrides were
+    // removed from std.Build (same as sci/build.zig); the old
+    // -Dsysroot/-Dlibc cross-compilation options are obsolete.
     // SLA toolchain version, kept in sync with the @salang/sa npm line.
     const sla_version = b.option([]const u8, "version", "SLA toolchain semantic version.") orelse "0.1.3";
     const requested_optimize = b.standardOptimizeOption(.{});
@@ -33,7 +27,7 @@ pub fn build(b: *std.Build) void {
     sci_build_options.addOption([]const u8, "repo_root", repo_root);
     sci_build_options.addOption([]const u8, "sa_std_dir", sa_std_dir);
     sci_build_options.addOption([]const u8, "sa_std_archive_name", sa_std_archive_rel);
-    sci_build_options.addOption([]const u8, "sa_std_archive_path", b.pathFromRoot(sa_std_archive_path));
+    sci_build_options.addOption([]const u8, "sa_std_archive_path", pathFromRoot(b, sa_std_archive_path));
     sci_build_options.addOption([]const u8, "version", "dev");
     const sla_build_options = b.addOptions();
     sla_build_options.addOption([]const u8, "sa_std_dir", sa_std_dir);
@@ -55,6 +49,24 @@ pub fn build(b: *std.Build) void {
     });
     sci_bridge.addOptions("build_options", sci_build_options);
     root_module.addImport("sci_bridge", sci_bridge);
+    // Central 0.17 runtime helper (process-wide Io + env); see src/sla_rt.zig.
+    const sla_rt = b.createModule(.{
+        .root_source_file = b.path("src/sla_rt.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    root_module.addImport("sla_rt", sla_rt);
+    // NOTE(Zig 0.17): reuse sci's I/O compat layer (same `sio` module as
+    // sci/build.zig); sla sources use `const sio = @import("sio");` for
+    // cwd/Child/args/stdout shims, and sci_bridge needs it for its own
+    // `@import("sio")` sites (flattener/sab/verifier/...).
+    const sio_module = b.createModule(.{
+        .root_source_file = lazyPath(b, b.pathJoin(&.{ repo_root, "src/sa_io.zig" })),
+        .target = target,
+        .optimize = optimize,
+    });
+    root_module.addImport("sio", sio_module);
+    sci_bridge.addImport("sio", sio_module);
 
     const lib = b.addLibrary(.{
         .name = "sla",
@@ -73,6 +85,8 @@ pub fn build(b: *std.Build) void {
     local_cli_module.addImport("plugin_api", plugin_api);
     local_cli_module.addOptions("sla_build_options", sla_build_options);
     local_cli_module.addImport("sci_bridge", sci_bridge);
+    local_cli_module.addImport("sla_rt", sla_rt);
+    local_cli_module.addImport("sio", sio_module);
     const local_cli = b.addExecutable(.{
         .name = "sla",
         .root_module = local_cli_module,
@@ -80,7 +94,8 @@ pub fn build(b: *std.Build) void {
     linkHostSystemLibs(local_cli, is_windows);
     b.installArtifact(local_cli);
     const run_local_cli = b.addRunArtifact(local_cli);
-    if (b.args) |args| run_local_cli.addArgs(args);
+    // NOTE(Zig 0.17): `b.args` forwarding was removed; run the installed
+    // `sla` binary directly with arguments instead.
     const local_cli_step = b.step("local-cli", "Run the local Sla CLI driver");
     local_cli_step.dependOn(&run_local_cli.step);
 
@@ -90,13 +105,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     dump_sab_module.addImport("sci_bridge", sci_bridge);
+    dump_sab_module.addImport("sla_rt", sla_rt);
+    dump_sab_module.addImport("sio", sio_module);
     const dump_sab = b.addExecutable(.{
         .name = "dump-sab",
         .root_module = dump_sab_module,
     });
     linkHostSystemLibs(dump_sab, is_windows);
     const run_dump_sab = b.addRunArtifact(dump_sab);
-    if (b.args) |args| run_dump_sab.addArgs(args);
+    // NOTE(Zig 0.17): `b.args` forwarding was removed (see local-cli above).
     const dump_sab_step = b.step("dump-sab", "Disassemble SAB or report uses of one symbol");
     dump_sab_step.dependOn(&run_dump_sab.step);
 
@@ -106,7 +123,8 @@ pub fn build(b: *std.Build) void {
     // Test step
     const main_tests = b.addTest(.{
         .root_module = root_module,
-        .filter = test_filter,
+        // NOTE(Zig 0.17): `TestOptions.filter` became `filters: []const []const u8`.
+        .filters = if (test_filter) |f| &.{f} else &.{},
     });
     main_tests.root_module.addImport("sci_bridge", sci_bridge);
     linkHostSystemLibs(main_tests, is_windows);
@@ -141,8 +159,10 @@ fn saStdArchivePath(os_tag: std.Target.Os.Tag) []const u8 {
 
 fn linkHostSystemLibs(compile: *std.Build.Step.Compile, is_windows: bool) void {
     if (!is_windows) return;
-    compile.linkSystemLibrary("ws2_32");
-    compile.linkSystemLibrary("iphlpapi");
+    // NOTE(Zig 0.17): `Compile.linkSystemLibrary` was removed; link via the
+    // root module instead (same as sci/build.zig).
+    compile.root_module.linkSystemLibrary("ws2_32", .{});
+    compile.root_module.linkSystemLibrary("iphlpapi", .{});
 }
 
 // Wrap a possibly-absolute path as a LazyPath. Zig's b.path() rejects absolute
@@ -164,27 +184,28 @@ fn lazyPath(b: *std.Build, sub_path: []const u8) std.Build.LazyPath {
 // rather than silently emitting a dummy string.
 fn resolveRepoRoot(b: *std.Build) []const u8 {
     const a = b.allocator;
+    const io = b.graph.io;
     const candidates = blk: {
-        var list = std.ArrayList([]const u8).init(a);
+        var list = std.array_list.Managed([]const u8).init(a);
         list.append("../../../sci") catch {};
         list.append("../sci") catch {};
         // HOME-derived probes (works on Linux/macOS and Windows %USERPROFILE%).
-        if (std.process.getEnvVarOwned(a, "USERPROFILE")) |home| {
+        if (b.graph.environ_map.get("USERPROFILE")) |home| {
             list.append(b.pathJoin(&.{ home, "projects", "sci" })) catch {};
-        } else |_| {}
-        if (std.process.getEnvVarOwned(a, "HOME")) |home| {
+        }
+        if (b.graph.environ_map.get("HOME")) |home| {
             list.append(b.pathJoin(&.{ home, "projects", "sci" })) catch {};
-        } else |_| {}
+        }
         list.append("/home/vscode/projects/sci") catch {};
         break :blk list.toOwnedSlice() catch &.{};
     };
 
-    if (std.process.getEnvVarOwned(a, "SCI_ROOT")) |env_root| {
-        if (dirHasFile(env_root, "src/plugin_bridge.zig")) return env_root;
-    } else |_| {}
+    if (b.graph.environ_map.get("SCI_ROOT")) |env_root| {
+        if (dirHasFile(io, env_root, "src/plugin_bridge.zig")) return env_root;
+    }
 
     for (candidates) |c| {
-        if (dirHasFile(c, "src/plugin_bridge.zig")) return a.dupe(u8, c) catch c;
+        if (dirHasFile(io, c, "src/plugin_bridge.zig")) return a.dupe(u8, c) catch c;
     }
     return "../sci";
 }
@@ -199,20 +220,21 @@ fn resolveRepoRoot(b: *std.Build) []const u8 {
 // <repo_root> so a follow-up build-time file-missing error is actionable.
 fn resolveSaStdDir(b: *std.Build, repo_root: []const u8, sa_std_dir_option: ?[]const u8, archive_name: []const u8) []const u8 {
     const a = b.allocator;
+    const io = b.graph.io;
 
     if (sa_std_dir_option) |opt| {
-        if (dirHasFile(opt, archive_name)) return opt;
+        if (dirHasFile(io, opt, archive_name)) return opt;
     }
-    if (std.process.getEnvVarOwned(a, "SA_STD_DIR")) |env_root| {
-        if (dirHasFile(env_root, archive_name)) return env_root;
-    } else |_| {}
-    if (std.process.getEnvVarOwned(a, "SCI_ROOT")) |env_root| {
+    if (b.graph.environ_map.get("SA_STD_DIR")) |env_root| {
+        if (dirHasFile(io, env_root, archive_name)) return env_root;
+    }
+    if (b.graph.environ_map.get("SCI_ROOT")) |env_root| {
         const joined = b.pathJoin(&.{ env_root, "artifacts", "sa_std" });
-        if (dirHasFile(joined, archive_name)) return joined;
-    } else |_| {}
+        if (dirHasFile(io, joined, archive_name)) return joined;
+    }
     {
-        const joined = b.pathJoin(&.{ repo_root, "artifacts", "sa_std" });
-        if (dirHasFile(joined, archive_name)) return joined;
+    const joined = b.pathJoin(&.{ repo_root, "artifacts", "sa_std" });
+    if (dirHasFile(io, joined, archive_name)) return joined;
     }
 
     // Common sibling / install locations, mirroring the runtime search in
@@ -226,16 +248,16 @@ fn resolveSaStdDir(b: *std.Build, repo_root: []const u8, sa_std_dir_option: ?[]c
         "../../sci/sa_std",
     };
     for (candidates) |c| {
-        if (dirHasFile(c, archive_name)) return a.dupe(u8, c) catch c;
+        if (dirHasFile(io, c, archive_name)) return a.dupe(u8, c) catch c;
     }
-    if (std.process.getEnvVarOwned(a, "USERPROFILE")) |home| {
+    if (b.graph.environ_map.get("USERPROFILE")) |home| {
         const installed = b.pathJoin(&.{ home, ".sa", "std" });
-        if (dirHasFile(installed, archive_name)) return installed;
-    } else |_| {}
-    if (std.process.getEnvVarOwned(a, "HOME")) |home| {
+        if (dirHasFile(io, installed, archive_name)) return installed;
+    }
+    if (b.graph.environ_map.get("HOME")) |home| {
         const installed = b.pathJoin(&.{ home, ".sa", "std" });
-        if (dirHasFile(installed, archive_name)) return installed;
-    } else |_| {}
+        if (dirHasFile(io, installed, archive_name)) return installed;
+    }
 
     const joined = b.pathJoin(&.{ repo_root, "artifacts", "sa_std" });
     return joined;
@@ -243,19 +265,28 @@ fn resolveSaStdDir(b: *std.Build, repo_root: []const u8, sa_std_dir_option: ?[]c
 
 fn absoluteBuildPath(b: *std.Build, path: []const u8) []const u8 {
     if (std.fs.path.isAbsolute(path)) return path;
-    return b.pathFromRoot(path);
+    return pathFromRoot(b, path);
 }
-fn dirHasFile(dir: []const u8, name: []const u8) bool {
-    var d = std.fs.cwd().openDir(dir, .{}) catch return false;
-    defer d.close();
-    d.access(name, .{}) catch return false;
+
+/// NOTE(Zig 0.17): `Build.pathFromRoot` was removed. Equivalent helper:
+/// resolve `sub_path` against the directory containing build.zig.
+fn pathFromRoot(b: *std.Build, sub_path: []const u8) []u8 {
+    const root_path = b.root.root_dir.path orelse ".";
+    return std.fs.path.resolveAlloc(b.allocator, &.{ root_path, sub_path }) catch @panic("OOM");
+}
+
+/// NOTE(Zig 0.17): `std.fs.Dir` was replaced by `std.Io.Dir`; every
+/// filesystem operation now takes an explicit `Io`.
+fn dirHasFile(io: std.Io, dir: []const u8, name: []const u8) bool {
+    var d = std.Io.Dir.cwd().openDir(io, dir, .{}) catch return false;
+    defer d.close(io);
+    d.access(io, name, .{}) catch return false;
     return true;
 }
 
 fn effectiveOptimizeForDevInstall(b: *std.Build, requested: std.builtin.OptimizeMode) std.builtin.OptimizeMode {
-    if (requested != .ReleaseFast) return requested;
-    const value = std.process.getEnvVarOwned(b.allocator, "SA_PLUGIN_DEV") catch return requested;
-    defer b.allocator.free(value);
-    if (std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "true")) return .Debug;
+    if (requested != .fast) return requested;
+    const value = b.graph.environ_map.get("SA_PLUGIN_DEV") orelse return requested;
+    if (std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "true")) return .debug;
     return requested;
 }

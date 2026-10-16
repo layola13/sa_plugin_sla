@@ -31,31 +31,20 @@ async fn run() -> i32 {
     return second;
 }
 
-fn block_on(future: future<i32>) -> i32 {
-    let data: ptr = PTR_NULL();
-    let raw = RAW_WAKER_NEW(data, data);
-    let waker = WAKER_FROM_RAW(raw);
-    let context = CONTEXT_FROM_WAKER(waker);
-    let boxed = Box::new(future);
-    let future_ref = *boxed;
-    let pinned = stack_alloc();
-    PIN_MUT_NEW(pinned, future_ref);
-
+// Futures must be created and driven in the same function: the async
+// state's vtable is compiler-side metadata that does not cross function
+// boundaries, so a `future` parameter would poll with the wrong poll fn
+// and never observe readiness. Hence no `block_on(fut)` helper here.
+fn pending_resume_total() -> i32 {
+    let t = task::new(run());
     let deadline = unix_now_ns() + 2000000000;
     while unix_now_ns() < deadline {
-        let poll = FUTURE_READY_POLL_STATE(PIN_MUT_GET_MUT(pinned));
-        let ready = POLL_IS_READY(poll);
-        if ready == true {
-            let value: i32 = POLL_VALUE(poll);
-            return value;
+        if task::poll(t) == true {
+            return task::result(t);
         };
         THREAD_SLEEP_MS(1);
     }
     panic(314);
-}
-
-fn pending_resume_total() -> i32 {
-    return block_on(run());
 }
 
 fn main() -> i32 {

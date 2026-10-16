@@ -59,7 +59,7 @@ pub const Scope = struct {
     allocator: std.mem.Allocator,
     parent: ?*Scope,
     symbols: std.StringHashMap(Symbol),
-    using_modules: std.ArrayList([]const u8),
+    using_modules: std.array_list.Managed([]const u8),
 
     pub fn init(allocator: std.mem.Allocator, parent: ?*Scope) !*Scope {
         const self = try allocator.create(Scope);
@@ -67,7 +67,7 @@ pub const Scope = struct {
             .allocator = allocator,
             .parent = parent,
             .symbols = std.StringHashMap(Symbol).init(allocator),
-            .using_modules = std.ArrayList([]const u8).init(allocator),
+            .using_modules = std.array_list.Managed([]const u8).init(allocator),
         };
         return self;
     }
@@ -141,16 +141,16 @@ pub const TypeChecker = struct {
     trait_impls: std.StringHashMap(void),
     extern_funcs: std.StringHashMap(contract_parser.ExternalFunction),
     layout_defines: std.StringHashMap(contract_parser.LayoutDefine),
-    scope_pool: std.ArrayList(*Scope),
+    scope_pool: std.array_list.Managed(*Scope),
 
     // Maps a return/block exit node to the variables that need to be dropped
-    cleanups: std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)),
+    cleanups: std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)),
     // Maps await expressions to cleanups used only when codegen emits a
     // generated pending return. Ready paths retain their ordinary state.
-    await_cleanups: std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)),
-    macro_call_try_cleanups: std.AutoHashMap(*const ast.CallExpr, std.ArrayList([]const u8)),
+    await_cleanups: std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)),
+    macro_call_try_cleanups: std.AutoHashMap(*const ast.CallExpr, std.array_list.Managed([]const u8)),
     // Maps a branch end to the variables to release for Phi resolution
-    phi_cleanups: std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)),
+    phi_cleanups: std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)),
 
     // Tracks internal Sla functions for validation
     funcs: std.StringHashMap(*ast.FuncDecl),
@@ -160,7 +160,7 @@ pub const TypeChecker = struct {
     // Tracks user-defined macros
     macros: std.StringHashMap(*ast.MacroDecl),
     imported_macros: std.StringHashMap(ImportedMacro),
-    overloads: std.StringHashMap(std.ArrayList([]const u8)),
+    overloads: std.StringHashMap(std.array_list.Managed([]const u8)),
     using_modules_input: []const []const u8,
     // Maps expressions to their validated types for use in Codegen layout offsets
     expr_types: std.AutoHashMap(*const ast.Node, *ast.Type),
@@ -197,18 +197,18 @@ pub const TypeChecker = struct {
             .trait_impls = std.StringHashMap(void).init(allocator),
             .extern_funcs = std.StringHashMap(contract_parser.ExternalFunction).init(allocator),
             .layout_defines = std.StringHashMap(contract_parser.LayoutDefine).init(allocator),
-            .scope_pool = std.ArrayList(*Scope).init(allocator),
-            .cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
-            .await_cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
-            .macro_call_try_cleanups = std.AutoHashMap(*const ast.CallExpr, std.ArrayList([]const u8)).init(allocator),
-            .phi_cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
+            .scope_pool = std.array_list.Managed(*Scope).init(allocator),
+            .cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
+            .await_cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
+            .macro_call_try_cleanups = std.AutoHashMap(*const ast.CallExpr, std.array_list.Managed([]const u8)).init(allocator),
+            .phi_cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .function_aliases = std.StringHashMap([]const u8).init(allocator),
             .function_alias_metadata = std.StringHashMap(FunctionAliasMetadata).init(allocator),
             .imported_function_signatures = std.StringHashMap(FunctionSignature).init(allocator),
             .macros = std.StringHashMap(*ast.MacroDecl).init(allocator),
             .imported_macros = std.StringHashMap(ImportedMacro).init(allocator),
-            .overloads = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
+            .overloads = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
             .using_modules_input = options.using_modules,
             .expr_types = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
             .dyn_call_traits = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
@@ -327,7 +327,7 @@ pub const TypeChecker = struct {
     }
 
     fn recordAwaitCleanup(self: *TypeChecker, await_node: *const ast.Node, future_expr: *const ast.Node, scope: *Scope) TypeError!void {
-        var cleanup_list = std.ArrayList([]const u8).init(self.allocator);
+        var cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
         var current: ?*Scope = scope;
         while (current) |frame| : (current = frame.parent) {
             var iter = frame.symbols.valueIterator();
@@ -415,7 +415,7 @@ pub const TypeChecker = struct {
     }
 
     fn normalizeUsingPath(self: *TypeChecker, using_path: []const u8) TypeError![]const u8 {
-        var buf = std.ArrayList(u8).init(self.allocator);
+        var buf = std.array_list.Managed(u8).init(self.allocator);
         var i: usize = 0;
         while (i < using_path.len) {
             if (i + 1 < using_path.len and using_path[i] == ':' and using_path[i + 1] == ':') {
@@ -475,8 +475,8 @@ pub const TypeChecker = struct {
         return found;
     }
 
-    fn currentUsingModules(self: *TypeChecker, scope: *Scope) std.ArrayList([]const u8) {
-        var mods = std.ArrayList([]const u8).init(self.allocator);
+    fn currentUsingModules(self: *TypeChecker, scope: *Scope) std.array_list.Managed([]const u8) {
+        var mods = std.array_list.Managed([]const u8).init(self.allocator);
         var curr: ?*Scope = scope;
         while (curr) |s| {
             for (s.using_modules.items) |m| {
@@ -920,7 +920,7 @@ pub const TypeChecker = struct {
         synthetic.* = .{ .name = alias.name, .generics = &.{}, .fields = &.{}, .derives = &.{}, .is_union = false, .is_opaque = false };
         self.alias_struct_cache.put(alias.name, synthetic) catch return null;
 
-        var fields = std.ArrayList(ast.Field).init(self.allocator);
+        var fields = std.array_list.Managed(ast.Field).init(self.allocator);
         defer fields.deinit();
         for (alias.components) |component| {
             switch (component) {
@@ -1072,7 +1072,7 @@ pub const TypeChecker = struct {
         const closure_scope = try Scope.init(self.allocator, scope);
         try self.scope_pool.append(closure_scope);
 
-        var param_types = std.ArrayList(*ast.Type).init(self.allocator);
+        var param_types = std.array_list.Managed(*ast.Type).init(self.allocator);
         for (lit.params, contextual_params) |p, ctx_ty| {
             if (p.ty.* != .infer and !self.typesEqual(p.ty, ctx_ty)) return TypeError.TypeMismatch;
             try self.defineSymbol(closure_scope, p.name, ctx_ty, true);
@@ -2206,7 +2206,7 @@ pub const TypeChecker = struct {
                         },
                     };
                     const key = try std.fmt.allocPrint(self.allocator, "{s}|{s}", .{ type_name, op_name });
-                    var list = self.overloads.get(key) orelse std.ArrayList([]const u8).init(self.allocator);
+                    var list = self.overloads.get(key) orelse std.array_list.Managed([]const u8).init(self.allocator);
                     const symbol = try std.fmt.allocPrint(self.allocator, "{s}__{s}", .{ type_name, op_name });
                     try list.append(symbol);
                     try self.overloads.put(key, list);
@@ -2634,7 +2634,7 @@ pub const TypeChecker = struct {
         // Auto-cleanup for variables local to this block that are still active.
         // Raw pointers are non-owning, but they still need lexical liveness end
         // markers so generated SA does not leave pointer locals Active at exit.
-        var cleanup_list = std.ArrayList([]const u8).init(self.allocator);
+        var cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
         var iter = scope.symbols.valueIterator();
         while (iter.next()) |sym| {
             if (sym.state == .active and !isInternalSymbol(sym.name)) {
@@ -2763,7 +2763,7 @@ pub const TypeChecker = struct {
                         for (branch_values, live_bodies) |state, body| {
                             if (state != .active or body.len == 0) continue;
                             const last = body[body.len - 1];
-                            var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                            var list = self.phi_cleanups.get(last) orelse std.array_list.Managed([]const u8).init(self.allocator);
                             try list.append(name);
                             try self.phi_cleanups.put(last, list);
                         }
@@ -3003,7 +3003,7 @@ pub const TypeChecker = struct {
                 }
 
                 // Collect all active variables across all scope frames up to the function root
-                var cleanup_list = std.ArrayList([]const u8).init(self.allocator);
+                var cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
                 var curr: ?*Scope = scope;
                 while (curr) |s| {
                     var iter = s.symbols.valueIterator();
@@ -3099,7 +3099,7 @@ pub const TypeChecker = struct {
                     return TypeError.CompileError;
                 };
 
-                var cleanup_list = std.ArrayList([]const u8).init(self.allocator);
+                var cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
                 var curr: ?*Scope = scope;
                 while (curr) |s| {
                     var iter = s.symbols.valueIterator();
@@ -3197,7 +3197,7 @@ pub const TypeChecker = struct {
                     return sym.ty;
                 }
                 if (self.funcs.get(name)) |func| {
-                    var params = std.ArrayList(*ast.Type).init(self.allocator);
+                    var params = std.array_list.Managed(*ast.Type).init(self.allocator);
                     for (func.params) |param| {
                         try params.append(param.ty);
                     }
@@ -3523,7 +3523,7 @@ pub const TypeChecker = struct {
                     return TypeError.TypeMismatch;
                 }
 
-                var elems = std.ArrayList(*ast.Type).init(self.allocator);
+                var elems = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (lit.elements) |elem| {
                     try elems.append(try self.checkExpr(elem, scope));
                 }
@@ -3649,7 +3649,7 @@ pub const TypeChecker = struct {
                 const closure_scope = try Scope.init(self.allocator, scope);
                 try self.scope_pool.append(closure_scope);
 
-                var param_types = std.ArrayList(*ast.Type).init(self.allocator);
+                var param_types = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (lit.params) |p| {
                     try self.defineSymbol(closure_scope, p.name, p.ty, true);
                     try param_types.append(p.ty);
@@ -5101,7 +5101,7 @@ pub const TypeChecker = struct {
                         if (rootIdentifier(arg)) |name| try propagated_args.put(name, {});
                     }
                     if (has_macro_try) {
-                        var cleanup = std.ArrayList([]const u8).init(self.allocator);
+                        var cleanup = std.array_list.Managed([]const u8).init(self.allocator);
                         errdefer cleanup.deinit();
                         var current: ?*Scope = scope;
                         while (current) |frame| {
@@ -5297,14 +5297,14 @@ pub const TypeChecker = struct {
                                         if (then_state == .active) {
                                             if (ife.then_block.len > 0) {
                                                 const last = ife.then_block[ife.then_block.len - 1];
-                                                var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                                                var list = self.phi_cleanups.get(last) orelse std.array_list.Managed([]const u8).init(self.allocator);
                                                 try list.append(name);
                                                 try self.phi_cleanups.put(last, list);
                                             }
                                         } else if (ife.else_block) |eb| {
                                             if (eb.len > 0) {
                                                 const last = eb[eb.len - 1];
-                                                var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                                                var list = self.phi_cleanups.get(last) orelse std.array_list.Managed([]const u8).init(self.allocator);
                                                 try list.append(name);
                                                 try self.phi_cleanups.put(last, list);
                                             }
@@ -5423,14 +5423,14 @@ pub const TypeChecker = struct {
                                     if (then_state == .active) {
                                         if (ife.then_block.len > 0) {
                                             const last = ife.then_block[ife.then_block.len - 1];
-                                            var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                                            var list = self.phi_cleanups.get(last) orelse std.array_list.Managed([]const u8).init(self.allocator);
                                             try list.append(name);
                                             try self.phi_cleanups.put(last, list);
                                         }
                                     } else if (ife.else_block) |eb| {
                                         if (eb.len > 0) {
                                             const last = eb[eb.len - 1];
-                                            var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                                            var list = self.phi_cleanups.get(last) orelse std.array_list.Managed([]const u8).init(self.allocator);
                                             try list.append(name);
                                             try self.phi_cleanups.put(last, list);
                                         }
@@ -5467,12 +5467,12 @@ pub const TypeChecker = struct {
 
                 var saved_states = try self.saveScopeStates(scope);
                 defer saved_states.deinit();
-                var live_states = std.ArrayList(std.StringHashMap(ValueState)).init(self.allocator);
+                var live_states = std.array_list.Managed(std.StringHashMap(ValueState)).init(self.allocator);
                 defer {
                     for (live_states.items) |*states| states.deinit();
                     live_states.deinit();
                 }
-                var live_bodies = std.ArrayList([]const *ast.Node).init(self.allocator);
+                var live_bodies = std.array_list.Managed([]const *ast.Node).init(self.allocator);
                 defer live_bodies.deinit();
 
                 for (swe.cases) |case| {
@@ -5519,12 +5519,12 @@ pub const TypeChecker = struct {
                 if (optionInnerType(val_ty) != null or resultOkType(val_ty) != null) {
                     var saved_states = try self.saveScopeStates(scope);
                     defer saved_states.deinit();
-                    var live_states = std.ArrayList(std.StringHashMap(ValueState)).init(self.allocator);
+                    var live_states = std.array_list.Managed(std.StringHashMap(ValueState)).init(self.allocator);
                     defer {
                         for (live_states.items) |*states| states.deinit();
                         live_states.deinit();
                     }
-                    var live_bodies = std.ArrayList([]const *ast.Node).init(self.allocator);
+                    var live_bodies = std.array_list.Managed([]const *ast.Node).init(self.allocator);
                     defer live_bodies.deinit();
 
                     var result_ty: ?*ast.Type = null;
@@ -5582,12 +5582,12 @@ pub const TypeChecker = struct {
 
                 var saved_states = try self.saveScopeStates(scope);
                 defer saved_states.deinit();
-                var live_states = std.ArrayList(std.StringHashMap(ValueState)).init(self.allocator);
+                var live_states = std.array_list.Managed(std.StringHashMap(ValueState)).init(self.allocator);
                 defer {
                     for (live_states.items) |*states| states.deinit();
                     live_states.deinit();
                 }
-                var live_bodies = std.ArrayList([]const *ast.Node).init(self.allocator);
+                var live_bodies = std.array_list.Managed([]const *ast.Node).init(self.allocator);
                 defer live_bodies.deinit();
 
                 var result_ty: ?*ast.Type = null;
@@ -5669,7 +5669,7 @@ pub const TypeChecker = struct {
                 if (inner_ty.* == .infer) return inner_ty;
 
                 if (optionInnerType(inner_ty)) |unwrapped_ty| {
-                    var try_cleanup = std.ArrayList([]const u8).init(self.allocator);
+                    var try_cleanup = std.array_list.Managed([]const u8).init(self.allocator);
                     var curr: ?*Scope = scope;
                     while (curr) |s| {
                         var iter = s.symbols.valueIterator();
@@ -5690,7 +5690,7 @@ pub const TypeChecker = struct {
                 }
 
                 if (resultOkType(inner_ty)) |unwrapped_ty| {
-                    var try_cleanup = std.ArrayList([]const u8).init(self.allocator);
+                    var try_cleanup = std.array_list.Managed([]const u8).init(self.allocator);
                     var curr: ?*Scope = scope;
                     while (curr) |s| {
                         var iter = s.symbols.valueIterator();
@@ -5725,7 +5725,7 @@ pub const TypeChecker = struct {
                 const unwrapped_ty = value_ty orelse return TypeError.FieldNotFound;
 
                 // Collect all currently active variables in the scope chain
-                var try_cleanup = std.ArrayList([]const u8).init(self.allocator);
+                var try_cleanup = std.array_list.Managed([]const u8).init(self.allocator);
                 var curr: ?*Scope = scope;
                 while (curr) |s| {
                     var iter = s.symbols.valueIterator();

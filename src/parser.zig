@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
 const lowering_rules = @import("lowering_rules.zig");
@@ -45,9 +46,9 @@ pub const Parser = struct {
     lex: lexer.Lexer,
     tok: lexer.Token,
     last_expected: ?[]const u8,
-    known_types: std.ArrayList([]const u8),
-    known_enums: std.ArrayList([]const u8),
-    known_modules: std.ArrayList([]const u8),
+    known_types: std.array_list.Managed([]const u8),
+    known_enums: std.array_list.Managed([]const u8),
+    known_modules: std.array_list.Managed([]const u8),
     current_impl_target: ?*ast.Type,
     base_dir: []const u8,
     import_scan_depth: usize,
@@ -79,9 +80,9 @@ pub const Parser = struct {
             .lex = lexer.Lexer.init(buffer),
             .tok = undefined,
             .last_expected = null,
-            .known_types = std.ArrayList([]const u8).init(allocator),
-            .known_enums = std.ArrayList([]const u8).init(allocator),
-            .known_modules = std.ArrayList([]const u8).init(allocator),
+            .known_types = std.array_list.Managed([]const u8).init(allocator),
+            .known_enums = std.array_list.Managed([]const u8).init(allocator),
+            .known_modules = std.array_list.Managed([]const u8).init(allocator),
             .current_impl_target = null,
             .base_dir = base_dir,
             .import_scan_depth = 0,
@@ -355,7 +356,7 @@ pub const Parser = struct {
     }
 
     fn parseImportPathTokenSequence(self: *Parser) ParserError![]const u8 {
-        var buf = std.ArrayList(u8).init(self.allocator);
+        var buf = std.array_list.Managed(u8).init(self.allocator);
         while (isImportPathToken(self.peek())) {
             const part = self.lexeme(self.tok.loc);
             try buf.appendSlice(part);
@@ -376,7 +377,7 @@ pub const Parser = struct {
     fn readSlaStdPathIfExists(self: *Parser, root: []const u8, rel_path: []const u8) !?[]const u8 {
         if (rel_path.len == 0) return null;
         const candidate = try std.fs.path.join(self.allocator, &.{ root, rel_path });
-        _ = std.fs.cwd().access(candidate, .{}) catch |err| {
+        _ = sio.cwd().access(candidate, .{}) catch |err| {
             if (err == error.FileNotFound or err == error.NotDir or err == error.IsDir) return null;
             return err;
         };
@@ -388,7 +389,7 @@ pub const Parser = struct {
         if (std.mem.eql(u8, import_path, "sla_std")) return null;
         const rel_path = import_path["sla_std/".len..];
 
-        if (std.process.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |env_root| {
+        if (sio.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |env_root| {
             if (try self.readSlaStdPathIfExists(env_root, rel_path)) |resolved| return resolved;
         } else |_| {}
 
@@ -458,7 +459,7 @@ pub const Parser = struct {
     }
 
     pub fn parseProgram(self: *Parser) ParserError!*ast.Node {
-        var decls = std.ArrayList(*ast.Node).init(self.allocator);
+        var decls = std.array_list.Managed(*ast.Node).init(self.allocator);
         errdefer decls.deinit();
 
         while (self.peek() != .eof) {
@@ -565,7 +566,7 @@ pub const Parser = struct {
         }
     }
 
-    fn parseModuleDeclInto(self: *Parser, decls: *std.ArrayList(*ast.Node), parent_prefix: ?[]const u8) ParserError!void {
+    fn parseModuleDeclInto(self: *Parser, decls: *std.array_list.Managed(*ast.Node), parent_prefix: ?[]const u8) ParserError!void {
         try self.expect(.keyword_mod);
         const name_tok = self.tok;
         try self.expect(.identifier);
@@ -644,7 +645,7 @@ pub const Parser = struct {
 
     fn parseDeriveDeclAfterAt(self: *Parser) ParserError!*ast.Node {
         try self.expect(.l_paren);
-        var derives = std.ArrayList([]const u8).init(self.allocator);
+        var derives = std.array_list.Managed([]const u8).init(self.allocator);
         while (self.peek() != .r_paren and self.peek() != .eof) {
             const derive_tok = self.tok;
             try self.expect(.identifier);
@@ -685,11 +686,11 @@ pub const Parser = struct {
         const name = self.lexeme(name_tok.loc);
         try self.expect(.equal);
 
-        var components = std.ArrayList(ast.TypeAliasComponent).init(self.allocator);
+        var components = std.array_list.Managed(ast.TypeAliasComponent).init(self.allocator);
         while (true) {
             if (self.peek() == .l_brace) {
                 try self.expect(.l_brace);
-                var fields = std.ArrayList(ast.Field).init(self.allocator);
+                var fields = std.array_list.Managed(ast.Field).init(self.allocator);
                 while (self.peek() != .r_brace and self.peek() != .eof) {
                     const f_tok = self.tok;
                     try self.expect(.identifier);
@@ -715,7 +716,7 @@ pub const Parser = struct {
 
     fn parseExternBlock(self: *Parser, abi: ?[]const u8) ParserError!*ast.Node {
         try self.expect(.l_brace);
-        var decls = std.ArrayList(*ast.Node).init(self.allocator);
+        var decls = std.array_list.Managed(*ast.Node).init(self.allocator);
         while (self.peek() != .r_brace and self.peek() != .eof) {
             const is_pub = self.match(.keyword_pub);
             if (self.peek() != .keyword_fn) return ParserError.ExpectedDeclaration;
@@ -735,7 +736,7 @@ pub const Parser = struct {
         try self.expect(.identifier);
         const name = self.lexeme(name_tok.loc);
 
-        var generics = std.ArrayList([]const u8).init(self.allocator);
+        var generics = std.array_list.Managed([]const u8).init(self.allocator);
         if (self.match(.less_than)) {
             while (true) {
                 const g_tok = self.tok;
@@ -746,7 +747,7 @@ pub const Parser = struct {
             try self.expectGenericClose();
         }
 
-        var fields = std.ArrayList(ast.Field).init(self.allocator);
+        var fields = std.array_list.Managed(ast.Field).init(self.allocator);
         var is_opaque = false;
         if (self.match(.semicolon)) {
             is_opaque = true;
@@ -794,7 +795,7 @@ pub const Parser = struct {
         try self.expect(.identifier);
         const name = self.lexeme(name_tok.loc);
 
-        var generics = std.ArrayList([]const u8).init(self.allocator);
+        var generics = std.array_list.Managed([]const u8).init(self.allocator);
         if (self.match(.less_than)) {
             while (true) {
                 const g_tok = self.tok;
@@ -806,7 +807,7 @@ pub const Parser = struct {
         }
 
         try self.expect(.l_brace);
-        var variants = std.ArrayList(ast.EnumVariant).init(self.allocator);
+        var variants = std.array_list.Managed(ast.EnumVariant).init(self.allocator);
         while (self.peek() != .r_brace and self.peek() != .eof) {
             const variant_tok = self.tok;
             try self.expect(.identifier);
@@ -831,7 +832,7 @@ pub const Parser = struct {
                 discriminant = value;
             }
 
-            var fields = std.ArrayList(ast.Field).init(self.allocator);
+            var fields = std.array_list.Managed(ast.Field).init(self.allocator);
             if (self.match(.l_brace)) {
                 while (self.peek() != .r_brace and self.peek() != .eof) {
                     const f_tok = self.tok;
@@ -865,7 +866,7 @@ pub const Parser = struct {
         // unique or match arms would silently miscompile. Deliberately
         // stricter than C: `A, B = 0` (aliased tags) is rejected here.
         {
-            var seen = std.ArrayList(i64).init(self.allocator);
+            var seen = std.array_list.Managed(i64).init(self.allocator);
             var next_auto: i64 = 0;
             for (variants.items) |variant| {
                 if (variant.fields.len != 0 and variant.discriminant != null) return ParserError.UnexpectedToken;
@@ -888,7 +889,7 @@ pub const Parser = struct {
         const name_tok = self.tok;
         try self.expect(.identifier);
         const name = self.lexeme(name_tok.loc);
-        var supertraits = std.ArrayList([]const u8).init(self.allocator);
+        var supertraits = std.array_list.Managed([]const u8).init(self.allocator);
         if (self.match(.colon)) {
             while (true) {
                 const super_tok = self.tok;
@@ -899,7 +900,7 @@ pub const Parser = struct {
         }
         try self.expect(.l_brace);
 
-        var methods = std.ArrayList(ast.TraitMethod).init(self.allocator);
+        var methods = std.array_list.Managed(ast.TraitMethod).init(self.allocator);
         const prev_impl_target = self.current_impl_target;
         self.current_impl_target = try self.makeUserDefinedType("Self", &.{});
         defer self.current_impl_target = prev_impl_target;
@@ -912,7 +913,7 @@ pub const Parser = struct {
             _ = try self.parseGenericParams();
 
             try self.expect(.l_paren);
-            var params = std.ArrayList(ast.Param).init(self.allocator);
+            var params = std.array_list.Managed(ast.Param).init(self.allocator);
             if (self.peek() != .r_paren and self.peek() != .eof) {
                 const first_is_borrow = self.match(.ampersand);
                 const first_is_move = if (!first_is_borrow) self.match(.caret) else false;
@@ -986,7 +987,7 @@ pub const Parser = struct {
         }
         try self.expect(.l_brace);
 
-        var methods = std.ArrayList(*ast.Node).init(self.allocator);
+        var methods = std.array_list.Managed(*ast.Node).init(self.allocator);
         const prev_impl_target = self.current_impl_target;
         self.current_impl_target = target_ty;
         defer self.current_impl_target = prev_impl_target;
@@ -1009,7 +1010,7 @@ pub const Parser = struct {
         const target_ty = try self.parseType();
         try self.expect(.l_brace);
 
-        var methods = std.ArrayList(*ast.Node).init(self.allocator);
+        var methods = std.array_list.Managed(*ast.Node).init(self.allocator);
         while (self.peek() != .r_brace and self.peek() != .eof) {
             try methods.append(try self.parseOverloadMethodDecl(target_ty));
             _ = self.match(.semicolon);
@@ -1022,7 +1023,7 @@ pub const Parser = struct {
     }
 
     fn parseGenericParams(self: *Parser) ParserError![]const []const u8 {
-        var generics = std.ArrayList([]const u8).init(self.allocator);
+        var generics = std.array_list.Managed([]const u8).init(self.allocator);
         if (self.match(.less_than)) {
             while (true) {
                 const g_tok = self.tok;
@@ -1048,7 +1049,7 @@ pub const Parser = struct {
 
         try self.expect(.l_paren);
 
-        var params = std.ArrayList(ast.Param).init(self.allocator);
+        var params = std.array_list.Managed(ast.Param).init(self.allocator);
         if (self.peek() != .r_paren and self.peek() != .eof) {
             const first_is_borrow = self.match(.ampersand);
             const first_is_move = if (!first_is_borrow) self.match(.caret) else false;
@@ -1140,7 +1141,7 @@ pub const Parser = struct {
 
         try self.expect(.l_paren);
 
-        var params = std.ArrayList(ast.Param).init(self.allocator);
+        var params = std.array_list.Managed(ast.Param).init(self.allocator);
         if (self.peek() != .r_paren and self.peek() != .eof) {
             const first_is_borrow = self.match(.ampersand);
             const first_is_move = if (!first_is_borrow) self.match(.caret) else false;
@@ -1203,7 +1204,7 @@ pub const Parser = struct {
 
         try self.expect(.l_paren);
 
-        var params = std.ArrayList(ast.Param).init(self.allocator);
+        var params = std.array_list.Managed(ast.Param).init(self.allocator);
         while (self.peek() != .r_paren and self.peek() != .eof) {
             const is_borrow = self.match(.ampersand);
             const is_move = if (!is_borrow) self.match(.caret) else false;
@@ -1264,7 +1265,7 @@ pub const Parser = struct {
 
         try self.expect(.l_paren);
 
-        var params = std.ArrayList([]const u8).init(self.allocator);
+        var params = std.array_list.Managed([]const u8).init(self.allocator);
         while (self.peek() != .r_paren and self.peek() != .eof) {
             const p_tok = self.tok;
             try self.expect(.identifier);
@@ -1339,10 +1340,10 @@ pub const Parser = struct {
 
             const dir_path = std.fs.path.dirname(pattern_path) orelse ".";
             const pattern_name = std.fs.path.basename(pattern_path);
-            var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+            var dir = sio.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
             defer dir.close();
 
-            var matches = std.ArrayList([]const u8).init(self.allocator);
+            var matches = std.array_list.Managed([]const u8).init(self.allocator);
             var it = dir.iterate();
             while (try it.next()) |entry| {
                 if (entry.kind != .file and entry.kind != .sym_link) continue;
@@ -1370,7 +1371,7 @@ pub const Parser = struct {
 
     fn prescanResolvedSlaImportTypes(self: *Parser, resolved_path: []const u8) !void {
         const canonical_path = blk: {
-            const real = std.fs.cwd().realpathAlloc(self.allocator, resolved_path) catch break :blk resolved_path;
+            const real = sio.cwd().realpathAlloc(self.allocator, resolved_path) catch break :blk resolved_path;
             const normed = host_paths.normalizePathSlashes(self.allocator, real) catch {
                 break :blk real;
             };
@@ -1392,7 +1393,7 @@ pub const Parser = struct {
             .complete = false,
         });
 
-        const source = std.fs.cwd().readFileAlloc(self.allocator, canonical_path, 16 * 1024 * 1024) catch return;
+        const source = sio.cwd().readFileAlloc(self.allocator, canonical_path, 16 * 1024 * 1024) catch return;
         const expanded_source = source_expand.expand(self.allocator, source) catch return;
 
         const import_dir = std.fs.path.dirname(canonical_path) orelse ".";
@@ -1513,7 +1514,7 @@ pub const Parser = struct {
         // template literals were truncated at the first interp `}`).
         var in_template = false;
         var interp_depth: u16 = 0;
-        var tmpl_stack: [8]u16 = [_]u16{0} ** 8;
+        var tmpl_stack: [8]u16 = std.mem.zeroes([8]u16);
         var tmpl_sp: u8 = 0;
         while (true) {
             const tok = lex.next();
@@ -1590,7 +1591,7 @@ pub const Parser = struct {
         // Same template-state mirror as peekBlockSpan (#4).
         var in_template = false;
         var interp_depth: u16 = 0;
-        var tmpl_stack: [8]u16 = [_]u16{0} ** 8;
+        var tmpl_stack: [8]u16 = std.mem.zeroes([8]u16);
         var tmpl_sp: u8 = 0;
         while (depth > 0 and self.peek() != .eof) {
             if (self.peek() == .template_start) {
@@ -1687,7 +1688,7 @@ pub const Parser = struct {
 
     fn parseBlock(self: *Parser) ParserError![]const *ast.Node {
         try self.expect(.l_brace);
-        var stmts = std.ArrayList(*ast.Node).init(self.allocator);
+        var stmts = std.array_list.Managed(*ast.Node).init(self.allocator);
         while (self.peek() != .r_brace and self.peek() != .eof) {
             const stmt = try self.parseStmt();
             try stmts.append(stmt);
@@ -1730,7 +1731,7 @@ pub const Parser = struct {
                 // Desugars to `{ let __chainK = value; ... = __chainK; }` so
                 // the value evaluates once (mirrors the `__qcN` precedent for
                 // `?.` chains; plain single assignment below is untouched).
-                var chain_targets = std.ArrayList(*ast.Node).init(self.allocator);
+                var chain_targets = std.array_list.Managed(*ast.Node).init(self.allocator);
                 try chain_targets.append(expr);
                 while (self.match(.equal)) {
                     try chain_targets.append(rhs);
@@ -1740,7 +1741,7 @@ pub const Parser = struct {
                 if (chain_targets.items.len > 1) {
                     const tmp_name = try std.fmt.allocPrint(self.allocator, "__chain{d}", .{self.synth_counter});
                     self.synth_counter += 1;
-                    var chain_body = std.ArrayList(*ast.Node).init(self.allocator);
+                    var chain_body = std.array_list.Managed(*ast.Node).init(self.allocator);
                     const tmp_let = try self.allocator.create(ast.Node);
                     tmp_let.* = .{ .let_stmt = .{ .name = tmp_name, .ty = null, .value = rhs } };
                     try chain_body.append(tmp_let);
@@ -1806,9 +1807,11 @@ pub const Parser = struct {
                 node.* = .{ .assign_stmt = .{ .target = expr, .value = value } };
                 return node;
             }
-            // `a ??= b` desugars to `a = a.unwrap_or(b)`, mirroring `+=`
-            // above (same target-reuse tradeoff: complex place expressions
-            // evaluate twice; bind them first).
+            // `a ??= b` desugars to `a = Some(a.unwrap_or(b))`, mirroring
+            // `+=` above (same target-reuse tradeoff: complex place
+            // expressions evaluate twice; bind them first). The `Some`
+            // wrap-back is required: `unwrap_or` yields the inner value,
+            // but the target holds an `Option`.
             if (self.match(.question_question_equal)) {
                 const rhs = try self.parseExpr(0);
                 try self.expect(.semicolon);
@@ -1825,8 +1828,20 @@ pub const Parser = struct {
                         .args = fallback_args,
                     },
                 };
+                const some_args = try self.allocator.alloc(*ast.Node, 1);
+                some_args[0] = fallback;
+                const some_generics = try self.allocator.alloc(*ast.Type, 0);
+                const some_call = try self.allocator.create(ast.Node);
+                some_call.* = .{
+                    .call_expr = .{
+                        .func_name = "Some",
+                        .associated_target = null,
+                        .generics = some_generics,
+                        .args = some_args,
+                    },
+                };
                 const node = try self.allocator.create(ast.Node);
-                node.* = .{ .assign_stmt = .{ .target = expr, .value = fallback } };
+                node.* = .{ .assign_stmt = .{ .target = expr, .value = some_call } };
                 return node;
             }
             if (self.match(.pipe_equal)) {
@@ -1889,7 +1904,7 @@ pub const Parser = struct {
 
         if (self.peek() == .l_paren) {
             self.advance();
-            var names = std.ArrayList([]const u8).init(self.allocator);
+            var names = std.array_list.Managed([]const u8).init(self.allocator);
             while (self.peek() != .r_paren and self.peek() != .eof) {
                 const name_tok = self.tok;
                 try self.expect(.identifier);
@@ -1913,7 +1928,7 @@ pub const Parser = struct {
 
         if (self.peek() == .l_bracket) {
             self.advance();
-            var names = std.ArrayList([]const u8).init(self.allocator);
+            var names = std.array_list.Managed([]const u8).init(self.allocator);
             var rest_name: ?[]const u8 = null;
             var rest_alias: ?[]const u8 = null;
             while (self.peek() != .r_bracket and self.peek() != .eof) {
@@ -2203,7 +2218,7 @@ pub const Parser = struct {
     fn parseStructLiteral(self: *Parser, ty: *ast.Type) ParserError!*ast.Node {
         try self.expect(.l_brace);
 
-        var fields = std.ArrayList(ast.StructLiteralField).init(self.allocator);
+        var fields = std.array_list.Managed(ast.StructLiteralField).init(self.allocator);
         var update_expr: ?*ast.Node = null;
         while (self.peek() != .r_brace and self.peek() != .eof) {
             if (self.peek() == .range) {
@@ -2236,7 +2251,7 @@ pub const Parser = struct {
     }
 
     fn parseGenericStructLiteralTail(self: *Parser, name: []const u8) ParserError!*ast.Node {
-        var generics = std.ArrayList(*ast.Type).init(self.allocator);
+        var generics = std.array_list.Managed(*ast.Type).init(self.allocator);
         while (true) {
             const ty = try self.parseType();
             try generics.append(ty);
@@ -2253,7 +2268,7 @@ pub const Parser = struct {
         try self.expect(.identifier);
         const variant_name = self.lexeme(variant_tok.loc);
 
-        var fields = std.ArrayList(ast.EnumLiteralField).init(self.allocator);
+        var fields = std.array_list.Managed(ast.EnumLiteralField).init(self.allocator);
         if (self.match(.l_brace)) {
             while (self.peek() != .r_brace and self.peek() != .eof) {
                 const field_tok = self.tok;
@@ -2285,7 +2300,7 @@ pub const Parser = struct {
     fn parseModuleCallAfterName(self: *Parser, module_name: []const u8) ParserError!*ast.Node {
         try self.expect(.double_colon);
 
-        var path_parts = std.ArrayList([]const u8).init(self.allocator);
+        var path_parts = std.array_list.Managed([]const u8).init(self.allocator);
         try path_parts.append(module_name);
 
         while (true) {
@@ -2302,7 +2317,7 @@ pub const Parser = struct {
             break;
         }
 
-        var generics = std.ArrayList(*ast.Type).init(self.allocator);
+        var generics = std.array_list.Managed(*ast.Type).init(self.allocator);
         _ = self.match(.double_colon);
         if (self.match(.less_than)) {
             while (true) {
@@ -2314,7 +2329,7 @@ pub const Parser = struct {
         }
 
         try self.expect(.l_paren);
-        var args = std.ArrayList(*ast.Node).init(self.allocator);
+        var args = std.array_list.Managed(*ast.Node).init(self.allocator);
         while (self.peek() != .r_paren and self.peek() != .eof) {
             const arg = try self.parseExpr(0);
             try args.append(arg);
@@ -2322,7 +2337,7 @@ pub const Parser = struct {
         }
         try self.expect(.r_paren);
 
-        var name_buf = std.ArrayList(u8).init(self.allocator);
+        var name_buf = std.array_list.Managed(u8).init(self.allocator);
         for (path_parts.items, 0..) |part, i| {
             if (i > 0) try name_buf.appendSlice("__");
             try name_buf.appendSlice(part);
@@ -2347,7 +2362,7 @@ pub const Parser = struct {
         const func_name = self.lexeme(name_tok.loc);
         try self.expect(.l_paren);
 
-        var args = std.ArrayList(*ast.Node).init(self.allocator);
+        var args = std.array_list.Managed(*ast.Node).init(self.allocator);
         while (self.peek() != .r_paren and self.peek() != .eof) {
             const arg = try self.parseExpr(0);
             try args.append(arg);
@@ -2466,7 +2481,7 @@ pub const Parser = struct {
     }
 
     fn parseGenericCallTail(self: *Parser, func_name: []const u8) ParserError!*ast.Node {
-        var generics = std.ArrayList(*ast.Type).init(self.allocator);
+        var generics = std.array_list.Managed(*ast.Type).init(self.allocator);
         while (true) {
             const ty = try self.parseType();
             try generics.append(ty);
@@ -2475,7 +2490,7 @@ pub const Parser = struct {
         try self.expectGenericClose();
         try self.expect(.l_paren);
 
-        var args = std.ArrayList(*ast.Node).init(self.allocator);
+        var args = std.array_list.Managed(*ast.Node).init(self.allocator);
         while (self.peek() != .r_paren and self.peek() != .eof) {
             const arg = try self.parseExpr(0);
             try args.append(arg);
@@ -2496,7 +2511,7 @@ pub const Parser = struct {
     }
 
     fn parseGenericFunctionRefTail(self: *Parser, func_name: []const u8) ParserError!*ast.Node {
-        var generics = std.ArrayList(*ast.Type).init(self.allocator);
+        var generics = std.array_list.Managed(*ast.Type).init(self.allocator);
         while (true) {
             const ty = try self.parseType();
             try generics.append(ty);
@@ -2517,7 +2532,7 @@ pub const Parser = struct {
             return node;
         }
         try self.expect(.pipe);
-        var params = std.ArrayList(ast.Param).init(self.allocator);
+        var params = std.array_list.Managed(ast.Param).init(self.allocator);
         while (self.peek() != .pipe and self.peek() != .eof) {
             const p_tok = self.tok;
             try self.expect(.identifier);
@@ -2557,7 +2572,7 @@ pub const Parser = struct {
             return ParserError.UnexpectedToken;
         }
 
-        var bindings = std.ArrayList([]const u8).init(self.allocator);
+        var bindings = std.array_list.Managed([]const u8).init(self.allocator);
         if (self.match(.l_brace)) {
             while (self.peek() != .r_brace and self.peek() != .eof) {
                 const bind_tok = self.tok;
@@ -2593,7 +2608,7 @@ pub const Parser = struct {
             variant_name = self.lexeme(variant_tok.loc);
         }
 
-        var bindings = std.ArrayList([]const u8).init(self.allocator);
+        var bindings = std.array_list.Managed([]const u8).init(self.allocator);
         if (self.match(.l_brace)) {
             while (self.peek() != .r_brace and self.peek() != .eof) {
                 const bind_tok = self.tok;
@@ -2616,7 +2631,7 @@ pub const Parser = struct {
     }
 
     fn parseIfLetChain(self: *Parser) ParserError![]const ast.IfLetCond {
-        var chain = std.ArrayList(ast.IfLetCond).init(self.allocator);
+        var chain = std.array_list.Managed(ast.IfLetCond).init(self.allocator);
         while (true) {
             try self.expect(.keyword_let);
             const pattern = try self.parseLetPattern();
@@ -2634,7 +2649,7 @@ pub const Parser = struct {
         const val = try self.parseExpr(0);
         try self.expect(.l_brace);
 
-        var cases = std.ArrayList(ast.MatchCase).init(self.allocator);
+        var cases = std.array_list.Managed(ast.MatchCase).init(self.allocator);
         while (self.peek() != .r_brace and self.peek() != .eof) {
             const pattern = try self.parseEnumPattern();
             const guard = if (self.match(.keyword_if)) try self.parseExpr(0) else null;
@@ -2656,7 +2671,7 @@ pub const Parser = struct {
         try self.expect(.string_literal);
         const raw_template = self.lexeme(template_tok.loc);
 
-        var operands = std.ArrayList(ast.InlineAsmOperand).init(self.allocator);
+        var operands = std.array_list.Managed(ast.InlineAsmOperand).init(self.allocator);
         while (self.match(.comma)) {
             if (self.peek() == .r_paren) break;
             const constraint_tok = self.tok;
@@ -2802,7 +2817,7 @@ pub const Parser = struct {
                 const wrapped_value = blk: {
                     if (self.peek() == .l_paren) {
                         self.advance();
-                        var call_args = std.ArrayList(*ast.Node).init(self.allocator);
+                        var call_args = std.array_list.Managed(*ast.Node).init(self.allocator);
                         try call_args.append(tmp_ident);
                         if (self.peek() != .r_paren and self.peek() != .eof) {
                             while (true) {
@@ -3139,7 +3154,7 @@ pub const Parser = struct {
                 self.advance();
                 const expr = try self.parseExpr(0);
                 if (self.match(.comma)) {
-                    var elements = std.ArrayList(*ast.Node).init(self.allocator);
+                    var elements = std.array_list.Managed(*ast.Node).init(self.allocator);
                     try elements.append(expr);
                     while (self.peek() != .r_paren and self.peek() != .eof) {
                         const elem = try self.parseExpr(0);
@@ -3156,7 +3171,7 @@ pub const Parser = struct {
             },
             .l_bracket => {
                 self.advance();
-                var elements = std.ArrayList(*ast.Node).init(self.allocator);
+                var elements = std.array_list.Managed(*ast.Node).init(self.allocator);
                 if (self.peek() != .r_bracket and self.peek() != .eof) {
                     const first = try self.parseExpr(0);
                     if (self.match(.semicolon)) {
@@ -3251,7 +3266,7 @@ pub const Parser = struct {
                 const field_name = self.lexeme(field_tok.loc);
 
                 if (self.peek() == .l_paren or self.looksLikeGenericMethodCallTail()) {
-                    var generic_args = std.ArrayList(*ast.Type).init(self.allocator);
+                    var generic_args = std.array_list.Managed(*ast.Type).init(self.allocator);
                     if (self.match(.less_than)) {
                         while (true) {
                             const t = try self.parseType();
@@ -3262,7 +3277,7 @@ pub const Parser = struct {
                     }
 
                     try self.expect(.l_paren);
-                    var args = std.ArrayList(*ast.Node).init(self.allocator);
+                    var args = std.array_list.Managed(*ast.Node).init(self.allocator);
                     try args.append(left);
                     while (self.peek() != .r_paren and self.peek() != .eof) {
                         const arg = try self.parseExpr(0);
@@ -3290,7 +3305,7 @@ pub const Parser = struct {
             .bang => {
                 if (self.peek() != .l_paren) return ParserError.UnexpectedInfixToken;
                 if (left.* != .identifier) return ParserError.InvalidCallTarget;
-                var args = std.ArrayList(*ast.Node).init(self.allocator);
+                var args = std.array_list.Managed(*ast.Node).init(self.allocator);
                 self.advance();
                 while (self.peek() != .r_paren and self.peek() != .eof) {
                     const arg = try self.parseExpr(0);
@@ -3320,7 +3335,7 @@ pub const Parser = struct {
                     else => return ParserError.InvalidCallTarget,
                 }
 
-                var args = std.ArrayList(*ast.Node).init(self.allocator);
+                var args = std.array_list.Managed(*ast.Node).init(self.allocator);
                 while (self.peek() != .r_paren and self.peek() != .eof) {
                     const arg = try self.parseExpr(0);
                     try args.append(arg);
@@ -3430,12 +3445,12 @@ pub const Parser = struct {
     /// downstream); only template-only escapes are resolved here (`\${`
     /// would otherwise be an unknown downstream escape). `"` is escaped
     /// for the synthesized literal; `{`/`}` are doubled for `format()`.
-    fn appendTemplateChunk(out: *std.ArrayList(u8), raw: []const u8) ParserError!void {
+    fn appendTemplateChunk(out: *std.array_list.Managed(u8), raw: []const u8) ParserError!void {
         const push = struct {
-            fn s(list: *std.ArrayList(u8), text: []const u8) ParserError!void {
+            fn s(list: *std.array_list.Managed(u8), text: []const u8) ParserError!void {
                 list.appendSlice(text) catch return ParserError.OutOfMemory;
             }
-            fn c(list: *std.ArrayList(u8), ch: u8) ParserError!void {
+            fn c(list: *std.array_list.Managed(u8), ch: u8) ParserError!void {
                 list.append(ch) catch return ParserError.OutOfMemory;
             }
         };
@@ -3483,8 +3498,8 @@ pub const Parser = struct {
     /// without interpolation degrades to a plain string literal.
     fn parseTemplateLiteral(self: *Parser) ParserError!*ast.Node {
         try self.expect(.template_start);
-        var fmt_parts = std.ArrayList(u8).init(self.allocator);
-        var args = std.ArrayList(*ast.Node).init(self.allocator);
+        var fmt_parts = std.array_list.Managed(u8).init(self.allocator);
+        var args = std.array_list.Managed(*ast.Node).init(self.allocator);
         while (true) {
             if (self.peek() == .template_string) {
                 const tok = self.tok;
@@ -3568,7 +3583,7 @@ pub const Parser = struct {
         const val = try self.parseExpr(0);
         try self.expect(.l_brace);
 
-        var cases = std.ArrayList(ast.Case).init(self.allocator);
+        var cases = std.array_list.Managed(ast.Case).init(self.allocator);
         while (self.peek() != .r_brace and self.peek() != .eof) {
             const pattern = try self.parseExpr(0);
             try self.expect(.fat_arrow);
@@ -3653,7 +3668,7 @@ pub const Parser = struct {
                     return try makePrimitive(self.allocator, .f64);
                 }
 
-                var generics = std.ArrayList(*ast.Type).init(self.allocator);
+                var generics = std.array_list.Managed(*ast.Type).init(self.allocator);
                 if (self.match(.less_than)) {
                     while (true) {
                         const t = try self.parseType();
@@ -3730,7 +3745,7 @@ pub const Parser = struct {
             .l_paren => {
                 const first = try self.parseType();
                 if (self.match(.comma)) {
-                    var elems = std.ArrayList(*ast.Type).init(self.allocator);
+                    var elems = std.array_list.Managed(*ast.Type).init(self.allocator);
                     try elems.append(first);
                     while (self.peek() != .r_paren and self.peek() != .eof) {
                         const elem = try self.parseType();
@@ -3755,7 +3770,7 @@ pub const Parser = struct {
 
     fn parseFunctionType(self: *Parser, abi: ?[]const u8) ParserError!*ast.Type {
         try self.expect(.l_paren);
-        var params = std.ArrayList(*ast.Type).init(self.allocator);
+        var params = std.array_list.Managed(*ast.Type).init(self.allocator);
         while (self.peek() != .r_paren and self.peek() != .eof) {
             const param_ty = try self.parseType();
             try params.append(param_ty);
@@ -3971,12 +3986,13 @@ test "parser accepts explicit u64 max literal suffix" {
 }
 
 test "sla import type prescan skips imported function bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "dep.sla",
         .data =
         \\struct ImportedThing {
@@ -3989,7 +4005,7 @@ test "sla import type prescan skips imported function bodies" {
         ,
     });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     const source =
@@ -4013,12 +4029,13 @@ test "sla import type prescan skips imported function bodies" {
 }
 
 test "sla import type prescan visits diamond dependencies once" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "common.sla",
         .data =
         \\struct SharedThing {
@@ -4026,14 +4043,14 @@ test "sla import type prescan visits diamond dependencies once" {
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "left.sla",
         .data =
         \\@import "common.sla"
         \\struct LeftThing { shared: SharedThing }
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "right.sla",
         .data =
         \\@import "common.sla"
@@ -4041,7 +4058,7 @@ test "sla import type prescan visits diamond dependencies once" {
         ,
     });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     const source =
@@ -4326,9 +4343,9 @@ test "syntax diagnostic includes location token and context" {
     var p = Parser.init(allocator, source);
     try std.testing.expectError(ParserError.ExpectedDeclaration, p.parseProgram());
 
-    var out = std.ArrayList(u8).init(std.testing.allocator);
+    var out = std.array_list.Managed(u8).init(std.testing.allocator);
     defer out.deinit();
-    try p.printDiagnostic(out.writer(), "bad.sla", ParserError.ExpectedDeclaration);
+    try p.printDiagnostic(sio.managedWriter(&out), "bad.sla", ParserError.ExpectedDeclaration);
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "Syntax Error: failed to parse bad.sla:4:1: error.ExpectedDeclaration") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "4 | }") != null);
@@ -4452,7 +4469,10 @@ test "sla nullish assign desugars to assign unwrap_or" {
 
     const fill = prog.program.decls[0].func_decl;
     try std.testing.expect(fill.body[1].* == .assign_stmt);
-    const fallback = fill.body[1].assign_stmt.value.call_expr;
+    const some_call = fill.body[1].assign_stmt.value.call_expr;
+    try std.testing.expect(std.mem.eql(u8, some_call.func_name, "Some"));
+    try std.testing.expect(some_call.args.len == 1);
+    const fallback = some_call.args[0].call_expr;
     try std.testing.expect(std.mem.eql(u8, fallback.func_name, "unwrap_or"));
     try std.testing.expect(fallback.args.len == 2);
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const host_paths = @import("host_paths.zig");
 const ast = @import("ast.zig");
 const plugin_imports = @import("plugin_imports.zig");
@@ -46,9 +47,9 @@ fn normalizedSlaStdImportPath(allocator: std.mem.Allocator, path: []const u8) !?
 fn absoluteDirForOutput(allocator: std.mem.Allocator, output_file: []const u8) ![]const u8 {
     const output_dir = std.fs.path.dirname(output_file) orelse ".";
     if (std.fs.path.isAbsolute(output_dir)) return try allocator.dupe(u8, output_dir);
-    return std.fs.cwd().realpathAlloc(allocator, output_dir) catch |err| switch (err) {
+    return sio.cwd().realpathAlloc(allocator, output_dir) catch |err| switch (err) {
         error.FileNotFound => blk: {
-            const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+            const cwd = try sio.cwd().realpathAlloc(allocator, ".");
             break :blk try std.fs.path.join(allocator, &.{ cwd, output_dir });
         },
         else => return err,
@@ -76,7 +77,11 @@ fn rewriteImportPathForOutput(
     }
 
     const output_dir = try absoluteDirForOutput(allocator, output_file);
-    const relative = try std.fs.path.relative(allocator, output_dir, target_path);
+    // NOTE(Zig 0.17): `std.fs.path.relative` became `relativeAlloc`, which
+    // takes an explicit cwd (+ environ_map, only used on Windows).
+    const cwd = try sio.getCwdAlloc(allocator);
+    defer allocator.free(cwd);
+    const relative = try std.fs.path.relativeAlloc(allocator, cwd, null, output_dir, target_path);
     return try host_paths.normalizePathSlashes(allocator, relative);
 }
 

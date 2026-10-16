@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 
 pub const SourceExpandError = error{
     InvalidExpandTuple,
@@ -24,10 +25,10 @@ const TupleContext = struct {
     }
 
     fn typeList(self: TupleContext, allocator: std.mem.Allocator) SourceExpandError![]const u8 {
-        var out = std.ArrayList(u8).init(allocator);
+        var out = std.array_list.Managed(u8).init(allocator);
         for (0..self.arity) |i| {
             if (i != 0) try out.appendSlice(", ");
-            out.writer().print("{s}{}", .{ self.type_prefix, i }) catch return SourceExpandError.OutOfMemory;
+            sio.managedPrint(&out, "{s}{}", .{ self.type_prefix, i }) catch return SourceExpandError.OutOfMemory;
         }
         return out.toOwnedSlice() catch return SourceExpandError.OutOfMemory;
     }
@@ -38,7 +39,7 @@ pub fn expand(allocator: std.mem.Allocator, source: []const u8) SourceExpandErro
         return allocator.dupe(u8, source) catch return SourceExpandError.OutOfMemory;
     }
 
-    var out = std.ArrayList(u8).init(allocator);
+    var out = std.array_list.Managed(u8).init(allocator);
     // Large ECS modules use many @expand_tuple blocks; avoid geometric realloc churn.
     try out.ensureTotalCapacity(source.len * 2);
     var i: usize = 0;
@@ -90,7 +91,7 @@ fn expandCachePath(allocator: std.mem.Allocator, module_path: []const u8, source
 }
 
 fn loadExpandedSourceCache(allocator: std.mem.Allocator, cache_path: []const u8) !?[]u8 {
-    return std.fs.cwd().readFileAlloc(allocator, cache_path, 64 * 1024 * 1024) catch |err| switch (err) {
+    return sio.cwd().readFileAlloc(allocator, cache_path, 64 * 1024 * 1024) catch |err| switch (err) {
         error.FileNotFound => null,
         else => err,
     };
@@ -98,10 +99,13 @@ fn loadExpandedSourceCache(allocator: std.mem.Allocator, cache_path: []const u8)
 
 fn storeExpandedSourceCache(cache_path: []const u8, expanded: []const u8) void {
     const dir = std.fs.path.dirname(cache_path) orelse return;
-    std.fs.cwd().makePath(dir) catch return;
-    const file = std.fs.cwd().createFile(cache_path, .{}) catch return;
+    sio.cwd().makePath(dir) catch return;
+    const file = sio.cwd().createFile(cache_path, .{ .truncate = true }) catch return;
     defer file.close();
-    file.writeAll(expanded) catch {};
+    var wb: [8192]u8 = undefined;
+    var w = file.writer(&wb);
+    w.interface.writeAll(expanded) catch {};
+    w.interface.flush() catch {};
 }
 
 const ExpandTupleSpec = struct {
@@ -125,7 +129,7 @@ fn parseExpandTupleArgs(args: []const u8) SourceExpandError!ExpandTupleSpec {
 }
 
 fn expandTemplate(allocator: std.mem.Allocator, template: []const u8, ctx: TupleContext) SourceExpandError![]const u8 {
-    var out = std.ArrayList(u8).init(allocator);
+    var out = std.array_list.Managed(u8).init(allocator);
     var i: usize = 0;
     while (i < template.len) {
         if (startsWithAt(template, i, "@each")) {
@@ -168,25 +172,25 @@ fn expandTemplate(allocator: std.mem.Allocator, template: []const u8, ctx: Tuple
     return out.toOwnedSlice() catch return SourceExpandError.OutOfMemory;
 }
 
-fn appendPlaceholder(out: *std.ArrayList(u8), text: []const u8, index: *usize, ctx: TupleContext) SourceExpandError!bool {
+fn appendPlaceholder(out: *std.array_list.Managed(u8), text: []const u8, index: *usize, ctx: TupleContext) SourceExpandError!bool {
     const i = index.*;
     if (text[i] != '$') return false;
     if (startsWithAt(text, i, "$TYPE_PARAMS") or startsWithAt(text, i, "$TYPES")) {
         for (0..ctx.arity) |type_index| {
             if (type_index != 0) try out.appendSlice(", ");
-            out.writer().print("{s}{}", .{ ctx.type_prefix, type_index }) catch return SourceExpandError.OutOfMemory;
+            sio.managedPrint(out, "{s}{}", .{ ctx.type_prefix, type_index }) catch return SourceExpandError.OutOfMemory;
         }
         index.* += if (startsWithAt(text, i, "$TYPE_PARAMS")) "$TYPE_PARAMS".len else "$TYPES".len;
         return true;
     }
     if (startsWithAt(text, i, "$N")) {
-        out.writer().print("{}", .{ctx.arity}) catch return SourceExpandError.OutOfMemory;
+        sio.managedPrint(out, "{}", .{ctx.arity}) catch return SourceExpandError.OutOfMemory;
         index.* += 2;
         return true;
     }
     if (startsWithAt(text, i, "$I")) {
         const idx = ctx.current_index orelse return SourceExpandError.InvalidExpandTuple;
-        out.writer().print("{}", .{idx}) catch return SourceExpandError.OutOfMemory;
+        sio.managedPrint(out, "{}", .{idx}) catch return SourceExpandError.OutOfMemory;
         index.* += 2;
         return true;
     }
@@ -198,13 +202,13 @@ fn appendPlaceholder(out: *std.ArrayList(u8), text: []const u8, index: *usize, c
     }
     if (startsWithAt(text, i + 1, ctx.type_prefix) and placeholderBoundary(text, i + 1 + ctx.type_prefix.len)) {
         const type_index = ctx.current_index orelse return SourceExpandError.InvalidExpandTuple;
-        out.writer().print("{s}{}", .{ ctx.type_prefix, type_index }) catch return SourceExpandError.OutOfMemory;
+        sio.managedPrint(out, "{s}{}", .{ ctx.type_prefix, type_index }) catch return SourceExpandError.OutOfMemory;
         index.* += 1 + ctx.type_prefix.len;
         return true;
     }
     if (startsWithAt(text, i, "$T")) {
         const type_index = ctx.current_index orelse return SourceExpandError.InvalidExpandTuple;
-        out.writer().print("{s}{}", .{ ctx.type_prefix, type_index }) catch return SourceExpandError.OutOfMemory;
+        sio.managedPrint(out, "{s}{}", .{ ctx.type_prefix, type_index }) catch return SourceExpandError.OutOfMemory;
         index.* += 2;
         return true;
     }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const sla_build_options = @import("sla_build_options");
 const ast = @import("ast.zig");
 const contract_parser = @import("contract_parser.zig");
@@ -18,7 +19,7 @@ fn stringSliceLessThan(_: void, a: []const u8, b: []const u8) bool {
 }
 
 fn sabProfileEnabled(allocator: std.mem.Allocator) bool {
-    const value = std.process.getEnvVarOwned(allocator, "SLA_SAB_PROFILE") catch return false;
+    const value = sio.getEnvVarOwned(allocator, "SLA_SAB_PROFILE") catch return false;
     defer allocator.free(value);
     return value.len != 0 and
         !std.mem.eql(u8, value, "0") and
@@ -26,26 +27,32 @@ fn sabProfileEnabled(allocator: std.mem.Allocator) bool {
 }
 
 fn sabProfileElapsedMs(start_ns: i128) i128 {
-    return @divTrunc(std.time.nanoTimestamp() - start_ns, std.time.ns_per_ms);
+    return @divTrunc(sio.nanoTimestamp() - start_ns, std.time.ns_per_ms);
 }
 
 fn sabProfileStage(enabled: bool, label: []const u8, start_ns: i128) void {
     if (!enabled) return;
-    std.io.getStdErr().writer().print("[sla-sab-profile] {s}: {d}ms\n", .{
+    var ebuf: [8192]u8 = undefined;
+    var ew = sio.getStdErr().writer(&ebuf);
+    ew.interface.print("[sla-sab-profile] {s}: {d}ms\n", .{
         label,
         sabProfileElapsedMs(start_ns),
     }) catch {};
+    ew.interface.flush() catch {};
 }
 
 fn sabProfileDecl(enabled: bool, kind: []const u8, name: []const u8, start_ns: i128) void {
     if (!enabled) return;
     const elapsed_ms = sabProfileElapsedMs(start_ns);
     if (elapsed_ms < 25) return;
-    std.io.getStdErr().writer().print("[sla-sab-profile] {s} {s}: {d}ms\n", .{
+    var ebuf: [8192]u8 = undefined;
+    var ew = sio.getStdErr().writer(&ebuf);
+    ew.interface.print("[sla-sab-profile] {s} {s}: {d}ms\n", .{
         kind,
         name,
         elapsed_ms,
     }) catch {};
+    ew.interface.flush() catch {};
 }
 
 pub const Error = error{
@@ -140,8 +147,8 @@ const MacroExpansionContext = struct {
     local_idx: usize = 0,
     args: []const MacroArgBinding,
     locals: std.StringHashMap(MacroLocalBinding),
-    local_changes: std.ArrayList(MacroLocalChange),
-    allocated_names: std.ArrayList([]const u8),
+    local_changes: std.array_list.Managed(MacroLocalChange),
+    allocated_names: std.array_list.Managed([]const u8),
 };
 
 const EscapedCapture = struct {
@@ -162,7 +169,7 @@ const EscapedClosureEntry = struct {
 };
 
 const EscapedCaptureCollector = struct {
-    ordered: std.ArrayList(EscapedCapture),
+    ordered: std.array_list.Managed(EscapedCapture),
     seen: std.StringHashMap(void),
 };
 
@@ -251,8 +258,8 @@ const PendingStdDep = struct {
 
 const DecodedModuleLocalRemap = struct {
     reg_ids: std.AutoHashMap(u32, u32),
-    reg_order: std.ArrayList(u32),
-    extra_reg_ids: std.ArrayList(u32),
+    reg_order: std.array_list.Managed(u32),
+    extra_reg_ids: std.array_list.Managed(u32),
     stable_reg_ids: std.AutoHashMap(u32, u32),
     source_reg_symbol_ids: std.AutoHashMap(u32, u32),
     label_ids: std.AutoHashMap(u32, u32),
@@ -262,8 +269,8 @@ const DecodedModuleLocalRemap = struct {
     fn init(allocator: std.mem.Allocator) DecodedModuleLocalRemap {
         return .{
             .reg_ids = std.AutoHashMap(u32, u32).init(allocator),
-            .reg_order = std.ArrayList(u32).init(allocator),
-            .extra_reg_ids = std.ArrayList(u32).init(allocator),
+            .reg_order = std.array_list.Managed(u32).init(allocator),
+            .extra_reg_ids = std.array_list.Managed(u32).init(allocator),
             .stable_reg_ids = std.AutoHashMap(u32, u32).init(allocator),
             .source_reg_symbol_ids = std.AutoHashMap(u32, u32).init(allocator),
             .label_ids = std.AutoHashMap(u32, u32).init(allocator),
@@ -287,9 +294,9 @@ const DecodedModuleLocalRemap = struct {
 pub const Codegen = struct {
     allocator: std.mem.Allocator,
     tc: *type_checker.TypeChecker,
-    symbols: std.ArrayList([]const u8),
+    symbols: std.array_list.Managed([]const u8),
     symbol_ids: std.StringHashMap(u32),
-    const_decls: std.ArrayList(const_decl.ConstDecl),
+    const_decls: std.array_list.Managed(const_decl.ConstDecl),
     fn_ptr_vtables: std.StringHashMap(void),
     closure_bindings: std.StringHashMap(*const ast.ClosureLiteral),
     closure_param_regs: std.StringHashMap(u32),
@@ -312,12 +319,12 @@ pub const Codegen = struct {
     // (println/len/format-push/as_ptr) must use C-string paths for these
     // instead of slice-field loads.
     explicit_ptr_string_locals: std.StringHashMap(void),
-    std_surface_rules: std.ArrayList(StdSurfaceRule),
+    std_surface_rules: std.array_list.Managed(StdSurfaceRule),
     included_imports: std.StringHashMap(void),
-    pending_std_deps: std.ArrayList(PendingStdDep),
-    std_import_modules: std.ArrayList(StdImportModule),
+    pending_std_deps: std.array_list.Managed(PendingStdDep),
+    std_import_modules: std.array_list.Managed(StdImportModule),
     std_import_module_ids: std.StringHashMap(usize),
-    std_macro_templates: std.ArrayList(StdMacroTemplate),
+    std_macro_templates: std.array_list.Managed(StdMacroTemplate),
     std_macro_template_ids: std.StringHashMap(usize),
     escaped_closure_entries: std.AutoHashMap(*const ast.Node, EscapedClosureEntry),
     refcell_borrow_values: std.AutoHashMap(u32, RefCellBorrowValue),
@@ -343,13 +350,13 @@ pub const Codegen = struct {
     string_literal_consts: std.StringHashMap([]const u8),
     hashmap_key_slots: std.StringHashMap(u32),
     sa_std_root: ?[]const u8 = null,
-    instructions: std.ArrayList(inst.Instruction),
-    function_sigs: std.ArrayList(sig.FunctionSig),
-    test_sigs: std.ArrayList(sig.FunctionSig),
-    locals: std.ArrayList(Local),
-    loop_continue_labels: std.ArrayList([]const u8),
-    loop_break_labels: std.ArrayList([]const u8),
-    current_reg_ids: std.ArrayList(u32),
+    instructions: std.array_list.Managed(inst.Instruction),
+    function_sigs: std.array_list.Managed(sig.FunctionSig),
+    test_sigs: std.array_list.Managed(sig.FunctionSig),
+    locals: std.array_list.Managed(Local),
+    loop_continue_labels: std.array_list.Managed([]const u8),
+    loop_break_labels: std.array_list.Managed([]const u8),
+    current_reg_ids: std.array_list.Managed(u32),
     current_reg_seen: std.AutoHashMap(u32, void),
     released_regs: std.AutoHashMap(u32, void),
     // Register ids that have already had a `stack_alloc` emitted in the current
@@ -373,7 +380,7 @@ pub const Codegen = struct {
     current_block: ?[]const *ast.Node = null,
     current_stmt_index: usize = 0,
     active_macro_try_cleanup: ?[]const []const u8 = null,
-    current_expr_later_nodes: std.ArrayList(*const ast.Node),
+    current_expr_later_nodes: std.array_list.Managed(*const ast.Node),
     future_task_helpers_emitted: bool = false,
     // When appending a decoded std-macro fragment, fragment-internal temp/local
     // registers (named `tmp_N`, `__...` by the snippet flattener) share the
@@ -391,9 +398,9 @@ pub const Codegen = struct {
         return .{
             .allocator = allocator,
             .tc = tc,
-            .symbols = std.ArrayList([]const u8).init(allocator),
+            .symbols = std.array_list.Managed([]const u8).init(allocator),
             .symbol_ids = std.StringHashMap(u32).init(allocator),
-            .const_decls = std.ArrayList(const_decl.ConstDecl).init(allocator),
+            .const_decls = std.array_list.Managed(const_decl.ConstDecl).init(allocator),
             .fn_ptr_vtables = std.StringHashMap(void).init(allocator),
             .closure_bindings = std.StringHashMap(*const ast.ClosureLiteral).init(allocator),
             .closure_param_regs = std.StringHashMap(u32).init(allocator),
@@ -402,12 +409,12 @@ pub const Codegen = struct {
             .multi_let_bindings = std.StringHashMap(void).init(allocator),
             .inferred_string_slice_locals = std.StringHashMap(void).init(allocator),
             .explicit_ptr_string_locals = std.StringHashMap(void).init(allocator),
-            .std_surface_rules = std.ArrayList(StdSurfaceRule).init(allocator),
+            .std_surface_rules = std.array_list.Managed(StdSurfaceRule).init(allocator),
             .included_imports = std.StringHashMap(void).init(allocator),
-            .pending_std_deps = std.ArrayList(PendingStdDep).init(allocator),
-            .std_import_modules = std.ArrayList(StdImportModule).init(allocator),
+            .pending_std_deps = std.array_list.Managed(PendingStdDep).init(allocator),
+            .std_import_modules = std.array_list.Managed(StdImportModule).init(allocator),
             .std_import_module_ids = std.StringHashMap(usize).init(allocator),
-            .std_macro_templates = std.ArrayList(StdMacroTemplate).init(allocator),
+            .std_macro_templates = std.array_list.Managed(StdMacroTemplate).init(allocator),
             .std_macro_template_ids = std.StringHashMap(usize).init(allocator),
             .escaped_closure_entries = std.AutoHashMap(*const ast.Node, EscapedClosureEntry).init(allocator),
             .refcell_borrow_values = std.AutoHashMap(u32, RefCellBorrowValue).init(allocator),
@@ -427,17 +434,17 @@ pub const Codegen = struct {
             .copy_value_cache = std.StringHashMap(bool).init(allocator),
             .string_literal_consts = std.StringHashMap([]const u8).init(allocator),
             .hashmap_key_slots = std.StringHashMap(u32).init(allocator),
-            .instructions = std.ArrayList(inst.Instruction).init(allocator),
-            .function_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
-            .test_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
-            .locals = std.ArrayList(Local).init(allocator),
-            .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
-            .loop_break_labels = std.ArrayList([]const u8).init(allocator),
-            .current_reg_ids = std.ArrayList(u32).init(allocator),
+            .instructions = std.array_list.Managed(inst.Instruction).init(allocator),
+            .function_sigs = std.array_list.Managed(sig.FunctionSig).init(allocator),
+            .test_sigs = std.array_list.Managed(sig.FunctionSig).init(allocator),
+            .locals = std.array_list.Managed(Local).init(allocator),
+            .loop_continue_labels = std.array_list.Managed([]const u8).init(allocator),
+            .loop_break_labels = std.array_list.Managed([]const u8).init(allocator),
+            .current_reg_ids = std.array_list.Managed(u32).init(allocator),
             .current_reg_seen = std.AutoHashMap(u32, void).init(allocator),
             .released_regs = std.AutoHashMap(u32, void).init(allocator),
             .stack_alloc_emitted = std.AutoHashMap(u32, void).init(allocator),
-            .current_expr_later_nodes = std.ArrayList(*const ast.Node).init(allocator),
+            .current_expr_later_nodes = std.array_list.Managed(*const ast.Node).init(allocator),
         };
     }
 
@@ -528,35 +535,35 @@ pub const Codegen = struct {
     pub fn generate(self: *Codegen, program: *ast.Node) ![]u8 {
         if (program.* != .program) return Error.UnsupportedSabDirectFeature;
         const profile = sabProfileEnabled(self.allocator);
-        var stage_start = std.time.nanoTimestamp();
+        var stage_start = sio.nanoTimestamp();
         try self.collectGlobalScalarConsts(program);
         try self.collectGlobalArrayConsts(program);
         try self.collectAssignedBindings(program);
         sabProfileStage(profile, "pre-scan", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         try self.loadStdSurfaceRules();
         self.preloadStdSurfaceDeps(program) catch |err| {
             self.traceUnsupported("std surface preload failed: {s}\n", .{@errorName(err)});
             return err;
         };
         sabProfileStage(profile, "std surface deps", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         if (programUsesFutureTaskRuntime(program)) {
             try self.emitFutureTaskHelpers();
         }
         sabProfileStage(profile, "future helpers", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         for (program.program.decls) |decl| {
             if (decl.* == .impl_decl and decl.impl_decl.trait_name != null) {
                 try self.emitTraitVTableDecl(&decl.impl_decl);
             }
         }
         sabProfileStage(profile, "trait vtables", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         for (program.program.decls) |decl| {
             switch (decl.*) {
                 .func_decl => |*f| {
-                    const decl_start = if (profile) std.time.nanoTimestamp() else 0;
+                    const decl_start = if (profile) sio.nanoTimestamp() else 0;
                     if (f.is_decl_only) {
                         if (f.is_extern and !hasConcreteFunctionSymbol(program.program.decls, f)) {
                             self.genExternDecl(f) catch |err| {
@@ -574,7 +581,7 @@ pub const Codegen = struct {
                     }
                 },
                 .test_decl => |*t| {
-                    const decl_start = if (profile) std.time.nanoTimestamp() else 0;
+                    const decl_start = if (profile) sio.nanoTimestamp() else 0;
                     self.genTestDecl(t) catch |err| {
                         self.traceUnsupported("test decl {s} failed: {s}\n", .{ t.name, @errorName(err) });
                         return err;
@@ -582,7 +589,7 @@ pub const Codegen = struct {
                     sabProfileDecl(profile, "test", t.name, decl_start);
                 },
                 .impl_decl => |*i| {
-                    const decl_start = if (profile) std.time.nanoTimestamp() else 0;
+                    const decl_start = if (profile) sio.nanoTimestamp() else 0;
                     self.genImplDecl(i) catch |err| {
                         self.traceUnsupported("impl decl failed: {s}\n", .{@errorName(err)});
                         return err;
@@ -590,7 +597,7 @@ pub const Codegen = struct {
                     sabProfileDecl(profile, "impl", concreteTypeName(i.target_ty) orelse "?", decl_start);
                 },
                 .overload_decl => |*o| {
-                    const decl_start = if (profile) std.time.nanoTimestamp() else 0;
+                    const decl_start = if (profile) sio.nanoTimestamp() else 0;
                     self.genOverloadDecl(o) catch |err| {
                         self.traceUnsupported("overload decl failed: {s}\n", .{@errorName(err)});
                         return err;
@@ -605,13 +612,13 @@ pub const Codegen = struct {
             }
         }
         sabProfileStage(profile, "top-level decls", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         try self.emitEscapedClosureEntries();
         sabProfileStage(profile, "escaped closures", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         try self.emitReferencedContractExternDecls();
         sabProfileStage(profile, "extern decls", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         const bytes = try sab.encodeProgramWithConsts(
             self.allocator,
             self.symbols.items,
@@ -695,7 +702,7 @@ pub const Codegen = struct {
     fn emitGlobalArrayConst(self: *Codegen, name: []const u8, value: *const ast.Node, arr: ast.ArrayType) !void {
         const label = try std.fmt.allocPrint(self.allocator, "SLA_GCONST_{s}", .{name});
         const stride = arrayStride(arr.elem);
-        var buf = std.ArrayList(u8).init(self.allocator);
+        var buf = std.array_list.Managed(u8).init(self.allocator);
         defer buf.deinit();
         if (value.* == .array_literal) {
             const lit = value.array_literal;
@@ -743,11 +750,11 @@ pub const Codegen = struct {
             return;
         }
         const bytes = try buf.toOwnedSlice();
-        var hex_text = std.ArrayList(u8).init(self.allocator);
+        var hex_text = std.array_list.Managed(u8).init(self.allocator);
         defer hex_text.deinit();
         try hex_text.appendSlice("hex:");
         for (bytes) |b| {
-            try hex_text.writer().print("\\x{x:0>2}", .{b});
+            try sio.managedPrint(&hex_text, "\\x{x:0>2}", .{b});
         }
         const literal_text = try hex_text.toOwnedSlice();
         const raw_text = try std.fmt.allocPrint(self.allocator, "@const {s} = {s}", .{ label, literal_text });
@@ -989,8 +996,8 @@ pub const Codegen = struct {
         self: *Codegen,
         trait_name: []const u8,
         type_name: []const u8,
-        slots: *std.ArrayList(const_decl.VTableSlot),
-        literal: *std.ArrayList(u8),
+        slots: *std.array_list.Managed(const_decl.VTableSlot),
+        literal: *std.array_list.Managed(u8),
     ) !void {
         const trait_decl = self.tc.traits.get(trait_name) orelse return Error.UnsupportedSabDirectFeature;
         for (trait_decl.supertraits) |supertrait| {
@@ -1007,7 +1014,7 @@ pub const Codegen = struct {
             }
             if (slots.items.len > 0) try literal.appendSlice(", ");
             const lowered = try self.loweredFuncSymbol(mangled);
-            try literal.writer().print("{s} = @{s}", .{ method.name, lowered });
+            try sio.managedPrint(literal, "{s} = @{s}", .{ method.name, lowered });
             try slots.append(.{
                 .name = try self.allocator.dupe(u8, method.name),
                 .func_name = try self.allocator.dupe(u8, lowered),
@@ -1021,8 +1028,8 @@ pub const Codegen = struct {
         const type_name = concreteTypeName(decl.target_ty) orelse return Error.UnsupportedSabDirectFeature;
         const vt_name = try self.vtableName(trait_name, type_name);
 
-        var slots = std.ArrayList(const_decl.VTableSlot).init(self.allocator);
-        var literal = std.ArrayList(u8).init(self.allocator);
+        var slots = std.array_list.Managed(const_decl.VTableSlot).init(self.allocator);
+        var literal = std.array_list.Managed(u8).init(self.allocator);
         try literal.appendSlice("vtable { ");
         try self.appendTraitVTableEntries(trait_name, type_name, &slots, &literal);
         try literal.appendSlice(" }");
@@ -1166,7 +1173,7 @@ pub const Codegen = struct {
     }
 
     fn decodeStringLiteralBytes(self: *Codegen, value: []const u8) ![]u8 {
-        var out = std.ArrayList(u8).init(self.allocator);
+        var out = std.array_list.Managed(u8).init(self.allocator);
         errdefer out.deinit();
 
         var i: usize = 0;
@@ -1199,7 +1206,7 @@ pub const Codegen = struct {
     }
 
     fn escapedUtf8LiteralBytes(self: *Codegen, bytes: []const u8) ![]u8 {
-        var out = std.ArrayList(u8).init(self.allocator);
+        var out = std.array_list.Managed(u8).init(self.allocator);
         errdefer out.deinit();
 
         for (bytes) |b| switch (b) {
@@ -1212,7 +1219,7 @@ pub const Codegen = struct {
             else => if (std.ascii.isPrint(b)) {
                 try out.append(b);
             } else {
-                try out.writer().print("\\x{X:0>2}", .{b});
+                try sio.managedPrint(&out, "\\x{X:0>2}", .{b});
             },
         };
 
@@ -1264,11 +1271,11 @@ pub const Codegen = struct {
     }
 
     fn readStdSurfaceFile(self: *Codegen) !?[]const u8 {
-        if (std.process.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |root| {
+        if (sio.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |root| {
             defer self.allocator.free(root);
             const path = try std.fs.path.join(self.allocator, &.{ root, "std_surface.sla_meta" });
             defer self.allocator.free(path);
-            if (std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
+            if (sio.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
                 error.FileNotFound, error.NotDir => {},
                 else => return err,
             }
@@ -1278,7 +1285,7 @@ pub const Codegen = struct {
             defer self.allocator.free(home);
             const path = try std.fs.path.join(self.allocator, &.{ home, "projects", "sa_plugins", "sa_plugin_sla", "sla_std", "std_surface.sla_meta" });
             defer self.allocator.free(path);
-            if (std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
+            if (sio.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
                 error.FileNotFound, error.NotDir => {},
                 else => return err,
             }
@@ -1291,7 +1298,7 @@ pub const Codegen = struct {
             "/home/vscode/projects/sa_plugins/sa_plugin_sla/sla_std/std_surface.sla_meta",
         };
         for (candidates) |path| {
-            if (std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
+            if (sio.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
                 error.FileNotFound, error.NotDir => {},
                 else => return err,
             }
@@ -1309,7 +1316,7 @@ pub const Codegen = struct {
         for (required_files) |rel| {
             const path = try std.fs.path.join(self.allocator, &.{ root, rel });
             defer self.allocator.free(path);
-            if (std.fs.cwd().openFile(path, .{})) |file| {
+            if (sio.cwd().openFile(path, .{})) |file| {
                 file.close();
             } else |err| switch (err) {
                 error.FileNotFound, error.NotDir => return false,
@@ -1326,12 +1333,12 @@ pub const Codegen = struct {
 
     fn resolveSaStdRoot(self: *Codegen) ![]const u8 {
         if (try self.dupeIfValidSaStdRoot(sla_build_options.sa_std_source_dir)) |root| return root;
-        if (std.process.getEnvVarOwned(self.allocator, "SA_STD_DIR")) |env_root| {
+        if (sio.getEnvVarOwned(self.allocator, "SA_STD_DIR")) |env_root| {
             defer self.allocator.free(env_root);
             if (try self.dupeIfValidSaStdRoot(env_root)) |root| return root;
         } else |_| {}
 
-        if (std.process.getEnvVarOwned(self.allocator, "SCI_ROOT")) |sci_root| {
+        if (sio.getEnvVarOwned(self.allocator, "SCI_ROOT")) |sci_root| {
             defer self.allocator.free(sci_root);
             const sci_sa_std_root = try std.fs.path.join(self.allocator, &.{ sci_root, "sa_std" });
             defer self.allocator.free(sci_sa_std_root);
@@ -1387,7 +1394,7 @@ pub const Codegen = struct {
     }
 
     fn parseStdSurfaceArgs(self: *Codegen, text: []const u8) ![]const StdSurfaceArgKind {
-        var args = std.ArrayList(StdSurfaceArgKind).init(self.allocator);
+        var args = std.array_list.Managed(StdSurfaceArgKind).init(self.allocator);
         var it = std.mem.splitScalar(u8, text, ',');
         while (it.next()) |raw| {
             const item = std.mem.trim(u8, raw, " \t\r");
@@ -1400,7 +1407,7 @@ pub const Codegen = struct {
     fn parseStdSurfaceDeps(self: *Codegen, text: ?[]const u8) ![]const []const u8 {
         const raw = text orelse return &.{};
         if (!std.mem.startsWith(u8, raw, "deps=")) return Error.UnsupportedSabDirectFeature;
-        var deps = std.ArrayList([]const u8).init(self.allocator);
+        var deps = std.array_list.Managed([]const u8).init(self.allocator);
         var it = std.mem.splitScalar(u8, raw["deps=".len..], ',');
         while (it.next()) |item_raw| {
             const item = std.mem.trim(u8, item_raw, " \t\r");
@@ -1942,9 +1949,9 @@ pub const Codegen = struct {
             ));
             return;
         }
-        var args = std.ArrayList([]const u8).init(self.allocator);
+        var args = std.array_list.Managed([]const u8).init(self.allocator);
         defer args.deinit();
-        var literal_args = std.ArrayList(bool).init(self.allocator);
+        var literal_args = std.array_list.Managed(bool).init(self.allocator);
         defer literal_args.deinit();
         for (rule.args) |arg_kind| {
             try args.append(try self.stdSurfaceArgText(arg_kind, values));
@@ -2532,7 +2539,7 @@ pub const Codegen = struct {
         self.deinitBorrowAddressTempSnapshot(&snapshot.borrow_temps);
     }
 
-    fn appendCurrentBranchEmitterState(self: *Codegen, snapshots: *std.ArrayList(BranchEmitterStateSnapshot)) !void {
+    fn appendCurrentBranchEmitterState(self: *Codegen, snapshots: *std.array_list.Managed(BranchEmitterStateSnapshot)) !void {
         var snapshot = try self.cloneBranchEmitterState();
         errdefer self.deinitBranchEmitterStateSnapshot(&snapshot);
         try snapshots.append(snapshot);
@@ -2747,7 +2754,7 @@ pub const Codegen = struct {
     fn rememberBorrowAddressTemps(self: *Codegen, borrow_reg: u32, source: AddressSource) !void {
         const plan = lowering_rules.planBorrowAddressTemps(!self.isLocalReg(source.reg), source.release_regs.len != 0);
         if (!plan.remember and source.restore_slot == null) return;
-        var regs = std.ArrayList(u32).init(self.allocator);
+        var regs = std.array_list.Managed(u32).init(self.allocator);
         defer regs.deinit();
         if (plan.track_primary_temp) try regs.append(source.reg);
         if (plan.track_extra_temps) try regs.appendSlice(source.release_regs);
@@ -2873,7 +2880,17 @@ pub const Codegen = struct {
             }
         }
 
+        try self.emitMoveForSlotTransfer(src);
         try self.transferResultSlotValueState(slot, src, true);
+    }
+
+    /// Runtime counterpart of a result-slot ownership move (see
+    /// `storeResultSlotTransferredValue`): retire the source alias with
+    /// `move_` (frees nothing) so the verifier does not report the branch
+    /// allocation live at function exit. The slot, and later the
+    /// merge-loaded result, owns the memory. Locals are exempt.
+    fn emitMoveForSlotTransfer(self: *Codegen, src: u32) !void {
+        if (!self.isLocalReg(src)) try self.emitMove(src);
     }
 
     fn loadResultSlotTransferredValue(self: *Codegen, dst: u32, slot: u32, target_ty: *const ast.Type) !void {
@@ -3472,7 +3489,7 @@ pub const Codegen = struct {
         for (closure.params) |param| try locals.put(param.name, {});
 
         var collector = EscapedCaptureCollector{
-            .ordered = std.ArrayList(EscapedCapture).init(self.allocator),
+            .ordered = std.array_list.Managed(EscapedCapture).init(self.allocator),
             .seen = std.StringHashMap(void).init(self.allocator),
         };
         defer collector.seen.deinit();
@@ -3605,7 +3622,7 @@ pub const Codegen = struct {
     }
 
     fn emitRefCellBorrowReleasesForCell(self: *Codegen, cell_reg: u32) anyerror!void {
-        var handles_to_release = std.ArrayList(u32).init(self.allocator);
+        var handles_to_release = std.array_list.Managed(u32).init(self.allocator);
         defer handles_to_release.deinit();
 
         var iter = self.refcell_borrow_values.iterator();
@@ -3627,7 +3644,7 @@ pub const Codegen = struct {
         try seen.put(reg, {});
         if (self.released_regs.contains(reg)) return;
 
-        var handles_to_release = std.ArrayList(u32).init(self.allocator);
+        var handles_to_release = std.array_list.Managed(u32).init(self.allocator);
         defer handles_to_release.deinit();
         var iter = self.refcell_borrow_values.iterator();
         while (iter.next()) |entry| {
@@ -4067,7 +4084,7 @@ pub const Codegen = struct {
     }
 
     fn cloneDecodedModuleRegIds(self: *Codegen, required_ids: []const u32, remap: *DecodedModuleLocalRemap) ![]const u32 {
-        var out = std.ArrayList(u32).init(self.allocator);
+        var out = std.array_list.Managed(u32).init(self.allocator);
         errdefer out.deinit();
         var seen = std.AutoHashMap(u32, void).init(self.allocator);
         defer seen.deinit();
@@ -4149,10 +4166,10 @@ pub const Codegen = struct {
     }
 
     fn collectDecodedModuleTextRegs(self: *Codegen, symbols: []const []const u8, text: []const u8, remap: *DecodedModuleLocalRemap, stable_names: *const std.StringHashMap(void), const_names: *const std.StringHashMap(void), allow_unknown: bool) !void {
-        var token = std.ArrayList(u8).init(self.allocator);
+        var token = std.array_list.Managed(u8).init(self.allocator);
         defer token.deinit();
         const flush = struct {
-            fn call(cg: *Codegen, source_symbols: []const []const u8, tok: *std.ArrayList(u8), local_remap: *DecodedModuleLocalRemap, stable: *const std.StringHashMap(void), consts: *const std.StringHashMap(void), collect_unknown: bool) !void {
+            fn call(cg: *Codegen, source_symbols: []const []const u8, tok: *std.array_list.Managed(u8), local_remap: *DecodedModuleLocalRemap, stable: *const std.StringHashMap(void), consts: *const std.StringHashMap(void), collect_unknown: bool) !void {
                 if (tok.items.len == 0) return;
                 defer tok.clearRetainingCapacity();
                 if (!decodedModuleTextTokenCanBeLocalReg(tok.items)) return;
@@ -4222,12 +4239,12 @@ pub const Codegen = struct {
         text: []const u8,
         remap: *DecodedModuleLocalRemap,
     ) ![]const u8 {
-        var out = std.ArrayList(u8).init(self.allocator);
+        var out = std.array_list.Managed(u8).init(self.allocator);
         errdefer out.deinit();
-        var token = std.ArrayList(u8).init(self.allocator);
+        var token = std.array_list.Managed(u8).init(self.allocator);
         defer token.deinit();
         const flush = struct {
-            fn call(cg: *Codegen, source_symbols: []const []const u8, tok: *std.ArrayList(u8), local_remap: *DecodedModuleLocalRemap, dst: *std.ArrayList(u8)) !void {
+            fn call(cg: *Codegen, source_symbols: []const []const u8, tok: *std.array_list.Managed(u8), local_remap: *DecodedModuleLocalRemap, dst: *std.array_list.Managed(u8)) !void {
                 if (tok.items.len == 0) return;
                 defer tok.clearRetainingCapacity();
                 if (local_remap.reg_names.get(tok.items)) |mapped_name| {
@@ -4393,12 +4410,12 @@ pub const Codegen = struct {
     /// `fragment_rename_args`), immediates, and `@func` targets pass through.
     fn renameFragmentText(self: *Codegen, text: []const u8) ![]const u8 {
         const rename = self.fragment_rename orelse return try self.allocator.dupe(u8, text);
-        var out = std.ArrayList(u8).init(self.allocator);
+        var out = std.array_list.Managed(u8).init(self.allocator);
         errdefer out.deinit();
-        var token = std.ArrayList(u8).init(self.allocator);
+        var token = std.array_list.Managed(u8).init(self.allocator);
         defer token.deinit();
         const flush = struct {
-            fn call(cg: *Codegen, r: *std.StringHashMap([]const u8), tok: *std.ArrayList(u8), o: *std.ArrayList(u8)) !void {
+            fn call(cg: *Codegen, r: *std.StringHashMap([]const u8), tok: *std.array_list.Managed(u8), o: *std.array_list.Managed(u8)) !void {
                 if (tok.items.len == 0) return;
                 if (try cg.fragmentRenamedName(r, tok.items)) |renamed| {
                     try o.appendSlice(renamed);
@@ -4445,12 +4462,12 @@ pub const Codegen = struct {
         const rename = self.fragment_rename orelse {
             return try self.replaceStdMacroPlaceholders(text, args);
         };
-        var out = std.ArrayList(u8).init(self.allocator);
+        var out = std.array_list.Managed(u8).init(self.allocator);
         errdefer out.deinit();
-        var token = std.ArrayList(u8).init(self.allocator);
+        var token = std.array_list.Managed(u8).init(self.allocator);
         defer token.deinit();
         const flush = struct {
-            fn call(cg: *Codegen, r: *std.StringHashMap([]const u8), tok: *std.ArrayList(u8), o: *std.ArrayList(u8), call_args: []const []const u8) !void {
+            fn call(cg: *Codegen, r: *std.StringHashMap([]const u8), tok: *std.array_list.Managed(u8), o: *std.array_list.Managed(u8), call_args: []const []const u8) !void {
                 if (tok.items.len == 0) return;
                 if (templateSymbolNameArgIndex(tok.items)) |arg_idx| {
                     if (arg_idx >= call_args.len) return Error.UnsupportedSabDirectFeature;
@@ -4854,7 +4871,7 @@ pub const Codegen = struct {
         const param_ids = try self.remapDecodedModuleIds(symbols, source.param_ids, remap, stable_names);
         const source_reg_ids = try self.remapDecodedModuleIds(symbols, source.reg_ids, remap, stable_names);
         defer if (source_reg_ids.len != 0) self.allocator.free(source_reg_ids);
-        var required_reg_ids = std.ArrayList(u32).init(self.allocator);
+        var required_reg_ids = std.array_list.Managed(u32).init(self.allocator);
         defer required_reg_ids.deinit();
         try required_reg_ids.appendSlice(param_ids);
         try required_reg_ids.appendSlice(source_reg_ids);
@@ -5266,7 +5283,7 @@ pub const Codegen = struct {
 
     fn ensureStdDeps(self: *Codegen, import_path: []const u8, deps: []const []const u8) !void {
         if (deps.len == 0) return;
-        var missing = std.ArrayList([]const u8).init(self.allocator);
+        var missing = std.array_list.Managed([]const u8).init(self.allocator);
         defer missing.deinit();
         for (deps) |dep| {
             if (!self.included_imports.contains(dep) and !self.pendingStdDepContains(dep)) try missing.append(dep);
@@ -5353,16 +5370,16 @@ pub const Codegen = struct {
         const func_name = try std.fmt.allocPrint(self.allocator, "__sla_macro_template_{}", .{self.std_macro_templates.items.len});
         errdefer self.allocator.free(func_name);
 
-        var source = std.ArrayList(u8).init(self.allocator);
+        var source = std.array_list.Managed(u8).init(self.allocator);
         defer source.deinit();
-        try source.writer().print("@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
+        try sio.managedPrint(&source, "@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
         for (0..arg_count) |idx| {
             const placeholder = try self.stdMacroPlaceholder(idx);
             defer self.allocator.free(placeholder);
             if (idx == 0) {
-                try source.writer().print(" {s}", .{placeholder});
+                try sio.managedPrint(&source, " {s}", .{placeholder});
             } else {
-                try source.writer().print(", {s}", .{placeholder});
+                try sio.managedPrint(&source, ", {s}", .{placeholder});
             }
         }
         try source.appendSlice("\n    return\n");
@@ -5483,23 +5500,23 @@ pub const Codegen = struct {
         const func_name = try std.fmt.allocPrint(self.allocator, "__sla_macro_fragment_{}", .{self.macro_fragment_idx});
         self.macro_fragment_idx += 1;
 
-        var source = std.ArrayList(u8).init(self.allocator);
-        try source.writer().print("@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
+        var source = std.array_list.Managed(u8).init(self.allocator);
+        try sio.managedPrint(&source, "@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
         for (args, 0..) |arg, i| {
             const use_literal = literal_args.len != 0 and literal_args[i];
             if (use_literal) {
                 if (i == 0) {
-                    try source.writer().print(" {s}", .{arg});
+                    try sio.managedPrint(&source, " {s}", .{arg});
                 } else {
-                    try source.writer().print(", {s}", .{arg});
+                    try sio.managedPrint(&source, ", {s}", .{arg});
                 }
             } else {
                 const placeholder = try self.stdMacroPlaceholder(i);
                 defer self.allocator.free(placeholder);
                 if (i == 0) {
-                    try source.writer().print(" {s}", .{placeholder});
+                    try sio.managedPrint(&source, " {s}", .{placeholder});
                 } else {
-                    try source.writer().print(", {s}", .{placeholder});
+                    try sio.managedPrint(&source, ", {s}", .{placeholder});
                 }
             }
         }
@@ -5639,7 +5656,7 @@ pub const Codegen = struct {
         try self.emitAssumeSafe(worker_safe, worker_raw);
 
         const handle = try self.intern(try self.newTmp());
-        var args = std.ArrayList([]const u8).init(self.allocator);
+        var args = std.array_list.Managed([]const u8).init(self.allocator);
         defer args.deinit();
         try args.append(self.symbols.items[handle]);
         try args.append(try std.fmt.allocPrint(self.allocator, "*{s}", .{self.symbols.items[worker_safe]}));
@@ -5873,7 +5890,7 @@ pub const Codegen = struct {
         try self.appendDeclInst(fsig);
         try self.emitLabel("L_ENTRY");
 
-        var capture_regs = std.ArrayList(struct { reg: u32, ty: *const ast.Type }).init(self.allocator);
+        var capture_regs = std.array_list.Managed(struct { reg: u32, ty: *const ast.Type }).init(self.allocator);
         defer capture_regs.deinit();
         for (entry.captures) |capture| {
             const reg = try self.intern(try self.newTmp());
@@ -6298,7 +6315,7 @@ pub const Codegen = struct {
     }
 
     fn emitContractExternDecls(self: *Codegen) !void {
-        var names = std.ArrayList([]const u8).init(self.allocator);
+        var names = std.array_list.Managed([]const u8).init(self.allocator);
         defer names.deinit();
         var iter = self.tc.extern_funcs.keyIterator();
         while (iter.next()) |name| try names.append(name.*);
@@ -6318,7 +6335,7 @@ pub const Codegen = struct {
     }
 
     fn callTargetName(body: []const u8) ?[]const u8 {
-        const trimmed = std.mem.trimLeft(u8, body, " \t\r");
+        const trimmed = std.mem.trimStart(u8, body, " \t\r");
         if (trimmed.len == 0 or trimmed[0] != '@') return null;
         var end: usize = 1;
         while (end < trimmed.len and isCallTargetChar(trimmed[end])) : (end += 1) {}
@@ -6327,9 +6344,9 @@ pub const Codegen = struct {
     }
 
     fn directCallTargetName(body: []const u8) ?[]const u8 {
-        const trimmed = std.mem.trimLeft(u8, body, " \t\r");
+        const trimmed = std.mem.trimStart(u8, body, " \t\r");
         const target = callTargetName(trimmed) orelse return null;
-        const after = std.mem.trimLeft(u8, trimmed[target.len + 1 ..], " \t\r");
+        const after = std.mem.trimStart(u8, trimmed[target.len + 1 ..], " \t\r");
         if (after.len == 0 or after[0] != '(') return null;
         return target;
     }
@@ -6344,16 +6361,16 @@ pub const Codegen = struct {
             try names.put(target, {});
         }
 
-        var sorted = std.ArrayList([]const u8).init(self.allocator);
+        var sorted = std.array_list.Managed([]const u8).init(self.allocator);
         defer sorted.deinit();
         var iter = names.keyIterator();
         while (iter.next()) |name| try sorted.append(name.*);
         std.mem.sort([]const u8, sorted.items, {}, stringSliceLessThan);
         if (sorted.items.len == 0) return;
 
-        var extern_sigs = std.ArrayList(sig.FunctionSig).init(self.allocator);
+        var extern_sigs = std.array_list.Managed(sig.FunctionSig).init(self.allocator);
         defer extern_sigs.deinit();
-        var extern_insts = std.ArrayList(inst.Instruction).init(self.allocator);
+        var extern_insts = std.array_list.Managed(inst.Instruction).init(self.allocator);
         defer extern_insts.deinit();
         for (sorted.items, 0..) |name, idx| {
             var fsig = try self.makeContractExternSig(name, idx);
@@ -6363,14 +6380,14 @@ pub const Codegen = struct {
         }
 
         const shift = extern_insts.items.len;
-        var shifted_insts = std.ArrayList(inst.Instruction).init(self.allocator);
+        var shifted_insts = std.array_list.Managed(inst.Instruction).init(self.allocator);
         try shifted_insts.ensureTotalCapacity(shift + self.instructions.items.len);
         shifted_insts.appendSliceAssumeCapacity(extern_insts.items);
         shifted_insts.appendSliceAssumeCapacity(self.instructions.items);
         self.instructions.deinit();
         self.instructions = shifted_insts;
 
-        var shifted_sigs = std.ArrayList(sig.FunctionSig).init(self.allocator);
+        var shifted_sigs = std.array_list.Managed(sig.FunctionSig).init(self.allocator);
         try shifted_sigs.ensureTotalCapacity(extern_sigs.items.len + self.function_sigs.items.len);
         shifted_sigs.appendSliceAssumeCapacity(extern_sigs.items);
         for (self.function_sigs.items) |fsig| {
@@ -6748,7 +6765,7 @@ pub const Codegen = struct {
     }
 
     fn traceSabUnsupported(self: *Codegen) bool {
-        const value = std.process.getEnvVarOwned(self.allocator, "SLA_SAB_TRACE_UNSUPPORTED") catch return false;
+        const value = sio.getEnvVarOwned(self.allocator, "SLA_SAB_TRACE_UNSUPPORTED") catch return false;
         defer self.allocator.free(value);
         return value.len != 0 and !std.mem.eql(u8, value, "0");
     }
@@ -8755,7 +8772,7 @@ pub const Codegen = struct {
         if (source.reg == base) {
             source.release_regs = base_source.release_regs;
         } else {
-            var release_regs = std.ArrayList(u32).init(self.allocator);
+            var release_regs = std.array_list.Managed(u32).init(self.allocator);
             defer release_regs.deinit();
             if (!self.isLocalReg(base)) try release_regs.append(base);
             try release_regs.appendSlice(base_source.release_regs);
@@ -8782,7 +8799,7 @@ pub const Codegen = struct {
             if (source.reg == target_reg) {
                 source.release_regs = target_source.release_regs;
             } else {
-                var release_regs = std.ArrayList(u32).init(self.allocator);
+                var release_regs = std.array_list.Managed(u32).init(self.allocator);
                 defer release_regs.deinit();
                 if (!self.isLocalReg(target_reg)) try release_regs.append(target_reg);
                 try release_regs.appendSlice(target_source.release_regs);
@@ -8796,7 +8813,7 @@ pub const Codegen = struct {
         const elem_ptr = try self.genArrayElementPtr(addressable_target_ty.array, target_reg, index_reg);
         if (elem_ptr.offset) |offset| try self.emitRelease(offset);
         if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
-        var release_regs = std.ArrayList(u32).init(self.allocator);
+        var release_regs = std.array_list.Managed(u32).init(self.allocator);
         defer release_regs.deinit();
         if (!self.isLocalReg(target_reg)) try release_regs.append(target_reg);
         try release_regs.appendSlice(target_source.release_regs);
@@ -9262,16 +9279,16 @@ pub const Codegen = struct {
 
         const emit_symbol = lowering_rules.staticCallEmitSymbol(call_plan);
         const lowered = try self.loweredFuncSymbol(emit_symbol);
-        var text = std.ArrayList(u8).init(self.allocator);
-        var release_regs = std.ArrayList(u32).init(self.allocator);
+        var text = std.array_list.Managed(u8).init(self.allocator);
+        var release_regs = std.array_list.Managed(u32).init(self.allocator);
         defer release_regs.deinit();
-        var consume_regs = std.ArrayList(u32).init(self.allocator);
+        var consume_regs = std.array_list.Managed(u32).init(self.allocator);
         defer consume_regs.deinit();
-        var forget_regs = std.ArrayList(u32).init(self.allocator);
+        var forget_regs = std.array_list.Managed(u32).init(self.allocator);
         defer forget_regs.deinit();
-        var restores = std.ArrayList(struct { slot: u32, value: u32 }).init(self.allocator);
+        var restores = std.array_list.Managed(struct { slot: u32, value: u32 }).init(self.allocator);
         defer restores.deinit();
-        try text.writer().print("@{s}(", .{lowered});
+        try sio.managedPrint(&text, "@{s}(", .{lowered});
         for (call.args, 0..) |arg, i| {
             const effective = macroEffectiveArg(ctx, arg);
             const param_info = try self.directSabCallParam(call_plan.target_symbol, i);
@@ -9739,8 +9756,8 @@ pub const Codegen = struct {
             .invocation = invocation,
             .args = bindings,
             .locals = std.StringHashMap(MacroLocalBinding).init(self.allocator),
-            .local_changes = std.ArrayList(MacroLocalChange).init(self.allocator),
-            .allocated_names = std.ArrayList([]const u8).init(self.allocator),
+            .local_changes = std.array_list.Managed(MacroLocalChange).init(self.allocator),
+            .allocated_names = std.array_list.Managed([]const u8).init(self.allocator),
         };
         defer {
             ctx.allocated_names.deinit();
@@ -9796,10 +9813,14 @@ pub const Codegen = struct {
                         return;
                     }
                     const value = try self.genExpr(expr);
-                    try self.emitRelease(value);
+                    // See genMacroStmt: skip the discard release when the
+                    // statement terminated the path (e.g. unsafe ending in
+                    // `return`); post-terminator instructions are rejected.
+                    if (!self.lastIsTerminator()) try self.emitRelease(value);
                 } else {
                     const value = try self.genExpr(expr);
-                    try self.emitRelease(value);
+                    // Same terminator guard as above.
+                    if (!self.lastIsTerminator()) try self.emitRelease(value);
                 }
             },
             .return_stmt => |ret| {
@@ -10101,7 +10122,7 @@ pub const Codegen = struct {
         const val_reg = try self.genExpr(sw.val);
         const val_is_local = self.isLocalReg(val_reg);
 
-        var check_labels = std.ArrayList([]const u8).init(self.allocator);
+        var check_labels = std.array_list.Managed([]const u8).init(self.allocator);
         defer check_labels.deinit();
         for (sw.cases) |_| {
             try check_labels.append(try self.newLabel("L_SWITCH_CHECK"));
@@ -10112,7 +10133,7 @@ pub const Codegen = struct {
         const branch_locals_len = self.locals.items.len;
         var pre_branch_state = try self.cloneBranchEmitterState();
         defer self.deinitBranchEmitterStateSnapshot(&pre_branch_state);
-        var live_branch_states = std.ArrayList(BranchEmitterStateSnapshot).init(self.allocator);
+        var live_branch_states = std.array_list.Managed(BranchEmitterStateSnapshot).init(self.allocator);
         defer {
             for (live_branch_states.items) |*snapshot| self.deinitBranchEmitterStateSnapshot(snapshot);
             live_branch_states.deinit();
@@ -10981,7 +11002,7 @@ pub const Codegen = struct {
         const capacity = fmt.len + (call.args.len - 1) * 24;
         try self.emitStdMacroFragment("sa_std/string_format.sa", "FORMAT_BEGIN", &.{ self.symbols.items[out_string], try std.fmt.allocPrint(self.allocator, "{}", .{capacity}) });
 
-        var literal = std.ArrayList(u8).init(self.allocator);
+        var literal = std.array_list.Managed(u8).init(self.allocator);
         defer literal.deinit();
         var arg_idx: usize = 1;
         var i: usize = 0;
@@ -11428,7 +11449,7 @@ pub const Codegen = struct {
                         const raw_index = idx.index.literal.int_val;
                         if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
                         var source = try self.addressWithOffset(base_ptr, typeSize(elem_ty) * @as(usize, @intCast(raw_index)));
-                        var release_regs = std.ArrayList(u32).init(self.allocator);
+                        var release_regs = std.array_list.Managed(u32).init(self.allocator);
                         defer release_regs.deinit();
                         if (source.reg != base_ptr and !self.isLocalReg(base_ptr)) try release_regs.append(base_ptr);
                         if (!self.isLocalReg(target_reg)) try release_regs.append(target_reg);
@@ -11480,7 +11501,7 @@ pub const Codegen = struct {
             if (source.reg == target_reg) {
                 source.release_regs = target_source.release_regs;
             } else {
-                var release_regs = std.ArrayList(u32).init(self.allocator);
+                var release_regs = std.array_list.Managed(u32).init(self.allocator);
                 defer release_regs.deinit();
                 if (!self.isLocalReg(target_reg)) try release_regs.append(target_reg);
                 try release_regs.appendSlice(target_source.release_regs);
@@ -11494,7 +11515,7 @@ pub const Codegen = struct {
         const elem_ptr = try self.genArrayElementPtr(addressable_target_ty.?.array, target_reg, index_reg);
         if (elem_ptr.offset) |offset| try self.emitRelease(offset);
         if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
-        var release_regs = std.ArrayList(u32).init(self.allocator);
+        var release_regs = std.array_list.Managed(u32).init(self.allocator);
         defer release_regs.deinit();
         if (!self.isLocalReg(target_reg)) try release_regs.append(target_reg);
         try release_regs.appendSlice(target_source.release_regs);
@@ -11547,7 +11568,7 @@ pub const Codegen = struct {
             break :blk loaded;
         } else source;
 
-        var release_regs = std.ArrayList(u32).init(self.allocator);
+        var release_regs = std.array_list.Managed(u32).init(self.allocator);
         defer release_regs.deinit();
 
         const slot = try self.intern(try self.newTmp());
@@ -11858,8 +11879,8 @@ pub const Codegen = struct {
         try self.emitStdMacroFragment("sa_std/core/trait_object.sa", "DYN_GET_VTABLE", &.{ self.symbols.items[vtable_reg], self.symbols.items[dyn_reg] });
         try self.emitLoad(fn_reg, vtable_reg, slot, .ptr);
 
-        var body = std.ArrayList(u8).init(self.allocator);
-        try body.writer().print("{s}(&{s})", .{ self.symbols.items[fn_reg], self.symbols.items[data_reg] });
+        var body = std.array_list.Managed(u8).init(self.allocator);
+        try sio.managedPrint(&body, "{s}(&{s})", .{ self.symbols.items[fn_reg], self.symbols.items[data_reg] });
         var item = self.makeInst(.call_indirect);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .text = try body.toOwnedSlice() };
@@ -12026,14 +12047,14 @@ pub const Codegen = struct {
         const status = try self.intern(try self.newTmp());
         const is_ok = try self.intern(try self.newTmp());
 
-        var join_args = std.ArrayList([]const u8).init(self.allocator);
+        var join_args = std.array_list.Managed([]const u8).init(self.allocator);
         defer join_args.deinit();
         try join_args.append(self.symbols.items[status]);
         try join_args.append(self.symbols.items[handle]);
         try join_args.append(try std.fmt.allocPrint(self.allocator, "*{s}", .{self.symbols.items[recv_reg]}));
         try self.emitStdMacroFragment("sa_std/thread.sa", "THREAD_JOIN_STATUS", join_args.items);
 
-        var drop_args = std.ArrayList([]const u8).init(self.allocator);
+        var drop_args = std.array_list.Managed([]const u8).init(self.allocator);
         defer drop_args.deinit();
         try drop_args.append(self.symbols.items[handle]);
         try self.emitStdMacroFragment("sa_std/thread.sa", "THREAD_DROP", drop_args.items);
@@ -13542,7 +13563,14 @@ pub const Codegen = struct {
         if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
         const path_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
         if (!lowering_rules.isStringLikeType(path_ty)) return Error.UnsupportedSabDirectFeature;
-        const path_reg = try self.genExpr(@constCast(call.args[0]));
+        // A string literal argument must materialize as a Slice: generic
+        // `genExpr` may lower literals to a raw data-pointer (when the
+        // literal's recorded type is ptr/void-like), but the loads below
+        // read Slice ptr/len fields. Build the Slice explicitly.
+        const path_reg = if (call.args[0].* == .literal and call.args[0].literal == .string_val)
+            try self.genStringLiteral(call.args[0].literal.string_val)
+        else
+            try self.genExpr(@constCast(call.args[0]));
         const path_ptr = try self.intern(try self.newTmp());
         try self.recordReg(path_ptr);
         const path_len = try self.intern(try self.newTmp());
@@ -13580,6 +13608,10 @@ pub const Codegen = struct {
         defer pre_released.deinit();
         try self.emitLabel(ok_label);
         try self.emitBranchRelease(ok_reg);
+        // Branch-scoped releases bypass `released_regs` bookkeeping, so
+        // record the register as consumed: the merge point below must not
+        // release it again (double release traps UseAfterMove).
+        try self.markConsumed(ok_reg);
         try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
             self.symbols.items[result_reg],
             self.symbols.items[file_reg],
@@ -13609,14 +13641,20 @@ pub const Codegen = struct {
         try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
         try self.emitLabel(end_label);
         if (!self.isLocalReg(status_reg)) try self.emitRelease(status_reg);
-        try self.emitRelease(ok_reg);
+        // NOTE: `ok_reg` is released inside each branch (with matching
+        // `markConsumed` bookkeeping), so it must NOT be released again here.
         if (!self.isLocalReg(path_ptr)) try self.emitRelease(path_ptr);
         if (!self.isLocalReg(path_len)) try self.emitRelease(path_len);
         return result_reg;
     }
 
     /// Direct-SAB `file.as_raw_fd()`: the File value already is the fd word,
-    /// so copy and narrow to i32, mirroring the SA-text backend.
+    /// so copy and narrow to i32, mirroring the SA-text backend. The
+    /// intermediate word-copy is intentionally NOT released: releasing a
+    /// File-typed register closes the fd, so releasing the copy would
+    /// double-close when scope cleanup later releases the receiver
+    /// (UseAfterMove). The SA-text backend likewise returns without
+    /// releasing the copy.
     fn genFileAsRawFdCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
         _ = expr;
         if (call.associated_target != null) return null;
@@ -13629,7 +13667,6 @@ pub const Codegen = struct {
         const dst = try self.intern(try self.newTmp());
         try self.recordReg(dst);
         try self.emitOp(dst, .trunc, .{ .reg = copied }, .{ .ty = @intFromEnum(sig.PrimType.i32) });
-        if (!self.isLocalReg(copied)) try self.emitRelease(copied);
         return dst;
     }
 
@@ -14624,15 +14661,15 @@ pub const Codegen = struct {
             break :blk reg;
         } else null;
 
-        var arg_names = std.ArrayList([]const u8).init(self.allocator);
+        var arg_names = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_names.deinit();
-        var release_regs = std.ArrayList(u32).init(self.allocator);
+        var release_regs = std.array_list.Managed(u32).init(self.allocator);
         defer release_regs.deinit();
-        var restores = std.ArrayList(struct { slot: u32, value: u32 }).init(self.allocator);
+        var restores = std.array_list.Managed(struct { slot: u32, value: u32 }).init(self.allocator);
         defer restores.deinit();
-        var output_rebindings = std.ArrayList(struct { name: []const u8, reg: u32, ty: *const ast.Type }).init(self.allocator);
+        var output_rebindings = std.array_list.Managed(struct { name: []const u8, reg: u32, ty: *const ast.Type }).init(self.allocator);
         defer output_rebindings.deinit();
-        var output_stores = std.ArrayList(struct { slot: u32, value: u32, ty: sig.PrimType }).init(self.allocator);
+        var output_stores = std.array_list.Managed(struct { slot: u32, value: u32, ty: sig.PrimType }).init(self.allocator);
         defer output_stores.deinit();
 
         if (dst) |reg| try arg_names.append(self.symbols.items[reg]);
@@ -15002,16 +15039,16 @@ pub const Codegen = struct {
         const call_plan = lowering.call;
         const emit_symbol = lowering_rules.staticCallEmitSymbol(call_plan);
         const lowered = try self.loweredFuncSymbol(emit_symbol);
-        var text = std.ArrayList(u8).init(self.allocator);
-        var release_regs = std.ArrayList(u32).init(self.allocator);
+        var text = std.array_list.Managed(u8).init(self.allocator);
+        var release_regs = std.array_list.Managed(u32).init(self.allocator);
         defer release_regs.deinit();
-        var consume_regs = std.ArrayList(u32).init(self.allocator);
+        var consume_regs = std.array_list.Managed(u32).init(self.allocator);
         defer consume_regs.deinit();
-        var forget_regs = std.ArrayList(u32).init(self.allocator);
+        var forget_regs = std.array_list.Managed(u32).init(self.allocator);
         defer forget_regs.deinit();
-        var restores = std.ArrayList(struct { slot: u32, value: u32 }).init(self.allocator);
+        var restores = std.array_list.Managed(struct { slot: u32, value: u32 }).init(self.allocator);
         defer restores.deinit();
-        try text.writer().print("@{s}(", .{lowered});
+        try sio.managedPrint(&text, "@{s}(", .{lowered});
         for (call.args, 0..) |arg, i| {
             const param_info = try self.directSabCallParam(call_plan.target_symbol, i);
             const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
@@ -15179,7 +15216,7 @@ pub const Codegen = struct {
 
     fn borrowAddressCallArgReleaseRegs(self: *Codegen, source: AddressSource, prefix: u8) ![]const u32 {
         const plan = lowering_rules.planPrefixedBorrowAddressCallArgRelease(prefix, !self.isLocalReg(source.reg), source.release_regs.len != 0, source.restore_slot != null);
-        var regs = std.ArrayList(u32).init(self.allocator);
+        var regs = std.array_list.Managed(u32).init(self.allocator);
         defer regs.deinit();
         if (plan.release_address_value) try regs.append(source.reg);
         if (plan.release_source_temps) try regs.appendSlice(source.release_regs);
@@ -15207,7 +15244,7 @@ pub const Codegen = struct {
     }
 
     fn fieldProjectionReleaseRegs(self: *Codegen, projection: AddressSource) ![]const u32 {
-        var regs = std.ArrayList(u32).init(self.allocator);
+        var regs = std.array_list.Managed(u32).init(self.allocator);
         defer regs.deinit();
         if (!self.isLocalReg(projection.reg)) try regs.append(projection.reg);
         for (projection.release_regs) |reg| {
@@ -15429,7 +15466,7 @@ pub const Codegen = struct {
         });
         try self.emitRelease(len_reg);
 
-        var extra_releases = std.ArrayList(u32).init(self.allocator);
+        var extra_releases = std.array_list.Managed(u32).init(self.allocator);
         defer extra_releases.deinit();
         if (release_after_call and !self.isLocalReg(base_source_reg)) {
             try extra_releases.append(base_source_reg);
@@ -15994,7 +16031,7 @@ pub const Codegen = struct {
 
     fn genInlineClosureUnary(self: *Codegen, closure: *const ast.ClosureLiteral, arg_reg: u32) anyerror!u32 {
         if (closure.params.len != 1) return Error.UnsupportedSabDirectFeature;
-        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        var saved = std.array_list.Managed(SavedClosureParam).init(self.allocator);
         defer saved.deinit();
         try saved.append(.{ .name = closure.params[0].name, .old = self.closure_param_regs.get(closure.params[0].name) });
         try self.closure_param_regs.put(closure.params[0].name, arg_reg);
@@ -16009,7 +16046,7 @@ pub const Codegen = struct {
 
     fn genInlineClosureBinary(self: *Codegen, closure: *const ast.ClosureLiteral, left_reg: u32, right_reg: u32) anyerror!u32 {
         if (closure.params.len != 2) return Error.UnsupportedSabDirectFeature;
-        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        var saved = std.array_list.Managed(SavedClosureParam).init(self.allocator);
         defer saved.deinit();
         try saved.append(.{ .name = closure.params[0].name, .old = self.closure_param_regs.get(closure.params[0].name) });
         try saved.append(.{ .name = closure.params[1].name, .old = self.closure_param_regs.get(closure.params[1].name) });
@@ -16022,11 +16059,11 @@ pub const Codegen = struct {
     fn genClosureCall(self: *Codegen, closure: *const ast.ClosureLiteral, call: ast.CallExpr) anyerror!u32 {
         if (closure.params.len != call.args.len) return Error.UnsupportedSabDirectFeature;
 
-        var arg_regs = std.ArrayList(u32).init(self.allocator);
+        var arg_regs = std.array_list.Managed(u32).init(self.allocator);
         defer arg_regs.deinit();
         for (call.args) |arg| try arg_regs.append(try self.genExpr(@constCast(arg)));
 
-        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        var saved = std.array_list.Managed(SavedClosureParam).init(self.allocator);
         defer saved.deinit();
         for (closure.params, arg_regs.items) |param, arg_reg| {
             try saved.append(.{ .name = param.name, .old = self.closure_param_regs.get(param.name) });
@@ -16614,7 +16651,7 @@ pub const Codegen = struct {
 
             try self.emitLabel(ok_label);
             if (!self.isLocalReg(ok_reg)) try self.emitBranchRelease(ok_reg);
-            var release_regs = std.ArrayList(u32).init(self.allocator);
+            var release_regs = std.array_list.Managed(u32).init(self.allocator);
             defer release_regs.deinit();
             try release_regs.append(receiver_reg);
             if (arg_reg) |reg| try release_regs.append(reg);
@@ -16641,7 +16678,7 @@ pub const Codegen = struct {
             .value = value_reg,
             .elem_size = self.elementSlotSize(receiver_ty),
         });
-        var release_regs = std.ArrayList(u32).init(self.allocator);
+        var release_regs = std.array_list.Managed(u32).init(self.allocator);
         defer release_regs.deinit();
         try release_regs.append(receiver_reg);
         try self.releaseNonLocalTemps(release_regs.items);
@@ -17243,10 +17280,10 @@ pub const Codegen = struct {
         const returns_void = isVoidType(result_ty);
         const dst = if (returns_void) null else try self.intern(try self.newTmp());
         if (dst) |reg| try self.recordReg(reg);
-        var body = std.ArrayList(u8).init(self.allocator);
-        var arg_regs = std.ArrayList(u32).init(self.allocator);
+        var body = std.array_list.Managed(u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed(u32).init(self.allocator);
         defer arg_regs.deinit();
-        try body.writer().print("{s}(", .{self.symbols.items[call_reg]});
+        try sio.managedPrint(&body, "{s}(", .{self.symbols.items[call_reg]});
         for (call.args, 0..) |arg, i| {
             const arg_reg = try self.genExpr(@constCast(arg));
             const call_arg_reg = blk: {
@@ -17261,7 +17298,7 @@ pub const Codegen = struct {
             };
             try arg_regs.append(call_arg_reg);
             if (i > 0) try body.appendSlice(", ");
-            try body.writer().print("{s}", .{self.symbols.items[call_arg_reg]});
+            try sio.managedPrint(&body, "{s}", .{self.symbols.items[call_arg_reg]});
         }
         try body.append(')');
 
@@ -17589,19 +17626,19 @@ pub const Codegen = struct {
         const panic_label = try self.newLabel("L_MATCH_NO_MATCH");
 
         // One check label per case plus the trailing no-match panic block.
-        var check_labels = std.ArrayList([]const u8).init(self.allocator);
+        var check_labels = std.array_list.Managed([]const u8).init(self.allocator);
         defer check_labels.deinit();
         for (mat.cases) |_| {
             try check_labels.append(try self.newLabel("L_MATCH_CHECK"));
         }
-        var case_cond_regs = std.ArrayList(u32).init(self.allocator);
+        var case_cond_regs = std.array_list.Managed(u32).init(self.allocator);
         defer case_cond_regs.deinit();
-        var case_guard_regs = std.ArrayList([]u32).init(self.allocator);
+        var case_guard_regs = std.array_list.Managed([]u32).init(self.allocator);
         defer {
             for (case_guard_regs.items) |regs| self.allocator.free(regs);
             case_guard_regs.deinit();
         }
-        var case_binding_regs = std.ArrayList([]u32).init(self.allocator);
+        var case_binding_regs = std.array_list.Managed([]u32).init(self.allocator);
         defer {
             for (case_binding_regs.items) |regs| self.allocator.free(regs);
             case_binding_regs.deinit();
@@ -17634,7 +17671,7 @@ pub const Codegen = struct {
         const branch_locals_len = self.locals.items.len;
         var pre_branch_state = try self.cloneBranchEmitterState();
         defer self.deinitBranchEmitterStateSnapshot(&pre_branch_state);
-        var live_branch_states = std.ArrayList(BranchEmitterStateSnapshot).init(self.allocator);
+        var live_branch_states = std.array_list.Managed(BranchEmitterStateSnapshot).init(self.allocator);
         defer {
             for (live_branch_states.items) |*snapshot| self.deinitBranchEmitterStateSnapshot(snapshot);
             live_branch_states.deinit();
@@ -17802,7 +17839,7 @@ pub const Codegen = struct {
         const merge_label = try self.newLabel("L_OPTION_MATCH_MERGE");
         const panic_label = try self.newLabel("L_OPTION_MATCH_NO_MATCH");
 
-        var check_labels = std.ArrayList([]const u8).init(self.allocator);
+        var check_labels = std.array_list.Managed([]const u8).init(self.allocator);
         defer check_labels.deinit();
         for (mat.cases) |_| {
             try check_labels.append(try self.newLabel("L_OPTION_MATCH_CHECK"));
@@ -17912,15 +17949,15 @@ pub const Codegen = struct {
             cursor.* += 1;
             const call_plan = lowering_rules.planStaticCall(self.tc, guard, guard.call_expr) orelse return Error.UnsupportedSabDirectFeature;
             const lowered = try self.loweredFuncSymbol(lowering_rules.staticCallEmitSymbol(call_plan));
-            var body = std.ArrayList(u8).init(self.allocator);
-            try body.writer().print("@{s}(", .{lowered});
+            var body = std.array_list.Managed(u8).init(self.allocator);
+            try sio.managedPrint(&body, "@{s}(", .{lowered});
             for (guard.call_expr.args, 0..) |arg, arg_idx| {
                 if (arg_idx > 0) try body.appendSlice(", ");
                 if (arg.* == .identifier) {
                     const reg = self.localReg(arg.identifier) orelse return Error.UnsupportedSabDirectFeature;
                     try body.appendSlice(self.symbols.items[reg]);
                 } else if (arg.* == .literal and arg.literal == .int_val) {
-                    try body.writer().print("{}", .{arg.literal.int_val});
+                    try sio.managedPrint(&body, "{}", .{arg.literal.int_val});
                 } else {
                     const reg = try self.genScalarMatchGuardValue(arg, scratch, cursor);
                     try body.appendSlice(self.symbols.items[reg]);

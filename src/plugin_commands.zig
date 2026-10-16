@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
@@ -65,7 +66,7 @@ fn writeSiblingSabFromBytes(
     allocator: std.mem.Allocator,
     file: []const u8,
     sab_bytes: []const u8,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
 ) !bool {
     const sab_out = try defaultOutputPath(allocator, file, ".sla", ".sab");
     return try writeSabFile(allocator, sab_out, sab_bytes, stderr);
@@ -74,8 +75,8 @@ fn writeSiblingSabFromBytes(
 fn runSabBuildCommand(
     args: []const []const u8,
     option_start: usize,
-    stdout: std.io.AnyWriter,
-    stderr: std.io.AnyWriter,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
 ) !u8 {
     const options = parseSlaCliOptionsFrom(args, "sab build", option_start) catch {
         try writeCommandHelp(stderr, "sab build");
@@ -107,8 +108,8 @@ fn runSabBuildCommand(
 fn runSabWorkspaceCommand(
     args: []const []const u8,
     option_start: usize,
-    stdout: std.io.AnyWriter,
-    stderr: std.io.AnyWriter,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
 ) !u8 {
     _ = stdout;
     const options = parseSlaCliOptionsFrom(args, "sab workspace", option_start) catch {
@@ -141,19 +142,19 @@ fn runSabWorkspaceCommand(
         if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
     }
 
-    var argv = std.ArrayList([]const u8).init(allocator);
+    var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(resolveSaExecutable(allocator));
     try argv.append("build-exe");
     try argv.append(managed_path);
     try appendSabWorkspacePassthrough(&argv, extra_args);
 
-    var child = std.process.Child.init(argv.items, allocator);
+    var child = sio.Child.init(argv.items, allocator);
     const term = child.spawnAndWait() catch |err| {
         try stderr.print("Error: failed to run 'sa build-exe' for SAB workspace output: {}\n", .{err});
         return 1;
     };
     return switch (term) {
-        .Exited => |code| code,
+        .exited => |code| code,
         else => 1,
     };
 }
@@ -161,8 +162,8 @@ fn runSabWorkspaceCommand(
 fn runSabDisasmCommand(
     args: []const []const u8,
     option_start: usize,
-    stdout: std.io.AnyWriter,
-    stderr: std.io.AnyWriter,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
 ) !u8 {
     if (option_start >= args.len or isHelpArg(args[option_start])) {
         try writeCommandHelp(stderr, "sab disasm");
@@ -176,7 +177,7 @@ fn runSabDisasmCommand(
     const file = args[option_start];
     const out_file = parseOutFileArg(args, option_start + 1);
 
-    const sab_bytes = std.fs.cwd().readFileAlloc(allocator, file, 16 * 1024 * 1024) catch |err| {
+    const sab_bytes = sio.cwd().readFileAlloc(allocator, file, 16 * 1024 * 1024) catch |err| {
         try stderr.print("SAB Error: failed to read {s}: {}\n", .{ file, err });
         return 1;
     };
@@ -187,7 +188,7 @@ fn runSabDisasmCommand(
     };
 
     if (out_file) |path| {
-        std.fs.cwd().writeFile(.{ .sub_path = path, .data = text }) catch |err| {
+        sio.cwd().writeFile(.{ .sub_path = path, .data = text }) catch |err| {
             try stderr.print("File Error: failed to write {s}: {}\n", .{ path, err });
             return 1;
         };
@@ -201,8 +202,8 @@ fn runSabDisasmCommand(
 fn runSabCommand(
     args: []const []const u8,
     subcommand_index: usize,
-    stdout: std.io.AnyWriter,
-    stderr: std.io.AnyWriter,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
 ) !u8 {
     if (subcommand_index >= args.len or isHelpArg(args[subcommand_index])) {
         try writeCommandHelp(stderr, "sab");
@@ -221,8 +222,8 @@ fn runSabCommand(
 pub fn runSlaCommandImpl(
     ctx: *const plugin_api.Context,
     args: []const []const u8,
-    stdout: std.io.AnyWriter,
-    stderr: std.io.AnyWriter,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
 ) !?u8 {
     if (args.len < 2) return null;
     if (std.mem.eql(u8, args[1], "slab")) {
@@ -308,7 +309,7 @@ pub fn runSlaCommandImpl(
 
         const sa_code = (try compileSlaToSaString(allocator, file, final_out, stderr)) orelse return 1;
 
-        std.fs.cwd().writeFile(.{ .sub_path = final_out, .data = sa_code }) catch |err| {
+        sio.cwd().writeFile(.{ .sub_path = final_out, .data = sa_code }) catch |err| {
             try stderr.print("File Error: failed to write output {s}: {}\n", .{ final_out, err });
             return 1;
         };
@@ -339,20 +340,20 @@ pub fn runSlaCommandImpl(
             if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
         }
 
-        var argv = std.ArrayList([]const u8).init(allocator);
+        var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append("build-exe");
         try argv.append(sab_out);
         for (extra_args) |a| try argv.append(a);
         try appendDefaultJobsAuto(&argv, extra_args);
 
-        var child = std.process.Child.init(argv.items, allocator);
+        var child = sio.Child.init(argv.items, allocator);
         const term = child.spawnAndWait() catch |err| {
             try stderr.print("Error: failed to run 'sa build-exe': {}\n", .{err});
             return 1;
         };
         return switch (term) {
-            .Exited => |code| code,
+            .exited => |code| code,
             else => 1,
         };
     } else if (std.mem.eql(u8, cmd, "build-wasm") or std.mem.eql(u8, cmd, "build-js")) {
@@ -380,20 +381,20 @@ pub fn runSlaCommandImpl(
             if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
         }
 
-        var argv = std.ArrayList([]const u8).init(allocator);
+        var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append(sa_sub);
         try argv.append(sab_out);
         for (extra_args) |a| try argv.append(a);
         try appendDefaultJobsAuto(&argv, extra_args);
 
-        var child = std.process.Child.init(argv.items, allocator);
+        var child = sio.Child.init(argv.items, allocator);
         const term = child.spawnAndWait() catch |err| {
             try stderr.print("Error: failed to run 'sa {s}': {}\n", .{ sa_sub, err });
             return 1;
         };
         return switch (term) {
-            .Exited => |code| code,
+            .exited => |code| code,
             else => 1,
         };
     } else if (std.mem.eql(u8, cmd, "build-workspace")) {
@@ -425,20 +426,20 @@ pub fn runSlaCommandImpl(
             if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
         }
 
-        var argv = std.ArrayList([]const u8).init(allocator);
+        var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append("build-exe");
         try argv.append(sab_out);
         for (extra_args) |a| try argv.append(a);
         try appendDefaultJobsAuto(&argv, extra_args);
 
-        var child = std.process.Child.init(argv.items, allocator);
+        var child = sio.Child.init(argv.items, allocator);
         const term = child.spawnAndWait() catch |err| {
             try stderr.print("Error: failed to run 'sa build-exe': {}\n", .{err});
             return 1;
         };
         return switch (term) {
-            .Exited => |code| code,
+            .exited => |code| code,
             else => 1,
         };
     } else if (std.mem.eql(u8, cmd, "check")) {
@@ -457,22 +458,22 @@ pub fn runSlaCommandImpl(
 
         const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
         const profile = plugin_compile_options.slaProfileEnabled(allocator);
-        var stage_start = std.time.nanoTimestamp();
+        var stage_start = sio.nanoTimestamp();
 
-        const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
+        const content = sio.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
             try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
             return 1;
         };
         plugin_compile_options.slaProfileStage(stderr, profile, "check read source", stage_start);
 
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         const expanded_content = source_expand.expandForModulePath(allocator, file, content) catch |err| {
             try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
             return 1;
         };
         plugin_compile_options.slaProfileStage(stderr, profile, "check source expand", stage_start);
 
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         const sla_base_dir = std.fs.path.dirname(file) orelse ".";
         var p = parser_mod.Parser.initWithDirAndOptions(allocator, expanded_content, sla_base_dir, .{
             .parse_test_bodies = false,
@@ -483,7 +484,7 @@ pub fn runSlaCommandImpl(
         };
         plugin_compile_options.slaProfileStage(stderr, profile, "check parse", stage_start);
 
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
         var import_modules = SlaModuleTable.initWithParserOptions(allocator, .{
             .parse_function_bodies = false,
@@ -493,9 +494,9 @@ pub fn runSlaCommandImpl(
         // Check include_all never materializes imported bodies; skip span capture.
         import_modules.capture_body_spans = false;
         defer import_modules.deinit();
-        var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+        var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);
         defer root_import_groups.deinit();
-        var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+        var contract_imports = std.array_list.Managed(ResolvedImport).init(allocator);
         defer contract_imports.deinit();
         const expanded_prog = expandSlaImportsWithModuleTable(allocator, prog, file, &primary_decls, .{
             .imported_bodies_decl_only = true,
@@ -506,7 +507,7 @@ pub fn runSlaCommandImpl(
         };
         plugin_compile_options.slaProfileStage(stderr, profile, "check import expand", stage_start);
 
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         var mono = monomorphizer_mod.Monomorphizer.init(allocator);
         defer mono.deinit();
         var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
@@ -524,7 +525,7 @@ pub fn runSlaCommandImpl(
         };
         plugin_compile_options.slaProfileStage(stderr, profile, "check monomorphize", stage_start);
 
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         var tc = type_checker_mod.TypeChecker.init(allocator);
         defer tc.deinit();
 
@@ -534,14 +535,14 @@ pub fn runSlaCommandImpl(
         };
         plugin_compile_options.slaProfileStage(stderr, profile, "check load contracts", stage_start);
 
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         registerImportedFunctionAliasesFromResolvedImports(&tc, allocator, root_import_groups.items, &import_modules) catch |err| {
             try stderr.print("Import Error: failed to register @import function aliases: {}\n", .{err});
             return 1;
         };
         plugin_compile_options.slaProfileStage(stderr, profile, "check import aliases", stage_start);
 
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         tc.checkProgram(specialized_prog) catch |err| {
             try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
             return 1;
@@ -582,10 +583,10 @@ pub fn runSlaCommandImpl(
             .sa => (try compileSlaSaTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1,
         };
         defer {
-            if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
+            if (test_input.delete_after) sio.cwd().deleteFile(test_input.path) catch {};
         }
 
-        var argv = std.ArrayList([]const u8).init(allocator);
+        var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append("test");
         try argv.append(test_input.path);
@@ -594,13 +595,13 @@ pub fn runSlaCommandImpl(
             return 1;
         };
 
-        var child = std.process.Child.init(argv.items, allocator);
+        var child = sio.Child.init(argv.items, allocator);
         const term = child.spawnAndWait() catch |err| {
             try stderr.print("Error: failed to run 'sa test': {}\n", .{err});
             return 1;
         };
         return switch (term) {
-            .Exited => |code| code,
+            .exited => |code| code,
             else => 1,
         };
     } else {

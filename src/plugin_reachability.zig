@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const type_checker_mod = @import("type_checker.zig");
@@ -28,13 +29,13 @@ pub const UnresolvedCallable = struct {
 };
 
 pub const UnresolvedCallableSet = struct {
-    records: std.ArrayList(UnresolvedCallable),
-    record_indices_by_name: std.StringHashMap(std.ArrayList(usize)),
+    records: std.array_list.Managed(UnresolvedCallable),
+    record_indices_by_name: std.StringHashMap(std.array_list.Managed(usize)),
 
     pub fn init(allocator: std.mem.Allocator) UnresolvedCallableSet {
         return .{
-            .records = std.ArrayList(UnresolvedCallable).init(allocator),
-            .record_indices_by_name = std.StringHashMap(std.ArrayList(usize)).init(allocator),
+            .records = std.array_list.Managed(UnresolvedCallable).init(allocator),
+            .record_indices_by_name = std.StringHashMap(std.array_list.Managed(usize)).init(allocator),
         };
     }
 
@@ -58,7 +59,7 @@ pub const UnresolvedCallableSet = struct {
         receiver_type_name: ?[]const u8,
     ) !void {
         const entry = try self.record_indices_by_name.getOrPut(name);
-        if (!entry.found_existing) entry.value_ptr.* = std.ArrayList(usize).init(self.records.allocator);
+        if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed(usize).init(self.records.allocator);
         for (entry.value_ptr.items) |record_index| {
             const recorded = self.records.items[record_index];
             if (recorded.kind != kind) continue;
@@ -85,7 +86,7 @@ pub const SlaCallableIndex = struct {
     macro_decls: std.StringHashMap(*ast.MacroDecl),
     type_decls: std.StringHashMap(*ast.Node),
     module_sources: std.StringHashMap([]const u8),
-    associated_candidates: std.StringHashMap(std.ArrayList([]const u8)),
+    associated_candidates: std.StringHashMap(std.array_list.Managed([]const u8)),
     unresolved_callables: ?*UnresolvedCallableSet,
 
     pub fn init(allocator: std.mem.Allocator) SlaCallableIndex {
@@ -97,7 +98,7 @@ pub const SlaCallableIndex = struct {
             .macro_decls = std.StringHashMap(*ast.MacroDecl).init(allocator),
             .type_decls = std.StringHashMap(*ast.Node).init(allocator),
             .module_sources = std.StringHashMap([]const u8).init(allocator),
-            .associated_candidates = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
+            .associated_candidates = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
             .unresolved_callables = null,
         };
     }
@@ -151,7 +152,7 @@ pub const SlaCallableIndex = struct {
 
     pub fn addAssociatedCandidate(self: *SlaCallableIndex, method_name: []const u8, symbol: []const u8) !void {
         const entry = try self.associated_candidates.getOrPut(method_name);
-        if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+        if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed([]const u8).init(self.allocator);
         try entry.value_ptr.append(symbol);
     }
 
@@ -524,7 +525,7 @@ pub const ReachabilityAnalysis = struct {
     }
 
     pub fn retainOnly(self: *ReachabilityAnalysis, set: *std.StringHashMap(void), incoming: *const std.StringHashMap(void)) !bool {
-        var removed = std.ArrayList([]const u8).init(self.allocator);
+        var removed = std.array_list.Managed([]const u8).init(self.allocator);
         defer removed.deinit();
         var iter = set.keyIterator();
         while (iter.next()) |key_ptr| {
@@ -535,7 +536,7 @@ pub const ReachabilityAnalysis = struct {
     }
 
     pub fn retainMatchingInts(self: *ReachabilityAnalysis, facts: *std.StringHashMap(i64), incoming: *const std.StringHashMap(i64)) !bool {
-        var removed = std.ArrayList([]const u8).init(self.allocator);
+        var removed = std.array_list.Managed([]const u8).init(self.allocator);
         defer removed.deinit();
         var iter = facts.iterator();
         while (iter.next()) |entry| {
@@ -552,7 +553,7 @@ pub const ReachabilityAnalysis = struct {
     }
 
     pub fn retainMatchingBools(self: *ReachabilityAnalysis, facts: *std.StringHashMap(bool), incoming: *const std.StringHashMap(bool)) !bool {
-        var removed = std.ArrayList([]const u8).init(self.allocator);
+        var removed = std.array_list.Managed([]const u8).init(self.allocator);
         defer removed.deinit();
         var iter = facts.iterator();
         while (iter.next()) |entry| {
@@ -569,7 +570,7 @@ pub const ReachabilityAnalysis = struct {
     }
 
     pub fn retainMatchingTypes(self: *ReachabilityAnalysis, facts: *std.StringHashMap([]const u8), incoming: *const std.StringHashMap([]const u8)) !bool {
-        var removed = std.ArrayList([]const u8).init(self.allocator);
+        var removed = std.array_list.Managed([]const u8).init(self.allocator);
         defer removed.deinit();
         var iter = facts.iterator();
         while (iter.next()) |entry| {
@@ -1185,7 +1186,7 @@ pub fn pruneDeadZeroImportScanLetsInBlock(
     var facts = try incoming_facts.clone();
     defer facts.deinit();
 
-    var out = std.ArrayList(*ast.Node).init(allocator);
+    var out = std.array_list.Managed(*ast.Node).init(allocator);
     for (block, 0..) |stmt, idx| {
         var keep = true;
         switch (stmt.*) {
@@ -1269,7 +1270,7 @@ pub fn collectSyntacticReachableRootsFromDecls(
     analysis: ?*ReachabilityAnalysis,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     decls: []const *ast.Node,
     test_filter: ?[]const u8,
     saw_test: *bool,
@@ -1323,14 +1324,14 @@ pub fn scanReferencedSymbolRoots(
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
     scanned_symbol_roots: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
 ) !bool {
     // Every referenced root is inserted into this set when scanned. If counts
     // match, no root can be pending and we can avoid walking the whole hash map.
     // Explicit invalidation removes entries, making the counts differ again.
     if (referenced_types.count() == scanned_symbol_roots.count()) return false;
 
-    var pending = std.ArrayList([]const u8).init(funcs.allocator);
+    var pending = std.array_list.Managed([]const u8).init(funcs.allocator);
     defer pending.deinit();
 
     var referenced_iter = referenced_types.keyIterator();
@@ -1357,7 +1358,7 @@ pub fn scanReferencedSymbolRoots(
 const ReachabilityBuildState = struct {
     allocator: std.mem.Allocator,
     callable_index: SlaCallableIndex,
-    worklist: std.ArrayList([]const u8),
+    worklist: std.array_list.Managed([]const u8),
     scanned_symbol_roots: std.StringHashMap(void),
     scanned_type_roots: std.StringHashMap(void),
     analysis: ReachabilityAnalysis,
@@ -1369,7 +1370,7 @@ const ReachabilityBuildState = struct {
         return .{
             .allocator = allocator,
             .callable_index = SlaCallableIndex.init(allocator),
-            .worklist = std.ArrayList([]const u8).init(allocator),
+            .worklist = std.array_list.Managed([]const u8).init(allocator),
             .scanned_symbol_roots = std.StringHashMap(void).init(allocator),
             .scanned_type_roots = std.StringHashMap(void).init(allocator),
             .scanned_function_bodies = std.StringHashMap(void).init(allocator),
@@ -1491,9 +1492,9 @@ fn drainReachabilityBuildState(
                     // already walked
                 } else {
                     if (profile) non_empty_bodies += 1;
-                    const body_start = if (profile) std.time.nanoTimestamp() else 0;
+                    const body_start = if (profile) sio.nanoTimestamp() else 0;
                     try collectSyntacticReachableBlock(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, name, out_reachable, out_referenced_types, &state.worklist, fd.body);
-                    if (profile) body_walk_ns += std.time.nanoTimestamp() - body_start;
+                    if (profile) body_walk_ns += sio.nanoTimestamp() - body_start;
                     if (!options.prune_for_test_codegen) {
                         try state.scanned_function_bodies.put(name, {});
                     }
@@ -1501,12 +1502,12 @@ fn drainReachabilityBuildState(
             }
             state.analysis.current_facts = prev_facts;
         }
-        const scan_sym_start = if (profile) std.time.nanoTimestamp() else 0;
+        const scan_sym_start = if (profile) sio.nanoTimestamp() else 0;
         const scanned_symbols = try scanReferencedSymbolRoots(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, out_reachable, out_referenced_types, &state.scanned_symbol_roots, &state.worklist);
-        if (profile) scan_sym_ns += std.time.nanoTimestamp() - scan_sym_start;
-        const scan_ty_start = if (profile) std.time.nanoTimestamp() else 0;
+        if (profile) scan_sym_ns += sio.nanoTimestamp() - scan_sym_start;
+        const scan_ty_start = if (profile) sio.nanoTimestamp() else 0;
         const scanned_types = try scanReferencedExportedTypeSignatures(&state.callable_index, out_referenced_types, &state.scanned_type_roots);
-        if (profile) scan_ty_ns += std.time.nanoTimestamp() - scan_ty_start;
+        if (profile) scan_ty_ns += sio.nanoTimestamp() - scan_ty_start;
         if (!scanned_symbols and !scanned_types) break;
     }
     if (profile) {
@@ -1530,14 +1531,14 @@ fn initializeReachabilityBuildState(
     if (root_program.* != .program) return error.InvalidProgram;
     const profile = plugin_compile_options.slaProfileEnabled(state.allocator);
     state.callable_index.unresolved_callables = &state.unresolved_callables;
-    const index_start = if (profile) std.time.nanoTimestamp() else 0;
+    const index_start = if (profile) sio.nanoTimestamp() else 0;
     try state.callable_index.addDecls(root_program.program.decls);
     for (modules) |module| try state.callable_index.addDeclsFromModule(module.program.program.decls, module);
-    const index_ns = if (profile) std.time.nanoTimestamp() - index_start else 0;
-    const roots_start = if (profile) std.time.nanoTimestamp() else 0;
+    const index_ns = if (profile) sio.nanoTimestamp() - index_start else 0;
+    const roots_start = if (profile) sio.nanoTimestamp() else 0;
     try collectInitialReachabilityRoots(state, root_program, module_table, options, imported_macros, out_reachable, out_referenced_types);
-    const roots_ns = if (profile) std.time.nanoTimestamp() - roots_start else 0;
-    const drain_start = if (profile) std.time.nanoTimestamp() else 0;
+    const roots_ns = if (profile) sio.nanoTimestamp() - roots_start else 0;
+    const drain_start = if (profile) sio.nanoTimestamp() else 0;
     try drainReachabilityBuildState(state, module_table, options, imported_macros, out_reachable, out_referenced_types);
     if (profile) {
         std.debug.print(
@@ -1545,7 +1546,7 @@ fn initializeReachabilityBuildState(
             .{
                 @divTrunc(index_ns, std.time.ns_per_ms),
                 @divTrunc(roots_ns, std.time.ns_per_ms),
-                @divTrunc(std.time.nanoTimestamp() - drain_start, std.time.ns_per_ms),
+                @divTrunc(sio.nanoTimestamp() - drain_start, std.time.ns_per_ms),
                 modules.len,
             },
         );
@@ -1830,7 +1831,7 @@ pub fn materializeReachableImportedModuleBodiesWithState(
         for (ordered_modules) |module| {
             if (module.has_function_bodies and module.has_macro_bodies) continue;
             {
-                const select_start = std.time.nanoTimestamp();
+                const select_start = sio.nanoTimestamp();
                 var selected_functions = std.StringHashMap(void).init(allocator);
                 defer selected_functions.deinit();
                 var selected_macros = std.StringHashMap(void).init(allocator);
@@ -1842,10 +1843,10 @@ pub fn materializeReachableImportedModuleBodiesWithState(
                 try collectReachableModuleBodyNames(allocator, module, reachable, referenced_types, &selected_functions, &selected_macros);
                 const unchanged = stringSetsEqual(&selected_functions, &module.parsed_function_bodies) and
                     stringSetsEqual(&selected_macros, &module.parsed_macro_bodies);
-                select_ns += std.time.nanoTimestamp() - select_start;
+                select_ns += sio.nanoTimestamp() - select_start;
                 if (unchanged) continue;
 
-                var newly_materialized_functions = std.ArrayList([]const u8).init(allocator);
+                var newly_materialized_functions = std.array_list.Managed([]const u8).init(allocator);
                 defer {
                     for (newly_materialized_functions.items) |name| allocator.free(name);
                     newly_materialized_functions.deinit();
@@ -1856,7 +1857,7 @@ pub fn materializeReachableImportedModuleBodiesWithState(
                         try newly_materialized_functions.append(try allocator.dupe(u8, name_ptr.*));
                     }
                 }
-                var newly_materialized_macros = std.ArrayList([]const u8).init(allocator);
+                var newly_materialized_macros = std.array_list.Managed([]const u8).init(allocator);
                 defer {
                     for (newly_materialized_macros.items) |name| allocator.free(name);
                     newly_materialized_macros.deinit();
@@ -1868,9 +1869,9 @@ pub fn materializeReachableImportedModuleBodiesWithState(
                     }
                 }
 
-                const reparse_start = std.time.nanoTimestamp();
+                const reparse_start = sio.nanoTimestamp();
                 const reparse_stats = try modules.reparseModuleWithSelectedBodies(module, &selected_functions, &selected_macros);
-                const reparse_elapsed_ns = std.time.nanoTimestamp() - reparse_start;
+                const reparse_elapsed_ns = sio.nanoTimestamp() - reparse_start;
                 reparse_ns += reparse_elapsed_ns;
                 stats.reparses += 1;
                 if (profile_enabled) {
@@ -1899,9 +1900,9 @@ pub fn materializeReachableImportedModuleBodiesWithState(
         }
         if (!changed) break;
 
-        const extend_start = std.time.nanoTimestamp();
+        const extend_start = sio.nanoTimestamp();
         try drainReachabilityBuildState(state, modules, options, imported_macros, reachable, referenced_types);
-        extend_ns += std.time.nanoTimestamp() - extend_start;
+        extend_ns += sio.nanoTimestamp() - extend_start;
         stats.incremental_extensions += 1;
     }
     if (profile_enabled) {
@@ -2092,7 +2093,7 @@ pub fn scanReferencedExportedTypeSignatures(
 ) !bool {
     if (referenced_types.count() == scanned_type_roots.count()) return false;
 
-    var pending = std.ArrayList(*ast.Node).init(funcs.allocator);
+    var pending = std.array_list.Managed(*ast.Node).init(funcs.allocator);
     defer pending.deinit();
 
     var referenced_iter = referenced_types.keyIterator();
@@ -2115,7 +2116,7 @@ pub fn markSyntacticReachableFunc(
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     name: []const u8,
 ) !void {
     if (try moduleQualifiedCallableForCaller(funcs, modules, caller_name, name)) |qualified| {
@@ -2196,7 +2197,7 @@ pub fn markSyntacticAssociatedCallCandidates(
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     method_name: []const u8,
     target_type_name: ?[]const u8,
 ) !void {
@@ -2249,7 +2250,7 @@ pub fn collectSyntacticReachableExpr(
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     expr: *const ast.Node,
 ) anyerror!void {
     switch (expr.*) {
@@ -2384,7 +2385,7 @@ pub fn collectSyntacticReachableBlock(
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     block: []const *ast.Node,
 ) anyerror!void {
     var local_facts: ?SyntacticFactSet = null;

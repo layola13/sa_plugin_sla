@@ -1,5 +1,9 @@
 # sa_plugin_sla
 
+> **Build requirement: Zig 0.17** — this plugin targets and is verified against **Zig 0.17.0**. Build and test with Zig 0.17; older toolchains such as 0.14.x are not supported.
+> 本插件需使用 **Zig 0.17** 编译与测试。
+
+
 Safe ASM (SA) 的 Sla 编译器与工具插件。提供 Sla → SA 编译能力，并向宿主 SA 环境暴露一组 skill 和 CLI 命令。
 
 ## 状态

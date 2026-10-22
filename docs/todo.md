@@ -1222,3 +1222,37 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   抽跑 `02_arith` 出 `14/4/2/-5`、`20_closures` 出 `15/4/true/true`、
   `01_hello` 出 `hello world`）。至此三后端全量编译口径拉平：
   check/test（基线）+ build-exe 925 + build-wasm 925 + build-js 925。
+
+- 2026-10-22：网络并发性能对比（SLA vs Rust vs Go）**完成第二轮**。口径：
+  HTTP/1.1 keep-alive、`GET /`、`200 ok`、固定 20k 请求/档、并发 1/16/64/256、
+  2 次重复取中位数，指标为吞吐、P50/P95/P99、峰值 RSS、编译时间与产物体积。
+  SLA 侧用已安装 `http-server` 插件（zig 0.17），4 个独立进程
+  （18092–18095），每进程 1 个监听器 + 1 个 accept worker；Rust 为 4 个
+  thread-per-connection 进程；Go 为 4 个 `net/http` 进程。客户端在
+  `slarust/benchmarks/net/client/client.rs`，编排 `run_bench.py`，原始数据
+  `results.jsonl`，汇总 `summarize.py` → `summary.json`。
+  - 结果：SLA 35.7–43.9k rps（P50 0.08ms@c1、6.57ms@c256）；
+    Rust 222–249k（快 5.7–6.2×）；Go 66–82k（快 1.6–2.0×）。
+  - 关键修复：accept 后设置 `TCP_NODELAY`（C 单监听器 3.1k → 7.4k）；
+    4 个监听器必须拆成 4 个独立进程。同一进程放 4 个监听器只有 8–12k，
+    拆进程后 35–44k。`serve_threaded` 多 worker（4×4）反而只有
+    2.3–2.7k，确认 recycled pool 锁争用；最终每进程只用 1 个 accept worker。
+  - `serve_threaded` 立即返回根因已定位：SA 主机导出
+    `pthread_join(int32_t, uint8_t*)`，interpose 了 libc `pthread_join`，
+    插件 `std.Thread.join` join 错句柄后提前释放线程池。已改插件为
+    `detach` + `stopping`/`done` 原子计数等待，重装后正常阻塞返回，
+    `zig build test`（Zig 0.17）通过。SLA 闭包指针需从 vtable 取 code：
+    `load (load(p+8))+0`，不能传 `PTR_BYTE_ADD(handle,0)`。
+  - 仍未解：SLA 每成功请求约 52–56KB RSS 增长（20k 请求 c1 约 1.1GB、
+    c256 约 3.6GB），长跑 80k 后吞吐降至 3.7–7.5k；同一插件由 C 驱动
+    20k 请求 RSS 不增长，确认在 SLA 运行时/FFI 侧。`sci/sa_std/net`
+    4KB 读缓冲仍触发 `MemoryLeak(Composite)`。
+  - 下一步优先级：① 定位并修复 SLA 每请求 ~56KB 增长（最高优先，决定
+    长跑可用性）；② 继续把每请求 6 次 FFI（accept/resp_new/set_type/
+    send/resp_free/req_free）压到 1–2 次，或提供静态响应快速路径；
+    ③ 优化插件 accept 快路径（减少每请求 poll/池扫描/setsockopt）；
+    ④ 修复后重跑 1/16/64/256 并更新报告。
+  - 2026-10-22 复核通过：`zig build test`、`benchmarks/net/build.sh`、
+    `run_bench.py --servers sla --concurrency 16,64,256`（38.5k/35.0k/34.4k）、
+    C 驱动 20k 请求（7.5k rps，VmHWM 2MB）、`cserve` 返回 `200 OK` 且进程
+    保持运行；报告/HTML 表格与 `summary.json` 数值一致性校验通过。

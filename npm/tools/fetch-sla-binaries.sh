@@ -24,7 +24,11 @@ fetch() {
     trap 'rm -f "$tmp"' EXIT INT TERM
     echo "[i] $url"
     curl -sSL -o "$tmp" "$url"
-    unzip -q -o -j "$tmp" "$3" -d "$ROOT/packages/sla-$2/bin"
+    member="$(unzip -Z1 "$tmp" | awk -v b="$3" '{ n=$0; sub(/.*\//, "", n); if (n == b) { print; exit } }')"
+    if [ -z "$member" ]; then
+        echo "[miss] $3 not found in sla-$VER-$1.zip"; exit 1
+    fi
+    unzip -q -o -j "$tmp" "$member" -d "$ROOT/packages/sla-$2/bin"
     rm -f "$tmp"
     trap - EXIT INT TERM
     chmod +x "$dst"

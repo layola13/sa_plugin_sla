@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Fetch prebuilt `sla` binaries from a sa_plugin_sla GitHub Release.
@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $Root = Split-Path $PSScriptRoot -Parent
 $Base = "https://github.com/layola13/sa_plugin_sla/releases/download/$Version"
 
@@ -56,4 +57,4 @@ Copy-Item -Recurse -Force $StdSrc $StdDst
 Write-Host "[ok] sla stdlib <= $StdSrc"
 
 Remove-Item -Recurse -Force $Tmp
-Write-Host "[✓] all platform binaries staged under npm/packages/*/bin"
+Write-Host "[ok] all platform binaries staged under npm/packages/*/bin"

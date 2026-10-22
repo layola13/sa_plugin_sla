@@ -6,12 +6,12 @@
 # Binaries are intentionally NOT committed to git; the GitHub Release is the
 # binary store. Rebuilding instead? See stage-sla-binaries.sh.
 #
-# Usage: sh tools/fetch-sla-binaries.sh [--version VER]   (default: 0.1.4)
+# Usage: sh tools/fetch-sla-binaries.sh [--version VER]   (default: 0.1.8)
 
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VER="0.1.4"
+VER="0.1.8"
 if [ "${1:-}" = "--version" ]; then VER="$2"; fi
 BASE="https://github.com/layola13/sa_plugin_sla/releases/download/$VER"
 

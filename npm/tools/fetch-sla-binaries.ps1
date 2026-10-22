@@ -4,10 +4,10 @@
   Fetch prebuilt `sla` binaries from a sa_plugin_sla GitHub Release.
 .EXAMPLE
   powershell tools/fetch-sla-binaries.ps1
-  powershell tools/fetch-sla-binaries.ps1 -Version 0.1.4
+  powershell tools/fetch-sla-binaries.ps1 -Version 0.1.8
 #>
 param(
-    [string]$Version = "0.1.4"
+    [string]$Version = "0.1.8"
 )
 
 $ErrorActionPreference = "Stop"

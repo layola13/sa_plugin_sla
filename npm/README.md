@@ -16,7 +16,7 @@ npm/
 
 ## 版本同步
 
-跟 `@salang/sa` 同版本线（当前 0.1.4）：7 个包版本号 + meta 的 pins
+跟 `@salang/sa` 同版本线（当前 0.1.8）：7 个包版本号 + meta 的 pins
 （`dependencies.@salang/sa` 与 6 个 optionalDependencies）全一致。
 `sla --version` 取构建时 git tag，流程固定为
 **打 tag → 重编 6 平台 → check → publish**。

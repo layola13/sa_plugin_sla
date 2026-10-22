@@ -1,6 +1,6 @@
 {
   "name": "@slalang/sla",
-  "version": "0.1.4",
+  "version": "0.1.8",
   "description": "Sla language toolchain (global sla command), powered by the SA compiler",
   "license": "Apache-2.0",
   "repository": {
@@ -30,11 +30,11 @@
     "@salang/sa": "0.1.8"
   },
   "optionalDependencies": {
-    "@slalang/sla-darwin-arm64": "0.1.4",
-    "@slalang/sla-darwin-x64": "0.1.4",
-    "@slalang/sla-freebsd-x64": "0.1.4",
-    "@slalang/sla-linux-arm64": "0.1.4",
-    "@slalang/sla-linux-x64": "0.1.4",
-    "@slalang/sla-win32-x64": "0.1.4"
+    "@slalang/sla-darwin-arm64": "0.1.8",
+    "@slalang/sla-darwin-x64": "0.1.8",
+    "@slalang/sla-freebsd-x64": "0.1.8",
+    "@slalang/sla-linux-arm64": "0.1.8",
+    "@slalang/sla-linux-x64": "0.1.8",
+    "@slalang/sla-win32-x64": "0.1.8"
   }
 }

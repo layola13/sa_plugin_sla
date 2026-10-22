@@ -67,7 +67,24 @@ function main() {
   const saEntry = SA_PLATFORMS[key];
   if (saEntry) {
     const saPlatDir = pkgDir(saEntry.pkg);
-    if (saPlatDir) prependPath(path.join(saPlatDir, 'bin'));
+    if (saPlatDir) {
+      const saBinDir = path.join(saPlatDir, 'bin');
+      const saBin = path.join(saBinDir, saEntry.bin);
+      // Platform binaries are not declared in package.json "bin", so tarballs
+      // packed on Windows (or fetched without chmod) land as 0644. sla invokes
+      // `sa` through PATH, so restore the exec bit here as well.
+      try {
+        fs.chmodSync(saBin, 0o755);
+      } catch {}
+      prependPath(saBinDir);
+      // Platform packages bundle libLLVM; the binary's RUNPATH points at the
+      // build machine, so prefer the package directory for the dynamic loader.
+      if (process.platform === 'linux') {
+        env.LD_LIBRARY_PATH = `${saBinDir}${env.LD_LIBRARY_PATH ? ':' + env.LD_LIBRARY_PATH : ''}`;
+      } else if (process.platform === 'darwin') {
+        env.DYLD_LIBRARY_PATH = `${saBinDir}${env.DYLD_LIBRARY_PATH ? ':' + env.DYLD_LIBRARY_PATH : ''}`;
+      }
+    }
   }
   // Then the @salang/sa node wrapper as fallback.
   const saDir = pkgDir('@salang/sa');

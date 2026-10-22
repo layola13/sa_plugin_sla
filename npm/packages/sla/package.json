@@ -27,7 +27,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@salang/sa": "0.1.4"
+    "@salang/sa": "0.1.8"
   },
   "optionalDependencies": {
     "@slalang/sla-darwin-arm64": "0.1.4",

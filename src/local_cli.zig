@@ -11,8 +11,9 @@ const sla_build_options = @import("sla_build_options");
 /// the legacy `sla sla <cmd>` / `sla slab <cmd>` forms keep working verbatim.
 fn isTopLevelSlaCommand(token: []const u8) bool {
     const commands = [_][]const u8{
-        "init",      "skills", "stability", "build", "build-workspace",
-        "build-exe", "build-wasm", "build-js", "sab", "check", "test", "help",
+        "init",      "skills",     "stability", "build",   "build-workspace",
+        "build-exe", "build-wasm", "build-js",  "build-c", "sab",
+        "check",     "test",       "help",
     };
     for (commands) |cmd| {
         if (std.mem.eql(u8, token, cmd)) return true;
@@ -71,7 +72,7 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, argv[1], "sla") or std.mem.eql(u8, argv[1], "slab")) break :blk false;
         break :blk isTopLevelSlaCommand(argv[1]);
     };
-    const args: []const []const u8 = if (should_synthesize)    blk: {
+    const args: []const []const u8 = if (should_synthesize) blk: {
         const synth_len = if (needs_help) (if (argv.len > 2) argv.len + 1 else 3) else argv.len + 1;
         const synth = try allocator.alloc([]const u8, synth_len);
         synth[0] = argv[0];

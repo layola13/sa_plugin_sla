@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     // removed from std.Build (same as sci/build.zig); the old
     // -Dsysroot/-Dlibc cross-compilation options are obsolete.
     // SLA toolchain version, kept in sync with the @salang/sa npm line.
-    const sla_version = b.option([]const u8, "version", "SLA toolchain semantic version.") orelse "0.1.3";
+    const sla_version = b.option([]const u8, "version", "SLA toolchain semantic version.") orelse "0.1.4";
     const requested_optimize = b.standardOptimizeOption(.{});
     const optimize = effectiveOptimizeForDevInstall(b, requested_optimize);
     const test_filter = b.option([]const u8, "test-filter", "Only compile and run Zig tests whose name contains this filter.");

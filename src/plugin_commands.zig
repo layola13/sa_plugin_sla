@@ -247,6 +247,7 @@ pub fn runSlaCommandImpl(
         try stderr.writeAll("  build-exe  [file] [-p <package>] [sa-build-exe args]\n");
         try stderr.writeAll("  build-wasm [file] [-p <package>] [sa-build-wasm args]\n");
         try stderr.writeAll("  build-js   [file] [-p <package>] [sa-build-js args]\n");
+        try stderr.writeAll("  build-c    [file] [-p <package>] [sa-build-c args]\n");
         try stderr.writeAll("  sab build  [file] [-p <package>] [--out <file.sab>]\n");
         try stderr.writeAll("  sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe args]\n");
         try stderr.writeAll("  sab disasm <file.sab> [--out <file.sa>]\n");
@@ -356,8 +357,13 @@ pub fn runSlaCommandImpl(
             .exited => |code| code,
             else => 1,
         };
-    } else if (std.mem.eql(u8, cmd, "build-wasm") or std.mem.eql(u8, cmd, "build-js")) {
-        const sa_sub = if (std.mem.eql(u8, cmd, "build-wasm")) "build-wasm" else "build-js";
+    } else if (std.mem.eql(u8, cmd, "build-wasm") or std.mem.eql(u8, cmd, "build-js") or std.mem.eql(u8, cmd, "build-c")) {
+        const sa_sub = if (std.mem.eql(u8, cmd, "build-wasm"))
+            "build-wasm"
+        else if (std.mem.eql(u8, cmd, "build-js"))
+            "build-js"
+        else
+            "build-c";
         const options = parseSlaCliOptions(args, cmd) catch {
             try writeCommandHelp(stderr, cmd);
             return 1;

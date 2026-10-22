@@ -15,6 +15,7 @@ pub const skills = [_]plugin_api.SkillSection{
             "sla build-exe [file] [-p <package>] [sa-build-exe-options...]",
             "sla build-wasm [file] [-p <package>] [sa-build-wasm-options...]",
             "sla build-js [file] [-p <package>] [sa-build-js-options...]",
+            "sla build-c [file] [-p <package>] [sa-build-c-options...]",
             "sla sab build [file] [-p <package>] [--out <file.sab>]",
             "sla sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]",
             "slab build|workspace|disasm ...",
@@ -107,7 +108,7 @@ fn writeSlaAgentSkillMarkdown(writer: anytype, agent_name: []const u8) !void {
     try writer.writeAll("- Use `sa sla init [path]` to scaffold a minimal SLA binary project.\n");
     try writer.writeAll("- Use `sa sla build <file>` only when a visible `.sa` text artifact is needed.\n");
     try writer.writeAll("- Use `sa sla build-exe <file>` or `sa sla sab workspace` for executable builds through the direct SAB path.\n");
-    try writer.writeAll("- Use `sa sla build-wasm <file>` for WebAssembly (.wasm) and `sa sla build-js <file>` for JavaScript (.js) through the same direct SAB path.\n");
+    try writer.writeAll("- Use `sa sla build-wasm <file>` for WebAssembly (.wasm), `sa sla build-js <file>` for JavaScript (.js), and `sa sla build-c <file>` for portable C (.c) through the same direct SAB path.\n");
     try writer.writeAll("- Use `sa sla test <file>` for tests through the direct SAB path by default; add `--test-backend sa` only when debugging legacy `.test.sa` output.\n");
     try writer.writeAll("- Use `sa sla sab build <file>` to emit managed SAB under `.sla-cache/sab/`; add `--out <file.sab>` only for an inspection copy.\n");
     try writer.writeAll("- Keep SLA-to-SA and SLA-to-SAB as separate mainlines; SAB output must not be implemented as `sla -> sa -> sab`.\n");

@@ -20,6 +20,7 @@ const plugin_project_shortcuts = @import("plugin_project_shortcuts.zig");
 const plugin_output_paths = @import("plugin_output_paths.zig");
 const plugin_compile_options = @import("plugin_compile_options.zig");
 const plugin_emit_reachability = @import("plugin_emit_reachability.zig");
+const plugin_freshness = @import("plugin_freshness.zig");
 
 const ResolvedImport = plugin_imports.ResolvedImport;
 const SlaCliOptions = plugin_cli.SlaCliOptions;
@@ -599,6 +600,7 @@ fn runSlaFrontend(
     options: SlaCompileOptions,
     stderr: *std.Io.Writer,
     profile: bool,
+    closure_out: ?*std.array_list.Managed([]const u8),
 ) !?*ast.Node {
     var stage_start = sio.nanoTimestamp();
     const content = sio.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
@@ -723,6 +725,27 @@ fn runSlaFrontend(
     specialized_prog.program.decls = try filtered_decls.toOwnedSlice();
     slaProfileStage(stderr, profile, "primary decl filter", stage_start);
 
+    // Report the full dependency closure (root + every module the import
+    // expansion touched + contract files) so callers can fingerprint the
+    // compilation for the freshness gate.
+    if (closure_out) |out| {
+        try out.append(try allocator.dupe(u8, file));
+        var module_it = import_modules.modules.keyIterator();
+        while (module_it.next()) |key| {
+            try out.append(try allocator.dupe(u8, key.*));
+        }
+        for (contract_imports.items) |contract_import| {
+            try out.append(try allocator.dupe(u8, contract_import.path));
+        }
+        // A workspace manifest can redirect how import specifiers resolve;
+        // fingerprint it too when it sits next to the root source.
+        if (std.fs.path.dirname(file)) |dir| {
+            try out.append(try std.fs.path.join(allocator, &.{ dir, "sa.mod" }));
+        } else {
+            try out.append(try allocator.dupe(u8, "sa.mod"));
+        }
+    }
+
     return specialized_prog;
 }
 
@@ -735,12 +758,19 @@ pub fn compileSlaToSaStringWithOptions(
 ) !?[]const u8 {
     const profile = slaProfileEnabled(allocator);
 
+    if (plugin_freshness.tryLoadFreshArtifact(allocator, file, .sa_text, options, output_file)) |cached| {
+        if (profile) stderr.print("[sla-profile] freshness gate: hit, front-end skipped\n", .{}) catch {};
+        return cached;
+    }
+
     var mono = monomorphizer_mod.Monomorphizer.init(allocator);
     defer mono.deinit();
     var tc = type_checker_mod.TypeChecker.init(allocator);
     defer tc.deinit();
+    var closure = std.array_list.Managed([]const u8).init(allocator);
+    defer closure.deinit();
 
-    const specialized_prog = (try runSlaFrontend(allocator, file, &mono, &tc, options, stderr, profile)) orelse return null;
+    const specialized_prog = (try runSlaFrontend(allocator, file, &mono, &tc, options, stderr, profile, &closure)) orelse return null;
 
     var stage_start = sio.nanoTimestamp();
     rewriteProgramImportsForOutput(allocator, specialized_prog, file, output_file) catch |err| {
@@ -762,6 +792,7 @@ pub fn compileSlaToSaStringWithOptions(
         return null;
     };
     slaProfileStage(stderr, profile, "sa codegen", stage_start);
+    plugin_freshness.storeFreshArtifact(allocator, file, .sa_text, options, output_file, closure.items, sa_code) catch {};
     return sa_code;
 }
 
@@ -842,12 +873,19 @@ pub fn compileSlaFileToSabWithOptions(
     _ = output_file;
     const profile = slaProfileEnabled(allocator);
 
+    if (plugin_freshness.tryLoadFreshArtifact(allocator, file, .sab, options, null)) |cached| {
+        if (profile) stderr.print("[sla-profile] freshness gate: hit, front-end skipped\n", .{}) catch {};
+        return cached;
+    }
+
     var mono = monomorphizer_mod.Monomorphizer.init(allocator);
     defer mono.deinit();
     var tc = type_checker_mod.TypeChecker.init(allocator);
     defer tc.deinit();
+    var closure = std.array_list.Managed([]const u8).init(allocator);
+    defer closure.deinit();
 
-    const specialized_prog = (try runSlaFrontend(allocator, file, &mono, &tc, options, stderr, profile)) orelse return null;
+    const specialized_prog = (try runSlaFrontend(allocator, file, &mono, &tc, options, stderr, profile, &closure)) orelse return null;
 
     var stage_start = sio.nanoTimestamp();
     if (options.prune_for_test_codegen) {
@@ -886,6 +924,7 @@ pub fn compileSlaFileToSabWithOptions(
         }
     };
     slaProfileStage(stderr, profile, "sab direct codegen", stage_start);
+    plugin_freshness.storeFreshArtifact(allocator, file, .sab, options, null, closure.items, sab_bytes) catch {};
     return sab_bytes;
 }
 

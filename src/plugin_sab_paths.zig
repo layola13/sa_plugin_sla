@@ -192,14 +192,13 @@ pub fn sabProjectRoot(allocator: std.mem.Allocator, source_file: []const u8) ![]
     return try allocator.dupe(u8, resolution.workspace_root);
 }
 
-test "sla sab workspace passthrough defaults to jobs auto unless supplied" {
+test "sla sab workspace passthrough does not force a jobs default" {
     var workspace_argv = std.array_list.Managed([]const u8).init(std.testing.allocator);
     defer workspace_argv.deinit();
     try appendSabWorkspacePassthrough(&workspace_argv, &.{ "--sab-out", "/tmp/out.sab", "-o", "/tmp/app" });
+    try std.testing.expectEqual(@as(usize, 2), workspace_argv.items.len);
     try std.testing.expectEqualStrings("-o", workspace_argv.items[0]);
     try std.testing.expectEqualStrings("/tmp/app", workspace_argv.items[1]);
-    try std.testing.expectEqualStrings("--jobs", workspace_argv.items[2]);
-    try std.testing.expectEqualStrings("auto", workspace_argv.items[3]);
 }
 
 test "sla sab test managed path is scoped by test filter" {

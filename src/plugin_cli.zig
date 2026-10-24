@@ -107,9 +107,16 @@ fn hasJobsArg(args: []const []const u8) bool {
 }
 
 pub fn appendDefaultJobsAuto(argv: *std.array_list.Managed([]const u8), args: []const []const u8) !void {
-    if (hasJobsArg(args)) return;
-    try argv.append("--jobs");
-    try argv.append("auto");
+    _ = argv;
+    _ = args;
+    // Deliberately do NOT force --jobs auto onto the SA subprocess.
+    // An explicit --jobs flag switches SA build-exe to its CGU parallel
+    // emission path, which is far slower than the serial path on
+    // SAB-sized workloads (measured ~20x) and intermittently livelocks;
+    // the SA default (no --jobs) uses the serial path whose results
+    // are served by the .sa_cache build-exe cache on repeat runs.
+    // A user-supplied --jobs is already present in argv via extra_args
+    // and is left untouched.
 }
 
 fn ensureParentDir(path: []const u8) !void {
@@ -455,12 +462,13 @@ pub fn parseSlaCliOptions(args: []const []const u8, command: []const u8) !SlaCli
     return parseSlaCliOptionsFrom(args, command, 3);
 }
 
-test "sla delegated SA commands default to jobs auto unless supplied" {
+test "sla delegated SA commands do not force a jobs default" {
     var test_argv = std.array_list.Managed([]const u8).init(std.testing.allocator);
     defer test_argv.deinit();
     try appendSaTestPassthrough(&test_argv, &.{ "--filter", "one" });
-    try std.testing.expectEqualStrings("--jobs", test_argv.items[test_argv.items.len - 2]);
-    try std.testing.expectEqualStrings("auto", test_argv.items[test_argv.items.len - 1]);
+    try std.testing.expectEqual(@as(usize, 2), test_argv.items.len);
+    try std.testing.expectEqualStrings("--filter", test_argv.items[0]);
+    try std.testing.expectEqualStrings("one", test_argv.items[1]);
 
     var explicit_argv = std.array_list.Managed([]const u8).init(std.testing.allocator);
     defer explicit_argv.deinit();
@@ -489,8 +497,6 @@ test "sla compiled test passthrough strips source-only test selection for child 
     var argv_eq = std.array_list.Managed([]const u8).init(std.testing.allocator);
     defer argv_eq.deinit();
     try appendCompiledSaTestPassthrough(&argv_eq, &.{ "--filter=one", "--trace-panic" });
-    try std.testing.expectEqual(@as(usize, 3), argv_eq.items.len);
+    try std.testing.expectEqual(@as(usize, 1), argv_eq.items.len);
     try std.testing.expectEqualStrings("--trace-panic", argv_eq.items[0]);
-    try std.testing.expectEqualStrings("--jobs", argv_eq.items[1]);
-    try std.testing.expectEqualStrings("auto", argv_eq.items[2]);
 }

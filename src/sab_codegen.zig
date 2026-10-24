@@ -1291,6 +1291,30 @@ pub const Codegen = struct {
             }
         }
 
+        // Layout-independent anchors, so the surface rules are found on any
+        // checkout layout, not only ~/projects: the standalone `sla`
+        // executable lives in <plugin-repo>/zig-out/bin (../../sla_std),
+        // and the host `sa` executable lives in <sci>/zig-out/bin with the
+        // plugin checkout as a sibling of sci (../../sa_plugin_sla/sla_std).
+        if (sio.selfExePathAlloc(self.allocator)) |self_path| {
+            defer self.allocator.free(self_path);
+            if (std.fs.path.dirname(self_path)) |exe_dir| {
+                const rel_candidates = [_][]const u8{
+                    "../../sla_std/std_surface.sla_meta",
+                    "../sla_std/std_surface.sla_meta",
+                    "../../sa_plugin_sla/sla_std/std_surface.sla_meta",
+                };
+                for (rel_candidates) |rel| {
+                    const path = try std.fs.path.join(self.allocator, &.{ exe_dir, rel });
+                    defer self.allocator.free(path);
+                    if (sio.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
+                        error.FileNotFound, error.NotDir => {},
+                        else => return err,
+                    }
+                }
+            }
+        } else |_| {}
+
         const candidates = [_][]const u8{
             "sla_std/std_surface.sla_meta",
             "sa_plugins/sa_plugin_sla/sla_std/std_surface.sla_meta",

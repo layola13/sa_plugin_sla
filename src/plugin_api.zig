@@ -14,7 +14,52 @@ pub const Context = struct {
     log: ?*const fn (ctx: *const anyopaque, level: LogLevel, message_ptr: [*]const u8, message_len: usize) callconv(.c) void = null,
     log_ctx: ?*anyopaque = null,
     json_mode: bool = false,
+    // Broker tail (layout-identical to the host Context): appended
+    // fields, so older declarations stay prefix-compatible.
+    broker_abi_version: u32 = 0,
+    broker_call: ?BrokerCallFn = null,
+    broker_ctx: ?*anyopaque = null,
 };
+
+pub const BrokerCallFn = *const fn (ctx: ?*anyopaque, op: u32, req: ?*const anyopaque, resp: ?*anyopaque) callconv(.c) u32;
+
+pub const broker_op_cache_lookup: u32 = 5;
+pub const broker_op_cache_store: u32 = 6;
+
+pub const BrokerCacheLookupRequest = extern struct {
+    ns_ptr: [*]const u8,
+    ns_len: usize,
+    key_ptr: [*]const u8,
+    key_len: usize,
+    closure_ptr: [*]const u8,
+    closure_len: usize,
+    value_ptr: ?[*]u8,
+    value_cap: usize,
+};
+
+pub const BrokerCacheLookupResponse = extern struct {
+    hit: u32,
+    value_len: usize,
+};
+
+pub const BrokerCacheStoreRequest = extern struct {
+    ns_ptr: [*]const u8,
+    ns_len: usize,
+    key_ptr: [*]const u8,
+    key_len: usize,
+    closure_ptr: [*]const u8,
+    closure_len: usize,
+    value_ptr: [*]const u8,
+    value_len: usize,
+};
+
+pub const BrokerCacheStoreResponse = extern struct {
+    stored: u32,
+};
+
+pub fn brokerAvailable(ctx: *const Context) bool {
+    return ctx.broker_call != null and ctx.broker_abi_version >= 1;
+}
 
 pub const LogLevel = enum(u8) {
     debug,

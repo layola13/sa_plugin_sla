@@ -1,4 +1,5 @@
 const std = @import("std");
+const plugin_freshness = @import("plugin_freshness.zig");
 const sio = @import("sio");
 const plugin_api = @import("plugin_api");
 const ast = @import("ast.zig");
@@ -221,6 +222,7 @@ fn runSlaCommandAbi(
     const allocator = std.heap.page_allocator;
     var local_ctx = ctx.*;
     local_ctx.allocator = allocator;
+    plugin_freshness.host_ctx = &local_ctx;
 
     const args = allocator.alloc([]const u8, argv_len) catch return @intFromEnum(plugin_api.AbiStatus.failed);
     defer allocator.free(args);

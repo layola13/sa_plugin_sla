@@ -1,4 +1,5 @@
 const std = @import("std");
+const plugin_api = @import("plugin_api.zig");
 const sio = @import("sio");
 const plugin_compile_options = @import("plugin_compile_options.zig");
 
@@ -47,6 +48,125 @@ const manifest_version: u32 = 1;
 const max_manifest_bytes: usize = 64 * 1024 * 1024;
 const max_dep_bytes: usize = 256 * 1024 * 1024;
 const max_artifact_bytes: usize = 1024 * 1024 * 1024;
+
+
+/// Host broker context for the current dispatch (set by plugin.zig's
+/// ABI entry when the host loads this plugin; null for the standalone
+/// sla binary, where the local gate below is the authority). When a
+/// broker is present, the host cache service owns freshness storage:
+/// the host rehashes the recorded dependency closure itself, so a hit
+/// here is exactly as trustworthy as a local hit.
+pub var host_ctx: ?*const plugin_api.Context = null;
+
+fn brokerCtx() ?*const plugin_api.Context {
+    const ctx = host_ctx orelse return null;
+    if (!plugin_api.brokerAvailable(ctx)) return null;
+    return ctx;
+}
+
+fn brokerKeyMaterial(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    kind: FreshnessKind,
+    options: SlaCompileOptions,
+    output_file: ?[]const u8,
+) ![]u8 {
+    const tag = kind.tag();
+    var material = std.array_list.Managed(u8).init(allocator);
+    errdefer material.deinit();
+    try material.appendSlice(tag);
+    try material.append(0);
+    var key_bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &key_bytes, gateKey(file, kind, options, output_file), .little);
+    try material.appendSlice(&key_bytes);
+    return material.toOwnedSlice();
+}
+
+fn brokerLoadFreshArtifact(
+    allocator: std.mem.Allocator,
+    ctx: *const plugin_api.Context,
+    file: []const u8,
+    kind: FreshnessKind,
+    options: SlaCompileOptions,
+    output_file: ?[]const u8,
+) ?[]u8 {
+    const broker_call = ctx.broker_call orelse return null;
+    const key = brokerKeyMaterial(allocator, file, kind, options, output_file) catch return null;
+    defer allocator.free(key);
+    var response = plugin_api.BrokerCacheLookupResponse{ .hit = 0, .value_len = 0 };
+    var request = plugin_api.BrokerCacheLookupRequest{
+        .ns_ptr = "sla".ptr,
+        .ns_len = 3,
+        .key_ptr = key.ptr,
+        .key_len = key.len,
+        .closure_ptr = key.ptr,
+        .closure_len = 0,
+        .value_ptr = null,
+        .value_cap = 0,
+    };
+    var status = broker_call(ctx.broker_ctx, plugin_api.broker_op_cache_lookup, &request, &response);
+    if (status == 0 and response.hit == 0) return null;
+    if (status != 5 and status != 0) return null;
+    if (response.value_len > max_artifact_bytes) return null;
+    const buffer = allocator.alloc(u8, response.value_len) catch return null;
+    errdefer allocator.free(buffer);
+    request.value_ptr = if (buffer.len == 0) null else buffer.ptr;
+    request.value_cap = buffer.len;
+    var response2 = plugin_api.BrokerCacheLookupResponse{ .hit = 0, .value_len = 0 };
+    status = broker_call(ctx.broker_ctx, plugin_api.broker_op_cache_lookup, &request, &response2);
+    if (status != 0 or response2.hit == 0) {
+        allocator.free(buffer);
+        return null;
+    }
+    return buffer[0..response2.value_len];
+}
+
+fn brokerStoreFreshArtifact(
+    allocator: std.mem.Allocator,
+    ctx: *const plugin_api.Context,
+    file: []const u8,
+    kind: FreshnessKind,
+    options: SlaCompileOptions,
+    output_file: ?[]const u8,
+    dep_paths: []const []const u8,
+    artifact_bytes: []const u8,
+) void {
+    const broker_call = ctx.broker_call orelse return;
+    const key = brokerKeyMaterial(allocator, file, kind, options, output_file) catch return;
+    defer allocator.free(key);
+
+    var seen = std.StringHashMap(void).init(allocator);
+    defer seen.deinit();
+    var blob = std.array_list.Managed(u8).init(allocator);
+    defer blob.deinit();
+    var count: u32 = 0;
+    var count_slot: [4]u8 = .{ 0, 0, 0, 0 };
+    blob.appendSlice(&count_slot) catch return;
+    for (dep_paths) |path| {
+        if (seen.contains(path)) continue;
+        seen.put(path, {}) catch return;
+        var len_bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &len_bytes, @intCast(path.len), .little);
+        blob.appendSlice(&len_bytes) catch return;
+        blob.appendSlice(path) catch return;
+        count += 1;
+    }
+    if (count == 0) return;
+    std.mem.writeInt(u32, @as(*[4]u8, @ptrCast(blob.items.ptr)), count, .little);
+
+    var response = plugin_api.BrokerCacheStoreResponse{ .stored = 0 };
+    const request = plugin_api.BrokerCacheStoreRequest{
+        .ns_ptr = "sla".ptr,
+        .ns_len = 3,
+        .key_ptr = key.ptr,
+        .key_len = key.len,
+        .closure_ptr = blob.items.ptr,
+        .closure_len = blob.items.len,
+        .value_ptr = artifact_bytes.ptr,
+        .value_len = artifact_bytes.len,
+    };
+    _ = broker_call(ctx.broker_ctx, plugin_api.broker_op_cache_store, &request, &response);
+}
 
 fn gateDisabled(allocator: std.mem.Allocator) bool {
     const value = sio.getEnvVarOwned(allocator, "SLA_NO_FRESHNESS_CACHE") catch return false;
@@ -117,6 +237,10 @@ pub fn tryLoadFreshArtifact(
 ) ?[]u8 {
     if (gateDisabled(allocator)) return null;
 
+    if (brokerCtx()) |ctx| {
+        return brokerLoadFreshArtifact(allocator, ctx, file, kind, options, output_file);
+    }
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -151,6 +275,11 @@ pub fn storeFreshArtifact(
     artifact_bytes: []const u8,
 ) !void {
     if (gateDisabled(allocator)) return;
+
+    if (brokerCtx()) |ctx| {
+        brokerStoreFreshArtifact(allocator, ctx, file, kind, options, output_file, dep_paths, artifact_bytes);
+        return;
+    }
 
     var seen = std.StringHashMap(void).init(allocator);
     defer seen.deinit();

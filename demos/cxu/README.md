@@ -10,7 +10,7 @@ SLA/SA 的改进项，先补地基再继续。总体路线图与排期见 sala
 | D1 01_bridge_stdio | 各 CLI 桥的双向 stdio 内核（spawn + JSON-RPC 行协议） | 已落地（见下） |
 | D2 HTTP/WS/SSE 服务面 | server 的 hono/ws 层 | 已落地（见下） |
 | D3 会话与持久化 | storage（SQLite + JSON） | 已落地（见下） |
-| D4 配置面 | config（TOML + env） | 待开工（前置 P0-6 TOML） |
+| D4 配置面 | config（TOML + env） | 已落地（见下） |
 | D5 终端 PTY | terminalPty.ts | 待开工（前置 P0-2 PTY） |
 | D6 文件监视 | fs.watch 用法群 | 待开工（前置 P0-3） |
 | D7 代码图谱 | saVmTreeSitter / saVmCodeGraph | 待开工（前置 P0-4） |
@@ -89,4 +89,23 @@ bash demos/cxu/02_http_ws_sse/run.sh
 
 ```bash
 bash demos/cxu/03_store_session/run.sh
+```
+
+## D4 04_config
+
+- 前置 P0-6 已补：TOML 解析内置 sa_std（sci src/runtime/sa_toml.zig，
+  13 个 sa_toml_* extern，声明在 sa_std/encoding/toml.sai）。文档句柄 +
+  点分路径取值（数组可经数字段寻址），镜像 JSON 面；日期时间以原文 +
+  独立 kind 保存，不静默强转；**重复键/表重定义是硬解析错误**（经
+  sa_toml_last_error 报告），对齐 CXU config.toml 健康检查对重复项的
+  可见性要求。sci sa-std-unit 含三组 TOML 用例（133/133）。
+- `main.sla`：经 fs 面读入 config.toml（codex 风格样本：顶层标量、
+  [model_providers.cxu]、[mcp_servers.jex] 的 args 数组与 env 子表、
+  [[servers]] 数组表），逐项断言取值；缺失键断言显式 not-found(3)；
+  环境变量 CXU_MODEL 覆盖文件 model（run.sh 注入并断言其值优先）。
+- `run.sh`：另用 python3 tomllib 独立解析同一样本核对同一组值，
+  全绿打印 `d4 config+env ok`。
+
+```bash
+bash demos/cxu/04_config/run.sh
 ```

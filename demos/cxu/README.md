@@ -15,7 +15,7 @@ SLA/SA 的改进项，先补地基再继续。总体路线图与排期见 sala
 | D6 文件监视 | fs.watch 用法群 | 已落地（见下） |
 | D7 代码图谱 | saVmTreeSitter / saVmCodeGraph | 已落地（见下） |
 | D8 认证小件 | bcrypt / keyring | 已落地（见下） |
-| D9 VM 工具面 | saVmTool / JEV + 16_policy | 待开工（前置 D7） |
+| D9 VM 工具面 | saVmTool / JEV + 16_policy | 已落地（见下） |
 | D10 静态与产物服务 | server 静态面 | 待开工（前置 D2） |
 | D11 free-key 服务 | free-key server | 待开工（前置 D2） |
 | D12 前端微缩 | web 对话屏（SAX + airlock） | 待开工（前置 D2） |
@@ -176,3 +176,20 @@ set/get/remove 往返，缺失项显式状态 3。集合按调用选：空 = OS
 默认（桌面登录 keyring）；无头环境无登录 keyring 时默认集合报
 IO 错误，演示用常驻的 session 集合（内存型）——此约束已记入
 crypto.sai 契约注释。
+
+## D9 09_vm_tools
+
+两个工具（find_definition = tree-sitter 定义查找，read_file = fs
+读）只经 16_policy 的门控 open 触碰文件。演示一个二进制三种策略
+场景（run.sh 驱动 SA_POLICY_JSON / SA_POLICY_TOKENS_JSON）：
+A allow-list 两工具全通、二次读放行；B deny 首调即状态 10、
+程序以 42 退出；C ask + 一次性令牌——每文件恰开一次，lib.ts 的
+蓄意二次读因令牌已消费被拒，审计日志恰有 2 条 source=token 的
+放行（已断言）。
+
+前置改进（随 D9 落地 sci）：① 令牌此前只有宿主进程内 API
+（mintToken），产物二进制 / sa run 无投递面——新增
+SA_POLICY_TOKENS_JSON 环境面（严格 JSON 规格数组，bootstrap 与
+interp 双路同装；无策略上下文时显式报错，绝不静默）；
+② sa_ts_node_byte_range 补入（定义字节跨度）。sa-std-unit
+144/144（含令牌解析/铸造/一次消费两组新用例）。

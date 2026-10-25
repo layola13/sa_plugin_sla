@@ -1,5 +1,5 @@
 const std = @import("std");
-const plugin_api = @import("plugin_api.zig");
+const plugin_api = @import("plugin_api");
 const sio = @import("sio");
 const plugin_compile_options = @import("plugin_compile_options.zig");
 
@@ -237,6 +237,10 @@ pub fn tryLoadFreshArtifact(
 ) ?[]u8 {
     if (gateDisabled(allocator)) return null;
 
+    if (sio.getEnvVarOwned(allocator, "SLA_CACHE_DEBUG")) |dbg| {
+        allocator.free(dbg);
+        std.debug.print("[cache-debug] host_ctx={} broker={}\n", .{ host_ctx != null, brokerCtx() != null });
+    } else |_| {}
     if (brokerCtx()) |ctx| {
         return brokerLoadFreshArtifact(allocator, ctx, file, kind, options, output_file);
     }

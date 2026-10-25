@@ -105,10 +105,6 @@ fn brokerLoadFreshArtifact(
         .value_cap = 0,
     };
     var status = broker_call(ctx.broker_ctx, plugin_api.broker_op_cache_lookup, &request, &response);
-    if (sio.getEnvVarOwned(allocator, "SLA_CACHE_DEBUG")) |dbg| {
-        allocator.free(dbg);
-        std.debug.print("[cache-debug] lookup status={d} hit={d} len={d}\n", .{ status, response.hit, response.value_len });
-    } else |_| {}
     if (status == 0 and response.hit == 0) return null;
     if (status != 5 and status != 0) return null;
     if (response.value_len > max_artifact_bytes) return null;
@@ -169,11 +165,7 @@ fn brokerStoreFreshArtifact(
         .value_ptr = artifact_bytes.ptr,
         .value_len = artifact_bytes.len,
     };
-    const store_status = broker_call(ctx.broker_ctx, plugin_api.broker_op_cache_store, &request, &response);
-    if (sio.getEnvVarOwned(allocator, "SLA_CACHE_DEBUG")) |dbg| {
-        allocator.free(dbg);
-        std.debug.print("[cache-debug] store status={d} stored={d} deps={d}\n", .{ store_status, response.stored, count });
-    } else |_| {}
+    _ = broker_call(ctx.broker_ctx, plugin_api.broker_op_cache_store, &request, &response);
 }
 
 fn gateDisabled(allocator: std.mem.Allocator) bool {
@@ -245,10 +237,6 @@ pub fn tryLoadFreshArtifact(
 ) ?[]u8 {
     if (gateDisabled(allocator)) return null;
 
-    if (sio.getEnvVarOwned(allocator, "SLA_CACHE_DEBUG")) |dbg| {
-        allocator.free(dbg);
-        std.debug.print("[cache-debug] host_ctx={} broker={}\n", .{ host_ctx != null, brokerCtx() != null });
-    } else |_| {}
     if (brokerCtx()) |ctx| {
         return brokerLoadFreshArtifact(allocator, ctx, file, kind, options, output_file);
     }

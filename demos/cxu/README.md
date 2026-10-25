@@ -16,7 +16,7 @@ SLA/SA 的改进项，先补地基再继续。总体路线图与排期见 sala
 | D7 代码图谱 | saVmTreeSitter / saVmCodeGraph | 已落地（见下） |
 | D8 认证小件 | bcrypt / keyring | 已落地（见下） |
 | D9 VM 工具面 | saVmTool / JEV + 16_policy | 已落地（见下） |
-| D10 静态与产物服务 | server 静态面 | 待开工（前置 D2） |
+| D10 静态与产物服务 | server 静态面 | 已落地（见下） |
 | D11 free-key 服务 | free-key server | 待开工（前置 D2） |
 | D12 前端微缩 | web 对话屏（SAX + airlock） | 待开工（前置 D2） |
 
@@ -193,3 +193,15 @@ SA_POLICY_TOKENS_JSON 环境面（严格 JSON 规格数组，bootstrap 与
 interp 双路同装；无策略上下文时显式报错，绝不静默）；
 ② sa_ts_node_byte_range 补入（定义字节跨度）。sa-std-unit
 144/144（含令牌解析/铸造/一次消费两组新用例）。
+
+## D10 10_static_server
+
+基于 D2 的 v2 http_server：白名单静态服务（仅 /, /index.html,
+/app.js, /style.css 四个字面路径可达，其余一律 404——穿越路径
+根本不到达 fs 层）；每请求经 fs 面现读文件；内容类型按文件给
+（html/js/css），缓存头分层（HTML no-cache、资产
+public, max-age=3600）。run.sh 用 curl 核对六个请求的状态码、
+content-type、cache-control 与正文逐字节一致（含 --path-as-is
+的 /../secret.txt 穿越尝试 → 404）。踩坑记账：就绪探测不能用裸
+TCP 连接——会被 accept 当成一个请求消费掉；首个 curl 自带
+--retry-connrefused 即可。

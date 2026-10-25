@@ -1,0 +1,587 @@
+@import "sa_std/crypto.sai"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/io/print.sai"
+@import "byteseq.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@main() -> i32:
+L_ENTRY:
+    hbuf = alloc 128
+    tmp_0 = 0
+    tmp_1 = tmp_0 as u8
+    EXPAND SLA_ARRAY_FILL_U8 hbuf, tmp_1, 128
+    tmp_2 = 0
+    hlen = stack_alloc 8
+    store hlen+0, tmp_2 as u64
+    !tmp_2
+    @const SLA_STR_0 = utf8:"correct horse\0"
+    tmp_5 = 13
+    tmp_4 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_4, &SLA_STR_0, tmp_5
+    !tmp_5
+    EXPAND STR_PTR tmp_3, tmp_4
+    @const SLA_STR_1 = utf8:"correct horse\0"
+    tmp_8 = 13
+    tmp_7 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_7, &SLA_STR_1, tmp_8
+    !tmp_8
+    EXPAND STR_LEN tmp_6, tmp_7
+    tmp_9 = 10
+    tmp_10 = ptr_add hbuf, 0
+    tmp_11 = 128
+    tmp_12 = ptr_add hlen, 0
+    tmp_13 = call @sa_bcrypt_hash(&tmp_3, tmp_6, tmp_9, &tmp_10, tmp_11, &tmp_12)
+    !tmp_3
+    !tmp_6
+    !tmp_9
+    !tmp_10
+    !tmp_11
+    !tmp_12
+    tmp_14 = 0
+    tmp_15 = ne tmp_13, tmp_14
+    !tmp_13
+    !tmp_14
+    br tmp_15 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_15
+    tmp_16 = 2
+    !hbuf
+    return tmp_16
+
+L_ELSE_1:
+    !tmp_15
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_18 = load hlen+0 as u64
+    tmp_19 = 60
+    tmp_20 = ne tmp_18, tmp_19
+    !tmp_19
+    br tmp_20 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_20
+    tmp_21 = 3
+    !hbuf
+    return tmp_21
+
+L_ELSE_4:
+    !tmp_20
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_23 = 0
+    tmp_24 = mul tmp_23, 1
+    tmp_25 = ptr_add hbuf, tmp_24
+    !tmp_24
+    !tmp_23
+    tmp_26 = load tmp_25+0 as u8
+    !tmp_25
+    tmp_27 = 36
+    tmp_28 = ne tmp_26, tmp_27
+    !tmp_26
+    !tmp_27
+    tmp_29 = 1
+    tmp_30 = mul tmp_29, 1
+    tmp_31 = ptr_add hbuf, tmp_30
+    !tmp_30
+    !tmp_29
+    tmp_32 = load tmp_31+0 as u8
+    !tmp_31
+    tmp_33 = 50
+    tmp_34 = ne tmp_32, tmp_33
+    !tmp_32
+    !tmp_33
+    tmp_35 = or tmp_28, tmp_34
+    !tmp_28
+    !tmp_34
+    tmp_36 = 2
+    tmp_37 = mul tmp_36, 1
+    tmp_38 = ptr_add hbuf, tmp_37
+    !tmp_37
+    !tmp_36
+    tmp_39 = load tmp_38+0 as u8
+    !tmp_38
+    tmp_40 = 98
+    tmp_41 = ne tmp_39, tmp_40
+    !tmp_39
+    !tmp_40
+    tmp_42 = or tmp_35, tmp_41
+    !tmp_35
+    !tmp_41
+    tmp_43 = 3
+    tmp_44 = mul tmp_43, 1
+    tmp_45 = ptr_add hbuf, tmp_44
+    !tmp_44
+    !tmp_43
+    tmp_46 = load tmp_45+0 as u8
+    !tmp_45
+    tmp_47 = 36
+    tmp_48 = ne tmp_46, tmp_47
+    !tmp_46
+    !tmp_47
+    tmp_49 = or tmp_42, tmp_48
+    !tmp_42
+    !tmp_48
+    tmp_50 = 4
+    tmp_51 = mul tmp_50, 1
+    tmp_52 = ptr_add hbuf, tmp_51
+    !tmp_51
+    !tmp_50
+    tmp_53 = load tmp_52+0 as u8
+    !tmp_52
+    tmp_54 = 49
+    tmp_55 = ne tmp_53, tmp_54
+    !tmp_53
+    !tmp_54
+    tmp_56 = or tmp_49, tmp_55
+    !tmp_49
+    !tmp_55
+    tmp_57 = 5
+    tmp_58 = mul tmp_57, 1
+    tmp_59 = ptr_add hbuf, tmp_58
+    !tmp_58
+    !tmp_57
+    tmp_60 = load tmp_59+0 as u8
+    !tmp_59
+    tmp_61 = 48
+    tmp_62 = ne tmp_60, tmp_61
+    !tmp_60
+    !tmp_61
+    tmp_63 = or tmp_56, tmp_62
+    !tmp_56
+    !tmp_62
+    tmp_64 = 6
+    tmp_65 = mul tmp_64, 1
+    tmp_66 = ptr_add hbuf, tmp_65
+    !tmp_65
+    !tmp_64
+    tmp_67 = load tmp_66+0 as u8
+    !tmp_66
+    tmp_68 = 36
+    tmp_69 = ne tmp_67, tmp_68
+    !tmp_67
+    !tmp_68
+    tmp_70 = or tmp_63, tmp_69
+    !tmp_63
+    !tmp_69
+    br tmp_70 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_70
+    tmp_71 = 4
+    !hbuf
+    return tmp_71
+
+L_ELSE_7:
+    !tmp_70
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    slot = alloc 8
+    tmp_73 = 0
+    tmp_74 = tmp_73 as u64
+    store slot+0, tmp_74 as u64
+    tmp_75 = 0
+    matched = stack_alloc 4
+    store matched+0, tmp_75 as u32
+    !tmp_75
+    @const SLA_STR_2 = utf8:"correct horse\0"
+    tmp_78 = 13
+    tmp_77 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_77, &SLA_STR_2, tmp_78
+    !tmp_78
+    EXPAND STR_PTR tmp_76, tmp_77
+    @const SLA_STR_3 = utf8:"correct horse\0"
+    tmp_81 = 13
+    tmp_80 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_80, &SLA_STR_3, tmp_81
+    !tmp_81
+    EXPAND STR_LEN tmp_79, tmp_80
+    tmp_82 = ptr_add hbuf, 0
+    tmp_83 = load hlen+0 as u64
+    tmp_84 = ptr_add matched, 0
+    tmp_85 = call @sa_bcrypt_verify(&tmp_76, tmp_79, &tmp_82, tmp_83, &tmp_84)
+    !tmp_76
+    !tmp_79
+    !tmp_82
+    !tmp_83
+    !tmp_84
+    tmp_86 = 0
+    tmp_87 = ne tmp_85, tmp_86
+    !tmp_85
+    !tmp_86
+    tmp_88 = load matched+0 as u32
+    tmp_89 = 1
+    tmp_90 = ne tmp_88, tmp_89
+    !tmp_89
+    tmp_91 = or tmp_87, tmp_90
+    !tmp_87
+    !tmp_90
+    br tmp_91 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_91
+    tmp_92 = 5
+    !slot
+    !hbuf
+    return tmp_92
+
+L_ELSE_10:
+    !tmp_91
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    @const SLA_STR_4 = utf8:"wrong horse\0"
+    tmp_96 = 11
+    tmp_95 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_95, &SLA_STR_4, tmp_96
+    !tmp_96
+    EXPAND STR_PTR tmp_94, tmp_95
+    @const SLA_STR_5 = utf8:"wrong horse\0"
+    tmp_99 = 11
+    tmp_98 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_98, &SLA_STR_5, tmp_99
+    !tmp_99
+    EXPAND STR_LEN tmp_97, tmp_98
+    tmp_100 = ptr_add hbuf, 0
+    tmp_101 = load hlen+0 as u64
+    tmp_102 = ptr_add matched, 0
+    tmp_103 = call @sa_bcrypt_verify(&tmp_94, tmp_97, &tmp_100, tmp_101, &tmp_102)
+    !tmp_94
+    !tmp_97
+    !tmp_100
+    !tmp_101
+    !tmp_102
+    tmp_104 = 0
+    tmp_105 = ne tmp_103, tmp_104
+    !tmp_103
+    !tmp_104
+    tmp_106 = load matched+0 as u32
+    tmp_107 = 0
+    tmp_108 = ne tmp_106, tmp_107
+    !tmp_107
+    tmp_109 = or tmp_105, tmp_108
+    !tmp_105
+    !tmp_108
+    br tmp_109 -> L_THEN_12, L_ELSE_13
+
+L_THEN_12:
+    !tmp_109
+    tmp_110 = 6
+    !slot
+    !hbuf
+    return tmp_110
+
+L_ELSE_13:
+    !tmp_109
+    jmp L_MERGE_14
+
+L_MERGE_14:
+    tmp_112 = call @sa_keyring_available()
+    tmp_113 = 1
+    tmp_114 = ne tmp_112, tmp_113
+    !tmp_112
+    !tmp_113
+    br tmp_114 -> L_THEN_15, L_ELSE_16
+
+L_THEN_15:
+    !tmp_114
+    tmp_115 = 7
+    !slot
+    !hbuf
+    return tmp_115
+
+L_ELSE_16:
+    !tmp_114
+    jmp L_MERGE_17
+
+L_MERGE_17:
+    @const SLA_STR_6 = utf8:"session\0"
+    tmp_119 = 7
+    tmp_118 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_118, &SLA_STR_6, tmp_119
+    !tmp_119
+    EXPAND STR_PTR tmp_117, tmp_118
+    @const SLA_STR_7 = utf8:"session\0"
+    tmp_122 = 7
+    tmp_121 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_121, &SLA_STR_7, tmp_122
+    !tmp_122
+    EXPAND STR_LEN tmp_120, tmp_121
+    @const SLA_STR_8 = utf8:"cxu-demo-token\0"
+    tmp_125 = 14
+    tmp_124 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_124, &SLA_STR_8, tmp_125
+    !tmp_125
+    EXPAND STR_PTR tmp_123, tmp_124
+    @const SLA_STR_9 = utf8:"cxu-demo-token\0"
+    tmp_128 = 14
+    tmp_127 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_127, &SLA_STR_9, tmp_128
+    !tmp_128
+    EXPAND STR_LEN tmp_126, tmp_127
+    @const SLA_STR_10 = utf8:"s3cret-value\0"
+    tmp_131 = 12
+    tmp_130 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_130, &SLA_STR_10, tmp_131
+    !tmp_131
+    EXPAND STR_PTR tmp_129, tmp_130
+    @const SLA_STR_11 = utf8:"s3cret-value\0"
+    tmp_134 = 12
+    tmp_133 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_133, &SLA_STR_11, tmp_134
+    !tmp_134
+    EXPAND STR_LEN tmp_132, tmp_133
+    tmp_135 = call @sa_keyring_set(&tmp_117, tmp_120, &tmp_123, tmp_126, &tmp_129, tmp_132)
+    !tmp_117
+    !tmp_120
+    !tmp_123
+    !tmp_126
+    !tmp_129
+    !tmp_132
+    tmp_136 = 0
+    tmp_137 = ne tmp_135, tmp_136
+    !tmp_135
+    !tmp_136
+    br tmp_137 -> L_THEN_18, L_ELSE_19
+
+L_THEN_18:
+    !tmp_137
+    tmp_138 = 8
+    !slot
+    !hbuf
+    return tmp_138
+
+L_ELSE_19:
+    !tmp_137
+    jmp L_MERGE_20
+
+L_MERGE_20:
+    vbuf = alloc 128
+    tmp_140 = 0
+    tmp_141 = tmp_140 as u8
+    EXPAND SLA_ARRAY_FILL_U8 vbuf, tmp_141, 128
+    tmp_142 = 0
+    vlen = stack_alloc 8
+    store vlen+0, tmp_142 as u64
+    !tmp_142
+    @const SLA_STR_12 = utf8:"cxu-demo-token\0"
+    tmp_145 = 14
+    tmp_144 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_144, &SLA_STR_12, tmp_145
+    !tmp_145
+    EXPAND STR_PTR tmp_143, tmp_144
+    @const SLA_STR_13 = utf8:"cxu-demo-token\0"
+    tmp_148 = 14
+    tmp_147 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_147, &SLA_STR_13, tmp_148
+    !tmp_148
+    EXPAND STR_LEN tmp_146, tmp_147
+    tmp_149 = ptr_add vbuf, 0
+    tmp_150 = 128
+    tmp_151 = ptr_add vlen, 0
+    tmp_152 = call @sa_keyring_get(&tmp_143, tmp_146, &tmp_149, tmp_150, &tmp_151)
+    !tmp_143
+    !tmp_146
+    !tmp_149
+    !tmp_150
+    !tmp_151
+    tmp_153 = 0
+    tmp_154 = ne tmp_152, tmp_153
+    !tmp_152
+    !tmp_153
+    br tmp_154 -> L_THEN_21, L_ELSE_22
+
+L_THEN_21:
+    !tmp_154
+    tmp_155 = 9
+    !slot
+    !vbuf
+    !hbuf
+    return tmp_155
+
+L_ELSE_22:
+    !tmp_154
+    jmp L_MERGE_23
+
+L_MERGE_23:
+    tmp_157 = ptr_add slot, 0
+    tmp_158 = ptr_add vbuf, 0
+    tmp_159 = load vlen+0 as u64
+    @const SLA_STR_14 = utf8:"s3cret-value\0"
+    tmp_162 = 12
+    tmp_161 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_161, &SLA_STR_14, tmp_162
+    !tmp_162
+    EXPAND STR_PTR tmp_160, tmp_161
+    @const SLA_STR_15 = utf8:"s3cret-value\0"
+    tmp_165 = 12
+    tmp_164 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_164, &SLA_STR_15, tmp_165
+    !tmp_165
+    EXPAND STR_LEN tmp_163, tmp_164
+    EXPAND BYTES_EQ tmp_157, tmp_158, tmp_159, tmp_160, tmp_163
+    !tmp_157
+    !tmp_158
+    !tmp_159
+    !tmp_160
+    !tmp_163
+    tmp_166 = 0
+    tmp_167 = mul tmp_166, 8
+    tmp_168 = ptr_add slot, tmp_167
+    !tmp_167
+    !tmp_166
+    tmp_169 = load tmp_168+0 as u64
+    !tmp_168
+    tmp_170 = 1
+    tmp_171 = ne tmp_169, tmp_170
+    !tmp_169
+    !tmp_170
+    br tmp_171 -> L_THEN_24, L_ELSE_25
+
+L_THEN_24:
+    !tmp_171
+    tmp_172 = 10
+    !slot
+    !vbuf
+    !hbuf
+    return tmp_172
+
+L_ELSE_25:
+    !tmp_171
+    jmp L_MERGE_26
+
+L_MERGE_26:
+    @const SLA_STR_16 = utf8:"cxu-demo-token\0"
+    tmp_176 = 14
+    tmp_175 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_175, &SLA_STR_16, tmp_176
+    !tmp_176
+    EXPAND STR_PTR tmp_174, tmp_175
+    @const SLA_STR_17 = utf8:"cxu-demo-token\0"
+    tmp_179 = 14
+    tmp_178 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_178, &SLA_STR_17, tmp_179
+    !tmp_179
+    EXPAND STR_LEN tmp_177, tmp_178
+    tmp_180 = call @sa_keyring_remove(&tmp_174, tmp_177)
+    !tmp_174
+    !tmp_177
+    tmp_181 = 0
+    tmp_182 = ne tmp_180, tmp_181
+    !tmp_180
+    !tmp_181
+    br tmp_182 -> L_THEN_27, L_ELSE_28
+
+L_THEN_27:
+    !tmp_182
+    tmp_183 = 11
+    !slot
+    !vbuf
+    !hbuf
+    return tmp_183
+
+L_ELSE_28:
+    !tmp_182
+    jmp L_MERGE_29
+
+L_MERGE_29:
+    @const SLA_STR_18 = utf8:"cxu-demo-token\0"
+    tmp_187 = 14
+    tmp_186 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_186, &SLA_STR_18, tmp_187
+    !tmp_187
+    EXPAND STR_PTR tmp_185, tmp_186
+    @const SLA_STR_19 = utf8:"cxu-demo-token\0"
+    tmp_190 = 14
+    tmp_189 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_189, &SLA_STR_19, tmp_190
+    !tmp_190
+    EXPAND STR_LEN tmp_188, tmp_189
+    tmp_191 = ptr_add vbuf, 0
+    tmp_192 = 128
+    tmp_193 = ptr_add vlen, 0
+    tmp_194 = call @sa_keyring_get(&tmp_185, tmp_188, &tmp_191, tmp_192, &tmp_193)
+    !tmp_185
+    !tmp_188
+    !tmp_191
+    !tmp_192
+    !tmp_193
+    gone = add tmp_194, 0
+    !tmp_194
+    tmp_195 = 3
+    tmp_196 = ne gone, tmp_195
+    !tmp_195
+    br tmp_196 -> L_THEN_30, L_ELSE_31
+
+L_THEN_30:
+    !tmp_196
+    tmp_197 = 12
+    !gone
+    !hbuf
+    !vbuf
+    !slot
+    return tmp_197
+
+L_ELSE_31:
+    !tmp_196
+    jmp L_MERGE_32
+
+L_MERGE_32:
+    @const SLA_STR_20 = utf8:"cxu-demo-token\0"
+    tmp_201 = 14
+    tmp_200 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_200, &SLA_STR_20, tmp_201
+    !tmp_201
+    EXPAND STR_PTR tmp_199, tmp_200
+    @const SLA_STR_21 = utf8:"cxu-demo-token\0"
+    tmp_204 = 14
+    tmp_203 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_203, &SLA_STR_21, tmp_204
+    !tmp_204
+    EXPAND STR_LEN tmp_202, tmp_203
+    tmp_205 = call @sa_keyring_remove(&tmp_199, tmp_202)
+    !tmp_199
+    !tmp_202
+    tmp_206 = 3
+    tmp_207 = ne tmp_205, tmp_206
+    !tmp_205
+    !tmp_206
+    br tmp_207 -> L_THEN_33, L_ELSE_34
+
+L_THEN_33:
+    !tmp_207
+    tmp_208 = 13
+    !gone
+    !hbuf
+    !vbuf
+    !slot
+    return tmp_208
+
+L_ELSE_34:
+    !tmp_207
+    jmp L_MERGE_35
+
+L_MERGE_35:
+    @const SLA_STR_22 = utf8:"d8 auth ok"
+    call @sa_print_bytes(&SLA_STR_22, 10)
+    @const SLA_STR_23 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_23, 1)
+    tmp_210 = 0
+    !gone
+    !hbuf
+    !vbuf
+    !slot
+    return tmp_210
+

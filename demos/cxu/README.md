@@ -14,7 +14,7 @@ SLA/SA 的改进项，先补地基再继续。总体路线图与排期见 sala
 | D5 终端 PTY | terminalPty.ts | 已落地（见下） |
 | D6 文件监视 | fs.watch 用法群 | 已落地（见下） |
 | D7 代码图谱 | saVmTreeSitter / saVmCodeGraph | 已落地（见下） |
-| D8 认证小件 | bcrypt / keyring | 待开工（前置 P0-6） |
+| D8 认证小件 | bcrypt / keyring | 已落地（见下） |
 | D9 VM 工具面 | saVmTool / JEV + 16_policy | 待开工（前置 D7） |
 | D10 静态与产物服务 | server 静态面 | 待开工（前置 D2） |
 | D11 free-key 服务 | free-key server | 待开工（前置 D2） |
@@ -159,3 +159,20 @@ sexp），树自持源码副本供节点文本提取。sa-std-unit 140/140
 解包一层，收集顶层 function_declaration 名 → 精确
 `add\ngreet\n`（箭头函数的 lexical_declaration 不计，属图谱
 扩展面）。run.sh 输出 `d7 code graph ok`。
+
+## D8 08_auth
+
+P0-6 余项已全部落地：bcrypt 与 keyring 内置 sa_std（sci
+src/runtime/sa_crypto.zig，crypto.sai）。bcrypt 经 dlopen
+libcrypt.so.1（crypt_gensalt_rn $2b$ + crypt_r；结果须立即拷出
+——crypt_r 返回其暂存结构内部指针，连用会自比自，探针实测教训）；
+keyring 经 dlopen libsecret-1.so.0（变参 *_sync + DONT_MATCH_NAME
+schema，单属性 key）。sa-std-unit 142/142（bcrypt 已知答案校验 +
+cost 4 往返、keyring 库可用性）。
+
+演示：bcrypt cost 10 哈希（60 字符、$2b$10$ 前缀）+ 对错口令校验；
+keyring 在 dbus-run-session + gnome-keyring-daemon 环境内做
+set/get/remove 往返，缺失项显式状态 3。集合按调用选：空 = OS
+默认（桌面登录 keyring）；无头环境无登录 keyring 时默认集合报
+IO 错误，演示用常驻的 session 集合（内存型）——此约束已记入
+crypto.sai 契约注释。

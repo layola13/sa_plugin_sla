@@ -13,7 +13,7 @@ SLA/SA 的改进项，先补地基再继续。总体路线图与排期见 sala
 | D4 配置面 | config（TOML + env） | 已落地（见下） |
 | D5 终端 PTY | terminalPty.ts | 已落地（见下） |
 | D6 文件监视 | fs.watch 用法群 | 已落地（见下） |
-| D7 代码图谱 | saVmTreeSitter / saVmCodeGraph | 待开工（前置 P0-4） |
+| D7 代码图谱 | saVmTreeSitter / saVmCodeGraph | 已落地（见下） |
 | D8 认证小件 | bcrypt / keyring | 待开工（前置 P0-6） |
 | D9 VM 工具面 | saVmTool / JEV + 16_policy | 待开工（前置 D7） |
 | D10 静态与产物服务 | server 静态面 | 待开工（前置 D2） |
@@ -142,3 +142,20 @@ next/close，fs.sai 声明）：内部缓冲逐个递交已解析事件
 演示：监视 work/ 目录后用 std fs 面写 note.txt——扫到 IN_CREATE +
 IN_CLOSE_WRITE（位掩码 3）；删文件后再扫到 IN_DELETE（4）。
 run.sh 全程亚秒级，输出 `d6 fs watch ok`。
+
+## D7 07_code_graph
+
+前置 P0-4 已落地：tree-sitter 内置 sa_std（sci src/runtime/
+sa_tree_sitter.zig）——核心库与语法库一律 dlopen（核心
+v0.25.10 / typescript 语法 v0.23.2，构件在 sci/artifacts/
+tree_sitter/，构建脚本同目录；解析规则见 .zig 头注释：
+SA_TREE_SITTER_DIR 或系统加载路径，缺核心 = available 0 +
+UNSUPPORTED 显式报错，语法 ABI 越界 = UNSUPPORTED）。
+15 个 sa_ts_* extern（parser/parse/tree/node 走查/field/text/
+sexp），树自持源码副本供节点文本提取。sa-std-unit 140/140
+（含解析 TS 抽函数名、未知语法显式报错两组）。
+
+演示：读 sample.ts 解析后遍历根命名子节点，export_statement
+解包一层，收集顶层 function_declaration 名 → 精确
+`add\ngreet\n`（箭头函数的 lexical_declaration 不计，属图谱
+扩展面）。run.sh 输出 `d7 code graph ok`。

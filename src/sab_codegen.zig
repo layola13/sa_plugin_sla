@@ -12599,7 +12599,12 @@ pub const Codegen = struct {
                 if (!self.isLocalReg(btree_reg)) try self.emitRelease(btree_reg);
                 return btree_len_dst;
             }
-            return null;
+            // String values share the Vec object layout (the 24-byte
+            // {ptr, cap, len} buffer the format/debug builders
+            // produce), so len() falls through to the Vec length load
+            // below instead of the generic call path (which emitted a
+            // call through an undeclared register).
+            if (!lowering_rules.isStringType(receiver_ty)) return null;
         };
         try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
         const receiver_source = try self.genVecOwnerReceiver(@constCast(call.args[0]));

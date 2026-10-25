@@ -13378,6 +13378,48 @@ pub const Codegen = struct {
     /// must be recognized before the planned static-call path: a bare
     /// `is_err` name would otherwise resolve as a static call to the
     /// undeclared `@sla__is_err` symbol and trap at runtime.
+    /// Option/Result constructors (Some/None/Ok/Err), mirroring the
+    /// SA-text backend: EXPAND OPTION_NEW_SOME / OPTION_NEW_NONE /
+    /// RESULT_NEW_OK / RESULT_NEW_ERR from the sa_std macro libraries.
+    /// Without this, a constructor call fell through to the generic
+    /// call path and emitted a call through an undeclared register
+    /// (SAB verifier: UnknownRegister "callee is not declared").
+    fn genBuiltinEnumConstructorCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        var import_path: []const u8 = undefined;
+        var macro_name: []const u8 = undefined;
+        var has_value = true;
+        if (lowering_rules.isOptionSomeCall(call)) {
+            import_path = "sa_std/core/option.sa";
+            macro_name = "OPTION_NEW_SOME";
+        } else if (lowering_rules.isResultOkCall(call)) {
+            import_path = "sa_std/core/result.sa";
+            macro_name = "RESULT_NEW_OK";
+        } else if (lowering_rules.isResultErrCall(call)) {
+            import_path = "sa_std/core/result.sa";
+            macro_name = "RESULT_NEW_ERR";
+        } else if (std.mem.eql(u8, call.func_name, "None")) {
+            import_path = "sa_std/core/option.sa";
+            macro_name = "OPTION_NEW_NONE";
+            has_value = false;
+        } else return null;
+        if (call.args.len != @as(usize, if (has_value) 1 else 0)) return null;
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        if (has_value) {
+            const value_reg = try self.genExpr(@constCast(call.args[0]));
+            try self.emitStdMacroFragment(import_path, macro_name, &.{
+                self.symbols.items[dst],
+                self.symbols.items[value_reg],
+            });
+            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        } else {
+            try self.emitStdMacroFragment(import_path, macro_name, &.{
+                self.symbols.items[dst],
+            });
+        }
+        return dst;
+    }
+
     fn genResultOptionQueryCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
         _ = expr;
         if (call.associated_target != null or call.args.len != 1) return null;
@@ -14806,6 +14848,7 @@ pub const Codegen = struct {
                 if (try self.genDebugCall(call)) |reg| return reg;
             }
             if (std.mem.eql(u8, call.func_name, "format")) return try self.genFormatCall(call);
+            if (try self.genBuiltinEnumConstructorCall(call)) |reg| return reg;
             if (self.closure_bindings.get(call.func_name)) |closure| return try self.genClosureCall(closure, call);
             if (self.tc.macros.get(call.func_name)) |macro_decl| {
                 try self.genUserMacroCall(macro_decl, &expr.call_expr);
@@ -14845,6 +14888,7 @@ pub const Codegen = struct {
         if (try self.genVecDequePushBackCall(expr, call)) |reg| return reg;
         if (try self.genVecDequePopFrontCall(expr, call)) |reg| return reg;
         if (try self.genOptionUnwrapOrDefaultCall(call)) |reg| return reg;
+        if (try self.genUnwrapOrCall(call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genMutexLockCall(expr, call)) |reg| return reg;
         if (try self.genManuallyDropCall(call)) |reg| return reg;
@@ -17214,6 +17258,37 @@ pub const Codegen = struct {
         try self.emitLabel(end_label);
         if (!self.isLocalReg(deque_reg)) try self.emitRelease(deque_reg);
         return option_reg;
+    }
+
+    /// Direct-SAB `unwrap_or(default)` for Option and Result
+    /// receivers, mirroring the SA-text backend (EXPAND
+    /// OPTION_UNWRAP_OR / RESULT_UNWRAP_OR, three operands:
+    /// out, receiver, default).
+    fn genUnwrapOrCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.args.len != 2) return null;
+        if (!lowering_rules.isUnwrapOrCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        var import_path: []const u8 = undefined;
+        var macro_name: []const u8 = undefined;
+        if (lowering_rules.resultOkType(receiver_ty) != null) {
+            import_path = "sa_std/core/result.sa";
+            macro_name = "RESULT_UNWRAP_OR";
+        } else if (lowering_rules.optionInnerType(receiver_ty) != null) {
+            import_path = "sa_std/core/option.sa";
+            macro_name = "OPTION_UNWRAP_OR";
+        } else return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const default_reg = try self.genExpr(@constCast(call.args[1]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment(import_path, macro_name, &.{
+            self.symbols.items[dst],
+            self.symbols.items[recv_reg],
+            self.symbols.items[default_reg],
+        });
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        if (!self.isLocalReg(default_reg)) try self.emitRelease(default_reg);
+        return dst;
     }
 
     /// Direct-SAB `Option.unwrap_or_default()`, mirroring the SA-text

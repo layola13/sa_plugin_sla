@@ -1,4 +1,4 @@
-@import "sqlite.sai"
+@import "plugin/node/node_extra.sai"
 @import "sa_std/encoding/json.sai"
 @import "sa_std/string.sa"
 @import "sa_std/ptr.sa"

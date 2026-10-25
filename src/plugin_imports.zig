@@ -72,6 +72,10 @@ pub fn isSlaStdImport(path: []const u8) bool {
     return std.mem.eql(u8, path, "sla_std") or std.mem.startsWith(u8, path, "sla_std/");
 }
 
+pub fn isPluginImport(path: []const u8) bool {
+    return std.mem.startsWith(u8, path, "plugin/");
+}
+
 pub fn readImportFileIfExistsWithOutputPath(allocator: std.mem.Allocator, path: []const u8, output_path: []const u8) !?ResolvedImport {
     const source = sio.cwd().readFileAlloc(allocator, path, max_import_bytes) catch |err| {
         if (err == error.FileNotFound or err == error.NotDir or err == error.IsDir) return null;
@@ -163,6 +167,42 @@ fn resolveSaStdImportFromBase(allocator: std.mem.Allocator, base_dir: []const u8
     return null;
 }
 
+/// Qualified plugin imports ("plugin/<name>/<relpath>") resolve against
+/// the installed plugin's interface directory
+/// (<plugins-home>/installed/<name>/current/sa), mirroring the host
+/// resolver in sci (pkg/resolver.zig + cli manifestPluginImportRoots), so
+/// an SLA source can import a plugin's .sai/.sal directly instead of
+/// redeclaring its externs locally. The plugins home follows the host:
+/// SA_PLUGINS_HOME, else XDG_DATA_HOME, else ~/.local/share.
+fn pluginsHomeDir(allocator: std.mem.Allocator) ?[]u8 {
+    if (sla_rt.getEnvOwned(allocator, "SA_PLUGINS_HOME")) |configured| {
+        return configured;
+    }
+    if (sla_rt.getEnvOwned(allocator, "XDG_DATA_HOME")) |xdg| {
+        defer allocator.free(xdg);
+        return std.fs.path.join(allocator, &.{ xdg, "sa_plugins" }) catch null;
+    }
+    if (host_paths.homeDirectory(allocator)) |home| {
+        defer allocator.free(home);
+        return std.fs.path.join(allocator, &.{ home, ".local", "share", "sa_plugins" }) catch null;
+    }
+    return null;
+}
+
+pub fn resolvePluginImport(allocator: std.mem.Allocator, import_path: []const u8) !?ResolvedImport {
+    if (!isPluginImport(import_path)) return null;
+    const rest = import_path["plugin/".len..];
+    const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return null;
+    if (slash == 0 or slash + 1 >= rest.len) return null;
+    const name = rest[0..slash];
+    const rel_path = rest[slash + 1 ..];
+    const home = pluginsHomeDir(allocator) orelse return null;
+    defer allocator.free(home);
+    const root = try std.fs.path.join(allocator, &.{ home, "installed", name, "current", "sa" });
+    defer allocator.free(root);
+    return try readImportFromRoot(allocator, root, rel_path, import_path);
+}
+
 pub fn resolveSlaStdImport(allocator: std.mem.Allocator, import_path: []const u8) !?ResolvedImport {
     return resolveSlaStdImportFromBase(allocator, ".", import_path);
 }
@@ -216,7 +256,7 @@ fn resolveWorkspacePackageImport(
 ) !?ResolvedImport {
     if (isExplicitFileImportPath(import_path)) return null;
     if (isGlobImportPath(import_path)) return null;
-    if (isSaStdImport(import_path) or isSlaStdImport(import_path)) return null;
+    if (isSaStdImport(import_path) or isSlaStdImport(import_path) or isPluginImport(import_path)) return null;
 
     const slash = std.mem.indexOfScalar(u8, import_path, '/') orelse return null;
     if (slash == 0 or slash + 1 >= import_path.len) return null;
@@ -263,6 +303,7 @@ pub fn resolveImportFile(
 
     if (try resolveSlaStdImportFromBase(allocator, base_dir, import_path)) |resolved| return resolved;
     if (try resolveSaStdImportFromBase(allocator, base_dir, import_path)) |resolved| return resolved;
+    if (try resolvePluginImport(allocator, import_path)) |resolved| return resolved;
     if (try resolveWorkspacePackageImport(allocator, base_dir, import_path)) |resolved| return resolved;
 
     const candidate = if (std.fs.path.isAbsolute(import_path))
@@ -293,7 +334,7 @@ pub fn appendResolvedImportFiles(
         return;
     }
 
-    if (isSaStdImport(raw_import_path) or isSlaStdImport(raw_import_path)) return error.FileNotFound;
+    if (isSaStdImport(raw_import_path) or isSlaStdImport(raw_import_path) or isPluginImport(raw_import_path)) return error.FileNotFound;
 
     const pattern_path = if (std.fs.path.isAbsolute(raw_import_path))
         try allocator.dupe(u8, raw_import_path)

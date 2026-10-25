@@ -12,7 +12,7 @@ SLA/SA 的改进项，先补地基再继续。总体路线图与排期见 sala
 | D3 会话与持久化 | storage（SQLite + JSON） | 已落地（见下） |
 | D4 配置面 | config（TOML + env） | 已落地（见下） |
 | D5 终端 PTY | terminalPty.ts | 已落地（见下） |
-| D6 文件监视 | fs.watch 用法群 | 待开工（前置 P0-3） |
+| D6 文件监视 | fs.watch 用法群 | 已落地（见下） |
 | D7 代码图谱 | saVmTreeSitter / saVmCodeGraph | 待开工（前置 P0-4） |
 | D8 认证小件 | bcrypt / keyring | 待开工（前置 P0-6） |
 | D9 VM 工具面 | saVmTool / JEV + 16_policy | 待开工（前置 D7） |
@@ -129,3 +129,16 @@ SIGKILL 后 try_wait == 137。run.sh 输出 `d5 pty ok`。
 （capability 实参 vs plain 形参 TypeMismatch）；通行做法是结构体包缓冲
 + &Struct 引用形参（Vec/MiniWriter 先例）——本演示 PtyAcc 即此式。
 ptr 形参只接受 STR_PTR/extern 返回等 plain ptr。
+
+## D6 06_fs_watch
+
+前置 P0-3 已落地：fs watch 内置 sa_std（sci src/runtime/sa_fs_watch.zig，
+Linux inotify）——6 个 sa_fs_watch_* extern（create/add/remove/poll/
+next/close，fs.sai 声明）：内部缓冲逐个递交已解析事件
+（wd/mask/cookie/name），add 走 16_policy 的 fs 读闸。sa-std-unit
+138/138（含两组用例：目录 create/close_write/delete 事件序列、文件
+监视空名事件 + 已关句柄报错）。
+
+演示：监视 work/ 目录后用 std fs 面写 note.txt——扫到 IN_CREATE +
+IN_CLOSE_WRITE（位掩码 3）；删文件后再扫到 IN_DELETE（4）。
+run.sh 全程亚秒级，输出 `d6 fs watch ok`。

@@ -10275,6 +10275,23 @@ pub const Codegen = struct {
                     try self.emitBorrowSymbol(dst, label);
                     break :blk dst;
                 }
+                // Bare `None`: the parser emits an identifier node for
+                // the synthetic Option unit constructor (plain `None`
+                // expressions and the else branch of `?.` desugars).
+                // Without this, the identifier fell through to
+                // intern(name) and referenced an undeclared register.
+                if (std.mem.eql(u8, name, "None")) {
+                    if (self.tc.expr_types.get(expr)) |expr_ty| {
+                        if (lowering_rules.optionInnerType(expr_ty) != null) {
+                            const dst = try self.intern(try self.newTmp());
+                            try self.recordReg(dst);
+                            try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+                                self.symbols.items[dst],
+                            });
+                            break :blk dst;
+                        }
+                    }
+                }
                 break :blk try self.intern(name);
             },
             .binary_expr => |bin| try self.genBinary(bin),

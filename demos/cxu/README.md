@@ -18,7 +18,7 @@ SLA/SA 的改进项，先补地基再继续。总体路线图与排期见 sala
 | D9 VM 工具面 | saVmTool / JEV + 16_policy | 已落地（见下） |
 | D10 静态与产物服务 | server 静态面 | 已落地（见下） |
 | D11 free-key 服务 | free-key server | 已落地（见下） |
-| D12 前端微缩 | web 对话屏（SAX + airlock） | 待开工（前置 D2） |
+| D12 前端微缩 | web 对话屏（SAX + airlock） | 已落地（见下） |
 
 ## D1 01_bridge_stdio
 
@@ -217,3 +217,17 @@ GET /health 给 {"up":N,"down":M}，POST /reset 清零；发放满 6
 踩坑记账：curl --retry 会把 429 当瞬时错误重试、每次重试都是
 一个新请求，会打爆服务器的定额请求预算——429 步骤须用无重试
 变体。
+
+## D12 12_frontend_mini
+
+前端微缩（诚实范围版）：page.sax（TokenView 组件，SLA handler
+记 token 数/done 态）经 sax 插件真实构建出 web 束（app.wasm +
+airlock.js + index.html + app.sa）；SLA 后端在 /stream 上按
+prompt 推三帧 token（Hel/lo/!）+ done 帧；client.sla 作为页面
+协议的替身消费者组装出 "Hello!" 并逐帧校验。**缺口如实记账：
+SAX airlock 目前没有 WebSocket 桥**——页面组件尚不能直接发起
+WS，此轮的流式往返由同协议的 SLA 客户端承担；airlock WS 桥
+列为 P3 前端课题。环境记账：sax 插件构建需要 LLVM ≥ 19 的
+LLVM-C（LLVMDIBuilderInsertDeclareRecordAtEnd），本机装
+apt.llvm.org 的 llvm-20-dev；-Dllvm=false 的 bootstrap 插件能
+加载但不能产出 app.wasm。

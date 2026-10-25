@@ -11,7 +11,7 @@ SLA/SA 的改进项，先补地基再继续。总体路线图与排期见 sala
 | D2 HTTP/WS/SSE 服务面 | server 的 hono/ws 层 | 已落地（见下） |
 | D3 会话与持久化 | storage（SQLite + JSON） | 已落地（见下） |
 | D4 配置面 | config（TOML + env） | 已落地（见下） |
-| D5 终端 PTY | terminalPty.ts | 待开工（前置 P0-2 PTY） |
+| D5 终端 PTY | terminalPty.ts | 已落地（见下） |
 | D6 文件监视 | fs.watch 用法群 | 待开工（前置 P0-3） |
 | D7 代码图谱 | saVmTreeSitter / saVmCodeGraph | 待开工（前置 P0-4） |
 | D8 认证小件 | bcrypt / keyring | 待开工（前置 P0-6） |
@@ -109,3 +109,23 @@ bash demos/cxu/03_store_session/run.sh
 ```bash
 bash demos/cxu/04_config/run.sh
 ```
+
+## D5 05_terminal_pty
+
+前置 P0-2 已落地：PTY 内置 sa_std（sci src/runtime/sa_pty.zig，Linux）——
+openpty + fork + setsid/TIOCSCTTY + execvp，10 个 sa_pty_* extern
+（spawn/read/write/poll/resize/winsize/pid/kill/try_wait/close，
+term.sai 声明），spawn 走 16_policy 的 run 类别闸（与 process spawn 同门）。
+主侧读在子进程退出后以零长读表示 EOF（Linux EIO 语义）；try_wait 状态
+约定：退出码或 128+信号；exec 失败由子进程以 127 退出呈现。
+sa-std-unit 136/136（含三组 PTY 用例：echo 回读、winsize/stty、127）。
+
+演示三场景（断言在程序内，退出码分项）：① /bin/echo 输出经行规程
+变 `pty-hello\r\n` 精确比对；② 初始窗口 111x33 时 `stty size` 输出
+`33 111`；③ 交互 cat：resize 100x40 + winsize 读回、写 hello 读回显、
+SIGKILL 后 try_wait == 137。run.sh 输出 `d5 pty ok`。
+
+摩擦（SLA 语言面记账）：用户函数不能把 &局部数组 作为 ptr 形参传入
+（capability 实参 vs plain 形参 TypeMismatch）；通行做法是结构体包缓冲
++ &Struct 引用形参（Vec/MiniWriter 先例）——本演示 PtyAcc 即此式。
+ptr 形参只接受 STR_PTR/extern 返回等 plain ptr。

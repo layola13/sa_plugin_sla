@@ -17,7 +17,7 @@ SLA/SA 的改进项，先补地基再继续。总体路线图与排期见 sala
 | D8 认证小件 | bcrypt / keyring | 已落地（见下） |
 | D9 VM 工具面 | saVmTool / JEV + 16_policy | 已落地（见下） |
 | D10 静态与产物服务 | server 静态面 | 已落地（见下） |
-| D11 free-key 服务 | free-key server | 待开工（前置 D2） |
+| D11 free-key 服务 | free-key server | 已落地（见下） |
 | D12 前端微缩 | web 对话屏（SAX + airlock） | 待开工（前置 D2） |
 
 ## D1 01_bridge_stdio
@@ -205,3 +205,15 @@ content-type、cache-control 与正文逐字节一致（含 --path-as-is
 的 /../secret.txt 穿越尝试 → 404）。踩坑记账：就绪探测不能用裸
 TCP 连接——会被 accept 当成一个请求消费掉；首个 curl 自带
 --retry-connrefused 即可。
+
+## D11 11_freekey_server
+
+密钥池服务（http_server v2）：GET /key 轮换发放健康密钥
+（round-robin，跳过 down），POST /report 以定长报文
+"key-N fail|ok" 回报（连续两次 fail 标记 down，ok 恢复），
+GET /health 给 {"up":N,"down":M}，POST /reset 清零；发放满 6
+次后 /key 回 429 {"error":"rate_limited"} 直到 reset。run.sh
+以 curl 驱动 12 步脚本序列，逐步核对状态码与 JSON 正文。
+踩坑记账：curl --retry 会把 429 当瞬时错误重试、每次重试都是
+一个新请求，会打爆服务器的定额请求预算——429 步骤须用无重试
+变体。

@@ -35,11 +35,11 @@ fn log(
 
 fn envUsize(name: []const u8) ?usize {
     // NOTE(Zig 0.17): `std.process.getEnvVarOwned` was removed; read via
-    // `std.posix.getenv` (same approach as sci's sio.getEnvVarOwned) without
+    // `std.c.getenv` (same approach as sci's sio.getEnvVarOwned) without
     // importing sio (this is a standalone test_runner module).
     const zkey = std.heap.page_allocator.dupeSentinel(u8, name, 0) catch return null;
     defer std.heap.page_allocator.free(zkey);
-    const raw = std.posix.getenv(zkey) orelse return null;
+    const raw = std.c.getenv(zkey) orelse return null;
     const val = std.mem.span(raw);
     if (val.len == 0) return null;
     return std.fmt.parseUnsigned(usize, val, 10) catch null;
@@ -48,7 +48,7 @@ fn envUsize(name: []const u8) ?usize {
 fn envFlag(name: []const u8) bool {
     const zkey = std.heap.page_allocator.dupeSentinel(u8, name, 0) catch return false;
     defer std.heap.page_allocator.free(zkey);
-    const raw = std.posix.getenv(zkey) orelse return false;
+    const raw = std.c.getenv(zkey) orelse return false;
     const val = std.mem.span(raw);
     return std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true");
 }
@@ -75,10 +75,13 @@ pub fn main() void {
     var i = start;
     while (i < end) : (i += 1) {
         const t = all[i];
-        testing.allocator_instance = .{};
+        testing.allocator_instance = .init(std.heap.page_allocator, .{
+            .canary = 0xc3a701ba,
+            .check_write_after_free = true,
+        });
         var leaked = false;
         defer {
-            if (testing.allocator_instance.deinit() == .leak) leaked = true;
+            if (testing.allocator_instance.deinit() != 0) leaked = true;
         }
         testing.log_level = .warn;
 
@@ -100,7 +103,7 @@ pub fn main() void {
             else => {
                 fail += 1;
                 std.debug.print("FAIL ({s})\n", .{@errorName(err)});
-                if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace.*);
+                if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace);
             },
         }
     }

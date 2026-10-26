@@ -7482,6 +7482,9 @@ pub const Codegen = struct {
         if (lowering_rules.planAsyncGeneralAwaitContinuation(f)) |plan| {
             return try self.genAsyncGeneralAwaitFuncDeclNamed(name, f, plan);
         }
+        if (lowering_rules.planAsyncLoopAwaitContinuation(f)) |plan| {
+            return try self.genAsyncLoopAwaitFuncDeclNamed(name, f, plan);
+        }
         if (lowering_rules.planAsyncSingleAwaitContinuation(f)) |plan| {
             return try self.genAsyncSingleAwaitFuncDeclNamed(name, f, plan);
         }
@@ -8333,6 +8336,14 @@ pub const Codegen = struct {
         return std.fmt.allocPrint(self.allocator, "sla_async_{s}_general_await_poll", .{name}) catch return CodegenError.OutOfMemory;
     }
 
+    fn asyncLoopAwaitVTableName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_LOOP_AWAIT_VT", .{name}) catch return CodegenError.OutOfMemory;
+    }
+
+    fn asyncLoopAwaitPollName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "sla_async_{s}_loop_await_poll", .{name}) catch return CodegenError.OutOfMemory;
+    }
+
     fn asyncJoin2AwaitVTableName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
         return std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_JOIN2_AWAIT_VT", .{name}) catch return CodegenError.OutOfMemory;
     }
@@ -8992,6 +9003,188 @@ pub const Codegen = struct {
         w.print("    !{s}\n", .{first_obj}) catch return CodegenError.CodegenError;
         for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncGeneralAwaitVTableName(name));
+        try self.recordFutureReadiness(async_state, .unknown);
+        w.print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
+    }
+
+    fn emitLoopAwaitLoadLocals(self: *Codegen, plan: lowering_rules.AsyncLoopAwaitContinuationPlan, from: usize, to: usize) CodegenError!void {
+        const w = sio.managedWriter(&self.out);
+        for (from..to) |i| {
+            const local = plan.locals[i];
+            w.print("    {s} = load data_slot+{d} as {s}\n", .{ local.name, lowering_rules.AsyncLoopAwaitContinuationPlan.localOffset(i), if (local.is_ptr) "ptr" else "u64" }) catch return CodegenError.CodegenError;
+        }
+    }
+
+    fn emitLoopAwaitStoreLocals(self: *Codegen, plan: lowering_rules.AsyncLoopAwaitContinuationPlan, from: usize, to: usize) CodegenError!void {
+        const w = sio.managedWriter(&self.out);
+        for (from..to) |i| {
+            const local = plan.locals[i];
+            w.print("    store data_slot+{d}, {s} as {s}\n", .{ lowering_rules.AsyncLoopAwaitContinuationPlan.localOffset(i), local.name, if (local.is_ptr) "ptr" else "u64" }) catch return CodegenError.CodegenError;
+        }
+    }
+
+    fn emitLoopAwaitFreeLocals(self: *Codegen, plan: lowering_rules.AsyncLoopAwaitContinuationPlan, from: usize, to: usize, skip: ?[]const u8) CodegenError!void {
+        const w = sio.managedWriter(&self.out);
+        for (from..to) |i| {
+            const local = plan.locals[i];
+            if (skip) |skip_name| {
+                if (std.mem.eql(u8, skip_name, local.name)) continue;
+            }
+            w.print("    !{s}\n", .{local.name}) catch return CodegenError.CodegenError;
+        }
+    }
+
+    fn emitAsyncLoopAwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncLoopAwaitContinuationPlan) CodegenError!void {
+        const vt_name = try self.asyncLoopAwaitVTableName(name);
+        defer self.allocator.free(vt_name);
+        const poll_name = try self.asyncLoopAwaitPollName(name);
+        defer self.allocator.free(poll_name);
+        var helper_allocs = std.array_list.Managed([]const u8).init(self.allocator);
+        defer helper_allocs.deinit();
+        const w = sio.managedWriter(&self.out);
+        w.print(
+            \\@const {s} = vtable {{ poll = @{s} }}
+            \\@{s}(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
+            \\L_ENTRY:
+            \\    async_loop_stage = load data_slot+0 as u64
+            \\    async_loop_done = eq async_loop_stage, 2
+            \\    async_loop_awaiting = eq async_loop_stage, 1
+            \\    br async_loop_done -> L_ASYNC_LOOP_EMPTY, L_ASYNC_LOOP_DISPATCH
+            \\L_ASYNC_LOOP_EMPTY:
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    jmp L_ASYNC_LOOP_DONE
+            \\L_ASYNC_LOOP_DISPATCH:
+            \\    br async_loop_awaiting -> L_ASYNC_LOOP_AWAIT, L_ASYNC_LOOP_HEAD
+            \\L_ASYNC_LOOP_HEAD:
+            \\
+        , .{ vt_name, poll_name, poll_name }) catch return CodegenError.CodegenError;
+        // Loop head: reload the head locals (params + prefix lets), evaluate
+        // the condition, branch to the body or to the finish.
+        try self.emitLoopAwaitLoadLocals(plan, 0, plan.head_local_count);
+        const cond_reg = try self.genExpr(@constCast(plan.cond_expr), &helper_allocs);
+        w.print("    br {s} -> L_ASYNC_LOOP_BODY, L_ASYNC_LOOP_FINISH\n", .{cond_reg}) catch return CodegenError.CodegenError;
+        const cond_is_tmp = std.mem.startsWith(u8, cond_reg, "tmp_");
+        // Body: pre segment, build this iteration's sub-future, spill the
+        // locals, then fall into the await stage within the same poll.
+        w.print("L_ASYNC_LOOP_BODY:\n", .{}) catch return CodegenError.CodegenError;
+        if (cond_is_tmp) {
+            w.print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
+        }
+        for (plan.pre_stmts) |stmt| {
+            _ = try self.genStmt(@constCast(stmt), &helper_allocs);
+        }
+        const sub_state = try self.genExpr(@constCast(plan.await_expr), &helper_allocs);
+        const sub_obj = try self.genFutureObjectForState(sub_state);
+        w.print("    store data_slot+8, {s} as ptr\n", .{sub_obj}) catch return CodegenError.CodegenError;
+        w.print("    store data_slot+0, 1 as u64\n", .{}) catch return CodegenError.CodegenError;
+        try self.emitLoopAwaitStoreLocals(plan, 0, plan.bindingIndex());
+        try self.emitLoopAwaitFreeLocals(plan, 0, plan.bindingIndex(), null);
+        w.print("    !{s}\n", .{sub_obj}) catch return CodegenError.CodegenError;
+        w.print("    jmp L_ASYNC_LOOP_AWAIT\n", .{}) catch return CodegenError.CodegenError;
+        // Await stage: poll the current sub-future through its vtable.
+        w.print(
+            \\L_ASYNC_LOOP_AWAIT:
+            \\    async_loop_obj = load data_slot+8 as ptr
+            \\    async_loop_ctx = 0
+            \\    EXPAND FUTURE_POLL async_loop_poll, async_loop_obj, async_loop_ctx
+            \\    EXPAND POLL_IS_READY async_loop_ready, async_loop_poll
+            \\    br async_loop_ready -> L_ASYNC_LOOP_SUBREADY, L_ASYNC_LOOP_SUBPENDING
+            \\L_ASYNC_LOOP_SUBPENDING:
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    !async_loop_ready
+            \\    !async_loop_poll
+            \\    !async_loop_ctx
+            \\    !async_loop_obj
+            \\    jmp L_ASYNC_LOOP_DONE
+            \\L_ASYNC_LOOP_SUBREADY:
+            \\
+        , .{}) catch return CodegenError.CodegenError;
+        w.print("    async_loop_value = load async_loop_poll+8 as u64\n", .{}) catch return CodegenError.CodegenError;
+        w.print("    store data_slot+{d}, async_loop_value as u64\n", .{lowering_rules.AsyncLoopAwaitContinuationPlan.localOffset(plan.bindingIndex())}) catch return CodegenError.CodegenError;
+        w.print(
+            \\    !async_loop_value
+            \\    !async_loop_ready
+            \\    !async_loop_poll
+            \\    !async_loop_ctx
+            \\    !async_loop_obj
+            \\
+        , .{}) catch return CodegenError.CodegenError;
+        // Sub-future completed: reload every persistent local, run the post
+        // segment, spill the head locals back, and re-enter the loop head
+        // within the same poll call.
+        try self.emitLoopAwaitLoadLocals(plan, 0, plan.local_count);
+        for (plan.post_stmts) |stmt| {
+            _ = try self.genStmt(@constCast(stmt), &helper_allocs);
+        }
+        try self.emitLoopAwaitStoreLocals(plan, 0, plan.head_local_count);
+        w.print("    store data_slot+0, 0 as u64\n", .{}) catch return CodegenError.CodegenError;
+        try self.emitLoopAwaitFreeLocals(plan, 0, plan.local_count, null);
+        for (plan.post_let_names[0..plan.post_let_count]) |let_name| {
+            w.print("    !{s}\n", .{let_name}) catch return CodegenError.CodegenError;
+        }
+        w.print("    jmp L_ASYNC_LOOP_HEAD\n", .{}) catch return CodegenError.CodegenError;
+        // Finish: the condition failed; evaluate the return expression over
+        // the head locals (still loaded from the loop head) and complete.
+        w.print("L_ASYNC_LOOP_FINISH:\n", .{}) catch return CodegenError.CodegenError;
+        if (cond_is_tmp) {
+            w.print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
+        }
+        const result_reg = try self.genExpr(@constCast(plan.ret_expr), &helper_allocs);
+        w.print("    store data_slot+0, 2 as u64\n", .{}) catch return CodegenError.CodegenError;
+        w.print("    EXPAND POLL_SET_READY out_poll_slot, {s}\n", .{result_reg}) catch return CodegenError.CodegenError;
+        if (std.mem.startsWith(u8, result_reg, "tmp_")) {
+            w.print("    !{s}\n", .{result_reg}) catch return CodegenError.CodegenError;
+        }
+        try self.emitLoopAwaitFreeLocals(plan, 0, plan.head_local_count, result_reg);
+        w.print(
+            \\    jmp L_ASYNC_LOOP_DONE
+            \\L_ASYNC_LOOP_DONE:
+            \\    !async_loop_awaiting
+            \\    !async_loop_done
+            \\    !async_loop_stage
+            \\    return
+            \\
+            \\
+        , .{}) catch return CodegenError.CodegenError;
+    }
+
+    fn genAsyncLoopAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncLoopAwaitContinuationPlan) CodegenError!void {
+        try self.emitAsyncLoopAwaitPollHelper(name, plan);
+
+        const lowered_name = try self.loweredFuncSymbol(name);
+        defer self.allocator.free(lowered_name);
+        const w = sio.managedWriter(&self.out);
+        w.print("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        for (f.params, 0..) |p, i| {
+            if (i > 0) w.print(", ", .{}) catch return CodegenError.CodegenError;
+            const prefix: []const u8 = self.abiParamPrefix(p);
+            w.print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+        }
+        const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
+        const ret_type_str = abiReturnTypeString(async_return_plan.abi_ret_ty);
+        w.print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
+        w.print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
+
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
+        defer hoisted_allocs.deinit();
+        try self.collectHoistedAllocs(f.body, &hoisted_allocs);
+        for (f.body[0..plan.prefix_len]) |stmt| {
+            _ = try self.genStmt(@constCast(stmt), &hoisted_allocs);
+        }
+        const async_state = try self.newTmp();
+        w.print("    {s} = alloc {d}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
+        w.print("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        w.print("    store {s}+8, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        for (0..plan.local_count) |i| {
+            const local = plan.locals[i];
+            if (i < plan.head_local_count) {
+                w.print("    store {s}+{d}, {s} as {s}\n", .{ async_state, lowering_rules.AsyncLoopAwaitContinuationPlan.localOffset(i), local.name, if (local.is_ptr) "ptr" else "u64" }) catch return CodegenError.CodegenError;
+            } else {
+                w.print("    store {s}+{d}, 0 as u64\n", .{ async_state, lowering_rules.AsyncLoopAwaitContinuationPlan.localOffset(i) }) catch return CodegenError.CodegenError;
+            }
+        }
+        for (f.params) |param| try self.emitRelease(param.name);
+        try self.future_state_vtables.put(async_state, try self.asyncLoopAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         w.print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
     }
@@ -13058,6 +13251,35 @@ pub const Codegen = struct {
                     return out_reg;
                 }
                 if (self.current_async and plan.ready_pending_state_return_if_async) {
+                    if (lowering_rules.awaitExprFutureIsCustom(aw.expr, &self.tc.funcs)) {
+                        // See sab_codegen's genAwait: the awaited future is
+                        // not a ready-state, so poll it until Ready instead
+                        // of reading its first word as a ready-state stage.
+                        const future_obj = try self.genFutureObjectForState(future_reg);
+                        const ctx = try self.newTmp();
+                        const poll_reg = try self.newTmp();
+                        const ready_reg = try self.newTmp();
+                        const out_reg = try self.newTmp();
+                        const loop_label = try self.newLabel("L_AWAIT_BUSYPOLL");
+                        const again_label = try self.newLabel("L_AWAIT_BUSYPOLL_AGAIN");
+                        const done_label = try self.newLabel("L_AWAIT_BUSYPOLL_DONE");
+                        self.outPrint("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{loop_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND FUTURE_POLL {s}, {s}, {s}\n", .{ poll_reg, future_obj, ctx }) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND POLL_IS_READY {s}, {s}\n", .{ ready_reg, poll_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ready_reg, done_label, again_label }) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{again_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{poll_reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{ready_reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    jmp {s}\n\n", .{loop_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{ready_reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND POLL_VALUE {s}, {s}\n", .{ out_reg, poll_reg }) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{poll_reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{ctx}) catch return CodegenError.CodegenError;
+                        self.outPrint("    !{s}\n", .{future_obj}) catch return CodegenError.CodegenError;
+                        return out_reg;
+                    }
                     const state_reg = try self.newTmp();
                     const pending_reg = try self.newTmp();
                     const ready_label = try self.newLabel("L_AWAIT_READY");
@@ -15153,6 +15375,9 @@ pub const Codegen = struct {
                             try self.recordFutureReadiness(reg, .unknown);
                         } else if (lowering_rules.planAsyncGeneralAwaitContinuation(func) != null) {
                             try self.future_state_vtables.put(reg, try self.asyncGeneralAwaitVTableName(call.func_name));
+                            try self.recordFutureReadiness(reg, .unknown);
+                        } else if (lowering_rules.planAsyncLoopAwaitContinuation(func) != null) {
+                            try self.future_state_vtables.put(reg, try self.asyncLoopAwaitVTableName(call.func_name));
                             try self.recordFutureReadiness(reg, .unknown);
                         } else if (lowering_rules.planAsyncSingleAwaitContinuation(func) != null) {
                             try self.future_state_vtables.put(reg, try self.asyncSingleAwaitVTableName(call.func_name));

@@ -2377,6 +2377,321 @@ pub fn planAsyncGeneralAwaitContinuation(func: *const ast.FuncDecl) ?AsyncGenera
     return plan;
 }
 
+/// Loop continuation: an async fn of the form
+///   prefix lets; while cond { pre; let x = <call>.await; post }; return e;
+/// gets a real state machine (see planAsyncLoopAwaitContinuation). Locals
+/// that must survive suspension points live in state slots; the awaited
+/// sub-future is built fresh each iteration and polled via its vtable.
+pub const AsyncLoopAwaitMaxLocals = 24;
+
+pub const AsyncLoopAwaitLocal = struct {
+    name: []const u8,
+    is_ptr: bool,
+};
+
+pub const AsyncLoopAwaitContinuationPlan = struct {
+    /// Slot order: params, prefix lets, pre-segment lets, the await binding.
+    locals: [AsyncLoopAwaitMaxLocals]AsyncLoopAwaitLocal = undefined,
+    local_count: usize = 0,
+    /// Number of leading locals that come from params + prefix lets (these
+    /// are loaded at the loop head and at the finish; the rest are loaded
+    /// only when a sub-future completes).
+    head_local_count: usize = 0,
+    prefix_len: usize = 0,
+    binding_name: []const u8,
+    await_expr: *const ast.Node,
+    cond_expr: *const ast.Node,
+    ret_expr: *const ast.Node,
+    pre_stmts: []const *ast.Node,
+    post_stmts: []const *ast.Node,
+    /// Top-level let names declared by the post segment (register cleanup).
+    post_let_names: [8][]const u8 = undefined,
+    post_let_count: usize = 0,
+
+    pub fn localOffset(index: usize) usize {
+        return 16 + 8 * index;
+    }
+
+    pub fn subObjectOffset() usize {
+        return 8;
+    }
+
+    pub fn bindingIndex(self: AsyncLoopAwaitContinuationPlan) usize {
+        return self.local_count - 1;
+    }
+
+    pub fn asyncStateSize(self: AsyncLoopAwaitContinuationPlan) usize {
+        return 16 + 8 * self.local_count;
+    }
+};
+
+const LoopAwaitBinding = struct {
+    binding_name: []const u8,
+    state_expr: *const ast.Node,
+    start: usize,
+    next: usize,
+};
+
+fn loopAwaitBindingAt(stmts: []const *ast.Node, idx: usize) ?LoopAwaitBinding {
+    if (idx >= stmts.len or stmts[idx].* != .let_stmt) return null;
+    const await_let = stmts[idx].let_stmt;
+    if (await_let.value.* == .await_expr) {
+        return .{
+            .binding_name = await_let.name,
+            .state_expr = await_let.value.await_expr.expr,
+            .start = idx,
+            .next = idx + 1,
+        };
+    }
+    if (idx + 1 >= stmts.len or !stmtIsPreboundAwaitState(stmts[idx], stmts[idx + 1])) return null;
+    const state_let = stmts[idx].let_stmt;
+    const bound_await_let = stmts[idx + 1].let_stmt;
+    return .{
+        .binding_name = bound_await_let.name,
+        .state_expr = state_let.value,
+        .start = idx,
+        .next = idx + 2,
+    };
+}
+
+/// Whitelist expression check for loop-plan segments: any node kind not
+/// listed (await, closures, match/switch, try, ...) rejects the plan.
+fn asyncLoopExprOk(node: *const ast.Node) bool {
+    switch (node.*) {
+        .literal, .identifier => return true,
+        .binary_expr => |bin| return asyncLoopExprOk(bin.left) and asyncLoopExprOk(bin.right),
+        .call_expr => |call| {
+            if (call.callee != null) return false;
+            for (call.args) |arg| if (!asyncLoopExprOk(arg)) return false;
+            return true;
+        },
+        .field_expr => |field| return asyncLoopExprOk(field.expr),
+        .index_expr => |idx| return asyncLoopExprOk(idx.target) and asyncLoopExprOk(idx.index),
+        .cast_expr => |cast| return asyncLoopExprOk(cast.expr),
+        .deref_expr => |deref| return asyncLoopExprOk(deref.expr),
+        .borrow_expr => |borrow| return asyncLoopExprOk(borrow.expr),
+        .move_expr => |move| return asyncLoopExprOk(move.expr),
+        .tuple_literal => |lit| {
+            for (lit.elements) |elem| if (!asyncLoopExprOk(elem)) return false;
+            return true;
+        },
+        .array_literal => |lit| {
+            for (lit.elements) |elem| if (!asyncLoopExprOk(elem)) return false;
+            return true;
+        },
+        .repeat_array_literal => |lit| return asyncLoopExprOk(lit.value),
+        .struct_literal => |lit| {
+            for (lit.fields) |field| if (!asyncLoopExprOk(field.value)) return false;
+            if (lit.update_expr) |update| if (!asyncLoopExprOk(update)) return false;
+            return true;
+        },
+        .enum_literal => |lit| {
+            for (lit.fields) |field| if (!asyncLoopExprOk(field.value)) return false;
+            return true;
+        },
+        .slice_expr => |slc| return asyncLoopExprOk(slc.target) and asyncLoopExprOk(slc.start) and asyncLoopExprOk(slc.end),
+        .if_expr => |ifx| {
+            if (!asyncLoopExprOk(ifx.cond)) return false;
+            for (ifx.then_block) |stmt| if (!asyncLoopStmtOk(stmt)) return false;
+            if (ifx.else_block) |else_block| {
+                for (else_block) |stmt| if (!asyncLoopStmtOk(stmt)) return false;
+            }
+            return true;
+        },
+        else => return false,
+    }
+}
+
+fn asyncLoopStmtOk(node: *const ast.Node) bool {
+    switch (node.*) {
+        .let_stmt => |let_stmt| return asyncLoopExprOk(let_stmt.value),
+        .const_stmt => |const_stmt| return asyncLoopExprOk(const_stmt.value),
+        .assign_stmt => |assign| return asyncLoopExprOk(assign.target) and asyncLoopExprOk(assign.value),
+        .expr_stmt => |inner| return asyncLoopExprOk(inner),
+        .block_stmt => |block| {
+            for (block.body) |stmt| if (!asyncLoopStmtOk(stmt)) return false;
+            return true;
+        },
+        else => return false,
+    }
+}
+
+/// Collect every let/const name declared anywhere inside a statement
+/// (including nested blocks and if branches). Used to reject shadowing of
+/// persistent locals, which the slot model cannot represent.
+fn collectLoopLetNames(node: *const ast.Node, names: *std.array_list.Managed([]const u8)) void {
+    switch (node.*) {
+        .let_stmt => |let_stmt| {
+            names.append(let_stmt.name) catch {};
+            collectLoopLetNames(let_stmt.value, names);
+        },
+        .const_stmt => |const_stmt| {
+            names.append(const_stmt.name) catch {};
+            collectLoopLetNames(const_stmt.value, names);
+        },
+        .assign_stmt => |assign| {
+            collectLoopLetNames(assign.target, names);
+            collectLoopLetNames(assign.value, names);
+        },
+        .expr_stmt => |inner| collectLoopLetNames(inner, names),
+        .block_stmt => |block| {
+            for (block.body) |stmt| collectLoopLetNames(stmt, names);
+        },
+        .if_expr => |ifx| {
+            collectLoopLetNames(ifx.cond, names);
+            for (ifx.then_block) |stmt| collectLoopLetNames(stmt, names);
+            if (ifx.else_block) |else_block| {
+                for (else_block) |stmt| collectLoopLetNames(stmt, names);
+            }
+        },
+        .binary_expr => |bin| {
+            collectLoopLetNames(bin.left, names);
+            collectLoopLetNames(bin.right, names);
+        },
+        .call_expr => |call| {
+            for (call.args) |arg| collectLoopLetNames(arg, names);
+        },
+        else => {},
+    }
+}
+
+fn loopTypeIsPtr(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .primitive => |prim| prim == .raw_ptr,
+        else => true,
+    };
+}
+
+fn loopLocalClass(ty: ?*ast.Type, value: *const ast.Node, prior: []const AsyncLoopAwaitLocal) ?bool {
+    if (ty) |declared| return loopTypeIsPtr(declared);
+    switch (value.*) {
+        .literal => |lit| return switch (lit) {
+            .string_val => true,
+            else => false,
+        },
+        .identifier => |name| {
+            for (prior) |local| {
+                if (std.mem.eql(u8, local.name, name)) return local.is_ptr;
+            }
+            return null;
+        },
+        else => return null,
+    }
+}
+
+pub fn planAsyncLoopAwaitContinuation(func: *const ast.FuncDecl) ?AsyncLoopAwaitContinuationPlan {
+    if (!func.is_async) return null;
+    if (func.ret_ty.* == .primitive and func.ret_ty.primitive == .void_type) return null;
+    if (func.body.len < 2) return null;
+
+    const ret_node = func.body[func.body.len - 1];
+    if (ret_node.* != .return_stmt) return null;
+    const ret_expr = ret_node.return_stmt.value orelse return null;
+    if (!asyncLoopExprOk(ret_expr)) return null;
+
+    const while_node = func.body[func.body.len - 2];
+    if (while_node.* != .while_stmt) return null;
+    const while_stmt = while_node.while_stmt;
+    if (while_stmt.let_pattern != null) return null;
+    if (!asyncLoopExprOk(while_stmt.cond)) return null;
+
+    const prefix_len = func.body.len - 2;
+    var plan = AsyncLoopAwaitContinuationPlan{
+        .binding_name = "",
+        .await_expr = while_stmt.cond,
+        .cond_expr = while_stmt.cond,
+        .ret_expr = ret_expr,
+        .pre_stmts = &.{},
+        .post_stmts = &.{},
+        .prefix_len = prefix_len,
+    };
+
+    // Persistent locals part 1: params (class from their declared types).
+    for (func.params) |param| {
+        if (plan.local_count >= AsyncLoopAwaitMaxLocals) return null;
+        plan.locals[plan.local_count] = .{
+            .name = param.name,
+            .is_ptr = loopTypeIsPtr(param.ty),
+        };
+        plan.local_count += 1;
+    }
+    // Persistent locals part 2: prefix lets (all body stmts before the while
+    // must be plain lets; values must be await-free whitelist expressions).
+    for (func.body[0..prefix_len]) |stmt| {
+        if (stmt.* != .let_stmt) return null;
+        const let_stmt = stmt.let_stmt;
+        if (!asyncLoopExprOk(let_stmt.value)) return null;
+        if (plan.local_count >= AsyncLoopAwaitMaxLocals) return null;
+        const is_ptr = loopLocalClass(let_stmt.ty, let_stmt.value, plan.locals[0..plan.local_count]) orelse return null;
+        plan.locals[plan.local_count] = .{ .name = let_stmt.name, .is_ptr = is_ptr };
+        plan.local_count += 1;
+    }
+    plan.head_local_count = plan.local_count;
+
+    // Locate the single await binding among the while body's direct stmts.
+    var binding: ?LoopAwaitBinding = null;
+    var scan: usize = 0;
+    while (scan < while_stmt.body.len) : (scan += 1) {
+        if (loopAwaitBindingAt(while_stmt.body, scan)) |found| {
+            binding = found;
+            break;
+        }
+    }
+    const bind = binding orelse return null;
+    if (bind.state_expr.* != .call_expr) return null;
+    if (!asyncLoopExprOk(bind.state_expr)) return null;
+    plan.binding_name = bind.binding_name;
+    plan.await_expr = bind.state_expr;
+    plan.pre_stmts = while_stmt.body[0..bind.start];
+    plan.post_stmts = while_stmt.body[bind.next..];
+
+    for (plan.pre_stmts) |stmt| if (!asyncLoopStmtOk(stmt)) return null;
+    for (plan.post_stmts) |stmt| if (!asyncLoopStmtOk(stmt)) return null;
+
+    // Shadowing guard: no segment let (any depth) may reuse a persistent
+    // name, and the binding may not collide either.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var seg_names = std.array_list.Managed([]const u8).init(arena.allocator());
+    for (plan.pre_stmts) |stmt| collectLoopLetNames(stmt, &seg_names);
+    for (plan.post_stmts) |stmt| collectLoopLetNames(stmt, &seg_names);
+    for (seg_names.items) |seg_name| {
+        for (plan.locals[0..plan.local_count]) |local| {
+            if (std.mem.eql(u8, seg_name, local.name)) return null;
+        }
+        if (std.mem.eql(u8, seg_name, bind.binding_name)) return null;
+    }
+    for (plan.locals[0..plan.local_count]) |local| {
+        if (std.mem.eql(u8, bind.binding_name, local.name)) return null;
+    }
+
+    // Persistent locals part 3: top-level pre-segment lets (their values are
+    // rebuilt by the pre segment each iteration, then spilled to slots so
+    // the post segment can read them after suspension).
+    for (plan.pre_stmts) |stmt| {
+        if (stmt.* != .let_stmt) continue;
+        const let_stmt = stmt.let_stmt;
+        if (plan.local_count >= AsyncLoopAwaitMaxLocals) return null;
+        const is_ptr = loopLocalClass(let_stmt.ty, let_stmt.value, plan.locals[0..plan.local_count]) orelse return null;
+        plan.locals[plan.local_count] = .{ .name = let_stmt.name, .is_ptr = is_ptr };
+        plan.local_count += 1;
+    }
+    // The binding itself is the final slot.
+    if (plan.local_count >= AsyncLoopAwaitMaxLocals) return null;
+    plan.locals[plan.local_count] = .{ .name = bind.binding_name, .is_ptr = false };
+    plan.local_count += 1;
+
+    // Post-segment top-level let names for register cleanup in codegen.
+    for (plan.post_stmts) |stmt| {
+        if (stmt.* != .let_stmt) continue;
+        if (plan.post_let_count >= plan.post_let_names.len) return null;
+        plan.post_let_names[plan.post_let_count] = stmt.let_stmt.name;
+        plan.post_let_count += 1;
+    }
+
+    return plan;
+}
+
 pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleAwaitContinuationPlan {
     if (!func.is_async) return null;
 
@@ -2583,6 +2898,28 @@ pub fn typesEquivalent(a: *const ast.Type, b: *const ast.Type) bool {
 
 pub fn planAwaitFuture(expr: *const ast.Node, future_ty: *const ast.Type, async_return_ty: ?*const ast.Type) AwaitPlan {
     return planAwaitFutureWithReadiness(expr, future_ty, async_return_ty, null);
+}
+
+/// True when the awaited expression produces a future whose state does NOT
+/// follow the ready-state {stage, value} protocol: a call to an async fn
+/// (plan-shaped states carry their own poll vtable, and an eager async
+/// callee may itself delegate to such a state) or a future::join2 /
+/// future::select2 / future::defer_ready construction. Awaiting such a
+/// future from an eager (non-plan) async fn must drive it with FUTURE_POLL
+/// until Ready; reading its first word as a ready-state stage either
+/// delegates the whole fn to it (dropping the continuation) or misreads
+/// the value.
+pub fn awaitExprFutureIsCustom(expr: *const ast.Node, funcs: anytype) bool {
+    if (expr.* != .call_expr) return false;
+    const call = expr.call_expr;
+    if (planFutureRuntimeCall(call)) |rt| {
+        return switch (rt.kind) {
+            .join2, .select2, .defer_ready => true,
+            else => false,
+        };
+    }
+    const target = funcs.get(call.func_name) orelse return false;
+    return target.is_async;
 }
 
 pub fn planAwaitFutureWithReadiness(expr: *const ast.Node, future_ty: *const ast.Type, async_return_ty: ?*const ast.Type, readiness_by_name: ?*const std.StringHashMap(FutureReadiness)) AwaitPlan {

@@ -9467,6 +9467,46 @@ test "sla sa backend argv set value idx is not slot materialized" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla test codegen keeps callee behind call mutated field guard" {
+    // C1 (test path) regression: the syntactic reachability scan folds
+    // an `if` condition with facts recorded for a local's fields. In the
+    // fixture (the verbatim saVmTool blocked-name closure), `seg` is a
+    // struct literal with len == 0 whose len is rewritten inside the
+    // loop; the scan used the stale entry fact to fold the nested
+    // `if seg.len > 0` to false, never marked sb_lower_ip reachable,
+    // and its declaration was pruned before type checking ("Undefined
+    // call: sb_lower_ip"; in large closures the same loss surfaced at
+    // SAB verification as UnknownRegister). The test compile must keep
+    // the callee and its callers.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "tests/test_unit_reachability_call_mutated_field.sla",
+        "tests/test_unit_reachability_call_mutated_field.test.sa",
+        stderr_fw.writer(),
+        .{
+            .test_filter = "call mutated field guard",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sb_lower_ip") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "blocked_segment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "isSaVmBlockedToolName") != null);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla test codegen single import chain compiles transitive bodies" {
     // C2a regression: with the root importing ONLY module A, the
     // test-compile (decl-only) expansion failed with an unlocated

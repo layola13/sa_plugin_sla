@@ -901,6 +901,146 @@ pub fn updateFactsForLetBinding(
     try recordKnownFieldsFromExpr(facts, facts, funcs, modules, name, value, 4);
 }
 
+/// A call may mutate anything reachable from its arguments (borrows, moves,
+/// field/index projections, derefs), so syntactic facts recorded for the
+/// root local of such an argument are stale once the call returns. Leaving
+/// them in place lets the branch pruner fold a later condition on that
+/// local's fields (e.g. `if seg.len > 0`) with a pre-call value and drop
+/// the branch — and every callee inside it — from the reachable set, so
+/// the callee's body is never materialized and test-mode checking reports
+/// the surviving call as undefined (C1 test-path form).
+fn clearFactsForCallArg(facts: *SyntacticFactSet, arg: *const ast.Node) void {
+    switch (arg.*) {
+        .identifier => |name| facts.clearName(name),
+        .borrow_expr => |borrow| clearFactsForCallArg(facts, borrow.expr),
+        .move_expr => |move| clearFactsForCallArg(facts, move.expr),
+        .deref_expr => |deref| clearFactsForCallArg(facts, deref.expr),
+        .field_expr => |field| clearFactsForCallArg(facts, field.expr),
+        .index_expr => |idx| clearFactsForCallArg(facts, idx.target),
+        .slice_expr => |slice| clearFactsForCallArg(facts, slice.target),
+        else => {},
+    }
+}
+
+/// Roots whose fields are written anywhere inside `block` — by a field or
+/// index assignment, or by being passed to a call — must lose their
+/// syntactic facts before the block is treated as a loop body: the body
+/// executes repeatedly, so a guard inside it observes values written by
+/// earlier iterations (and by sibling branches), never just the value
+/// the local had at loop entry. Folding such a guard with the entry
+/// value can erase a live callee from the reachable set (C1 test path).
+fn clearFactsForMutationsInBlock(facts: *SyntacticFactSet, block: []const *ast.Node) void {
+    for (block) |stmt| clearFactsForMutationsInNode(facts, stmt);
+}
+
+fn clearFactsForMutationsInNode(facts: *SyntacticFactSet, node: *const ast.Node) void {
+    switch (node.*) {
+        .assign_stmt => |assign| {
+            clearFactsForMutationsInNode(facts, assign.value);
+            if (assign.target.* == .identifier) {
+                facts.clearName(assign.target.identifier);
+            } else {
+                clearFactsForAssignedField(facts, assign.target);
+                clearFactsForMutationsInNode(facts, assign.target);
+            }
+        },
+        .call_expr => |call| {
+            clearFactsForCallArgs(facts, call);
+            for (call.args) |arg| clearFactsForMutationsInNode(facts, arg);
+        },
+        .let_stmt => |let| clearFactsForMutationsInNode(facts, let.value),
+        .const_stmt => |c| clearFactsForMutationsInNode(facts, c.value),
+        .let_else_stmt => |let| {
+            clearFactsForMutationsInNode(facts, let.value);
+            clearFactsForMutationsInBlock(facts, let.else_block);
+        },
+        .let_destructure_stmt => |let| clearFactsForMutationsInNode(facts, let.value),
+        .expr_stmt => |expr| clearFactsForMutationsInNode(facts, expr),
+        .return_stmt => |ret| if (ret.value) |value| clearFactsForMutationsInNode(facts, value),
+        .block_stmt => |blk| clearFactsForMutationsInBlock(facts, blk.body),
+        .if_expr => |ife| {
+            clearFactsForMutationsInNode(facts, ife.cond);
+            if (ife.let_chain) |chain| {
+                for (chain) |cond| clearFactsForMutationsInNode(facts, cond.value);
+            }
+            clearFactsForMutationsInBlock(facts, ife.then_block);
+            if (ife.else_block) |else_block| clearFactsForMutationsInBlock(facts, else_block);
+        },
+        .while_stmt => |while_stmt| {
+            clearFactsForMutationsInNode(facts, while_stmt.cond);
+            clearFactsForMutationsInBlock(facts, while_stmt.body);
+        },
+        .for_stmt => |for_stmt| {
+            clearFactsForMutationsInNode(facts, for_stmt.start);
+            if (for_stmt.end) |end_expr| clearFactsForMutationsInNode(facts, end_expr);
+            clearFactsForMutationsInBlock(facts, for_stmt.body);
+        },
+        .switch_expr => |swe| {
+            clearFactsForMutationsInNode(facts, swe.val);
+            for (swe.cases) |case| {
+                clearFactsForMutationsInNode(facts, case.pattern);
+                clearFactsForMutationsInBlock(facts, case.body);
+            }
+        },
+        .match_expr => |mat| {
+            clearFactsForMutationsInNode(facts, mat.val);
+            for (mat.cases) |case| {
+                if (case.guard) |guard| clearFactsForMutationsInNode(facts, guard);
+                clearFactsForMutationsInBlock(facts, case.body);
+            }
+        },
+        .unsafe_expr => |unsafe_expr| clearFactsForMutationsInBlock(facts, unsafe_expr.body),
+        .binary_expr => |bin| {
+            clearFactsForMutationsInNode(facts, bin.left);
+            clearFactsForMutationsInNode(facts, bin.right);
+        },
+        .borrow_expr => |borrow| clearFactsForMutationsInNode(facts, borrow.expr),
+        .move_expr => |move| clearFactsForMutationsInNode(facts, move.expr),
+        .deref_expr => |deref| clearFactsForMutationsInNode(facts, deref.expr),
+        .cast_expr => |cast| clearFactsForMutationsInNode(facts, cast.expr),
+        .field_expr => |field| clearFactsForMutationsInNode(facts, field.expr),
+        .index_expr => |idx| {
+            clearFactsForMutationsInNode(facts, idx.target);
+            clearFactsForMutationsInNode(facts, idx.index);
+        },
+        .struct_literal => |lit| {
+            for (lit.fields) |field| clearFactsForMutationsInNode(facts, field.value);
+            if (lit.update_expr) |update| clearFactsForMutationsInNode(facts, update);
+        },
+        .tuple_literal => |lit| for (lit.elements) |elem| clearFactsForMutationsInNode(facts, elem),
+        .array_literal => |lit| for (lit.elements) |elem| clearFactsForMutationsInNode(facts, elem),
+        .closure_literal => |closure| clearFactsForMutationsInNode(facts, closure.body),
+        .await_expr => |await_expr| clearFactsForMutationsInNode(facts, await_expr.expr),
+        .try_expr => |try_expr| clearFactsForMutationsInNode(facts, try_expr.expr),
+        else => {},
+    }
+}
+
+fn clearFactsForCallArgs(facts: *SyntacticFactSet, call: ast.CallExpr) void {
+    for (call.args) |arg| clearFactsForCallArg(facts, arg);
+}
+
+fn clearFactsForAssignedField(facts: *SyntacticFactSet, target: *const ast.Node) void {
+    var node = target;
+    var saw_field = false;
+    while (true) {
+        switch (node.*) {
+            .field_expr => |field| {
+                saw_field = true;
+                node = field.expr;
+            },
+            .index_expr => |idx| node = idx.target,
+            .borrow_expr => |borrow| node = borrow.expr,
+            .deref_expr => |deref| node = deref.expr,
+            .identifier => |name| {
+                if (saw_field) facts.clearKnownFieldsForName(name);
+                return;
+            },
+            else => return,
+        }
+    }
+}
+
 pub fn pruneKnownFalseBranchesInBlock(
     allocator: std.mem.Allocator,
     block: []const *ast.Node,
@@ -916,10 +1056,12 @@ pub fn pruneKnownFalseBranchesInBlock(
         switch (stmt.*) {
             .let_stmt => |let| {
                 try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
+                if (let.value.* == .call_expr) clearFactsForCallArgs(&facts, let.value.call_expr);
                 try updateFactsForLetBinding(&facts, null, null, let.name, let.ty, let.value);
             },
             .const_stmt => |c| {
                 try pruneKnownFalseBranchesInExpr(allocator, c.value, &facts);
+                if (c.value.* == .call_expr) clearFactsForCallArgs(&facts, c.value.call_expr);
                 try updateFactsForLetBinding(&facts, null, null, c.name, c.ty, c.value);
             },
             .let_else_stmt => |let| {
@@ -935,18 +1077,28 @@ pub fn pruneKnownFalseBranchesInBlock(
             .assign_stmt => |assign| {
                 try pruneKnownFalseBranchesInExpr(allocator, assign.target, &facts);
                 try pruneKnownFalseBranchesInExpr(allocator, assign.value, &facts);
-                if (assign.target.* == .identifier) facts.clearName(assign.target.identifier);
+                if (assign.value.* == .call_expr) clearFactsForCallArgs(&facts, assign.value.call_expr);
+                if (assign.target.* == .identifier) {
+                    facts.clearName(assign.target.identifier);
+                } else {
+                    clearFactsForAssignedField(&facts, assign.target);
+                }
             },
             .block_stmt => |blk| try pruneKnownFalseBranchesInBlock(allocator, blk.body, &facts),
-            .expr_stmt => |expr| try pruneKnownFalseBranchesInExprPos(allocator, expr, &facts, is_tail),
+            .expr_stmt => |expr| {
+                try pruneKnownFalseBranchesInExprPos(allocator, expr, &facts, is_tail);
+                if (expr.* == .call_expr) clearFactsForCallArgs(&facts, expr.call_expr);
+            },
             .return_stmt => |ret| if (ret.value) |value| try pruneKnownFalseBranchesInExpr(allocator, value, &facts),
             .for_stmt => |for_stmt| {
                 try pruneKnownFalseBranchesInExpr(allocator, for_stmt.start, &facts);
                 if (for_stmt.end) |end_expr| try pruneKnownFalseBranchesInExpr(allocator, end_expr, &facts);
+                clearFactsForMutationsInBlock(&facts, for_stmt.body);
                 try pruneKnownFalseBranchesInBlock(allocator, for_stmt.body, &facts);
             },
             .while_stmt => |while_stmt| {
                 try pruneKnownFalseBranchesInExpr(allocator, while_stmt.cond, &facts);
+                clearFactsForMutationsInBlock(&facts, while_stmt.body);
                 try pruneKnownFalseBranchesInBlock(allocator, while_stmt.body, &facts);
             },
             else => try pruneKnownFalseBranchesInExprPos(allocator, stmt, &facts, is_tail),
@@ -2404,7 +2556,10 @@ pub fn collectSyntacticReachableBlock(
             .let_stmt => |let| {
                 if (let.ty) |ty| try recordReferencedType(referenced_types, ty);
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, let.value);
-                if (local_facts) |*facts| try updateFactsForLetBinding(facts, funcs, modules, let.name, let.ty, let.value);
+                if (local_facts) |*facts| {
+                    if (let.value.* == .call_expr) clearFactsForCallArgs(facts, let.value.call_expr);
+                    try updateFactsForLetBinding(facts, funcs, modules, let.name, let.ty, let.value);
+                }
             },
             .let_else_stmt => |let| {
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, let.value);
@@ -2421,17 +2576,30 @@ pub fn collectSyntacticReachableBlock(
             .const_stmt => |c| {
                 if (c.ty) |ty| try recordReferencedType(referenced_types, ty);
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, c.value);
-                if (local_facts) |*facts| try updateFactsForLetBinding(facts, funcs, modules, c.name, c.ty, c.value);
+                if (local_facts) |*facts| {
+                    if (c.value.* == .call_expr) clearFactsForCallArgs(facts, c.value.call_expr);
+                    try updateFactsForLetBinding(facts, funcs, modules, c.name, c.ty, c.value);
+                }
             },
             .assign_stmt => |assign| {
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, assign.target);
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, assign.value);
                 if (local_facts) |*facts| {
-                    if (assign.target.* == .identifier) facts.clearName(assign.target.identifier);
+                    if (assign.value.* == .call_expr) clearFactsForCallArgs(facts, assign.value.call_expr);
+                    if (assign.target.* == .identifier) {
+                        facts.clearName(assign.target.identifier);
+                    } else {
+                        clearFactsForAssignedField(facts, assign.target);
+                    }
                 }
             },
             .block_stmt => |blk| try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, blk.body),
-            .expr_stmt => |expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, expr),
+            .expr_stmt => |expr| {
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, expr);
+                if (local_facts) |*facts| {
+                    if (expr.* == .call_expr) clearFactsForCallArgs(facts, expr.call_expr);
+                }
+            },
             .return_stmt => |ret| if (ret.value) |value| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, value),
             .for_stmt => |for_stmt| {
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, for_stmt.start);
@@ -2442,10 +2610,12 @@ pub fn collectSyntacticReachableBlock(
                     try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, null, caller_name, reachable, referenced_types, worklist, "iter_len", iterable_type_name);
                     try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, null, caller_name, reachable, referenced_types, worklist, "iter_at", iterable_type_name);
                 }
+                if (local_facts) |*facts| clearFactsForMutationsInBlock(facts, for_stmt.body);
                 try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, for_stmt.body);
             },
             .while_stmt => |while_stmt| {
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, while_stmt.cond);
+                if (local_facts) |*facts| clearFactsForMutationsInBlock(facts, while_stmt.body);
                 try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, while_stmt.body);
             },
             else => try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, stmt),

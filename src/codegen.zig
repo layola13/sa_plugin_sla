@@ -10343,6 +10343,23 @@ pub const Codegen = struct {
         }
         self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
 
+        // Leading output args whose binding lives in a stack slot were
+        // lowered to load temps above; the expansion assigns the temp, so
+        // store the result back into the slot before the temp is released.
+        // Parity with SAB genImportedMacroLeadingOutputArg (output_store_slot):
+        // without this the macro's output write is silently lost (C3).
+        if (!plan.expression_output) {
+            for (call.args, 0..) |arg, i| {
+                if (i >= plan.leading_outputs) break;
+                if (plan.callArgNeedsDirectAddressSlot(i)) continue;
+                const slot = self.importedMacroExistingAddressableSymbol(arg) orelse continue;
+                const arg_reg = arg_regs.items[i];
+                if (std.mem.eql(u8, arg_reg, slot)) continue;
+                const arg_ty = try self.importedMacroArgType(arg);
+                self.outPrint("    store {s}+0, {s} as {s}\n", .{ slot, arg_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+            }
+        }
+
         for (release_regs.items) |release_reg| {
             if (release_reg) |arg_reg| try self.emitRelease(arg_reg);
         }

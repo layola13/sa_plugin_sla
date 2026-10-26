@@ -9315,3 +9315,46 @@ test "sla sab backend lowers map clear" {
     };
     try std.testing.expect(sab_bytes.len > 0);
 }
+
+test "sla sa backend ptr byte add stmt output writes back to stack slot" {
+    // C3 regression: a statement-form imported-macro output (PTR_BYTE_ADD)
+    // bound to a stack-slot ptr local was lowered to a load temp and the
+    // expansion's assignment to that temp was never stored back into the
+    // slot, so the next PTR_WRITE_U8 stored through the stale NULL. The SA
+    // text must contain a store of the expansion's output reg into dp+0.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "tests/test_unit_ptr_byte_add_write_slot.sla",
+        "tests/test_unit_ptr_byte_add_write_slot.test.sa",
+        stderr_fw.writer(),
+        .{
+            .test_filter = "ptr byte add stmt output",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var writebacks: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, sa_code, search_from, "EXPAND PTR_BYTE_ADD ")) |hit| {
+        const reg_start = hit + "EXPAND PTR_BYTE_ADD ".len;
+        const reg_end = std.mem.indexOfPos(u8, sa_code, reg_start, ",") orelse break;
+        const reg = sa_code[reg_start..reg_end];
+        const store_line = try std.fmt.allocPrint(arena.allocator(), "store dp+0, {s} as ptr", .{reg});
+        if (std.mem.indexOf(u8, sa_code, store_line) != null) writebacks += 1;
+        search_from = reg_end;
+    }
+    try std.testing.expect(writebacks >= 2);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}

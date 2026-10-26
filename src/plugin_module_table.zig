@@ -597,8 +597,17 @@ pub const SlaModuleTable = struct {
             for (current.known_types) |name| try type_set.put(name, {});
             for (current.known_enums) |name| try enum_set.put(name, {});
             for (current.resolved_imports) |resolved| {
-                if (self.modules.get(resolved.path)) |imported| {
-                    if (!visited.contains(imported.path)) try stack.append(imported);
+                // C2a: a transitively imported module that is referenced
+                // only from body code (never from any declaration surface)
+                // may not have been loaded into the table yet — in
+                // decl-only (test/registry) mode nothing loads it, so a
+                // plain table lookup silently truncated the surface at
+                // the importing module and body materialization failed
+                // with an unlocated SyntaxError. Load it on demand so
+                // the surface always covers the full transitive closure.
+                const imported = self.modules.get(resolved.path) orelse self.getOrParse(resolved) catch null;
+                if (imported) |imported_module| {
+                    if (!visited.contains(imported_module.path)) try stack.append(imported_module);
                 }
             }
         }

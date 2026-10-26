@@ -9466,3 +9466,39 @@ test "sla sa backend argv set value idx is not slot materialized" {
     try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
+
+test "sla test codegen single import chain compiles transitive bodies" {
+    // C2a regression: with the root importing ONLY module A, the
+    // test-compile (decl-only) expansion failed with an unlocated
+    // SyntaxError because module B — referenced only from A's bodies —
+    // was never loaded into the module table, so the materialization
+    // type surface for A's bodies missed B's types. The same compile
+    // entry the `sa test` path uses must succeed for the single-import
+    // fixture (build-exe already worked).
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "tests/test_unit_import_single_import_chain.sla",
+        "tests/test_unit_import_single_import_chain.test.sa",
+        stderr_fw.writer(),
+        .{
+            .test_filter = "single import chain",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "chain_point_sum") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "chain_policy_checksum") != null);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}

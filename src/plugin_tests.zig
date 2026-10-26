@@ -9391,3 +9391,78 @@ test "sla sa backend void trailing return emits single epilogue" {
     try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
+
+test "imported macro argv slot scan ignores interpolated synthetic names" {
+    // D3 root cause: the address-slot scan matched `%index+` inside the
+    // synthetic register name `__process_argv_slot_%argv_%index+Field`
+    // in PROCESS_ARGV_SET_PTR's own store lines and misclassified the
+    // pure value parameter %index as an address-slot parameter.
+    const params = [_][]const u8{ "argv", "index", "data_ptr", "data_len" };
+    var mask: u64 = 0;
+    try plugin_imported_macros.markDirectAddressSlotMacroParams(
+        std.testing.allocator,
+        &mask,
+        &params,
+        "store __process_argv_slot_%argv_%index+SaProcessArgv_data, %data_ptr as ptr",
+    );
+    try std.testing.expectEqual(@as(u64, 0), mask);
+    try plugin_imported_macros.markDirectAddressSlotMacroParams(
+        std.testing.allocator,
+        &mask,
+        &params,
+        "store __process_argv_slot_%argv_%index+SaProcessArgv_len, %data_len as u64",
+    );
+    try std.testing.expectEqual(@as(u64, 0), mask);
+    // A genuine address-base use after a synthetic-name match in the
+    // same line must still be found.
+    try plugin_imported_macros.markDirectAddressSlotMacroParams(
+        std.testing.allocator,
+        &mask,
+        &params,
+        "store __s_%index+4, %data_len as u64; store %index+0, %data_len as u64",
+    );
+    try std.testing.expect((mask & (@as(u64, 1) << 1)) != 0);
+    // A genuine address-base use of %argv marks bit 0.
+    var mask2: u64 = 0;
+    try plugin_imported_macros.markDirectAddressSlotMacroParams(
+        std.testing.allocator,
+        &mask2,
+        &params,
+        "store %argv+8, %data_ptr as ptr",
+    );
+    try std.testing.expect((mask2 & (@as(u64, 1) << 0)) != 0);
+}
+
+test "sla sa backend argv set value idx is not slot materialized" {
+    // D3 regression (behavioral signature): with %index misclassified as
+    // an address-slot parameter, the helper's index binding was forced
+    // into a stack slot and the EXPAND received the slot address. The
+    // generated SA for the fixture must keep idx/j as plain registers.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "tests/test_unit_process_argv_set_via_ref.sla",
+        "tests/test_unit_process_argv_set_via_ref.test.sa",
+        stderr_fw.writer(),
+        .{
+            .test_filter = "process argv set",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "@sla__set_via_ref") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "idx = stack_alloc") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "j = stack_alloc") == null);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}

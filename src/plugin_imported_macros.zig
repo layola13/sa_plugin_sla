@@ -46,11 +46,31 @@ pub fn markDirectBorrowedMacroParams(allocator: std.mem.Allocator, mask: *u64, p
     }
 }
 
+fn isMacroRegisterNameChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '%';
+}
+
 pub fn markDirectAddressSlotMacroParams(allocator: std.mem.Allocator, mask: *u64, param_names: []const []const u8, line: []const u8) !void {
     for (param_names) |param| {
         const needle = try std.fmt.allocPrint(allocator, "%{s}+", .{param});
         defer allocator.free(needle);
-        if (std.mem.indexOf(u8, line, needle) != null) markBorrowedParam(mask, param_names, param);
+        // The `%param+` shape only proves the parameter is used as an
+        // address base when the `%` starts a fresh register token. Inside
+        // a longer synthetic register name built by textual interpolation
+        // (e.g. the `%index` inside `__process_argv_slot_%argv_%index`
+        // followed by `+SaProcessArgv_data` in a store) the match is a
+        // different register entirely; treating it as the parameter made
+        // pure value parameters (PROCESS_ARGV_SET_PTR's %index) look like
+        // address-slot parameters, so callers passed a stack slot's
+        // address where the value was expected (D3).
+        var search_from: usize = 0;
+        while (std.mem.indexOfPos(u8, line, search_from, needle)) |hit| {
+            if (hit == 0 or !isMacroRegisterNameChar(line[hit - 1])) {
+                markBorrowedParam(mask, param_names, param);
+                break;
+            }
+            search_from = hit + 1;
+        }
     }
 }
 

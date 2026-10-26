@@ -829,6 +829,11 @@ pub const Codegen = struct {
         return lowering_rules.blockTerminates(block);
     }
 
+    fn lastStmtIsReturn(block: []const *ast.Node) bool {
+        if (block.len == 0) return false;
+        return block[block.len - 1].* == .return_stmt;
+    }
+
     fn stmtTerminates(stmt: *const ast.Node) bool {
         return lowering_rules.stmtTerminates(stmt);
     }
@@ -7588,7 +7593,11 @@ pub const Codegen = struct {
             self.outPrint("    {s} = 0\n", .{zero}) catch return CodegenError.CodegenError;
             const future = try self.genReadyFutureI64(zero);
             self.outPrint("    return {s}\n", .{future}) catch return CodegenError.CodegenError;
-        } else if (isVoidType(f.ret_ty)) {
+        } else if (isVoidType(f.ret_ty) and !lastStmtIsReturn(f.body)) {
+            // C1: a trailing explicit `return;` already emitted cleanups and
+            // a `return` into the final block; emitting the implicit void
+            // epilogue as well produced `return` + `return` in one block,
+            // which the SA verifier rejects as FallthroughForbidden.
             self.outPrint("    return\n", .{}) catch return CodegenError.CodegenError;
         }
         self.outPrint("\n", .{}) catch return CodegenError.CodegenError;

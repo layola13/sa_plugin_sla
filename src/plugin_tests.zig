@@ -9358,3 +9358,36 @@ test "sla sa backend ptr byte add stmt output writes back to stack slot" {
     try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
+
+test "sla sa backend void trailing return emits single epilogue" {
+    // C1 regression: void functions ending in an explicit `return;` got a
+    // second implicit epilogue `return` in the same block, which the SA
+    // verifier rejects as FallthroughForbidden. The generated SA text for
+    // the fixture must contain no doubled `return` terminator anywhere.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "tests/test_unit_void_tail_return.sla",
+        "tests/test_unit_void_tail_return.test.sa",
+        stderr_fw.writer(),
+        .{
+            .test_filter = "void tail return",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "@sla__bump_capped") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "    return\n    return\n") == null);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}

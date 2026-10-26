@@ -568,6 +568,59 @@ pub const SlaModuleTable = struct {
         return module;
     }
 
+    /// Type/enum name surface used when materializing a module's function
+    /// bodies: the module's own known names unioned with those of every
+    /// transitively resolved import present in the table. Imported modules
+    /// are parsed decl-only with prescan disabled, so their own surface
+    /// lacks imported names; seeding body parses with only the own surface
+    /// makes the parser reject struct literals of imported types
+    /// (`ImportedType { ... }`) with an unlocated SyntaxError. The slices
+    /// borrow the modules' name strings; only the slices are owned.
+    pub const MaterializationTypeSurface = struct {
+        types: []const []const u8,
+        enums: []const []const u8,
+    };
+
+    fn materializationTypeSurface(self: *SlaModuleTable, module: *SlaModule) !MaterializationTypeSurface {
+        var type_set = std.StringHashMap(void).init(self.allocator);
+        defer type_set.deinit();
+        var enum_set = std.StringHashMap(void).init(self.allocator);
+        defer enum_set.deinit();
+        var visited = std.StringHashMap(void).init(self.allocator);
+        defer visited.deinit();
+        var stack = std.array_list.Managed(*SlaModule).init(self.allocator);
+        defer stack.deinit();
+        try stack.append(module);
+        while (stack.pop()) |current| {
+            if (visited.contains(current.path)) continue;
+            try visited.put(current.path, {});
+            for (current.known_types) |name| try type_set.put(name, {});
+            for (current.known_enums) |name| try enum_set.put(name, {});
+            for (current.resolved_imports) |resolved| {
+                if (self.modules.get(resolved.path)) |imported| {
+                    if (!visited.contains(imported.path)) try stack.append(imported);
+                }
+            }
+        }
+        var types = std.array_list.Managed([]const u8).init(self.allocator);
+        defer types.deinit();
+        var type_iter = type_set.keyIterator();
+        while (type_iter.next()) |name| try types.append(name.*);
+        var enums = std.array_list.Managed([]const u8).init(self.allocator);
+        defer enums.deinit();
+        var enum_iter = enum_set.keyIterator();
+        while (enum_iter.next()) |name| try enums.append(name.*);
+        return .{
+            .types = try types.toOwnedSlice(),
+            .enums = try enums.toOwnedSlice(),
+        };
+    }
+
+    fn freeMaterializationTypeSurface(self: *SlaModuleTable, surface: MaterializationTypeSurface) void {
+        self.allocator.free(surface.types);
+        self.allocator.free(surface.enums);
+    }
+
     pub fn reparseModuleWithSelectedBodies(
         self: *SlaModuleTable,
         module: *SlaModule,
@@ -584,6 +637,8 @@ pub const SlaModuleTable = struct {
         }
 
         const parse_start = sio.nanoTimestamp();
+        const surface = try self.materializationTypeSurface(module);
+        defer self.freeMaterializationTypeSurface(surface);
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, module.expanded_source, module.base_dir, .{
             .parse_function_bodies = true,
             .function_body_names = selected_function_bodies,
@@ -592,7 +647,7 @@ pub const SlaModuleTable = struct {
             .parse_test_bodies = self.parse_options.parse_test_bodies,
             .prescan_sla_import_types = false,
         });
-        try parser.seedKnownTypeNames(module.known_types, module.known_enums);
+        try parser.seedKnownTypeNames(surface.types, surface.enums);
         const parsed = try parser.parseProgram();
         if (parsed.* != .program) return error.InvalidProgram;
         const parse_ns = sio.nanoTimestamp() - parse_start;
@@ -683,6 +738,8 @@ pub const SlaModuleTable = struct {
             return .{ .commit_ns = sio.nanoTimestamp() - commit_start };
         }
 
+        const surface = try self.materializationTypeSurface(module);
+        defer self.freeMaterializationTypeSurface(surface);
         const parse_start = sio.nanoTimestamp();
         selected_iter = selected_functions.keyIterator();
         while (selected_iter.next()) |name_ptr| {
@@ -693,8 +750,8 @@ pub const SlaModuleTable = struct {
             const body = try parser_mod.Parser.parseFunctionBodySpan(
                 self.allocator,
                 span,
-                module.known_types,
-                module.known_enums,
+                surface.types,
+                surface.enums,
             );
             func_decl.body = body;
             func_decl.is_decl_only = false;

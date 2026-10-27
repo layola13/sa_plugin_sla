@@ -10357,10 +10357,14 @@ pub const Codegen = struct {
         // store the result back into the slot before the temp is released.
         // Parity with SAB genImportedMacroLeadingOutputArg (output_store_slot):
         // without this the macro's output write is silently lost (C3).
+        // The direct-address-slot skip only covers address-semantics
+        // params (the macro stores through the slot, never assigns it);
+        // an assigned-output param must store back even when its body
+        // also dereferences the freshly assigned value (PLUGIN_ASYNC_OP_NEW).
         if (!plan.expression_output) {
             for (call.args, 0..) |arg, i| {
                 if (i >= plan.leading_outputs) break;
-                if (plan.callArgNeedsDirectAddressSlot(i)) continue;
+                if (plan.callArgNeedsDirectAddressSlot(i) and !plan.callArgIsAssignedOutput(i)) continue;
                 const slot = self.importedMacroExistingAddressableSymbol(arg) orelse continue;
                 const arg_reg = arg_regs.items[i];
                 if (std.mem.eql(u8, arg_reg, slot)) continue;

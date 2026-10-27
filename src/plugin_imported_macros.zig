@@ -74,6 +74,106 @@ pub fn markDirectAddressSlotMacroParams(allocator: std.mem.Allocator, mask: *u64
     }
 }
 
+const MacroParamRefKind = enum { value, deref, addr_take };
+
+/// Classifies one whitespace/comma/paren-delimited body token as a
+/// reference to macro parameter `param`. A token that merely contains
+/// the parameter name inside a longer register name (an interpolated
+/// synthetic like `__sink_%out_db`, or a longer parameter sharing the
+/// prefix) is a different register entirely and does not count.
+fn classifyMacroParamToken(token: []const u8, param: []const u8) ?MacroParamRefKind {
+    var rest = token;
+    var took_addr = false;
+    if (rest.len > 0 and rest[0] == '&') {
+        took_addr = true;
+        rest = rest[1..];
+    }
+    if (rest.len == 0 or rest[0] != '%') return null;
+    rest = rest[1..];
+    if (!std.mem.startsWith(u8, rest, param)) return null;
+    const after = rest[param.len..];
+    if (after.len == 0) return if (took_addr) .addr_take else .value;
+    if (after[0] == '+') return .deref;
+    return null;
+}
+
+/// True when the (trimmed) body line assigns the parameter directly:
+/// `%param = ...` with the parameter as the whole LHS token.
+fn macroParamLineAssigns(line: []const u8, param: []const u8) bool {
+    if (!std.mem.startsWith(u8, line, "%")) return false;
+    var rest = line[1..];
+    if (!std.mem.startsWith(u8, rest, param)) return false;
+    rest = rest[param.len..];
+    if (rest.len > 0 and isMacroRegisterNameChar(rest[0])) return false;
+    rest = std.mem.trimStart(u8, rest, " \t");
+    return rest.len > 0 and rest[0] == '=' and (rest.len == 1 or rest[1] != '=');
+}
+
+/// Per-parameter scan state for markAssignedOutputMacroParams:
+/// 0 = unseen, 1 = assigned before any memory reference, 2 = tainted
+/// (a memory dereference or address-take precedes the first assignment,
+/// so the parameter has address semantics, not register-output
+/// semantics). Passing a parameter into a nested EXPAND position that
+/// the callee assigns counts as an assignment of the parameter;
+/// passing it into a borrowed/address-slot callee position counts as a
+/// memory reference.
+pub fn markAssignedOutputMacroParams(
+    tc: *type_checker_mod.TypeChecker,
+    param_names: []const []const u8,
+    ref_state: []u8,
+    line: []const u8,
+) void {
+    const is_expand = std.mem.startsWith(u8, line, "EXPAND");
+    var expanded_assigned: u64 = 0;
+    var expanded_memory: u64 = 0;
+    if (is_expand) {
+        var head = std.mem.tokenizeAny(u8, line["EXPAND".len..], " \t,()");
+        if (head.next()) |expanded_name| {
+            if (tc.imported_macros.get(expanded_name)) |expanded| {
+                expanded_assigned = expanded.assigned_output_mask;
+                expanded_memory = expanded.borrowed_arg_mask | expanded.address_slot_arg_mask;
+            }
+        }
+    }
+    for (param_names, 0..) |param, idx| {
+        if (ref_state[idx] == 2) continue;
+        const lhs_assign = !is_expand and macroParamLineAssigns(line, param);
+        var pending_assign = false;
+        var tokens = std.mem.tokenizeAny(u8, line, " \t,()");
+        var token_idx: usize = 0;
+        while (tokens.next()) |token| : (token_idx += 1) {
+            const kind = classifyMacroParamToken(token, param) orelse continue;
+            if (lhs_assign and token_idx == 0) {
+                // The LHS occurrence itself: its assignment takes effect
+                // only after the line's RHS references are evaluated.
+                pending_assign = true;
+                continue;
+            }
+            if (is_expand and token_idx >= 2) {
+                const arg_pos = token_idx - 2;
+                if (arg_pos < 64) {
+                    const bit = @as(u64, 1) << @intCast(arg_pos);
+                    if ((expanded_assigned & bit) != 0) {
+                        if (ref_state[idx] == 0) ref_state[idx] = 1;
+                        continue;
+                    }
+                    if ((expanded_memory & bit) != 0) {
+                        if (ref_state[idx] == 0) ref_state[idx] = 2;
+                        continue;
+                    }
+                }
+            }
+            switch (kind) {
+                .value => {},
+                .deref, .addr_take => {
+                    if (ref_state[idx] == 0) ref_state[idx] = 2;
+                },
+            }
+        }
+        if (pending_assign and ref_state[idx] == 0) ref_state[idx] = 1;
+    }
+}
+
 pub fn markExpandedImportedMacroParamMasks(
     tc: *type_checker_mod.TypeChecker,
     borrowed_mask: *u64,
@@ -168,10 +268,15 @@ fn tryLoadImportedMacrosFromCache(
         const borrow_s = parts.next() orelse continue;
         const address_s = parts.next() orelse continue;
         const callees_s = parts.next() orelse "";
+        // Records written before the assigned-output mask existed have
+        // no seventh field; treat the whole cache as stale and rescan
+        // rather than silently registering masks of zero.
+        const assigned_s = parts.next() orelse return false;
         const arity = std.fmt.parseInt(usize, arity_s, 10) catch continue;
         const leading = std.fmt.parseInt(usize, leading_s, 10) catch continue;
         const borrowed = std.fmt.parseInt(u64, borrow_s, 10) catch continue;
         const address = std.fmt.parseInt(u64, address_s, 10) catch continue;
+        const assigned = std.fmt.parseInt(u64, assigned_s, 10) catch return false;
         var callee_list = std.array_list.Managed([]const u8).init(allocator);
         defer callee_list.deinit();
         if (callees_s.len != 0) {
@@ -182,7 +287,7 @@ fn tryLoadImportedMacrosFromCache(
             }
         }
         const owned_import = if (import_path) |path| try allocator.dupe(u8, path) else null;
-        try tc.registerImportedMacro(try allocator.dupe(u8, name), arity, leading, owned_import, borrowed, address, try callee_list.toOwnedSlice());
+        try tc.registerImportedMacro(try allocator.dupe(u8, name), arity, leading, owned_import, borrowed, address, assigned, try callee_list.toOwnedSlice());
     }
     return true;
 }
@@ -248,6 +353,10 @@ pub fn loadImportedMacrosFromExpandedSource(
 
         var borrowed_arg_mask: u64 = 0;
         var address_slot_arg_mask: u64 = 0;
+        var assigned_output_mask: u64 = 0;
+        const param_ref_state = try allocator.alloc(u8, param_names.items.len);
+        defer allocator.free(param_ref_state);
+        @memset(param_ref_state, 0);
         var direct_callees = std.array_list.Managed([]const u8).init(allocator);
         defer direct_callees.deinit();
         while (lines.next()) |body_raw_line| {
@@ -256,8 +365,12 @@ pub fn loadImportedMacrosFromExpandedSource(
             try markDirectBorrowedMacroParams(allocator, &borrowed_arg_mask, param_names.items, body_line);
             try markDirectAddressSlotMacroParams(allocator, &address_slot_arg_mask, param_names.items, body_line);
             markExpandedImportedMacroParamMasks(tc, &borrowed_arg_mask, &address_slot_arg_mask, param_names.items, body_line);
+            markAssignedOutputMacroParams(tc, param_names.items, param_ref_state, body_line);
             try collectDirectSlaMacroCallees(allocator, &direct_callees, body_line);
             try appendExpandedImportedMacroDirectCallees(tc, &direct_callees, body_line);
+        }
+        for (param_ref_state, 0..) |state, idx| {
+            if (state == 1 and idx < 64) assigned_output_mask |= @as(u64, 1) << @intCast(idx);
         }
 
         const owned_import_path = if (import_path) |path| try allocator.dupe(u8, path) else null;
@@ -269,9 +382,9 @@ pub fn loadImportedMacrosFromExpandedSource(
             if (idx != 0) try callee_joined.append(',');
             try callee_joined.appendSlice(callee);
         }
-        const record = try std.fmt.allocPrint(allocator, "{s}|{d}|{d}|{d}|{d}|{s}", .{ name, arity, leading_outputs, borrowed_arg_mask, address_slot_arg_mask, callee_joined.items });
+        const record = try std.fmt.allocPrint(allocator, "{s}|{d}|{d}|{d}|{d}|{s}|{d}", .{ name, arity, leading_outputs, borrowed_arg_mask, address_slot_arg_mask, callee_joined.items, assigned_output_mask });
         try cache_records.append(record);
-        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, owned_callees);
+        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, assigned_output_mask, owned_callees);
     }
     if (import_path) |path| {
         const cache_path = macroIndexCachePath(allocator, path, expanded_source) catch null;

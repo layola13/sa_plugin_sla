@@ -9359,6 +9359,51 @@ test "sla sa backend ptr byte add stmt output writes back to stack slot" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sa backend imported macro assigned ptr output writes back to stack slot" {
+    // Assigned-output regression (AG6 SS11.1): an imported macro whose
+    // leading out param is ASSIGNED in the body (SLA_IMPORTED_ASSIGNED_
+    // PTR_NEW: %out_p = alloc 8) previously lost the value for slot-
+    // backed ptr locals -- the expansion defined a load temp and no
+    // store brought the pointer back into p's slot, so the first load
+    // through p dereferenced NULL. The SA text must store the
+    // expansion's output reg into p+0 after the EXPAND.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "tests/test_unit_imported_macro_assigned_outputs.sla",
+        "tests/test_unit_imported_macro_assigned_outputs.test.sa",
+        stderr_fw.writer(),
+        .{
+            .test_filter = "assigned ptr output",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var writebacks: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, sa_code, search_from, "EXPAND SLA_IMPORTED_ASSIGNED_PTR_NEW ")) |hit| {
+        const reg_start = hit + "EXPAND SLA_IMPORTED_ASSIGNED_PTR_NEW ".len;
+        const reg_end = std.mem.indexOfPos(u8, sa_code, reg_start, ",") orelse break;
+        const reg = sa_code[reg_start..reg_end];
+        const store_line = try std.fmt.allocPrint(arena.allocator(), "store p+0, {s} as ptr", .{reg});
+        if (std.mem.indexOf(u8, sa_code, store_line) != null) writebacks += 1;
+        search_from = reg_end;
+    }
+    try std.testing.expect(writebacks >= 2);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sa backend void trailing return emits single epilogue" {
     // C1 regression: void functions ending in an explicit `return;` got a
     // second implicit epilogue `return` in the same block, which the SA

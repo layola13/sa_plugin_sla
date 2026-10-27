@@ -574,6 +574,7 @@ pub const ImportedMacroCallPlan = struct {
     leading_outputs: usize,
     borrowed_arg_mask: u64,
     address_slot_arg_mask: u64,
+    assigned_output_mask: u64 = 0,
     expression_output: bool,
 
     pub fn macroParamIndexForCallArg(self: ImportedMacroCallPlan, call_arg_index: usize) usize {
@@ -591,6 +592,17 @@ pub const ImportedMacroCallPlan = struct {
         const macro_idx = self.macroParamIndexForCallArg(call_arg_index);
         if (macro_idx >= 64) return false;
         return (self.address_slot_arg_mask & (@as(u64, 1) << @intCast(macro_idx))) != 0;
+    }
+
+    /// True when the macro body assigns this parameter (its first
+    /// reference is the assignment) before any memory dereference or
+    /// address-take of it: the parameter is a pure register output, so
+    /// the expansion must define a fresh register whose value the
+    /// backend then stores back into the caller's binding.
+    pub fn callArgIsAssignedOutput(self: ImportedMacroCallPlan, call_arg_index: usize) bool {
+        const macro_idx = self.macroParamIndexForCallArg(call_arg_index);
+        if (macro_idx >= 64) return false;
+        return (self.assigned_output_mask & (@as(u64, 1) << @intCast(macro_idx))) != 0;
     }
 
     pub fn addressableIdentifierArgName(self: ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node) ?[]const u8 {
@@ -644,6 +656,18 @@ pub const ImportedMacroCallPlan = struct {
         has_existing_addressable_symbol: bool,
         arg_ty: *const ast.Type,
     ) ImportedMacroArgLoweringAction {
+        // Assigned-output parameters (the macro body assigns the param
+        // before any memory deref/address-take of it) must take the value
+        // path even when the param also carries borrowed/address-slot
+        // marks: the expansion defines the value in a fresh register and
+        // the backend stores it back into the caller's slot. Passing the
+        // caller's stack-slot register itself makes the expansion's
+        // assignment redefine the live stack_alloc register
+        // (RegisterRedefinition), and passing a load temp without the
+        // store-back silently loses the output.
+        if (address_shape == .identifier and self.callArgIsAssignedOutput(call_arg_index)) {
+            return .pass_value;
+        }
         if (self.callArgNeedsAddressableSlot(call_arg_index) and
             !self.callArgNeedsDirectAddressSlot(call_arg_index) and
             abiPassesAsPointer(arg_ty) and
@@ -3118,6 +3142,7 @@ pub fn planImportedMacroCall(tc: *type_checker.TypeChecker, call: ast.CallExpr) 
         .leading_outputs = macro.leading_outputs,
         .borrowed_arg_mask = macro.borrowed_arg_mask,
         .address_slot_arg_mask = macro.address_slot_arg_mask,
+        .assigned_output_mask = macro.assigned_output_mask,
         .expression_output = expression_output,
     };
 }

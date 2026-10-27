@@ -28,6 +28,7 @@ pub const ImportedMacro = struct {
     import_path: ?[]const u8 = null,
     borrowed_arg_mask: u64 = 0,
     address_slot_arg_mask: u64 = 0,
+    assigned_output_mask: u64 = 0,
     direct_callees: []const []const u8 = &.{},
 };
 
@@ -2116,13 +2117,14 @@ pub const TypeChecker = struct {
         }
     }
 
-    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64, direct_callees: []const []const u8) !void {
+    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64, assigned_output_mask: u64, direct_callees: []const []const u8) !void {
         try self.imported_macros.put(name, .{
             .arity = arity,
             .leading_outputs = leading_outputs,
             .import_path = import_path,
             .borrowed_arg_mask = borrowed_arg_mask,
             .address_slot_arg_mask = address_slot_arg_mask,
+            .assigned_output_mask = assigned_output_mask,
             .direct_callees = direct_callees,
         });
     }

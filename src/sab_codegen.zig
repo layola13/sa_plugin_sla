@@ -14529,8 +14529,13 @@ pub const Codegen = struct {
         if (self.stack_alloc_emitted.contains(dst)) {
             // Address-slot output macros (for example PIN_AS_REF) write into an
             // existing stack allocation. Passing an uninitialized temporary and
-            // copying it back produces an undeclared SAB register.
-            if (plan.callArgNeedsDirectAddressSlot(call_arg_index)) {
+            // copying it back produces an undeclared SAB register. That only
+            // holds for address-semantics params, which the macro never
+            // assigns; an assigned-output param (PLUGIN_ASYNC_OP_NEW assigns
+            // its out, then stores through the fresh value) must take the
+            // temporary + store-back path below, because the expansion's
+            // assignment would otherwise redefine the live slot register.
+            if (plan.callArgNeedsDirectAddressSlot(call_arg_index) and !plan.callArgIsAssignedOutput(call_arg_index)) {
                 return .{ .operand = self.symbols.items[dst], .release_reg = null };
             }
             const tmp = try self.intern(try self.newTmp());

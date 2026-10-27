@@ -1,0 +1,53 @@
+// REGISTERED REPRO -- different root from the assigned-output fix
+// (do not move into tests/ until the SAB side is fixed; it currently
+// FAILS under `sa test` and passes under build-exe).
+//
+// Shape (from AK's audit of saVmInterception.sla ap_error_action,
+// _defects/FIX_INTERCEPTION_AUDIT.md): one fn declares the same ptr
+// local name twice -- first inside a while loop, then again in the
+// tail -- each receiving a PTR_BYTE_ADD leading macro output. Under
+// the SAB backend the SECOND declaration's macro output lands in the
+// wrong (first) binding's storage: the tail pointer stays NULL and
+// the first dereference segfaults (signal 11). Renaming the tail
+// variable makes it pass (AK's local workaround: rest -> rest2).
+//
+// Adjudication (Agent AL, 2026-10-27): NOT the assigned-output
+// lowering defect. PTR_BYTE_ADD outputs were already value-pathed +
+// stored back (C3) for single declarations, and this shape's text
+// backend (build-exe) passes both before and after the assigned-
+// output fix, while the SAB failure is unchanged by it. Suspected
+// layer: SAB codegen's name-keyed binding resolution for imported-
+// macro leading-output targets (bindingReg / output target name)
+// across same-name redeclarations, aggravated by the first binding
+// living inside a loop body.
+//
+// Measured (baseline 3de91932 and assigned-output-fixed builds
+// alike): sa test -> "terminated by signal 11"; build-exe -> run 0.
+
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+
+fn pick(p: ptr, off1: u64, off2: u64) -> u8 {
+    let i: u64 = 0;
+    while i < 1 {
+        let rest: ptr = PTR_NULL();
+        PTR_BYTE_ADD(rest, p, off1);
+        let a: u8 = 0;
+        PTR_BYTE_AT(a, rest, 0);
+        if a == 255 { return 9; };
+        i = i + 1;
+    }
+    let rest: ptr = PTR_NULL();
+    PTR_BYTE_ADD(rest, p, off2);
+    let b: u8 = 0;
+    PTR_BYTE_AT(b, rest, 0);
+    return b;
+}
+
+@test "same name ptr redeclaration keeps second writeback"() {
+    let s = "xxAxBzzz";
+    let got = pick(STR_PTR(s), 2, 4);
+    if got != 66 {
+        panic(43301);
+    };
+}

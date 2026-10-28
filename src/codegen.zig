@@ -10778,7 +10778,7 @@ pub const Codegen = struct {
                 } else if (let.value.* == .tuple_literal) {
                     try self.genTupleLiteralInto(let.name, &let.value.tuple_literal, hoisted_allocs);
                 } else if (let.value.* == .array_literal) {
-                    try self.genArrayLiteralInto(let.name, &let.value.array_literal, hoisted_allocs);
+                    try self.genArrayLiteralInto(let.name, let.value, &let.value.array_literal, hoisted_allocs);
                 } else if (let.value.* == .repeat_array_literal) {
                     try self.genRepeatArrayLiteralInto(let.name, let.value, &let.value.repeat_array_literal, hoisted_allocs);
                 } else if (let.value.* == .identifier and self.typeIsCopyStruct(let_ty)) {
@@ -11067,7 +11067,7 @@ pub const Codegen = struct {
                 } else if (c.value.* == .tuple_literal) {
                     try self.genTupleLiteralInto(c.name, &c.value.tuple_literal, hoisted_allocs);
                 } else if (c.value.* == .array_literal) {
-                    try self.genArrayLiteralInto(c.name, &c.value.array_literal, hoisted_allocs);
+                    try self.genArrayLiteralInto(c.name, c.value, &c.value.array_literal, hoisted_allocs);
                 } else if (c.value.* == .repeat_array_literal) {
                     try self.genRepeatArrayLiteralInto(c.name, c.value, &c.value.repeat_array_literal, hoisted_allocs);
                 } else if (c.value.* == .identifier and self.typeIsCopyStruct(const_ty)) {
@@ -11732,13 +11732,26 @@ pub const Codegen = struct {
     fn genArrayLiteralInto(
         self: *Codegen,
         target: []const u8,
+        node: *const ast.Node,
         lit: *const ast.ArrayLiteral,
         hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (lit.elements.len == 0) return CodegenError.CodegenError;
+        // Element layout comes from the literal's own array type (the
+        // annotation / inferred type recorded for the whole node), never
+        // from an element expression's own type: untyped integer elements
+        // default to i64, so deriving size/stride from elements[0] stored
+        // an annotated [u8; 2] = [13, 10] at i64 stride and every read at
+        // index >= 1 came back 0. Mirrors genRepeatArrayLiteralInto,
+        // which already looks the element type up on the node.
+        var elem_ty: ?*const ast.Type = null;
+        if (self.tc.expr_types.get(node)) |node_ty| {
+            if (arrayType(node_ty)) |arr| elem_ty = arr.elem;
+        }
         const first_ty = self.tc.expr_types.get(lit.elements[0]) orelse return CodegenError.CodegenError;
-        const elem_size = typeSize(first_ty);
-        const elem_ty_str = typeString(first_ty);
+        const eff_ty = elem_ty orelse first_ty;
+        const elem_size = typeSize(eff_ty);
+        const elem_ty_str = typeString(eff_ty);
         const total_size = @max(elem_size * lit.elements.len, 1);
 
         self.outPrint("    {s} = alloc {}\n", .{ target, total_size }) catch return CodegenError.CodegenError;
@@ -13230,7 +13243,7 @@ pub const Codegen = struct {
             },
             .array_literal => |lit| {
                 const reg = try self.newTmp();
-                try self.genArrayLiteralInto(reg, &lit, hoisted_allocs);
+                try self.genArrayLiteralInto(reg, expr, &lit, hoisted_allocs);
                 return reg;
             },
             .repeat_array_literal => |lit| {

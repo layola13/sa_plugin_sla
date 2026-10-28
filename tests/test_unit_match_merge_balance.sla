@@ -11,10 +11,20 @@
 //
 // These shapes pass on the SAB backend before/after as: pre-fix the
 // whole file traps 1015 at module verification; post-fix all pass.
-// The SA text backend has the same structural gap in its own match
-// merge (family 3 territory, not this line's site): the shapes below
-// still trap 1015 there, identically pre- and post-fix, and are
-// registered as a junction item in the line's final report.
+//
+// Text-backend line (family 3): the SA text backend had the same
+// structural gap in its own match/switch merges - it compensated
+// if/else merges only (see test_unit_branch_merge_balance.sla), so
+// every shape in this file trapped 1015 there. The text backend now
+// carries the N-way form of the if/else consumption compensation:
+// per-arm end sets are collected at each fallthrough jump, the
+// differential union is released on the arms that did not consume it
+// (inserted before the arm's jump to the merge), and a no-default
+// switch's skip path is routed through a dedicated skip block with
+// its own compensation. All shapes below pass on both backends; the
+// enum-match and switch-default tests were added by that line to pin
+// the genMatchExpr and default-arm paths alongside the Option/Result
+// and skip-path shapes.
 
 fn fum_take_string(s: String) -> u64 {
     return len(s);
@@ -93,5 +103,78 @@ fn fum_take_string(s: String) -> u64 {
     }
     if total != 360000 {
         panic(7104);
+    };
+}
+
+enum FumEvent {
+    A { v: u64 },
+    B { v: u64 },
+}
+
+@test "enum match merge string consumed in one arm"() {
+    let s: String = format("hello world hello!");
+    let n: u64 = 0;
+    let e = FumEvent::A { v: 7 };
+    match e {
+        FumEvent::A { v } => {
+            n = fum_take_string(s) + v;
+        },
+        FumEvent::B { v } => {
+            n = v;
+        },
+    };
+    if n != 25 {
+        panic(7105);
+    };
+}
+
+@test "enum match merge string consumed in second arm"() {
+    let s: String = format("hello world hello!");
+    let n: u64 = 0;
+    let e = FumEvent::B { v: 7 };
+    match e {
+        FumEvent::A { v } => {
+            n = v;
+        },
+        FumEvent::B { v } => {
+            n = fum_take_string(s) + v;
+        },
+    };
+    if n != 25 {
+        panic(7106);
+    };
+}
+
+@test "switch default merge string consumed in one case"() {
+    let s: String = format("hello world hello!");
+    let n: u64 = 0;
+    let tag: i64 = 9;
+    switch tag {
+        1 => {
+            n = fum_take_string(s);
+        },
+        default => {
+            n = 0;
+        },
+    };
+    if n != 0 {
+        panic(7107);
+    };
+}
+
+@test "switch default merge string consumed in default"() {
+    let s: String = format("hello world hello!");
+    let n: u64 = 0;
+    let tag: i64 = 9;
+    switch tag {
+        1 => {
+            n = 0;
+        },
+        default => {
+            n = fum_take_string(s);
+        },
+    };
+    if n != 18 {
+        panic(7108);
     };
 }

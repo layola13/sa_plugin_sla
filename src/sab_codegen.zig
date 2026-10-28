@@ -3083,28 +3083,7 @@ pub const Codegen = struct {
             i -= 1;
             const local = self.locals.items[i];
             if (except != null and local.reg == except.?) continue;
-            if (self.released_regs.contains(local.reg)) continue;
-            if (local.is_param) {
-                const action = try self.paramCleanupAction(local);
-                if (action.skips()) continue;
-                if (action.marksConsumed()) {
-                    try self.markConsumed(local.reg);
-                    continue;
-                }
-                if (action.consumes()) {
-                    try self.emitMove(local.reg);
-                    continue;
-                }
-            }
-            if (local.stack_ty != null) {
-                try self.releaseStackLocalValue(local);
-                continue;
-            }
-            if (local.is_stack_alloc) {
-                if (self.stack_alloc_emitted.contains(local.reg)) try self.emitRelease(local.reg);
-                continue;
-            }
-            try self.emitRelease(local.reg);
+            try self.emitCleanupLocalDrop(local);
         }
     }
 
@@ -3241,6 +3220,71 @@ pub const Codegen = struct {
         }
     }
 
+    /// True when `ty` is an owned heap-buffer value type whose buffer is
+    /// released by `@sa_vec_free`: SLA `String` and `Vec<T>` share the
+    /// Vec struct layout and the same free entry point. The check is
+    /// deliberately strict (no borrow/pointer peeling): a binding whose
+    /// declared type is exactly the owned user-defined type owns its
+    /// buffer, while `&String`/`&Vec<T>` bindings carry a borrow type and
+    /// must never be freed by the borrower.
+    fn ownedBufferDropType(ty: ?*const ast.Type) bool {
+        const t = ty orelse return false;
+        if (t.* != .user_defined) return false;
+        return std.mem.eql(u8, t.user_defined.name, "String") or
+            std.mem.eql(u8, t.user_defined.name, "Vec");
+    }
+
+    /// Emit the deep drop for an owned String/Vec value: `@sa_vec_free`
+    /// takes the buffer out of the Vec struct and releases both the
+    /// buffer and the struct. A bare SAB `release` on the struct pointer
+    /// frees only the struct allocation and leaks the buffer (the F1/F-perf-2
+    /// residual measured on slanginx/slaredis), so cleanup paths for
+    /// owned String/Vec values must route here instead of `emitRelease`.
+    fn emitOwnedBufferFree(self: *Codegen, reg: u32) !void {
+        if (self.released_regs.contains(reg)) return;
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_free"});
+        try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_vec_free(^{s})", .{self.symbols.items[reg]}));
+        try self.released_regs.put(reg, {});
+    }
+
+    /// Full cleanup drop for one local, mirroring the sequential
+    /// (non-branch) cleanup structure: parameter capability actions,
+    /// stack-slot values, stack allocations, then register values.
+    /// Owned String/Vec values get the deep buffer drop; everything
+    /// else keeps the previous shallow release/move behaviour.
+    fn emitCleanupLocalDrop(self: *Codegen, local: Local) !void {
+        if (self.released_regs.contains(local.reg)) return;
+        if (local.is_param) {
+            const action = try self.paramCleanupAction(local);
+            if (action.skips()) return;
+            if (action.marksConsumed()) {
+                try self.markConsumed(local.reg);
+                return;
+            }
+            if (action.consumes()) {
+                if (ownedBufferDropType(local.ty)) {
+                    try self.emitOwnedBufferFree(local.reg);
+                    return;
+                }
+                try self.emitMove(local.reg);
+                return;
+            }
+        }
+        if (local.stack_ty != null) {
+            try self.releaseStackLocalValue(local);
+            return;
+        }
+        if (local.is_stack_alloc) {
+            if (self.stack_alloc_emitted.contains(local.reg)) try self.emitRelease(local.reg);
+            return;
+        }
+        if (ownedBufferDropType(local.ty)) {
+            try self.emitOwnedBufferFree(local.reg);
+            return;
+        }
+        try self.emitRelease(local.reg);
+    }
+
     fn releaseStackLocalValue(self: *Codegen, local: Local) !void {
         const ty = local.stack_ty orelse return;
         if (self.released_regs.contains(local.reg)) return;
@@ -3252,7 +3296,11 @@ pub const Codegen = struct {
             if (!self.typeIsCopyValue(ty)) {
                 const value = try self.intern(try self.newTmp());
                 try self.emitLoad(value, local.reg, 0, try storagePrimType(ty));
-                try self.emitRelease(value);
+                if (ownedBufferDropType(ty)) {
+                    try self.emitOwnedBufferFree(value);
+                } else {
+                    try self.emitRelease(value);
+                }
             }
             try self.markConsumed(local.reg);
             return;
@@ -3263,7 +3311,11 @@ pub const Codegen = struct {
         }
         const value = try self.intern(try self.newTmp());
         try self.emitLoad(value, local.reg, 0, try storagePrimType(ty));
-        try self.emitRelease(value);
+        if (ownedBufferDropType(ty)) {
+            try self.emitOwnedBufferFree(value);
+        } else {
+            try self.emitRelease(value);
+        }
         try self.emitRelease(local.reg);
     }
 
@@ -3273,25 +3325,7 @@ pub const Codegen = struct {
             i -= 1;
             const local = self.locals.items[i];
             if (!std.mem.eql(u8, local.name, name)) continue;
-            if (local.is_param) {
-                const action = try self.paramCleanupAction(local);
-                if (action.skips()) return;
-                if (action.marksConsumed()) {
-                    try self.markConsumed(local.reg);
-                    return;
-                }
-                if (action.consumes()) {
-                    if (!self.released_regs.contains(local.reg)) try self.emitMove(local.reg);
-                    return;
-                }
-            }
-            if (local.stack_ty != null) return try self.releaseStackLocalValue(local);
-            if (local.is_stack_alloc) {
-                if (self.stack_alloc_emitted.contains(local.reg)) try self.emitRelease(local.reg);
-                return;
-            }
-            if (self.released_regs.contains(local.reg)) return;
-            try self.emitRelease(local.reg);
+            try self.emitCleanupLocalDrop(local);
             return;
         }
 
@@ -3646,7 +3680,17 @@ pub const Codegen = struct {
             return;
         }
         if (!lowering_rules.exprResultNeedsRelease(expr)) return;
-        if (!self.isLocalReg(reg)) try self.emitRelease(reg);
+        if (!self.isLocalReg(reg)) {
+            // An unconsumed owned String/Vec expression temporary (e.g. a
+            // format() result used only through a borrow view) owns its
+            // buffer: drop it deeply instead of leaking the buffer behind
+            // a bare register release.
+            if (ownedBufferDropType(self.tc.expr_types.get(expr))) {
+                try self.emitOwnedBufferFree(reg);
+            } else {
+                try self.emitRelease(reg);
+            }
+        }
     }
 
     fn releaseStoredExprResultIfNeeded(self: *Codegen, expr: *const ast.Node, reg: u32, stored_ty: *const ast.Type) !void {
@@ -8955,7 +8999,16 @@ pub const Codegen = struct {
         }
 
         const dst = self.localReg(name) orelse try self.intern(name);
-        if (dst != value and !self.released_regs.contains(dst)) try self.emitRelease(dst);
+        if (dst != value and !self.released_regs.contains(dst)) {
+            // Reassignment drops the previous value: for owned String/Vec
+            // targets that drop must free the old buffer, not just the
+            // struct allocation a bare `release` covers.
+            if (ownedBufferDropType(self.localType(name))) {
+                try self.emitOwnedBufferFree(dst);
+            } else {
+                try self.emitRelease(dst);
+            }
+        }
         try self.emitAssignReg(dst, value);
     }
 
@@ -10253,7 +10306,11 @@ pub const Codegen = struct {
             i -= 1;
             const local = self.locals.items[i];
             if (local.is_param or local.stack_ty != null or self.released_regs.contains(local.reg)) continue;
-            try self.emitRelease(local.reg);
+            if (ownedBufferDropType(local.ty)) {
+                try self.emitOwnedBufferFree(local.reg);
+            } else {
+                try self.emitRelease(local.reg);
+            }
         }
     }
 

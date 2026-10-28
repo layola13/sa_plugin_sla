@@ -2526,6 +2526,165 @@ test "sla shared static call plan emits void calls without result registers" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sa codegen frees owned String and Vec params deeply" {
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    // F-perf-2 regression: by-value String/Vec parameters own their heap
+    // buffer, but the SA-text emitter never registered them in the drop
+    // sets, so function-exit cleanup emitted a bare `!param` register
+    // release and leaked the buffer (only the Vec struct was freed).
+    const source =
+        \\@import "sa_std/string.sa"
+        \\@import "sa_std/vec.sa"
+        \\
+        \\fn getlen(text: String) -> u64 {
+        \\    let n: u64 = len(text);
+        \\    return n;
+        \\}
+        \\
+        \\fn sumv(v: Vec<i32>) -> i64 {
+        \\    let total: i64 = 0;
+        \\    let i: i64 = 0;
+        \\    let cnt = len(v) as i64;
+        \\    while i < cnt {
+        \\        total = total + (v[i] as i64);
+        \\        i = i + 1;
+        \\    }
+        \\    return total;
+        \\}
+        \\
+        \\@test "param drops"() {
+        \\    let s: String = format("hello world");
+        \\    if getlen(s) != 11 { panic(25011); };
+        \\    let values: Vec<i32> = Vec::new();
+        \\    values.push(4);
+        \\    values.push(5);
+        \\    if sumv(values) != 9 { panic(25012); };
+        \\}
+    ;
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_fw.writer(),
+        .{
+            .test_filter = "param drops",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND STRING_BUF_FREE text") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND VEC_FREE v") != null);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab codegen frees owned String values deeply" {
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    // F-perf-2 regression: the SAB emitter cleaned owned String values up
+    // with a bare `release` (locals, reassignment predecessors) or a
+    // bookkeeping `move_` (by-value params). SAB `release` frees only the
+    // Vec struct allocation, so every dropped String leaked its heap
+    // buffer. Cleanup must call @sa_vec_free, which releases both.
+    const source =
+        \\@import "sa_std/ptr.sa"
+        \\@import "sa_std/string.sa"
+        \\
+        \\fn view_only(text: String) -> u64 {
+        \\    let n: u64 = len(text);
+        \\    return n;
+        \\}
+        \\
+        \\fn accumulate(p: ptr, n: u64) -> String {
+        \\    let out: String = format("");
+        \\    let i: u64 = 0;
+        \\    while i < n {
+        \\        let one: [u8; 1] = [PTR_BYTE_AT(p, i)];
+        \\        let s: String = one.iter().collect<String>();
+        \\        out = format("{}{}", out, s);
+        \\        i = i + 1;
+        \\    }
+        \\    return out;
+        \\}
+        \\
+        \\@test "sab string drops"() {
+        \\    let s: String = format("hello world");
+        \\    if view_only(s) != 11 { panic(25021); };
+        \\    let p: ptr = STR_PTR("127.0.0.1");
+        \\    let built: String = accumulate(p, 9);
+        \\    if len(built) != 9 { panic(25022); };
+        \\}
+    ;
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "main.sla",
+        ".sla-cache/sab/sab_string_drops.sab",
+        stderr_fw.writer(),
+        .{
+            .test_filter = "sab string drops",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    const disasm = try sci_bridge.disasmSabAlloc(arena.allocator(), sab_bytes);
+
+    // The by-value String param of view_only must be dropped with a
+    // @sa_vec_free call inside view_only's own instruction range.
+    const view_start = std.mem.indexOf(u8, disasm, "func_decl $sla__view_only") orelse return error.TestUnexpectedResult;
+    const view_rest = disasm[view_start..];
+    const view_end = std.mem.indexOf(u8, view_rest, "\nfunc_decl ") orelse view_rest.len;
+    try std.testing.expect(std.mem.indexOf(u8, view_rest[0..view_end], "call \"@sa_vec_free\"") != null);
+
+    // accumulate's loop must drop the reassignment predecessor of `out`
+    // and the per-iteration `s`: at least two @sa_vec_free calls in its
+    // instruction range.
+    const acc_start = std.mem.indexOf(u8, disasm, "func_decl $sla__accumulate") orelse return error.TestUnexpectedResult;
+    const acc_rest = disasm[acc_start..];
+    const acc_end = std.mem.indexOf(u8, acc_rest, "\nfunc_decl ") orelse acc_rest.len;
+    try std.testing.expect(std.mem.count(u8, acc_rest[0..acc_end], "call \"@sa_vec_free\"") >= 2);
+
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla reachability merges only call facts shared by every caller" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

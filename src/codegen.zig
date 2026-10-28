@@ -130,6 +130,7 @@ pub const Codegen = struct {
     mpsc_sender_channels: std.StringHashMap([]const u8),
     mpsc_receiver_bindings: std.StringHashMap(void),
     string_buf_bindings: std.StringHashMap(void),
+    vec_buf_bindings: std.StringHashMap(void),
     hashmap_bindings: std.StringHashMap(void),
     btree_map_bindings: std.StringHashMap(void),
     hashset_bindings: std.StringHashMap(void),
@@ -223,6 +224,7 @@ pub const Codegen = struct {
             .mpsc_sender_channels = std.StringHashMap([]const u8).init(allocator),
             .mpsc_receiver_bindings = std.StringHashMap(void).init(allocator),
             .string_buf_bindings = std.StringHashMap(void).init(allocator),
+            .vec_buf_bindings = std.StringHashMap(void).init(allocator),
             .hashmap_bindings = std.StringHashMap(void).init(allocator),
             .btree_map_bindings = std.StringHashMap(void).init(allocator),
             .hashset_bindings = std.StringHashMap(void).init(allocator),
@@ -298,6 +300,7 @@ pub const Codegen = struct {
         self.mpsc_sender_channels.deinit();
         self.mpsc_receiver_bindings.deinit();
         self.string_buf_bindings.deinit();
+        self.vec_buf_bindings.deinit();
         self.hashmap_bindings.deinit();
         self.btree_map_bindings.deinit();
         self.hashset_bindings.deinit();
@@ -985,6 +988,11 @@ pub const Codegen = struct {
         }
         if (self.string_buf_bindings.contains(resolved_name)) {
             self.outPrint("    EXPAND STRING_BUF_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
+            return;
+        }
+        if (self.vec_buf_bindings.contains(resolved_name)) {
+            self.outPrint("    EXPAND VEC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
         }
@@ -1778,6 +1786,9 @@ pub const Codegen = struct {
     }
 
     fn markOwnedCollectionBinding(self: *Codegen, name: []const u8, ty: *const ast.Type) CodegenError!void {
+        if (isOwnedVecType(ty)) {
+            self.vec_buf_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+        }
         if (hashMapTypes(ty) != null) {
             self.hashmap_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
         }
@@ -3275,6 +3286,19 @@ pub const Codegen = struct {
 
     fn isFormatStringType(ty: *const ast.Type) bool {
         return lowering_rules.isFormatStringType(ty);
+    }
+
+    /// Strict owned-buffer type checks (no borrow/pointer peeling, unlike
+    /// isFormatStringType): the declared type itself is the owned
+    /// user-defined `String`/`Vec` value, so the binding owns the heap
+    /// buffer and must drop it deeply. Borrow-typed bindings (`&String`,
+    /// `&Vec<T>`) carry a borrow type tag and are excluded.
+    fn isOwnedStringType(ty: *const ast.Type) bool {
+        return ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "String");
+    }
+
+    fn isOwnedVecType(ty: *const ast.Type) bool {
+        return ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "Vec");
     }
 
     fn escapedStringByteLen(value: []const u8) usize {
@@ -7679,6 +7703,7 @@ pub const Codegen = struct {
         self.mpsc_sender_channels.clearRetainingCapacity();
         self.mpsc_receiver_bindings.clearRetainingCapacity();
         self.string_buf_bindings.clearRetainingCapacity();
+        self.vec_buf_bindings.clearRetainingCapacity();
         self.hashmap_bindings.clearRetainingCapacity();
         self.btree_map_bindings.clearRetainingCapacity();
         self.hashset_bindings.clearRetainingCapacity();
@@ -7764,6 +7789,18 @@ pub const Codegen = struct {
 
         for (f.params) |p| {
             try self.rememberLocalBindingType(p.name, p.ty);
+            // By-value String/Vec parameters own their heap buffer, but
+            // unlike let bindings they were never registered in the drop
+            // sets, so scope cleanup fell back to a bare `!param` register
+            // release and leaked the buffer (F-perf-2). Register them so
+            // cleanup emits the deep free. Borrow parameters are excluded:
+            // they do not own the buffer.
+            if (!p.is_borrow and isOwnedStringType(p.ty)) {
+                self.string_buf_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+            }
+            if (!p.is_borrow and isOwnedVecType(p.ty)) {
+                self.vec_buf_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+            }
             if (p.ty.* == .borrow and sliceElementType(p.ty.borrow) != null) {
                 const raw_param = try self.newTmp();
                 const raw_ptr = try self.newTmp();
@@ -7851,6 +7888,7 @@ pub const Codegen = struct {
         self.mpsc_sender_channels.clearRetainingCapacity();
         self.mpsc_receiver_bindings.clearRetainingCapacity();
         self.string_buf_bindings.clearRetainingCapacity();
+        self.vec_buf_bindings.clearRetainingCapacity();
         self.hashmap_bindings.clearRetainingCapacity();
         self.btree_map_bindings.clearRetainingCapacity();
         self.hashset_bindings.clearRetainingCapacity();

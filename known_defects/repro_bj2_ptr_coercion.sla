@@ -1,0 +1,24 @@
+@import "sa_std/string.sa"
+@import "sa_std/env.sai"
+
+// BJ-2 minimal repro (triage: compiler type_checker coercion gap).
+// sa_env_buffer_data is declared `-> &ptr` in env.sai. Passing its
+// result directly as a `ptr` argument to a USER function fails type
+// checking: "checkExpr failed at call take_ptr ... (error.TypeMismatch)".
+// The same value coerces fine at a typed-let assignment, at return
+// position, and as an argument to an EXTERN function (sa_env_get).
+// An UNTYPED let keeps the &ptr type and also fails when passed on.
+// Verdict: the &ptr -> ptr coercion is missing only at user-call
+// argument checking in type_checker.zig; the .sai declarations are
+// correct (the materialized form is a no-op retype, used in
+// production by sa_std/http_proxy.sla).
+
+fn take_ptr(p: ptr) -> u64 {
+    return 0;
+}
+
+@test "bj2 direct pass to user fn"() {
+    let buf: u64 = sa_env_get(STR_PTR(format("PATH")), 4);
+    let n: u64 = take_ptr(sa_env_buffer_data(buf));
+    let fr: i32 = sa_env_buffer_free(buf);
+}

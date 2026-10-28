@@ -2576,11 +2576,14 @@ pub const Codegen = struct {
     }
 
     fn vecElementSlotSize(self: *Codegen, ty: *const ast.Type) usize {
-        const size = if (ty.* == .user_defined and lowering_rules.smartPointerType(ty) == null)
-            if (self.structDeclForType(ty)) |decl| structSize(decl) else typeSize(ty)
-        else
-            typeSize(ty);
-        return if (size < 8) 8 else size;
+        _ = self;
+        // The slot stride must match the shared lowering rule (and SAB):
+        // aggregate elements occupy one pointer-sized slot in a Vec buffer.
+        // The std macros this backend expands (SLICE_GET & friends) hardcode
+        // an 8-byte stride, and sa_vec_push stores a single word per slot;
+        // using the struct's inline size here desynchronized push-built
+        // buffers from slice reads at index >= 1.
+        return lowering_rules.vecElementSlotSize(ty);
     }
 
     fn typeString(ty: *const ast.Type) []const u8 {

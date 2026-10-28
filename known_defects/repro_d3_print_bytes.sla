@@ -1,0 +1,14 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/string.sa"
+
+// BM-D3 repro: direct call to the sa_print_bytes extern traps
+// CapabilityMismatch 1013 on the SA backend (SAB passes).
+// The .sai contract is (&msg: ptr, len: u64); the SA-text emitter
+// emits `call @sa_print_bytes(p, tmp_0)` without the borrow
+// prefix for any plain argument form (literal or ptr variable).
+
+@test "d3 direct sa_print_bytes via ptr variable"() {
+    let msg = format("hello");
+    let p: ptr = STR_PTR(msg);
+    sa_print_bytes(p, 5);
+}

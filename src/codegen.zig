@@ -167,6 +167,8 @@ pub const Codegen = struct {
     // consumed slot.
     move_out_stmt: ?*const ast.Node = null,
     move_out_name: ?[]const u8 = null,
+    rebind_move_out_stmt: ?*const ast.Node = null,
+    rebind_move_out_name: ?[]const u8 = null,
     current_async: bool,
     current_async_return_ty: ?*const ast.Type,
     async_pending_return_emitted: bool,
@@ -9865,6 +9867,37 @@ pub const Codegen = struct {
         self.move_out_name = arg.identifier;
     }
 
+    /// Follow-up line, generalized move-out (mirrors the SAB
+    /// codegen): the argument's binding is wholly reassigned later in
+    /// the same block before any read — proven dead at the call by
+    /// `lowering_rules.rebindMoveOutProven` — so the call may consume
+    /// it directly instead of deep-cloning. Shares the
+    /// one-claim-per-statement state with the self-assignment form;
+    /// the claim is recorded through `claimSelfAssignMoveOut`.
+    fn isRebindMoveOutArg(self: *Codegen, arg: *const ast.Node) bool {
+        if (arg.* != .identifier) return false;
+        const block = self.current_block orelse return false;
+        if (self.current_stmt_index >= block.len) return false;
+        if (self.move_out_stmt == block[self.current_stmt_index]) return false;
+        if (self.identifierUsedLaterInCurrentExpr(arg.identifier)) return false;
+        return lowering_rules.rebindMoveOutProven(block, self.current_stmt_index, arg.identifier, arg) != null;
+    }
+
+    /// Record a generalized-rebind claim: the shared
+    /// one-claim-per-statement state plus the overwriting statement
+    /// node, so the assignment emission for that statement can revive
+    /// the binding with a register rebind instead of storing through
+    /// the consumed slot register (which trips UseAfterMove).
+    fn claimRebindMoveOut(self: *Codegen, arg: *const ast.Node) void {
+        self.claimSelfAssignMoveOut(arg);
+        const block = self.current_block orelse return;
+        if (self.current_stmt_index >= block.len) return;
+        if (lowering_rules.rebindMoveOutProven(block, self.current_stmt_index, arg.identifier, arg)) |overwrite| {
+            self.rebind_move_out_stmt = overwrite;
+            self.rebind_move_out_name = arg.identifier;
+        }
+    }
+
     fn genVecCloneValue(self: *Codegen, source_reg: []const u8, elem_ty: *const ast.Type) CodegenError![]const u8 {
         const out = try self.newTmp();
         self.outPrint(
@@ -10105,8 +10138,15 @@ pub const Codegen = struct {
                     // the call consumes it — the assignment rebinds the
                     // slot — so pass the slot register itself (move-out)
                     // instead of paying for a full deep clone.
-                    const move_out = self.isSelfAssignMoveOutArg(arg);
-                    if (move_out) self.claimSelfAssignMoveOut(arg);
+                    // Follow-up line: the generalized rebind form
+                    // (binding wholly overwritten before any later read,
+                    // proven by rebindMoveOutProven) moves out on the
+                    // same claim.
+                    const self_move_out = self.isSelfAssignMoveOutArg(arg);
+                    const rebind_move_out = !self_move_out and self.isRebindMoveOutArg(arg);
+                    const move_out = self_move_out or rebind_move_out;
+                    if (self_move_out) self.claimSelfAssignMoveOut(arg);
+                    if (rebind_move_out) self.claimRebindMoveOut(arg);
                     // Language semantics allow reusing a by-value Vec after a plain
                     // call (typechecker does not consume it). The SA ABI still uses
                     // ^ and the callee frees, so keep the source live by cloning
@@ -11405,10 +11445,16 @@ pub const Codegen = struct {
                     // the SA referee (UseAfterMove); rebind the register
                     // instead, which is the form the referee accepts and
                     // branch merging expects for a live target.
-                    const move_out_rebind = self.move_out_stmt == stmt and self.move_out_name != null and std.mem.eql(u8, self.resolveBindingName(self.move_out_name.?), target_name) and !self.refcell_borrow_handles.contains(stored_val_reg);
+                    // Follow-up line: the same revival applies when an
+                    // earlier statement's call claimed the generalized
+                    // rebind move-out and this statement is the recorded
+                    // overwriting statement.
+                    const move_out_rebind = (self.move_out_stmt == stmt and self.move_out_name != null and std.mem.eql(u8, self.resolveBindingName(self.move_out_name.?), target_name) and !self.refcell_borrow_handles.contains(stored_val_reg)) or
+                        (self.rebind_move_out_stmt == stmt and self.rebind_move_out_name != null and std.mem.eql(u8, self.resolveBindingName(self.rebind_move_out_name.?), target_name) and !self.refcell_borrow_handles.contains(stored_val_reg));
                     if (self.bindingStorageAddress(target_name)) |address| {
                         self.outPrint("    store {s}, {s} as {s}\n", .{ address, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
+                        if (move_out_rebind) _ = self.consumed_bindings.remove(target_name);
                     } else if (move_out_rebind and (self.assigned_value_slots.contains(target_name) or self.addressable_bindings.contains(target_name) or self.stack_alloc_bindings.contains(target_name))) {
                         self.outPrint("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
                         _ = self.consumed_bindings.remove(target_name);

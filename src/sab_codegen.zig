@@ -6749,6 +6749,30 @@ pub const Codegen = struct {
         self.move_out_name = arg.identifier;
     }
 
+    /// Follow-up line, generalized move-out (mirrors the SA text
+    /// codegen): the argument's binding is wholly reassigned later in
+    /// the same block before any read — proven dead at the call by
+    /// `lowering_rules.rebindMoveOutProven` — so the call may consume
+    /// it directly instead of deep-cloning. Shares the
+    /// one-claim-per-statement state with the self-assignment form;
+    /// the claim is recorded through `claimSelfAssignMoveOut`.
+    fn isRebindMoveOutArg(self: *Codegen, arg: *const ast.Node) bool {
+        if (arg.* != .identifier) return false;
+        const block = self.current_block orelse return false;
+        if (self.current_stmt_index >= block.len) return false;
+        if (self.move_out_stmt == block[self.current_stmt_index]) return false;
+        if (self.identifierUsedLaterInCurrentExpr(arg.identifier)) return false;
+        return lowering_rules.rebindMoveOutProven(block, self.current_stmt_index, arg.identifier, arg) != null;
+    }
+
+    /// Record a generalized-rebind claim. The SAB assignment emission
+    /// needs no extra state beyond the shared one-claim bookkeeping:
+    /// the consumed slot register is skipped by the overwrite's
+    /// old-value release and rebound by its assign.
+    fn claimRebindMoveOut(self: *Codegen, arg: *const ast.Node) void {
+        self.claimSelfAssignMoveOut(arg);
+    }
+
     fn genVecCloneValue(self: *Codegen, source_reg: u32, elem_ty: *const ast.Type) anyerror!u32 {
         try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_new", "sa_vec_push", "sa_mem_copy", "sa_vec_with_capacity", "sa_vec_extend_from_slice" });
         const out = try self.intern(try self.newTmp());
@@ -16318,8 +16342,14 @@ pub const Codegen = struct {
                     }
                     // REG-BR-6: self-assignment tail form (`x = f(x, ..)`)
                     // moves out of the slot instead of deep-cloning it.
-                    const move_out = prefix == '^' and self.isSelfAssignMoveOutArg(arg);
-                    if (move_out) self.claimSelfAssignMoveOut(arg);
+                    // Follow-up line: the generalized rebind form (binding
+                    // wholly overwritten before any later read) moves out
+                    // on the same claim.
+                    const self_move_out = prefix == '^' and self.isSelfAssignMoveOutArg(arg);
+                    const rebind_move_out = prefix == '^' and !self_move_out and self.isRebindMoveOutArg(arg);
+                    const move_out = self_move_out or rebind_move_out;
+                    if (self_move_out) self.claimSelfAssignMoveOut(arg);
+                    if (rebind_move_out) self.claimRebindMoveOut(arg);
                     if (!move_out and prefix == '^' and arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
                         if (arg_ty) |ty| {
                             if (lowering_rules.vecElementType(ty)) |elem_ty| {
@@ -16356,8 +16386,12 @@ pub const Codegen = struct {
                 if (materialization.transfers_ownership) {
                     // REG-BR-6: self-assignment tail form (`x = f(x, ..)`)
                     // moves out of the slot instead of deep-cloning it.
-                    const move_out = self.isSelfAssignMoveOutArg(arg);
-                    if (move_out) self.claimSelfAssignMoveOut(arg);
+                    // Follow-up line: generalized rebind form, same claim.
+                    const self_move_out = self.isSelfAssignMoveOutArg(arg);
+                    const rebind_move_out = !self_move_out and self.isRebindMoveOutArg(arg);
+                    const move_out = self_move_out or rebind_move_out;
+                    if (self_move_out) self.claimSelfAssignMoveOut(arg);
+                    if (rebind_move_out) self.claimRebindMoveOut(arg);
                     if (!move_out and arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
                         if (arg_ty) |ty| {
                             if (lowering_rules.vecElementType(ty)) |elem_ty| {

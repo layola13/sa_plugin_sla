@@ -6713,6 +6713,111 @@ pub fn countIdentifierUsesExcept(node: *const ast.Node, name: []const u8, except
     }
 }
 
+/// Follow-up line, generalized move-out: whether `node` contains a
+/// `break`/`continue` that would escape the loop enclosing `node`
+/// (escapes bound by a loop nested inside `node` do not count). An
+/// escape in the window between a consuming call and the overwrite of
+/// its argument binding could skip the overwrite and re-enter the
+/// loop head with the binding already consumed.
+pub fn nodeContainsLoopEscape(node: *const ast.Node) bool {
+    return switch (node.*) {
+        .break_stmt, .continue_stmt => true,
+        .block_stmt => |block| blockContainsLoopEscape(block.body),
+        .if_expr => |ife| blk: {
+            if (blockContainsLoopEscape(ife.then_block)) break :blk true;
+            if (ife.else_block) |else_block| {
+                if (blockContainsLoopEscape(else_block)) break :blk true;
+            }
+            break :blk false;
+        },
+        .match_expr => |mat| blk: {
+            for (mat.cases) |case| {
+                if (blockContainsLoopEscape(case.body)) break :blk true;
+            }
+            break :blk false;
+        },
+        .switch_expr => |sw| blk: {
+            for (sw.cases) |case| {
+                if (blockContainsLoopEscape(case.body)) break :blk true;
+            }
+            break :blk false;
+        },
+        .let_else_stmt => |let| blockContainsLoopEscape(let.else_block),
+        .unsafe_expr => |u| blockContainsLoopEscape(u.body),
+        // while/for bind their own break/continue, and a closure body
+        // cannot contain an escape for an enclosing loop.
+        else => false,
+    };
+}
+
+pub fn blockContainsLoopEscape(body: []const *ast.Node) bool {
+    for (body) |stmt| {
+        if (nodeContainsLoopEscape(stmt)) return true;
+    }
+    return false;
+}
+
+/// Follow-up line, generalized move-out liveness proof. `arg` is a
+/// by-value call argument in the statement at `current_idx` of
+/// `block`, bound to identifier `name`. Returns the overwriting
+/// statement node when the binding is dead at the call — so the call
+/// may move out of it instead of deep-cloning — and null otherwise.
+/// Dead means all of the following hold:
+///   1. the current statement has no other use of `name` outside
+///      `arg` (walkable statement shapes only; anything else, and
+///      any unwalkable subexpression, disqualifies);
+///   2. the first later statement in the block that mentions `name`
+///      is a whole-variable assignment to `name` whose value does
+///      not read `name` (the overwrite revives the binding);
+///   3. no statement in between binds `name`, mentions `name`, or
+///      contains a loop escape that could skip the overwrite.
+/// The self-assignment form (`x = f(x, ..)`) is deliberately not
+/// claimed here; `tailChainContainsArg` owns it.
+pub fn rebindMoveOutProven(block: []const *ast.Node, current_idx: usize, name: []const u8, arg: *const ast.Node) ?*const ast.Node {
+    if (current_idx >= block.len) return null;
+    const cur = block[current_idx];
+    switch (cur.*) {
+        .let_stmt => |let| {
+            if (countIdentifierUsesExcept(let.value, name, arg) != 0) return null;
+        },
+        .const_stmt => |constant| {
+            if (countIdentifierUsesExcept(constant.value, name, arg) != 0) return null;
+        },
+        .let_destructure_stmt => |let| {
+            if (countIdentifierUsesExcept(let.value, name, arg) != 0) return null;
+        },
+        .expr_stmt => |expr| {
+            if (countIdentifierUsesExcept(expr, name, arg) != 0) return null;
+        },
+        .assign_stmt => |assign| {
+            if (assign.target.* == .identifier and std.mem.eql(u8, assign.target.identifier, name)) return null;
+            if (countIdentifierUsesExcept(assign.target, name, arg) != 0) return null;
+            if (countIdentifierUsesExcept(assign.value, name, arg) != 0) return null;
+        },
+        .return_stmt => |ret| {
+            if (ret.value) |value| {
+                if (countIdentifierUsesExcept(value, name, arg) != 0) return null;
+            }
+        },
+        else => return null,
+    }
+    var idx = current_idx + 1;
+    while (idx < block.len) : (idx += 1) {
+        const stmt = block[idx];
+        if (stmt.* == .assign_stmt) {
+            const assign = stmt.assign_stmt;
+            if (assign.target.* == .identifier and std.mem.eql(u8, assign.target.identifier, name)) {
+                if (countIdentifierUsesExcept(assign.value, name, arg) != 0) return null;
+                return stmt;
+            }
+        }
+        if (sharedNodeBindsIdentifier(stmt, name)) return null;
+        if (nodeContainsLoopEscape(stmt)) return null;
+        if (sharedNodeUsesIdentifier(stmt, name)) return null;
+    }
+    return null;
+}
+
 test "shared lowering rules normalize derives and call argument prefixes" {
     const derives = [_][]const u8{ "PartialEq", "Hash" };
     const decl = ast.StructDecl{

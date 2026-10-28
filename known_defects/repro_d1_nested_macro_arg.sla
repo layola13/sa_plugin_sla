@@ -1,0 +1,44 @@
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+
+// BM-D1 minimal repro: a macro invocation nested as an argument of
+// another macro invocation traps SAB-direct lowering.
+//   sa sla test --test-backend sab  -> {"trap":"UseAfterMove","trap_code":1009}
+//   sa sla test --test-backend sa   -> passes
+// PTR_COPY_BYTES expands (via SAB std-macro fragments) to
+// `call @sa_mem_copy(&dst, &src, n)`; the inner PTR_BYTE_ADD is a
+// statement macro whose materialized temp register is misaccounted
+// by the outer fragment's argument binding. BM originally observed
+// the sibling signature UnknownRegister 1007 ("callee is not
+// declared") in slanginx's imported webpath.sla unit; the imported-
+// unit position is NOT required (this file is self-contained).
+// Passing forms: bind the address to a local first, pass &field
+// directly, or use a PTR_BYTE_AT byte loop (slanginx's workaround).
+
+struct MimeTypeS {
+    bytes: [u8; 40],
+    len: u64,
+}
+
+fn mime_new_s() -> MimeTypeS {
+    return MimeTypeS { bytes: [0u8; 40], len: 0 };
+}
+
+fn mime_fill_s(out: &MimeTypeS, lit: ptr, lit_len: u64) {
+    PTR_COPY_BYTES(PTR_BYTE_ADD(&out.bytes, 0), lit, lit_len);
+    out.len = lit_len;
+}
+
+@test "d1 nested macro arg"() {
+    let s = mime_new_s();
+    mime_fill_s(&s, STR_PTR(format("abc")), 3);
+    if s.len != 3 {
+        panic(4981);
+    };
+    if s.bytes[0] != 97 {
+        panic(4982);
+    };
+    if s.bytes[2] != 99 {
+        panic(4983);
+    };
+}

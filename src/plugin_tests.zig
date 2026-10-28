@@ -410,6 +410,27 @@ fn expectSlaCheckRedeclarationDiagnostic(file: []const u8, expected: []const u8)
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, expected));
 }
 
+fn expectSlaCheckUseAfterMoveCallDiagnostic(file: []const u8) !void {
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", file };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
+
+    try std.testing.expectEqual(@as(?u8, 1), code);
+    try stderr_fw.writer().flush();
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "Type Check Error"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "UseAfterMove"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "variable `x`"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "regbr6_borrow_only"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "explicit copy"));
+}
+
 fn expectSlaCheckSyntaxDiagnostic(file: []const u8, expected: []const u8) !void {
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
@@ -444,6 +465,14 @@ test "sla check reports redeclared symbol names" {
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_macro.sla", "macro `repeated_macro`");
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_method.sla", "method `score` for `RepeatedMethod`");
     try expectSlaCheckSyntaxDiagnostic("tests/test_error_bare_overload.sla", "found 'overload'");
+}
+
+test "sla check diagnoses repeated by-value call use with the consuming call" {
+    // REG-BR-6: on the pre-fix checker this file type-checked cleanly
+    // (exit 0) and the pattern only failed later as a raw SA referee
+    // UseAfterMove 1009 trap; the diagnostic must name the variable,
+    // the first consuming call, and the explicit-copy remedy.
+    try expectSlaCheckUseAfterMoveCallDiagnostic("tests/test_error_use_after_move_call.sla");
 }
 
 test "sla check uses imported signatures without checking imported function bodies" {

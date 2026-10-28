@@ -43,6 +43,12 @@ pub const Symbol = struct {
     is_const: bool,
     state: ValueState,
     borrow_source: ?[]const u8 = null,
+    // REG-BR-6: when this binding was consumed by being passed as a plain
+    // by-value call argument, the name of that first consuming call, so a
+    // later use can be diagnosed at the language level (naming the variable,
+    // the first consuming call, and the explicit-copy fix) instead of leaking
+    // the SA referee's UseAfterMove 1009.
+    consumed_by_call: ?[]const u8 = null,
 };
 
 pub const InjectedScopeBinding = struct {
@@ -177,6 +183,13 @@ pub const TypeChecker = struct {
     current_function_namespace: ?[]const u8,
     current_loop_scope: ?*Scope,
     current_loop_body_terminates: bool,
+    // REG-BR-6: while checking an assignment statement's right-hand
+    // side, the target identifier and value node, so the call-argument
+    // consumption hook can recognize the self-assignment tail form
+    // (`x = f(x, ..)`) whose consumption is healed by the assignment
+    // itself.
+    assign_rhs_target_name: ?[]const u8 = null,
+    assign_rhs_value: ?*const ast.Node = null,
     global_scope: ?*Scope,
     unsafe_depth: usize,
     injected_scope_bindings: []const InjectedScopeBinding,
@@ -260,6 +273,7 @@ pub const TypeChecker = struct {
             }
         }
         sym.state = .consumed;
+        sym.consumed_by_call = null;
     }
 
     fn consumeExternMoveArg(self: *TypeChecker, scope: *Scope, param: contract_parser.Param, arg: *const ast.Node) TypeError!void {
@@ -775,6 +789,11 @@ pub const TypeChecker = struct {
             {
                 self.expr_types.put(arg, param.ty) catch return TypeError.OutOfMemory;
             }
+            // REG-BR-6: a plain by-value argument of a non-Copy owned type
+            // moves the binding at the SA level. Record that consumption
+            // here so a second use is diagnosed by the checker (naming the
+            // variable and this call) instead of reaching the SA referee.
+            try self.consumeCallArgIfMoved(scope, param, arg, arg_ty, call_name);
         }
     }
 
@@ -974,6 +993,130 @@ pub const TypeChecker = struct {
             },
             else => false,
         };
+    }
+
+    // REG-BR-6 helpers: mirror the emitters' call-arg ownership facts
+    // (lowering_rules.ValueArgOwnershipFacts and the shallow-copy / Vec-clone
+    // preservation rules in codegen.zig and sab_codegen.zig) so the checker
+    // consumes exactly those by-value identifier arguments that the SA
+    // lowering actually moves without preserving the source binding.
+    fn typeIsCopyValue(self: *TypeChecker, ty: *const ast.Type) bool {
+        if (lowering_rules.typeIsCopyValueBase(ty)) |decision| return decision;
+        return switch (ty.*) {
+            .user_defined => self.typeHasCopyDerive(ty),
+            .tuple => |tuple| blk: {
+                for (tuple.elems) |elem| {
+                    if (!self.typeIsCopyValue(elem)) break :blk false;
+                }
+                break :blk true;
+            },
+            .array => |arr| self.typeIsCopyValue(arr.elem),
+            else => false,
+        };
+    }
+
+    fn typeHasCopyDerive(self: *TypeChecker, ty: *const ast.Type) bool {
+        if (lowering_rules.typeHasCopyDeriveBase(ty)) |decision| return decision;
+        if (ty.* != .user_defined) return false;
+        const decl = self.structDeclForType(@constCast(ty)) orelse return false;
+        if (!lowering_rules.typeHasCopyDeriveStructGate(decl)) return false;
+        for (decl.fields) |field| {
+            if (!self.typeIsCopyValue(field.ty)) return false;
+        }
+        return true;
+    }
+
+    fn typeIsShallowCopyCallArgValue(self: *TypeChecker, ty: *const ast.Type, depth: usize) bool {
+        if (lowering_rules.shallowCopyCallArgValueBase(ty, depth)) |decision| return decision;
+        return switch (ty.*) {
+            .tuple => |tuple| blk: {
+                for (tuple.elems) |elem| {
+                    if (!self.typeIsShallowCopyCallArgValue(elem, depth + 1)) break :blk false;
+                }
+                break :blk true;
+            },
+            .array => |arr| self.typeIsShallowCopyCallArgValue(arr.elem, depth + 1),
+            .user_defined => |ud| blk: {
+                if (lowering_rules.shallowCopyCallArgUserDefinedBase(ty, depth)) |decision| break :blk decision;
+                if (self.enums.contains(ud.name)) break :blk true;
+                const decl = self.structDeclForType(@constCast(ty)) orelse break :blk false;
+                if (!lowering_rules.shallowCopyCallArgStructGate(decl)) break :blk false;
+                for (decl.fields) |field| {
+                    if (!self.typeIsShallowCopyCallArgValue(field.ty, depth + 1)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
+    fn callArgShallowCopyPreserved(self: *TypeChecker, arg: *const ast.Node, param: ast.Param, arg_ty: *ast.Type) bool {
+        return lowering_rules.callArgIsShallowCopyValueCandidate(
+            arg,
+            param,
+            arg_ty,
+            self.typeIsCopyValue(arg_ty),
+            self.typeIsShallowCopyCallArgValue(arg_ty, 0),
+        ) and self.structDeclForType(arg_ty) != null;
+    }
+
+    // Enums whose variant payloads are all Copy values move as plain scalars
+    // at the SA level; there is no owned register to consume.
+    fn enumPayloadIsCopy(self: *TypeChecker, ty: *const ast.Type) bool {
+        if (ty.* != .user_defined) return false;
+        const decl = self.enums.get(ty.user_defined.name) orelse return false;
+        for (decl.variants) |variant| {
+            for (variant.fields) |field| {
+                if (!self.typeIsCopyValue(field.ty)) return false;
+            }
+        }
+        return true;
+    }
+
+    fn consumeCallArgIfMoved(
+        self: *TypeChecker,
+        scope: *Scope,
+        param: ast.Param,
+        arg: *const ast.Node,
+        arg_ty: *ast.Type,
+        call_name: []const u8,
+    ) TypeError!void {
+        if (arg.* != .identifier) return;
+        // Inference placeholders (macro parameters inside a macro
+        // definition, unresolved generics) cannot be classified here;
+        // macro forwarding has its own consumption analysis.
+        if (arg_ty.* == .infer) return;
+        if (!lowering_rules.valueArgTransfersOwnershipFromParam(param, arg_ty, self.typeIsCopyValue(arg_ty))) return;
+        // The emitters keep a Vec source binding live by cloning it when a
+        // later use exists, so a Vec argument never strands the binding.
+        if (lowering_rules.vecElementType(arg_ty) != null) return;
+        // Shallow-copy-preserved struct arguments are copied at the call
+        // boundary by both emitters; the source binding stays live.
+        if (self.callArgShallowCopyPreserved(arg, param, arg_ty)) return;
+        if (self.enumPayloadIsCopy(arg_ty)) return;
+        const sym = scope.lookup(arg.identifier) orelse return;
+        if (sym.is_const) return;
+        if (sym.state != .active) return;
+        // REG-BR-6 self-assignment tail form (`x = f(x, ..)`): the
+        // assignment redefines the binding immediately after the
+        // right-hand side is checked, so the consumption heals within
+        // the same statement. Consume directly here instead of going
+        // through consumeBinding, whose loop guard exists for
+        // consumptions that stay dead across a loop back-edge - this
+        // one cannot, on any path through the statement.
+        if (self.assign_rhs_target_name) |target_name| {
+            if (std.mem.eql(u8, target_name, arg.identifier)) {
+                if (self.assign_rhs_value) |rhs| {
+                    if (lowering_rules.tailChainContainsArg(rhs, arg) and lowering_rules.countIdentifierUsesExcept(rhs, arg.identifier, arg) == 0) {
+                        sym.state = .consumed;
+                        sym.consumed_by_call = call_name;
+                        return;
+                    }
+                }
+            }
+        }
+        try self.consumeBinding(scope, arg.identifier, sym, "call argument");
+        sym.consumed_by_call = call_name;
     }
 
     fn typeIsEq(self: *TypeChecker, ty: *ast.Type) bool {
@@ -2953,7 +3096,19 @@ pub const TypeChecker = struct {
                     self.expr_types.put(assign.target, sym.ty) catch return TypeError.OutOfMemory;
                     break :blk sym.ty;
                 } else try self.checkExpr(assign.target, scope);
-                const val_ty = try self.checkExpr(assign.value, scope);
+                const prev_assign_target = self.assign_rhs_target_name;
+                const prev_assign_value = self.assign_rhs_value;
+                if (assign.target.* == .identifier) {
+                    self.assign_rhs_target_name = assign.target.identifier;
+                    self.assign_rhs_value = assign.value;
+                }
+                const val_ty = self.checkExpr(assign.value, scope) catch |err| {
+                    self.assign_rhs_target_name = prev_assign_target;
+                    self.assign_rhs_value = prev_assign_value;
+                    return err;
+                };
+                self.assign_rhs_target_name = prev_assign_target;
+                self.assign_rhs_value = prev_assign_value;
                 if (!self.valueAssignableTo(target_ty, val_ty)) {
                     const target_name = if (assign.target.* == .identifier) assign.target.identifier else "<expr>";
                     if (self.current_function_name) |fn_name| {
@@ -2988,6 +3143,14 @@ pub const TypeChecker = struct {
                 if (assign.target.* == .identifier) {
                     const sym = scope.lookup(assign.target.identifier) orelse return TypeError.UndefinedVariable;
                     if (sym.state == .uninitialized) sym.state = .active;
+                    // REG-BR-6: a whole-variable assignment redefines the
+                    // binding, so a value consumed earlier (including by the
+                    // assignment's own right-hand side, the `x = f(x, ..)`
+                    // accumulation form) is live again from here on.
+                    if (sym.state == .consumed) {
+                        sym.state = .active;
+                        sym.consumed_by_call = null;
+                    }
                 }
             },
             .return_stmt => |ret| {
@@ -3189,6 +3352,16 @@ pub const TypeChecker = struct {
                 }
                 if (scope.lookup(name)) |sym| {
                     if (sym.state == .consumed) {
+                        if (sym.consumed_by_call) |first_call| {
+                            // REG-BR-6: language-level diagnostic for a value
+                            // moved by an earlier by-value call argument.
+                            if (isStringType(sym.ty)) {
+                                self.setError("UseAfterMove: variable `{s}` was already moved by the call to `{s}`; a by-value argument transfers ownership, so it cannot be used again - pass an explicit copy to the earlier call if the value is still needed (for example `format(\"{{}}\", {s})`)", .{ name, first_call, name });
+                            } else {
+                                self.setError("UseAfterMove: variable `{s}` was already moved by the call to `{s}`; a by-value argument transfers ownership, so it cannot be used again - pass an explicit copy to the earlier call if the value is still needed", .{ name, first_call });
+                            }
+                            return TypeError.UseAfterMove;
+                        }
                         self.setError("UseAfterMove: identifier `{s}` was already consumed", .{name});
                         return TypeError.UseAfterMove;
                     }

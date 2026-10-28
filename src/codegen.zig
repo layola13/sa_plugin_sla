@@ -160,6 +160,13 @@ pub const Codegen = struct {
     current_expr_later_nodes: std.array_list.Managed(*const ast.Node),
     current_block: ?[]const *ast.Node = null,
     current_stmt_index: usize = 0,
+    // REG-BR-6 move-out claim: the statement whose right-hand tail call
+    // already consumed the assignment target itself, and the target's
+    // name. Set by the call-argument materialization, read by the
+    // assignment emission to rebind instead of storing through the
+    // consumed slot.
+    move_out_stmt: ?*const ast.Node = null,
+    move_out_name: ?[]const u8 = null,
     current_async: bool,
     current_async_return_ty: ?*const ast.Type,
     async_pending_return_emitted: bool,
@@ -9824,6 +9831,40 @@ pub const Codegen = struct {
         return true;
     }
 
+    /// REG-BR-6 self-assignment move-out predicate: `arg` is an
+    /// identifier argument in the tail call chain of the current
+    /// statement, the statement assigns the result back to that same
+    /// identifier, the identifier has no other use in the assigned
+    /// value, and no earlier argument of this statement already claimed
+    /// the move-out. When true, the call may consume the binding
+    /// directly (move-out) instead of deep-cloning it: the assignment
+    /// rebinds the slot to the call result.
+    fn isSelfAssignMoveOutArg(self: *Codegen, arg: *const ast.Node) bool {
+        if (arg.* != .identifier) return false;
+        const block = self.current_block orelse return false;
+        if (self.current_stmt_index >= block.len) return false;
+        const stmt = block[self.current_stmt_index];
+        if (stmt.* != .assign_stmt) return false;
+        const assign = stmt.assign_stmt;
+        if (assign.target.* != .identifier) return false;
+        if (!std.mem.eql(u8, self.resolveBindingName(assign.target.identifier), self.resolveBindingName(arg.identifier))) return false;
+        if (self.move_out_stmt == stmt) {
+            if (self.move_out_name) |claimed| {
+                if (std.mem.eql(u8, self.resolveBindingName(claimed), self.resolveBindingName(arg.identifier))) return false;
+            }
+        }
+        if (!lowering_rules.tailChainContainsArg(assign.value, arg)) return false;
+        if (lowering_rules.countIdentifierUsesExcept(assign.value, arg.identifier, arg) != 0) return false;
+        return true;
+    }
+
+    fn claimSelfAssignMoveOut(self: *Codegen, arg: *const ast.Node) void {
+        const block = self.current_block orelse return;
+        if (self.current_stmt_index >= block.len) return;
+        self.move_out_stmt = block[self.current_stmt_index];
+        self.move_out_name = arg.identifier;
+    }
+
     fn genVecCloneValue(self: *Codegen, source_reg: []const u8, elem_ty: *const ast.Type) CodegenError![]const u8 {
         const out = try self.newTmp();
         self.outPrint(
@@ -10059,11 +10100,18 @@ pub const Codegen = struct {
                 else
                     false;
                 if (materialization.transfers_ownership or abi_moves_arg) {
+                    // REG-BR-6: in the self-assignment tail form
+                    // (`x = f(x, ..)`) the binding is dead the moment
+                    // the call consumes it — the assignment rebinds the
+                    // slot — so pass the slot register itself (move-out)
+                    // instead of paying for a full deep clone.
+                    const move_out = self.isSelfAssignMoveOutArg(arg);
+                    if (move_out) self.claimSelfAssignMoveOut(arg);
                     // Language semantics allow reusing a by-value Vec after a plain
                     // call (typechecker does not consume it). The SA ABI still uses
                     // ^ and the callee frees, so keep the source live by cloning
                     // when the binding is still needed after this call.
-                    if (arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
+                    if (!move_out and arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
                         if (self.resolvedTypeForExpr(arg) orelse self.tc.expr_types.get(arg)) |ty| {
                             if (vecElementType(ty)) |elem_ty| {
                                 const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
@@ -11350,9 +11398,20 @@ pub const Codegen = struct {
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
                     const stored_val_reg = if (assign.value.* == .move_expr and std.mem.startsWith(u8, val_reg, "^")) val_reg[1..] else val_reg;
                     const target_name = self.resolveBindingName(assign.target.identifier);
+                    // REG-BR-6 move-out: the right-hand tail call claimed
+                    // this target (it consumed the binding itself), so
+                    // the slot's old value no longer exists. Storing the
+                    // result through the consumed slot register trips
+                    // the SA referee (UseAfterMove); rebind the register
+                    // instead, which is the form the referee accepts and
+                    // branch merging expects for a live target.
+                    const move_out_rebind = self.move_out_stmt == stmt and self.move_out_name != null and std.mem.eql(u8, self.resolveBindingName(self.move_out_name.?), target_name) and !self.refcell_borrow_handles.contains(stored_val_reg);
                     if (self.bindingStorageAddress(target_name)) |address| {
                         self.outPrint("    store {s}, {s} as {s}\n", .{ address, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
+                    } else if (move_out_rebind and (self.assigned_value_slots.contains(target_name) or self.addressable_bindings.contains(target_name) or self.stack_alloc_bindings.contains(target_name))) {
+                        self.outPrint("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
+                        _ = self.consumed_bindings.remove(target_name);
                     } else if (self.assigned_value_slots.contains(target_name)) {
                         _ = try self.releaseResultSlotRefCellHandle(target_name, false);
                         self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;

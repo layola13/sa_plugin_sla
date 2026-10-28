@@ -6660,6 +6660,59 @@ pub fn callArgIsLocalFnPtrValue(
     return has_local_binding;
 }
 
+/// REG-BR-6 self-assignment move-out: whether `arg` (a specific call
+/// argument node) sits in the tail position of `value` — the value IS a
+/// call, or a move/try/await wrapper around one, or `arg` belongs to a
+/// nested call that itself sits in an argument position of the tail
+/// call. Only then does the call's result flow directly into the
+/// assignment target, so consuming the target's old value at the call
+/// and rebinding the slot to the result is equivalent.
+pub fn tailChainContainsArg(value: *const ast.Node, arg: *const ast.Node) bool {
+    switch (value.*) {
+        .call_expr => |call| {
+            for (call.args) |a| {
+                if (a == arg) return true;
+                if (tailChainContainsArg(a, arg)) return true;
+            }
+            return false;
+        },
+        .move_expr => |mv| return tailChainContainsArg(mv.expr, arg),
+        .try_expr => |t| return tailChainContainsArg(t.expr, arg),
+        .await_expr => |aw| return tailChainContainsArg(aw.expr, arg),
+        else => return false,
+    }
+}
+
+/// Count uses of identifier `name` inside `node`, skipping the subtree
+/// rooted at `except` (the move-out argument itself). Node kinds that
+/// cannot be walked conservatively return maxInt, which disqualifies
+/// the move-out: any other use of the name in the assigned value (a
+/// sibling argument, a borrow, a condition) means the old value must
+/// stay live and the ordinary clone/move materialization applies.
+pub fn countIdentifierUsesExcept(node: *const ast.Node, name: []const u8, except: *const ast.Node) usize {
+    if (node == except) return 0;
+    switch (node.*) {
+        .identifier => |n| return if (std.mem.eql(u8, n, name)) 1 else 0,
+        .literal => return 0,
+        .call_expr => |call| {
+            var count: usize = 0;
+            if (call.callee) |callee| count += countIdentifierUsesExcept(callee, name, except);
+            for (call.args) |a| count += countIdentifierUsesExcept(a, name, except);
+            return count;
+        },
+        .move_expr => |mv| return countIdentifierUsesExcept(mv.expr, name, except),
+        .try_expr => |t| return countIdentifierUsesExcept(t.expr, name, except),
+        .await_expr => |aw| return countIdentifierUsesExcept(aw.expr, name, except),
+        .borrow_expr => |b| return countIdentifierUsesExcept(b.expr, name, except),
+        .deref_expr => |d| return countIdentifierUsesExcept(d.expr, name, except),
+        .cast_expr => |c| return countIdentifierUsesExcept(c.expr, name, except),
+        .binary_expr => |bin| return countIdentifierUsesExcept(bin.left, name, except) + countIdentifierUsesExcept(bin.right, name, except),
+        .field_expr => |f| return countIdentifierUsesExcept(f.expr, name, except),
+        .index_expr => |idx| return countIdentifierUsesExcept(idx.target, name, except) + countIdentifierUsesExcept(idx.index, name, except),
+        else => return std.math.maxInt(usize),
+    }
+}
+
 test "shared lowering rules normalize derives and call argument prefixes" {
     const derives = [_][]const u8{ "PartialEq", "Hash" };
     const decl = ast.StructDecl{

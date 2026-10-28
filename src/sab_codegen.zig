@@ -379,6 +379,12 @@ pub const Codegen = struct {
     current_expr_result_escapes: bool = false,
     current_block: ?[]const *ast.Node = null,
     current_stmt_index: usize = 0,
+    // REG-BR-6 move-out claim (mirrors the SA text codegen): the
+    // statement whose right-hand tail call already consumed the
+    // assignment target itself, so later arguments of the same
+    // statement must not claim the move-out again.
+    move_out_stmt: ?*const ast.Node = null,
+    move_out_name: ?[]const u8 = null,
     active_macro_try_cleanup: ?[]const []const u8 = null,
     current_expr_later_nodes: std.array_list.Managed(*const ast.Node),
     future_task_helpers_emitted: bool = false,
@@ -6662,6 +6668,39 @@ pub const Codegen = struct {
             if (nodeBindsIdentifier(block[idx], name)) return true;
         }
         return false;
+    }
+
+    /// REG-BR-6 self-assignment move-out predicate (mirrors the SA text
+    /// codegen): `arg` is an identifier argument in the tail call chain
+    /// of the current statement, the statement assigns the result back
+    /// to that same identifier, and the identifier has no other use in
+    /// the assigned value. The call may then consume the binding
+    /// directly instead of deep-cloning it; the SAB assignment
+    /// emission already rebinds the slot register to the result.
+    fn isSelfAssignMoveOutArg(self: *Codegen, arg: *const ast.Node) bool {
+        if (arg.* != .identifier) return false;
+        const block = self.current_block orelse return false;
+        if (self.current_stmt_index >= block.len) return false;
+        const stmt = block[self.current_stmt_index];
+        if (stmt.* != .assign_stmt) return false;
+        const assign = stmt.assign_stmt;
+        if (assign.target.* != .identifier) return false;
+        if (!std.mem.eql(u8, assign.target.identifier, arg.identifier)) return false;
+        if (self.move_out_stmt == stmt) {
+            if (self.move_out_name) |claimed| {
+                if (std.mem.eql(u8, claimed, arg.identifier)) return false;
+            }
+        }
+        if (!lowering_rules.tailChainContainsArg(assign.value, arg)) return false;
+        if (lowering_rules.countIdentifierUsesExcept(assign.value, arg.identifier, arg) != 0) return false;
+        return true;
+    }
+
+    fn claimSelfAssignMoveOut(self: *Codegen, arg: *const ast.Node) void {
+        const block = self.current_block orelse return;
+        if (self.current_stmt_index >= block.len) return;
+        self.move_out_stmt = block[self.current_stmt_index];
+        self.move_out_name = arg.identifier;
     }
 
     fn genVecCloneValue(self: *Codegen, source_reg: u32, elem_ty: *const ast.Type) anyerror!u32 {
@@ -16195,7 +16234,11 @@ pub const Codegen = struct {
                             .forget_reg = copied,
                         };
                     }
-                    if (prefix == '^' and arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
+                    // REG-BR-6: self-assignment tail form (`x = f(x, ..)`)
+                    // moves out of the slot instead of deep-cloning it.
+                    const move_out = prefix == '^' and self.isSelfAssignMoveOutArg(arg);
+                    if (move_out) self.claimSelfAssignMoveOut(arg);
+                    if (!move_out and prefix == '^' and arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
                         if (arg_ty) |ty| {
                             if (lowering_rules.vecElementType(ty)) |elem_ty| {
                                 const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
@@ -16229,7 +16272,11 @@ pub const Codegen = struct {
                 }
                 const arg_reg = try self.genExpr(@constCast(arg));
                 if (materialization.transfers_ownership) {
-                    if (arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
+                    // REG-BR-6: self-assignment tail form (`x = f(x, ..)`)
+                    // moves out of the slot instead of deep-cloning it.
+                    const move_out = self.isSelfAssignMoveOutArg(arg);
+                    if (move_out) self.claimSelfAssignMoveOut(arg);
+                    if (!move_out and arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
                         if (arg_ty) |ty| {
                             if (lowering_rules.vecElementType(ty)) |elem_ty| {
                                 const cloned = try self.genVecCloneValue(arg_reg, elem_ty);

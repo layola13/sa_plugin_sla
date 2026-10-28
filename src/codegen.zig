@@ -10529,6 +10529,23 @@ pub const Codegen = struct {
         return null;
     }
 
+    /// How an assigned-output aggregate argument that was passed to an
+    /// imported macro expansion through a fresh temp receives the
+    /// expansion's result, by the storage class of the caller's binding.
+    const AggregateOutputWriteback = union(enum) {
+        /// Plain register binding: the binding register itself is the
+        /// aggregate's storage pointer, so release the old value and
+        /// rebind the register to the temp (the revival shape plain
+        /// assignment emission uses).
+        rebind: []const u8,
+        /// Assigned-value slot: the stack cell holds the aggregate's
+        /// pointer, so store the temp pointer into the cell.
+        store_ptr_back: []const u8,
+        /// Inline stack slot: the stack cell is the aggregate's storage,
+        /// so copy the temp's bytes into it.
+        copy_into_slot: []const u8,
+    };
+
     fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (try self.genPlainTimeMacroCall(call, plan, hoisted_allocs)) |reg| return reg;
         const reg = if (plan.expression_output) try self.newTmp() else "return_ty_sentinel";
@@ -10536,6 +10553,14 @@ pub const Codegen = struct {
         defer arg_regs.deinit();
         var release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer release_regs.deinit();
+        var output_writebacks = std.array_list.Managed(AggregateOutputWriteback).init(self.allocator);
+        defer output_writebacks.deinit();
+        var output_writeback_tys = std.array_list.Managed(*const ast.Type).init(self.allocator);
+        defer output_writeback_tys.deinit();
+        var output_writeback_temps = std.array_list.Managed([]const u8).init(self.allocator);
+        defer output_writeback_temps.deinit();
+        var output_writeback_indices = std.array_list.Managed(usize).init(self.allocator);
+        defer output_writeback_indices.deinit();
         for (call.args, 0..) |arg, i| {
             const lowered_arg = try self.genImportedMacroArg(plan, i, arg, hoisted_allocs);
             // Parity with SAB `importedMacroDirectCallConsumesValueArg`: the
@@ -10551,8 +10576,44 @@ pub const Codegen = struct {
                     try self.markConsumedBinding(resolved);
                 }
             }
-            try arg_regs.append(lowered_arg.reg);
-            release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
+            var passed_reg = lowered_arg.reg;
+            var passed_release: ?[]const u8 = lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null;
+            // Assigned-output aggregate arguments (dns1006): when the
+            // macro body's first reference to a leading output parameter
+            // is its assignment and the caller's binding is an aggregate
+            // (user-defined) local passed through as its own register,
+            // the expansion's assignment would redefine that live
+            // register -- an alloc/call-slot storage pointer -- and the
+            // SA referee traps RegisterRedefinition (1006), e.g.
+            // SLICE_GET(rec, sl, i) on a DnsRecord local in
+            // dns_records_of_type. Scalar outputs are plain value
+            // registers and the expansion may assign them directly;
+            // slot-backed scalar outputs already take the load-temp +
+            // store-back path below. For aggregates, pass a fresh temp
+            // to the expansion instead and write the result back into
+            // the binding afterwards, mirroring SAB's output_bind
+            // rebind of the binding to the expansion's definition.
+            if (!plan.expression_output and i < plan.leading_outputs and plan.callArgIsAssignedOutput(i) and arg.* == .identifier) {
+                const arg_ty = try self.importedMacroArgType(arg);
+                const resolved = self.resolveBindingName(arg.identifier);
+                if (arg_ty.* == .user_defined and std.mem.eql(u8, lowered_arg.reg, resolved)) {
+                    const temp = try self.newTmp();
+                    const writeback: AggregateOutputWriteback = if (self.assigned_value_slots.contains(resolved))
+                        .{ .store_ptr_back = resolved }
+                    else if (self.stack_alloc_bindings.contains(resolved))
+                        .{ .copy_into_slot = resolved }
+                    else
+                        .{ .rebind = resolved };
+                    output_writebacks.append(writeback) catch return CodegenError.OutOfMemory;
+                    output_writeback_tys.append(arg_ty) catch return CodegenError.OutOfMemory;
+                    output_writeback_temps.append(temp) catch return CodegenError.OutOfMemory;
+                    output_writeback_indices.append(i) catch return CodegenError.OutOfMemory;
+                    passed_reg = temp;
+                    passed_release = null;
+                }
+            }
+            try arg_regs.append(passed_reg);
+            release_regs.append(passed_release) catch return CodegenError.OutOfMemory;
         }
 
         self.outPrint("    EXPAND {s}", .{plan.macro_name}) catch return CodegenError.CodegenError;
@@ -10580,12 +10641,41 @@ pub const Codegen = struct {
         if (!plan.expression_output) {
             for (call.args, 0..) |arg, i| {
                 if (i >= plan.leading_outputs) break;
+                // Aggregate assigned outputs took the temp path above;
+                // their write-back runs after this block.
+                if (std.mem.indexOfScalar(usize, output_writeback_indices.items, i) != null) continue;
                 if (plan.callArgNeedsDirectAddressSlot(i) and !plan.callArgIsAssignedOutput(i)) continue;
                 const slot = self.importedMacroExistingAddressableSymbol(arg) orelse continue;
                 const arg_reg = arg_regs.items[i];
                 if (std.mem.eql(u8, arg_reg, slot)) continue;
                 const arg_ty = try self.importedMacroArgType(arg);
                 self.outPrint("    store {s}+0, {s} as {s}\n", .{ slot, arg_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+            }
+        }
+
+        // Write back assigned-output aggregate results held in temps
+        // (dns1006): the expansion assigned the temp, so move its value
+        // into the caller's binding by the binding's storage class.
+        for (output_writebacks.items, 0..) |writeback, wi| {
+            const temp = output_writeback_temps.items[wi];
+            const arg_ty = output_writeback_tys.items[wi];
+            switch (writeback) {
+                .rebind => |name| {
+                    try self.emitRelease(name);
+                    self.outPrint("    {s} = {s}\n", .{ name, temp }) catch return CodegenError.CodegenError;
+                    _ = self.consumed_bindings.remove(name);
+                },
+                .store_ptr_back => |name| {
+                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ name, temp, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(temp);
+                },
+                .copy_into_slot => |name| {
+                    const size_reg = try self.newTmp();
+                    try self.emitIntConst(size_reg, @intCast(typeSize(arg_ty)));
+                    self.outPrint("    call @sa_mem_copy(&{s}, &{s}, {s})\n", .{ name, temp, size_reg }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(size_reg);
+                    try self.emitRelease(temp);
+                },
             }
         }
 

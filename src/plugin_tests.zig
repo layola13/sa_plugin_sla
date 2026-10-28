@@ -2609,7 +2609,11 @@ test "sla sab codegen frees owned String values deeply" {
     // with a bare `release` (locals, reassignment predecessors) or a
     // bookkeeping `move_` (by-value params). SAB `release` frees only the
     // Vec struct allocation, so every dropped String leaked its heap
-    // buffer. Cleanup must call @sa_vec_free, which releases both.
+    // buffer. Cleanup must emit the inline deep drop: a ptr-typed `take`
+    // of the buffer out of the struct, a `release` of the buffer, and a
+    // `release` of the struct. (A @sa_vec_free call is not equivalent in
+    // native builds: the SA-text encoding of vec.sa loses the take's ptr
+    // type, so the native emitter drops that function's releases.)
     const source =
         \\@import "sa_std/ptr.sa"
         \\@import "sa_std/string.sa"
@@ -2666,20 +2670,22 @@ test "sla sab codegen frees owned String values deeply" {
     };
     const disasm = try sci_bridge.disasmSabAlloc(arena.allocator(), sab_bytes);
 
-    // The by-value String param of view_only must be dropped with a
-    // @sa_vec_free call inside view_only's own instruction range.
+    // The by-value String param of view_only must be dropped with the
+    // inline deep drop (ptr-typed take + releases) inside view_only's
+    // own instruction range.
     const view_start = std.mem.indexOf(u8, disasm, "func_decl $sla__view_only") orelse return error.TestUnexpectedResult;
     const view_rest = disasm[view_start..];
     const view_end = std.mem.indexOf(u8, view_rest, "\nfunc_decl ") orelse view_rest.len;
-    try std.testing.expect(std.mem.indexOf(u8, view_rest[0..view_end], "call \"@sa_vec_free\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, view_rest[0..view_end], ",ty:12") != null);
+    try std.testing.expect(std.mem.count(u8, view_rest[0..view_end], "release ") >= 2);
 
     // accumulate's loop must drop the reassignment predecessor of `out`
-    // and the per-iteration `s`: at least two @sa_vec_free calls in its
+    // and the per-iteration `s`: at least two ptr-typed takes in its
     // instruction range.
     const acc_start = std.mem.indexOf(u8, disasm, "func_decl $sla__accumulate") orelse return error.TestUnexpectedResult;
     const acc_rest = disasm[acc_start..];
     const acc_end = std.mem.indexOf(u8, acc_rest, "\nfunc_decl ") orelse acc_rest.len;
-    try std.testing.expect(std.mem.count(u8, acc_rest[0..acc_end], "call \"@sa_vec_free\"") >= 2);
+    try std.testing.expect(std.mem.count(u8, acc_rest[0..acc_end], ",ty:12") >= 2);
 
     try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);

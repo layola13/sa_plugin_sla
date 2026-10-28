@@ -7058,6 +7058,21 @@ pub const Codegen = struct {
         self.outPrint("@import \"sa_std/core/panic.sa\"\n", .{}) catch return CodegenError.CodegenError;
 
         try self.emitArrayFillMacros();
+        if (self.thread_spawn_helpers.count() > 0) {
+            // The spawn helpers emitted below EXPAND THREAD_SPAWN (and join
+            // sites EXPAND THREAD_JOIN_STATUS / THREAD_DROP), whose macro
+            // definitions live in sa_std/thread.sa. thread::spawn is a
+            // compiler builtin, so an SLA program may use it without
+            // importing thread.sa itself; the generated SA must still carry
+            // the import or the flattener traps with ForbiddenSyntax /
+            // InvalidMacroInvocation on the helper (AD3 defect #19:
+            // launchInstall build-exe). The SAB codegen already ensures
+            // this dependency itself (ensureStdDeps). A duplicate import
+            // line is harmless when the source already imported thread.sa,
+            // and pruneUnusedThreadRuntimeImport keeps the line because
+            // the output does reference THREAD_ macros.
+            self.outPrint("@import \"sa_std/thread.sa\"\n", .{}) catch return CodegenError.CodegenError;
+        }
         if (self.programNeedsCmpMacros(program)) {
             self.outPrint("@import \"sa_std/cmp.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }

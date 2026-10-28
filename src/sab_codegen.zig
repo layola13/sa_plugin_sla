@@ -3242,16 +3242,9 @@ pub const Codegen = struct {
     /// owned String/Vec values must route here instead of `emitRelease`.
     fn emitOwnedBufferFree(self: *Codegen, reg: u32) !void {
         if (self.released_regs.contains(reg)) return;
-        // Inline deep drop (F-perf-2): take the heap buffer out of the
-        // Vec/String struct with an explicitly ptr-typed take and release
-        // it, then release the struct itself. Calling sa_vec_free instead
-        // is inert in native builds: the SA-text encoding of vec.sa loses
-        // the take's ptr type, so the native emitter never marks the
-        // buffer register as a heap allocation and drops the release.
-        const buf_reg = try self.intern(try self.newTmp());
-        try self.emitTake(buf_reg, reg, 0, .ptr);
-        try self.emitRelease(buf_reg);
-        try self.emitRelease(reg);
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_free"});
+        try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_vec_free(^{s})", .{self.symbols.items[reg]}));
+        try self.released_regs.put(reg, {});
     }
 
     /// Full cleanup drop for one local, mirroring the sequential

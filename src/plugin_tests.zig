@@ -9616,3 +9616,290 @@ test "sla test codegen single import chain compiles transitive bodies" {
     try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
+
+// Follow-up line helper: slice of `text` covering one SAB disasm
+// declaration (from its decl header to the next decl header).
+fn followupDeclRange(text: []const u8, header: []const u8) ?[]const u8 {
+    const start = std.mem.indexOf(u8, text, header) orelse return null;
+    var end = text.len;
+    const markers = [_][]const u8{ "\ntest_decl ", "\nfunc_decl ", "\nexport_decl ", "\nextern_decl " };
+    for (markers) |marker| {
+        if (std.mem.indexOfPos(u8, text, start + header.len, marker)) |idx| {
+            if (idx + 1 < end) end = idx + 1;
+        }
+    }
+    return text[start..end];
+}
+
+fn followupCountOccurrences(text: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, text, pos, needle)) |idx| {
+        count += 1;
+        pos = idx + needle.len;
+    }
+    return count;
+}
+
+test "sla sab if merge balance drops owned string deeply" {
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    // Follow-up line (family 1) regression: at an if merge, the
+    // compensation for a String consumed on one branch only was a
+    // shallow `move_` on the other branch's exit - the struct was
+    // freed but the heap buffer leaked. The balancing drop must be
+    // the deep @sa_vec_free form.
+    const source =
+        \\@import "sa_std/string.sa"
+        \\@import "sa_std/vec.sa"
+        \\
+        \\fn fu_take(s: String) -> u64 {
+        \\    return len(s);
+        \\}
+        \\
+        \\@test "if merge balance"() {
+        \\    let s: String = format("hello world hello!");
+        \\    let c: bool = true;
+        \\    let n: u64 = 0;
+        \\    if c {
+        \\        n = fu_take(s);
+        \\    };
+        \\    if n != 18 { panic(7301); };
+        \\}
+    ;
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "main.sla",
+        ".sla-cache/sab/if_merge_balance.sab",
+        stderr_fw.writer(),
+        .{
+            .test_filter = "if merge balance",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    const disasm = try sci_bridge.disasmSabAlloc(arena.allocator(), sab_bytes);
+    const range = followupDeclRange(disasm, "test_decl $\"if merge balance\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, range, "call \"@sa_vec_free\"") != null);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab match merge balances single-arm string consumption" {
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    // Follow-up line (family 1) regression: match merges had no
+    // compensation at all, so a String consumed on exactly one arm
+    // reached the merge Consumed there and Active on the other arm
+    // (referee PhiStateConflict 1015 at run time). Fallthrough arms
+    // now route through deferred L_MATCH_ARM_EXIT blocks that
+    // balance with the deep drop.
+    const source =
+        \\@import "sa_std/string.sa"
+        \\@import "sa_std/vec.sa"
+        \\
+        \\fn fu_take(s: String) -> u64 {
+        \\    return len(s);
+        \\}
+        \\
+        \\@test "match merge balance"() {
+        \\    let s: String = format("hello world hello!");
+        \\    let n: u64 = 0;
+        \\    let r: Result<u64, i32> = Ok(7);
+        \\    match r {
+        \\        Ok(v) => {
+        \\            n = fu_take(s);
+        \\        },
+        \\        Err(e) => {
+        \\            n = 0;
+        \\        },
+        \\    };
+        \\    if n != 18 { panic(7302); };
+        \\}
+    ;
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "main.sla",
+        ".sla-cache/sab/match_merge_balance.sab",
+        stderr_fw.writer(),
+        .{
+            .test_filter = "match merge balance",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    const disasm = try sci_bridge.disasmSabAlloc(arena.allocator(), sab_bytes);
+    const range = followupDeclRange(disasm, "test_decl $\"match merge balance\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, range, "L_MATCH_ARM_EXIT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, range, "call \"@sa_vec_free\"") != null);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla generalized rebind move-out drops the clone in both backends" {
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    // Follow-up line (item 2) regression: a by-value Vec argument
+    // whose binding is wholly reassigned before any read is dead at
+    // the call, so both codegens move out instead of deep-cloning.
+    // Controls pin the boundary: a genuine later read (a second
+    // by-value call, or a borrow read inside a nested branch) keeps
+    // the clone at the first call.
+    const source =
+        \\@import "sa_std/string.sa"
+        \\@import "sa_std/vec.sa"
+        \\
+        \\fn fu_sinkv(v: Vec<u8>) -> u64 {
+        \\    return len(v);
+        \\}
+        \\
+        \\fn fu_makev() -> Vec<u8> {
+        \\    let out: Vec<u8> = Vec::new();
+        \\    return out;
+        \\}
+        \\
+        \\fn fu_touchv(v: &Vec<u8>) -> u64 {
+        \\    return len(v);
+        \\}
+        \\
+        \\@test "rebind let value"() {
+        \\    let buf: Vec<u8> = Vec::new();
+        \\    buf.push(1);
+        \\    let n: u64 = fu_sinkv(buf);
+        \\    if n != 1 { panic(7303); };
+        \\    buf = fu_makev();
+        \\    buf.push(2);
+        \\    if fu_touchv(&buf) != 1 { panic(7304); };
+        \\}
+        \\
+        \\@test "rebind control by-value read"() {
+        \\    let buf: Vec<u8> = Vec::new();
+        \\    buf.push(3);
+        \\    let n: u64 = fu_sinkv(buf);
+        \\    if n != 1 { panic(7305); };
+        \\    let m: u64 = fu_sinkv(buf);
+        \\    if m != 1 { panic(7306); };
+        \\    buf = fu_makev();
+        \\    if fu_touchv(&buf) != 0 { panic(7307); };
+        \\}
+        \\
+        \\@test "rebind control nested read"() {
+        \\    let buf: Vec<u8> = Vec::new();
+        \\    buf.push(5);
+        \\    let n: u64 = fu_sinkv(buf);
+        \\    if n != 1 { panic(7308); };
+        \\    let c: bool = true;
+        \\    if c {
+        \\        let m: u64 = fu_touchv(&buf);
+        \\        if m != 1 { panic(7309); };
+        \\    };
+        \\    buf = fu_makev();
+        \\    if fu_touchv(&buf) != 0 { panic(7310); };
+        \\}
+    ;
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    // SAB backend: clone-fragment counts per test range.
+    const sab_cases = [_]struct { filter: []const u8, header: []const u8, clones: usize }{
+        .{ .filter = "rebind let value", .header = "test_decl $\"rebind let value\"", .clones = 0 },
+        .{ .filter = "rebind control by-value read", .header = "test_decl $\"rebind control by-value read\"", .clones = 1 },
+        .{ .filter = "rebind control nested read", .header = "test_decl $\"rebind control nested read\"", .clones = 1 },
+    };
+    for (sab_cases) |sab_case| {
+        const sab_bytes = (try compileSlaFileToSabWithOptions(
+            arena.allocator(),
+            "main.sla",
+            ".sla-cache/sab/rebind_move_out.sab",
+            stderr_fw.writer(),
+            .{
+                .test_filter = sab_case.filter,
+                .prune_for_test_codegen = true,
+                .load_reachable_imported_bodies_from_registry = true,
+            },
+        )) orelse {
+            try stderr_fw.writer().flush();
+            std.debug.print("{s}", .{stderr_buf.items});
+            return error.TestUnexpectedResult;
+        };
+        const disasm = try sci_bridge.disasmSabAlloc(arena.allocator(), sab_bytes);
+        const range = followupDeclRange(disasm, sab_case.header) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(sab_case.clones, followupCountOccurrences(range, "vec_clone"));
+    }
+
+    // SA text backend: EXPAND VEC_CLONE counts in the whole compiled
+    // output of each filtered test (pruned to the test's reachable
+    // code, so std code contributes no clones of its own).
+    const sa_cases = [_]struct { filter: []const u8, clones: usize }{
+        .{ .filter = "rebind let value", .clones = 0 },
+        .{ .filter = "rebind control by-value read", .clones = 1 },
+    };
+    for (sa_cases) |sa_case| {
+        const sa_code = (try compileSlaToSaStringWithOptions(
+            arena.allocator(),
+            "main.sla",
+            "main.test.sa",
+            stderr_fw.writer(),
+            .{
+                .test_filter = sa_case.filter,
+                .prune_for_test_codegen = true,
+                .load_reachable_imported_bodies_from_registry = true,
+            },
+        )) orelse {
+            try stderr_fw.writer().flush();
+            std.debug.print("{s}", .{stderr_buf.items});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expectEqual(sa_case.clones, followupCountOccurrences(sa_code, "EXPAND VEC_CLONE"));
+    }
+
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}

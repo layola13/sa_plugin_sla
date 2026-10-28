@@ -35,6 +35,10 @@ const ThreadCaptureInfo = struct {
     ty: ?*const ast.Type = null,
 };
 
+fn branchCompensationNameLessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
 const RefCellBorrowHandle = struct {
     cell_reg: []const u8,
     kind: lowering_rules.RefCellBorrowKind,
@@ -1323,6 +1327,112 @@ pub const Codegen = struct {
         while (iter.next()) |entry| {
             self.consumed_bindings.put(entry.key_ptr.*, entry.value_ptr.*) catch return CodegenError.OutOfMemory;
         }
+    }
+
+    fn mergeConsumedIntoUnion(self: *Codegen, acc: *std.StringHashMap(void)) CodegenError!void {
+        var iter = self.consumed_bindings.keyIterator();
+        while (iter.next()) |key| {
+            acc.put(key.*, {}) catch return CodegenError.OutOfMemory;
+        }
+    }
+
+    /// β fix (SA-text backend): drop elaboration at if/else merges.
+    ///
+    /// An owned binding (a by-value String param/local, a map/set, an mpsc
+    /// handle, ...) may be consumed on only one side of a branch: moved
+    /// into a call, moved into another binding, or released. The SA
+    /// referee requires every register to arrive at a merge label in the
+    /// same state from every predecessor (PhiStateConflict otherwise), so
+    /// the side that did not consume the binding gets the binding's
+    /// normal release (emitRelease) appended at its end, before its jump
+    /// to the merge label. The caller settles the post-merge consumed
+    /// state to the union of both branch end states, so a differentially
+    /// consumed binding is never released twice nor read after the merge.
+    ///
+    /// Candidates are restricted to source bindings already live before
+    /// the branch (live_owned): branch-local declarations are released by
+    /// their own block-scope cleanup and must never be compensated in a
+    /// sibling branch that never declared them. RefCell borrow handles
+    /// are excluded: they merge through the dedicated owner merge slots.
+    /// A branch that terminates (return/panic) never reaches the merge:
+    /// it receives no compensation and no jump (only its deferred blank
+    /// line), and the consumptions its exit cleanup performed are also
+    /// ignored — the surviving side alone defines the merge state, so a
+    /// value the surviving side still uses is never compensated away.
+    fn emitBranchConsumptionCompensation(
+        self: *Codegen,
+        live_owned: *const std.StringHashMap(void),
+        pre_branch_consumed: *const std.StringHashMap(void),
+        then_branch_consumed: *const std.StringHashMap(void),
+        pre_branch_refcell_handles: *const std.StringHashMap(RefCellBorrowHandle),
+        then_text_end: usize,
+        then_terminates: bool,
+        else_terminates: bool,
+        merge_label: []const u8,
+    ) CodegenError!void {
+        // Differential sets, sorted for deterministic output.
+        // for_then: consumed only in the else branch -> release in then.
+        // for_else: consumed only in the then branch -> release in else.
+        // Compensation exists only when BOTH sides reach the merge: a
+        // terminating side (return/panic) is not a merge predecessor, and
+        // the releases its exit cleanup marks as consumed must not leak
+        // into the surviving side -- the surviving side's end state alone
+        // defines the merge state, and values it still needs stay live.
+        var for_then = std.array_list.Managed([]const u8).init(self.allocator);
+        defer for_then.deinit();
+        var for_else = std.array_list.Managed([]const u8).init(self.allocator);
+        defer for_else.deinit();
+        if (!then_terminates and !else_terminates) {
+            var iter = self.consumed_bindings.iterator(); // else end state
+            while (iter.next()) |entry| {
+                const n = entry.key_ptr.*;
+                if (pre_branch_consumed.contains(n)) continue;
+                if (then_branch_consumed.contains(n)) continue;
+                if (!live_owned.contains(n)) continue;
+                if (pre_branch_refcell_handles.contains(n)) continue;
+                for_then.append(n) catch return CodegenError.OutOfMemory;
+            }
+            var then_iter = then_branch_consumed.iterator();
+            while (then_iter.next()) |entry| {
+                const n = entry.key_ptr.*;
+                if (pre_branch_consumed.contains(n)) continue;
+                if (self.consumed_bindings.contains(n)) continue;
+                if (!live_owned.contains(n)) continue;
+                if (pre_branch_refcell_handles.contains(n)) continue;
+                for_else.append(n) catch return CodegenError.OutOfMemory;
+            }
+        }
+        std.mem.sort([]const u8, for_then.items, {}, branchCompensationNameLessThan);
+        std.mem.sort([]const u8, for_else.items, {}, branchCompensationNameLessThan);
+
+        // Else side first: its text is the current tail of the output, so
+        // compensation, jump and the deferred blank line simply append.
+        if (!else_terminates) {
+            for (for_else.items) |n| try self.emitRelease(n);
+            self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
+        }
+        self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
+
+        // Then side: render compensation + jump into a scratch buffer and
+        // insert it at the end of the then-branch text. The compensated
+        // names are currently marked consumed (they were consumed in the
+        // else branch), so unmark each one before emitting its release;
+        // the caller recomputes the final post-merge state afterwards.
+        var scratch = std.array_list.Managed(u8).init(self.allocator);
+        defer scratch.deinit();
+        if (!then_terminates) {
+            const saved_out = self.out;
+            self.out = scratch;
+            for (for_then.items) |n| {
+                _ = self.consumed_bindings.remove(n);
+                try self.emitRelease(n);
+            }
+            self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
+            scratch = self.out;
+            self.out = saved_out;
+        }
+        scratch.appendSlice("\n") catch return CodegenError.OutOfMemory;
+        self.out.insertSlice(then_text_end, scratch.items) catch return CodegenError.OutOfMemory;
     }
 
     fn restoreBorrowSourceTemps(self: *Codegen, saved: *std.StringHashMap([]const u8)) CodegenError!void {
@@ -11938,6 +12048,15 @@ pub const Codegen = struct {
         }
         self.label_idx += 1;
 
+        // Arm-state discipline (same rule as plain if/else): every arm
+        // starts from the pre-match consumed set, and the post-match set
+        // is the union of the arms that actually fall through to the
+        // merge. Without this, a returning arm's cleanup consumptions
+        // leak past the merge and poison enclosing branch analysis.
+        var pre_match_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+        var fallthrough_consumed = std.StringHashMap(void).init(self.allocator);
+        var has_fallthrough_state = false;
+
         self.outPrint("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
 
         for (mat.cases, 0..) |case, i| {
@@ -11959,6 +12078,7 @@ pub const Codegen = struct {
             self.outPrint("    br {s} -> {s}, {s}\n\n", .{ cond, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
 
             self.outPrint("{s}:\n", .{case_labels.items[i]}) catch return CodegenError.CodegenError;
+            try self.restoreConsumedBindings(&pre_match_consumed);
             const variant = enumVariant(decl, case.pattern.variant_name) orelse return CodegenError.CodegenError;
             for (case.pattern.bindings, variant.fields) |binding, field| {
                 const layout = enumFieldLayout(variant, field.name) orelse return CodegenError.CodegenError;
@@ -11992,10 +12112,13 @@ pub const Codegen = struct {
                         try self.emitRelease(binding);
                     }
                 }
+                try self.mergeConsumedIntoUnion(&fallthrough_consumed);
+                has_fallthrough_state = true;
                 self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
             }
             self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
         }
+        if (has_fallthrough_state) try self.restoreConsumedBindings(&fallthrough_consumed);
 
         self.outPrint("{s}:\n", .{no_match_label}) catch return CodegenError.CodegenError;
         if (cond_regs.items.len > 0) {
@@ -12045,6 +12168,11 @@ pub const Codegen = struct {
         }
         self.label_idx += 1;
 
+        // Arm-state discipline: see genMatchExpr.
+        var pre_match_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+        var fallthrough_consumed = std.StringHashMap(void).init(self.allocator);
+        var has_fallthrough_state = false;
+
         self.outPrint("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
 
         for (mat.cases, 0..) |case, i| {
@@ -12073,6 +12201,7 @@ pub const Codegen = struct {
             }
 
             self.outPrint("{s}:\n", .{case_labels.items[i]}) catch return CodegenError.CodegenError;
+            try self.restoreConsumedBindings(&pre_match_consumed);
             if (std.mem.eql(u8, case.pattern.variant_name, "Some") and case.pattern.bindings.len == 1) {
                 self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
             } else if (std.mem.eql(u8, case.pattern.variant_name, "Ok") and case.pattern.bindings.len == 1) {
@@ -12108,10 +12237,13 @@ pub const Codegen = struct {
                 for (case.pattern.bindings) |binding| {
                     try self.emitRelease(binding);
                 }
+                try self.mergeConsumedIntoUnion(&fallthrough_consumed);
+                has_fallthrough_state = true;
                 self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
             }
             self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
         }
+        if (has_fallthrough_state) try self.restoreConsumedBindings(&fallthrough_consumed);
 
         self.outPrint("{s}:\n", .{no_match_label}) catch return CodegenError.CodegenError;
         if (cond_regs.items.len > 0) {
@@ -15838,6 +15970,22 @@ pub const Codegen = struct {
 
                 var pre_branch_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
                 defer pre_branch_consumed.deinit();
+                // β fix: source bindings already live before this branch are
+                // the only candidates for merge consumption compensation
+                // (branch-local declarations are released by their own
+                // block-scope cleanup and must never be compensated in a
+                // sibling branch that never declared them).
+                var pre_branch_live_owned = std.StringHashMap(void).init(self.allocator);
+                defer pre_branch_live_owned.deinit();
+                {
+                    var live_iter = self.local_binding_types.iterator();
+                    while (live_iter.next()) |entry| {
+                        const live_name = entry.key_ptr.*;
+                        if (isDiscardName(live_name)) continue;
+                        if (self.global_const_bindings.contains(live_name)) continue;
+                        pre_branch_live_owned.put(live_name, {}) catch return CodegenError.OutOfMemory;
+                    }
+                }
                 var pre_branch_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
                 defer pre_branch_borrow_sources.deinit();
                 var pre_branch_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
@@ -15886,14 +16034,19 @@ pub const Codegen = struct {
                 }
                 if (needs_merge and !then_terminates) {
                     try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &self.refcell_borrow_handles);
-                    self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                 }
-                self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
+                // β fix: the then-branch jump to the merge label is deferred
+                // until branch-consumption compensation has been appended
+                // (emitBranchConsumptionCompensation below); remember where
+                // the then-branch text ends so it can be inserted there.
+                const then_text_end = self.out.items.len;
 
                 var then_branch_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
                 defer then_branch_borrow_sources.deinit();
                 var then_branch_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
                 defer then_branch_refcell_handles.deinit();
+                var then_branch_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+                defer then_branch_consumed.deinit();
 
                 if (then_terminates) {
                     try self.restoreMutexState(&pre_then_mutex_guards, &pre_then_mutex_results);
@@ -15943,9 +16096,9 @@ pub const Codegen = struct {
                 }
                 if (needs_merge and !else_terminates) {
                     try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &self.refcell_borrow_handles);
-                    self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                 }
-                self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
+                // β fix: the else-branch jump is likewise deferred to
+                // emitBranchConsumptionCompensation below.
 
                 var else_branch_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
                 defer else_branch_borrow_sources.deinit();
@@ -15960,7 +16113,30 @@ pub const Codegen = struct {
                 }
 
                 if (needs_merge) {
+                    // β fix: append/insert the deferred branch-consumption
+                    // compensation releases and merge jumps, then settle the
+                    // post-merge consumed state: the union of both branch
+                    // end states when both sides reach the merge, or the
+                    // surviving side's end state when the other terminates.
+                    try self.emitBranchConsumptionCompensation(&pre_branch_live_owned, &pre_branch_consumed, &then_branch_consumed, &pre_branch_refcell_handles, then_text_end, then_terminates, else_terminates, merge_label);
+                    if (else_terminates) {
+                        try self.restoreConsumedBindings(&then_branch_consumed);
+                    } else if (!then_terminates) {
+                        var merged_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+                        defer merged_consumed.deinit();
+                        var then_iter = then_branch_consumed.iterator();
+                        while (then_iter.next()) |entry| {
+                            merged_consumed.put(entry.key_ptr.*, {}) catch return CodegenError.OutOfMemory;
+                        }
+                        try self.restoreConsumedBindings(&merged_consumed);
+                    }
                     self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+                } else {
+                    // Both sides terminate: no compensation and no jumps,
+                    // but restore the two deferred blank lines (one closes
+                    // the then-branch text, one closes the else-branch).
+                    self.out.insertSlice(then_text_end, "\n") catch return CodegenError.OutOfMemory;
+                    self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
                 }
                 try self.setMergeRefCellBranchState(
                     then_terminates,

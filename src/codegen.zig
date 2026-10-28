@@ -1444,6 +1444,101 @@ pub const Codegen = struct {
         self.out.insertSlice(then_text_end, scratch.items) catch return CodegenError.OutOfMemory;
     }
 
+    /// Snapshot of the source bindings live before a branch, the only
+    /// merge-compensation candidates (same construction as the if/else
+    /// path's pre_branch_live_owned): branch-local declarations are
+    /// released by their own block-scope cleanup and must never be
+    /// compensated in a sibling arm that never declared them.
+    fn snapshotLiveOwnedBindings(self: *Codegen) CodegenError!std.StringHashMap(void) {
+        var live_owned = std.StringHashMap(void).init(self.allocator);
+        errdefer live_owned.deinit();
+        var live_iter = self.local_binding_types.iterator();
+        while (live_iter.next()) |entry| {
+            const live_name = entry.key_ptr.*;
+            if (isDiscardName(live_name)) continue;
+            if (self.global_const_bindings.contains(live_name)) continue;
+            live_owned.put(live_name, {}) catch return CodegenError.OutOfMemory;
+        }
+        return live_owned;
+    }
+
+    /// Family 3, N-way counterpart of the if/else compensation above:
+    /// the differential consumption union of a match/switch merge.
+    /// A name belongs to the union when at least one fallthrough arm
+    /// consumed it (relative to the pre-branch set), it was already a
+    /// live owned source binding before the branch, and it is not a
+    /// RefCell borrow handle. These are exactly the gates of
+    /// emitBranchConsumptionCompensation, generalized from two branch
+    /// end states to N arm end states: every other fallthrough arm (and
+    /// a switch's no-case-taken skip path, whose end state is the
+    /// pre-branch set) must release each union name it did not consume,
+    /// so all merge predecessors agree on Consumed for the union and
+    /// the post-merge consumed set stays the union of arm end states.
+    /// Terminating arms are not merge predecessors and never take part.
+    fn mergeCompensationUnion(
+        self: *Codegen,
+        live_owned: *const std.StringHashMap(void),
+        pre_consumed: *const std.StringHashMap(void),
+        pre_refcell_handles: *const std.StringHashMap(RefCellBorrowHandle),
+        arm_end_sets: []const *const std.StringHashMap(void),
+    ) CodegenError!std.array_list.Managed([]const u8) {
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+        var names = std.array_list.Managed([]const u8).init(self.allocator);
+        errdefer names.deinit();
+        for (arm_end_sets) |arm_end| {
+            var iter = arm_end.keyIterator();
+            while (iter.next()) |key| {
+                const n = key.*;
+                if (seen.contains(n)) continue;
+                seen.put(n, {}) catch return CodegenError.OutOfMemory;
+                if (pre_consumed.contains(n)) continue;
+                if (!live_owned.contains(n)) continue;
+                if (pre_refcell_handles.contains(n)) continue;
+                names.append(n) catch return CodegenError.OutOfMemory;
+            }
+        }
+        std.mem.sort([]const u8, names.items, {}, branchCompensationNameLessThan);
+        return names;
+    }
+
+    /// Render one arm's merge compensation (its share of the union it
+    /// did not consume) into a scratch buffer and insert it at the
+    /// recorded offset, immediately before the arm's jump to the merge
+    /// label. The compensated names are marked consumed in the settled
+    /// post-merge state, so each is unmarked before its release is
+    /// rendered (emitRelease skips consumed names), exactly as the
+    /// then-branch insertion in emitBranchConsumptionCompensation does.
+    /// Callers insert arms in descending offset order so recorded
+    /// offsets of earlier arms stay valid.
+    fn insertArmMergeCompensation(
+        self: *Codegen,
+        compensation_union: []const []const u8,
+        arm_end_consumed: *const std.StringHashMap(void),
+        insert_offset: usize,
+    ) CodegenError!void {
+        var needed = false;
+        for (compensation_union) |n| {
+            if (!arm_end_consumed.contains(n)) {
+                needed = true;
+                break;
+            }
+        }
+        if (!needed) return;
+        var scratch = std.array_list.Managed(u8).init(self.allocator);
+        defer scratch.deinit();
+        const saved_out = self.out;
+        self.out = scratch;
+        for (compensation_union) |n| {
+            if (arm_end_consumed.contains(n)) continue;
+            _ = self.consumed_bindings.remove(n);
+            try self.emitRelease(n);
+        }
+        scratch = self.out;
+        self.out = saved_out;
+        self.out.insertSlice(insert_offset, scratch.items) catch return CodegenError.OutOfMemory;
+    }
+
     fn restoreBorrowSourceTemps(self: *Codegen, saved: *std.StringHashMap([]const u8)) CodegenError!void {
         self.borrow_source_temps.clearRetainingCapacity();
         var iter = saved.iterator();
@@ -12254,6 +12349,15 @@ pub const Codegen = struct {
         var pre_match_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
         var fallthrough_consumed = std.StringHashMap(void).init(self.allocator);
         var has_fallthrough_state = false;
+        // Family 3: merge consumption compensation (the N-way form of
+        // the if/else emitBranchConsumptionCompensation). Per fallthrough
+        // arm, record its end consumed set and the text offset of its
+        // jump to the merge label; after all arms, arms that did not
+        // consume a union name get its release inserted before the jump.
+        var pre_match_live_owned = try self.snapshotLiveOwnedBindings();
+        var pre_match_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+        var arm_end_sets = std.array_list.Managed(*std.StringHashMap(void)).init(self.allocator);
+        var arm_jmp_offsets = std.array_list.Managed(usize).init(self.allocator);
 
         self.outPrint("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
 
@@ -12312,11 +12416,23 @@ pub const Codegen = struct {
                 }
                 try self.mergeConsumedIntoUnion(&fallthrough_consumed);
                 has_fallthrough_state = true;
+                const arm_end = self.allocator.create(std.StringHashMap(void)) catch return CodegenError.OutOfMemory;
+                arm_end.* = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+                arm_end_sets.append(arm_end) catch return CodegenError.OutOfMemory;
+                arm_jmp_offsets.append(self.out.items.len) catch return CodegenError.OutOfMemory;
                 self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
             }
             self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
         }
         if (has_fallthrough_state) try self.restoreConsumedBindings(&fallthrough_consumed);
+        if (arm_end_sets.items.len > 0) {
+            const compensation_union = try self.mergeCompensationUnion(&pre_match_live_owned, &pre_match_consumed, &pre_match_refcell_handles, arm_end_sets.items);
+            var arm_idx = arm_end_sets.items.len;
+            while (arm_idx > 0) {
+                arm_idx -= 1;
+                try self.insertArmMergeCompensation(compensation_union.items, arm_end_sets.items[arm_idx], arm_jmp_offsets.items[arm_idx]);
+            }
+        }
 
         self.outPrint("{s}:\n", .{no_match_label}) catch return CodegenError.CodegenError;
         if (cond_regs.items.len > 0) {
@@ -12370,6 +12486,11 @@ pub const Codegen = struct {
         var pre_match_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
         var fallthrough_consumed = std.StringHashMap(void).init(self.allocator);
         var has_fallthrough_state = false;
+        // Family 3 merge compensation state: see genMatchExpr.
+        var pre_match_live_owned = try self.snapshotLiveOwnedBindings();
+        var pre_match_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+        var arm_end_sets = std.array_list.Managed(*std.StringHashMap(void)).init(self.allocator);
+        var arm_jmp_offsets = std.array_list.Managed(usize).init(self.allocator);
 
         self.outPrint("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
 
@@ -12437,11 +12558,23 @@ pub const Codegen = struct {
                 }
                 try self.mergeConsumedIntoUnion(&fallthrough_consumed);
                 has_fallthrough_state = true;
+                const arm_end = self.allocator.create(std.StringHashMap(void)) catch return CodegenError.OutOfMemory;
+                arm_end.* = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+                arm_end_sets.append(arm_end) catch return CodegenError.OutOfMemory;
+                arm_jmp_offsets.append(self.out.items.len) catch return CodegenError.OutOfMemory;
                 self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
             }
             self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
         }
         if (has_fallthrough_state) try self.restoreConsumedBindings(&fallthrough_consumed);
+        if (arm_end_sets.items.len > 0) {
+            const compensation_union = try self.mergeCompensationUnion(&pre_match_live_owned, &pre_match_consumed, &pre_match_refcell_handles, arm_end_sets.items);
+            var arm_idx = arm_end_sets.items.len;
+            while (arm_idx > 0) {
+                arm_idx -= 1;
+                try self.insertArmMergeCompensation(compensation_union.items, arm_end_sets.items[arm_idx], arm_jmp_offsets.items[arm_idx]);
+            }
+        }
 
         self.outPrint("{s}:\n", .{no_match_label}) catch return CodegenError.CodegenError;
         if (cond_regs.items.len > 0) {
@@ -16383,6 +16516,35 @@ pub const Codegen = struct {
                 }
                 self.label_idx += 1;
 
+                // Family 3: merge consumption compensation, the switch
+                // site (see genMatchExpr for the match form). Switch
+                // previously had no arm-state discipline at all: case
+                // bodies now start from the pre-switch consumed set,
+                // fallthrough case end sets are collected, and the
+                // post-switch set is their union. With no default case,
+                // the last check's false edge is a skip path into the
+                // merge whose end state is the pre-switch set; it is
+                // routed through a dedicated skip block below, which
+                // carries that path's share of the compensation.
+                var pre_switch_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+                var pre_switch_live_owned = try self.snapshotLiveOwnedBindings();
+                var pre_switch_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+                var switch_has_default = false;
+                for (swe.cases) |case| {
+                    if (isSwitchDefaultPattern(case.pattern)) {
+                        switch_has_default = true;
+                        break;
+                    }
+                }
+                const skip_label: ?[]const u8 = if (!switch_has_default and swe.cases.len > 0)
+                    std.fmt.allocPrint(self.allocator, "L_SWITCH_SKIP_{}", .{self.label_idx - 1}) catch return CodegenError.OutOfMemory
+                else
+                    null;
+                var switch_fallthrough_consumed = std.StringHashMap(void).init(self.allocator);
+                var switch_has_fallthrough_state = false;
+                var switch_arm_end_sets = std.array_list.Managed(*std.StringHashMap(void)).init(self.allocator);
+                var switch_arm_jmp_offsets = std.array_list.Managed(usize).init(self.allocator);
+
                 // Jump to first check
                 self.outPrint("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
 
@@ -16392,7 +16554,6 @@ pub const Codegen = struct {
                 // ladder, no merge block is reachable; emitting it would end
                 // the function on an unterminated label.
                 var any_fallthrough = false;
-                var has_default = false;
                 for (swe.cases, 0..) |case, idx| {
                     self.outPrint("{s}:\n", .{check_labels.items[idx]}) catch return CodegenError.CodegenError;
                     if (previous_cond) |cond| {
@@ -16400,7 +16561,6 @@ pub const Codegen = struct {
                         previous_cond = null;
                     }
                     const is_default = isSwitchDefaultPattern(case.pattern);
-                    if (is_default) has_default = true;
                     const is_eq = if (is_default) "" else try self.newTmp();
                     if (!is_default) {
                         if (switch_enum_decl) |decl| {
@@ -16437,7 +16597,7 @@ pub const Codegen = struct {
                         }
                     }
 
-                    const next_chk = if (idx + 1 < swe.cases.len) check_labels.items[idx + 1] else merge_label;
+                    const next_chk = if (idx + 1 < swe.cases.len) check_labels.items[idx + 1] else if (skip_label) |sl| sl else merge_label;
                     if (is_default) {
                         self.outPrint("    jmp {s}\n\n", .{cases_labels.items[idx]}) catch return CodegenError.CodegenError;
                     } else {
@@ -16447,20 +16607,56 @@ pub const Codegen = struct {
 
                     // Generate case body
                     self.outPrint("{s}:\n", .{cases_labels.items[idx]}) catch return CodegenError.CodegenError;
+                    try self.restoreConsumedBindings(&pre_switch_consumed);
                     if (!is_default) self.outPrint("    !{s}\n", .{is_eq}) catch return CodegenError.CodegenError;
                     if (val_needs_release and blockTerminates(case.body)) try self.emitRelease(val_reg);
                     try self.genBlock(case.body, hoisted_allocs);
                     if (!blockTerminates(case.body)) {
+                        try self.mergeConsumedIntoUnion(&switch_fallthrough_consumed);
+                        switch_has_fallthrough_state = true;
+                        const arm_end = self.allocator.create(std.StringHashMap(void)) catch return CodegenError.OutOfMemory;
+                        arm_end.* = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+                        switch_arm_end_sets.append(arm_end) catch return CodegenError.OutOfMemory;
+                        switch_arm_jmp_offsets.append(self.out.items.len) catch return CodegenError.OutOfMemory;
                         self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                         any_fallthrough = true;
                     }
                     self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
                 }
 
-                // The last non-default check branches to the merge label, so
-                // the merge block stays whenever it can be referenced.
+                // Settle the post-switch consumed state (the union of
+                // fallthrough case end states, or the pre-switch set when
+                // only the skip path reaches the merge), then emit the
+                // merge compensation: per-case insertions in descending
+                // offset order, then the skip block, whose releases are
+                // appended at the current tail in settled state.
+                if (switch_has_fallthrough_state) {
+                    try self.restoreConsumedBindings(&switch_fallthrough_consumed);
+                } else if (skip_label != null) {
+                    try self.restoreConsumedBindings(&pre_switch_consumed);
+                }
+                if (switch_arm_end_sets.items.len > 0 or skip_label != null) {
+                    const compensation_union = try self.mergeCompensationUnion(&pre_switch_live_owned, &pre_switch_consumed, &pre_switch_refcell_handles, switch_arm_end_sets.items);
+                    var arm_idx = switch_arm_end_sets.items.len;
+                    while (arm_idx > 0) {
+                        arm_idx -= 1;
+                        try self.insertArmMergeCompensation(compensation_union.items, switch_arm_end_sets.items[arm_idx], switch_arm_jmp_offsets.items[arm_idx]);
+                    }
+                    if (skip_label) |sl| {
+                        self.outPrint("{s}:\n", .{sl}) catch return CodegenError.CodegenError;
+                        for (compensation_union.items) |n| {
+                            _ = self.consumed_bindings.remove(n);
+                            try self.emitRelease(n);
+                        }
+                        self.outPrint("    jmp {s}\n\n", .{merge_label}) catch return CodegenError.CodegenError;
+                    }
+                }
+
+                // The last non-default check reaches the merge (through
+                // the skip block when one was routed), so the merge block
+                // stays whenever it can be referenced.
                 const last_is_default = swe.cases.len > 0 and isSwitchDefaultPattern(swe.cases[swe.cases.len - 1].pattern);
-                const need_merge = any_fallthrough or !has_default or !last_is_default;
+                const need_merge = any_fallthrough or !switch_has_default or !last_is_default;
                 if (need_merge) {
                     self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
                     if (val_needs_release) try self.emitRelease(val_reg);

@@ -11185,6 +11185,29 @@ pub const Codegen = struct {
                             try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
                             return;
                         }
+                        // Array (non-Vec) of struct elements: genExpr on the
+                        // index expression materializes a by-value COPY of
+                        // the element, so the generic path below stored the
+                        // field into the copy and silently dropped the
+                        // write (arr[1].key = 9 never landed). Address the
+                        // element through its slot pointer instead, exactly
+                        // like the Vec branch above (BJ defect, SA-text
+                        // path; the SAB path already addressed it).
+                        if (arrayType(lowering_rules.peelBorrowPointerType(idx_target_ty))) |arr| {
+                            if (arr.elem.* == .user_defined and self.tc.structs.contains(arr.elem.user_defined.name)) {
+                                const layout = try self.fieldAddressLayout(arr.elem, field.field_name);
+                                const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
+                                const addr = try self.genIndexAddress(&idx, hoisted_allocs);
+                                const elem_reg = try self.newTmp();
+                                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ elem_reg, addr.ptr }) catch return CodegenError.CodegenError;
+                                const val_reg = try self.genExpr(assign.value, hoisted_allocs);
+                                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ elem_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                                try self.emitForgetMovedValue(elem_reg);
+                                try self.finishIndexAddress(addr);
+                                try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
+                                return;
+                            }
+                        }
                     }
                     const base_reg = try self.genExpr(field.expr, hoisted_allocs);
                     const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
@@ -11790,16 +11813,37 @@ pub const Codegen = struct {
         const total_size = @max(elem_size * arr.len, 1);
         self.outPrint("    {s} = alloc {}\n", .{ target, total_size }) catch return CodegenError.CodegenError;
 
-        const value_reg = try self.genExpr(lit.value, hoisted_allocs);
+        // [value; N] evaluates `value` once per element (Rust semantics).
+        // Hoisting a single evaluation into every slot is only valid for
+        // plain scalar values: composite elements (nested arrays, structs,
+        // Strings, Vecs, ...) are pointer-represented, so storing one
+        // register into all slots aliased every element to the same heap
+        // object — writes to slot k landed in every slot (BJ defect:
+        // [[u8; 8]; 4] rows all read the last-written row; [Struct{..}; N]
+        // slots shared one instance).
+        const elem_is_scalar = switch (arr.elem.*) {
+            .primitive, .pointer, .borrow => true,
+            else => false,
+        };
         if (arr.elem.* == .primitive and arr.elem.primitive == .u8) {
+            const value_reg = try self.genExpr(lit.value, hoisted_allocs);
             self.outPrint("    EXPAND SLA_ARRAY_FILL_U8 {s}, {s}, {}\n", .{ target, value_reg, arr.len }) catch return CodegenError.CodegenError;
-        } else {
+            if (callArgNeedsRelease(lit.value)) try self.emitRelease(value_reg);
+        } else if (elem_is_scalar) {
+            const value_reg = try self.genExpr(lit.value, hoisted_allocs);
             const elem_ty_str = typeString(arr.elem);
             for (0..arr.len) |i| {
                 self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, value_reg, elem_ty_str }) catch return CodegenError.CodegenError;
             }
+            if (callArgNeedsRelease(lit.value)) try self.emitRelease(value_reg);
+        } else {
+            const elem_ty_str = typeString(arr.elem);
+            for (0..arr.len) |i| {
+                const slot_reg = try self.genExpr(lit.value, hoisted_allocs);
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, slot_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                if (callArgNeedsRelease(lit.value)) try self.emitRelease(slot_reg);
+            }
         }
-        if (callArgNeedsRelease(lit.value)) try self.emitRelease(value_reg);
     }
 
     fn genTupleLiteralInto(

@@ -9559,14 +9559,30 @@ pub const Codegen = struct {
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, arraySize(arr_ty.array));
-        const value = try self.genMacroExpr(lit.value, ctx);
-        if (!try self.emitRepeatArrayFill(dst, arr_ty.array, value)) {
+        // Per-element evaluation for composite elements, as in
+        // genRepeatArrayLiteral (single-evaluation hoist aliased all
+        // slots to one heap object for pointer-represented elements).
+        const elem_is_scalar = switch (arr_ty.array.elem.*) {
+            .primitive, .pointer, .borrow => true,
+            else => false,
+        };
+        if (elem_is_scalar) {
+            const value = try self.genMacroExpr(lit.value, ctx);
+            if (!try self.emitRepeatArrayFill(dst, arr_ty.array, value)) {
+                for (0..lit.len) |idx| {
+                    const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
+                    try self.emitStore(dst, layout.offset, value, layout.ty);
+                }
+            }
+            try self.releaseStoredExprResultIfNeeded(lit.value, value, arr_ty.array.elem);
+        } else {
             for (0..lit.len) |idx| {
                 const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
-                try self.emitStore(dst, layout.offset, value, layout.ty);
+                const slot_value = try self.genMacroExpr(lit.value, ctx);
+                try self.emitStore(dst, layout.offset, slot_value, layout.ty);
+                try self.releaseStoredExprResultIfNeeded(lit.value, slot_value, arr_ty.array.elem);
             }
         }
-        try self.releaseStoredExprResultIfNeeded(lit.value, value, arr_ty.array.elem);
         return dst;
     }
 
@@ -18675,14 +18691,32 @@ pub const Codegen = struct {
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, arraySize(arr_ty.array));
-        const value = try self.genExpr(lit.value);
-        if (!try self.emitRepeatArrayFill(dst, arr_ty.array, value)) {
+        // [value; N] evaluates `value` once per element; hoisting one
+        // evaluation into every slot is only valid for plain scalars.
+        // Composite elements are pointer-represented, so a single shared
+        // register aliased all elements to one heap object (BJ defect;
+        // mirrors the SA-text fix in codegen genRepeatArrayLiteralInto).
+        const elem_is_scalar = switch (arr_ty.array.elem.*) {
+            .primitive, .pointer, .borrow => true,
+            else => false,
+        };
+        if (elem_is_scalar) {
+            const value = try self.genExpr(lit.value);
+            if (!try self.emitRepeatArrayFill(dst, arr_ty.array, value)) {
+                for (0..lit.len) |idx| {
+                    const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
+                    try self.emitStore(dst, layout.offset, value, layout.ty);
+                }
+            }
+            try self.releaseStoredExprResultIfNeeded(lit.value, value, arr_ty.array.elem);
+        } else {
             for (0..lit.len) |idx| {
                 const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
-                try self.emitStore(dst, layout.offset, value, layout.ty);
+                const slot_value = try self.genExpr(lit.value);
+                try self.emitStore(dst, layout.offset, slot_value, layout.ty);
+                try self.releaseStoredExprResultIfNeeded(lit.value, slot_value, arr_ty.array.elem);
             }
         }
-        try self.releaseStoredExprResultIfNeeded(lit.value, value, arr_ty.array.elem);
         return dst;
     }
 

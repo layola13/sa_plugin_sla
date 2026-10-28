@@ -3142,8 +3142,42 @@ pub const Codegen = struct {
         }
     }
 
+    /// Whether the declared type is exactly the owned buffer type
+    /// (`String` or `Vec<T>`). Borrow spellings never reach this predicate
+    /// as `.user_defined`, so `&String`/`&Vec<T>` bindings never qualify.
+    /// Mirrors the F-perf-2 helper of the same name so the two lines'
+    /// `sab_codegen.zig` hunks reconcile mechanically at integration.
+    fn ownedBufferDropType(ty: ?*const ast.Type) bool {
+        const t = ty orelse return false;
+        if (t.* != .user_defined) return false;
+        return std.mem.eql(u8, t.user_defined.name, "String") or
+            std.mem.eql(u8, t.user_defined.name, "Vec");
+    }
+
+    /// Emit the deep drop for an owned String/Vec value: `@sa_vec_free`
+    /// takes the buffer out of the Vec struct and releases both the
+    /// buffer and the struct. A bare SAB `release`/`move_` on the struct
+    /// pointer frees only the struct allocation and leaks the buffer.
+    /// Mirrors the F-perf-2 helper of the same name.
+    fn emitOwnedBufferFree(self: *Codegen, reg: u32) !void {
+        if (self.released_regs.contains(reg)) return;
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_free"});
+        try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_vec_free(^{s})", .{self.symbols.items[reg]}));
+        try self.released_regs.put(reg, {});
+    }
+
     fn emitBalanceReleaseLocal(self: *Codegen, local: Local) !void {
         if (self.released_regs.contains(local.reg)) return;
+        // Follow-up line (family 1): branch-merge compensation for an
+        // owned String/Vec local must dispose of the value deeply. The
+        // shallow `move_` previously emitted here freed only the Vec
+        // struct and leaked the heap buffer on the non-consuming path.
+        // The deep form is restricted to plain register locals: stack
+        // slot values and stack allocations keep their existing paths
+        // below (their registers name slots, not the buffer struct), and
+        // the global `.release` semantics are untouched.
+        const deep_balance = ownedBufferDropType(local.ty) and
+            local.stack_ty == null and !local.is_stack_alloc;
         // Params must still be balanced even when their ABI storage is a pointer
         // word (by-value aggregate owners like `pool: EcsParallelTaskPool`).
         // Skipping them leaves Active vs Consumed PhiStateConflict on branch
@@ -3156,6 +3190,10 @@ pub const Codegen = struct {
                 return;
             }
             if (action.consumes()) {
+                if (deep_balance) {
+                    try self.emitOwnedBufferFree(local.reg);
+                    return;
+                }
                 try self.emitMove(local.reg);
                 return;
             }
@@ -3167,6 +3205,10 @@ pub const Codegen = struct {
                 const is_copy = self.typeIsCopyValue(ty);
                 const is_borrow = lowering_rules.isBorrowLikeType(ty);
                 if (is_copy or is_borrow) return;
+                if (deep_balance) {
+                    try self.emitOwnedBufferFree(local.reg);
+                    return;
+                }
                 try self.emitMove(local.reg);
                 try self.released_regs.put(local.reg, {});
                 return;
@@ -3175,6 +3217,10 @@ pub const Codegen = struct {
         if (local.stack_ty != null) return try self.releaseStackLocalValue(local);
         if (local.is_stack_alloc) {
             if (self.stack_alloc_emitted.contains(local.reg)) try self.emitRelease(local.reg);
+            return;
+        }
+        if (deep_balance) {
+            try self.emitOwnedBufferFree(local.reg);
             return;
         }
         try self.emitRelease(local.reg);
@@ -10545,6 +10591,13 @@ pub const Codegen = struct {
             for (live_branch_states.items) |*snapshot| self.deinitBranchEmitterStateSnapshot(snapshot);
             live_branch_states.deinit();
         }
+        // Deferred per-case exit blocks, in the same order as
+        // `live_branch_states` (fallthrough cases in order, then the
+        // no-default path). Mirrors the genMatchWithExpected merge
+        // balancing: a local consumed on some cases but not this one is
+        // disposed of on this path before the merge.
+        var case_exit_labels = std.array_list.Managed([]const u8).init(self.allocator);
+        defer case_exit_labels.deinit();
         var any_fallthrough = false;
 
         try self.emitJmp(check_labels.items[0]);
@@ -10577,7 +10630,9 @@ pub const Codegen = struct {
             const terminated = self.lastIsTerminator();
             if (!terminated) {
                 try self.releaseLocalsFrom(branch_locals_len, null);
-                try self.emitJmp(merge_label);
+                const case_exit_label = try self.newLabel("L_SWITCH_EXIT");
+                try case_exit_labels.append(case_exit_label);
+                try self.emitJmp(case_exit_label);
                 any_fallthrough = true;
                 try self.appendCurrentBranchEmitterState(&live_branch_states);
             }
@@ -10594,9 +10649,36 @@ pub const Codegen = struct {
                 previous_cond = null;
             }
             if (!val_is_local) try self.emitBranchRelease(val_reg);
-            try self.emitJmp(merge_label);
+            const case_exit_label = try self.newLabel("L_SWITCH_EXIT");
+            try case_exit_labels.append(case_exit_label);
+            try self.emitJmp(case_exit_label);
             any_fallthrough = true;
             try self.appendCurrentBranchEmitterState(&live_branch_states);
+        }
+
+        // Emit the deferred case exits (see genMatchWithExpected):
+        // balance each path against the union of case-end released
+        // sets and write the balanced set back into the snapshot so
+        // the merge intersection accounts for the drops.
+        {
+            var union_released = std.AutoHashMap(u32, void).init(self.allocator);
+            defer union_released.deinit();
+            for (live_branch_states.items) |snapshot| {
+                var released_iter = snapshot.released.iterator();
+                while (released_iter.next()) |entry| try union_released.put(entry.key_ptr.*, {});
+            }
+            for (case_exit_labels.items, 0..) |case_exit_label, live_idx| {
+                var snapshot = &live_branch_states.items[live_idx];
+                var branch_released = try snapshot.released.clone();
+                errdefer branch_released.deinit();
+                try self.restoreReleased(&snapshot.released);
+                try self.restoreRefCellBranchState(&snapshot.refcell_values, &snapshot.borrow_temps);
+                try self.emitLabel(case_exit_label);
+                try self.balanceBranchReleasedLocals(branch_locals_len, &branch_released, &union_released);
+                try self.emitJmp(merge_label);
+                snapshot.released.deinit();
+                snapshot.released = branch_released;
+            }
         }
 
         try self.setMergeBranchEmitterState(live_branch_states.items, &pre_branch_state);
@@ -18196,6 +18278,17 @@ pub const Codegen = struct {
             for (live_branch_states.items) |*snapshot| self.deinitBranchEmitterStateSnapshot(snapshot);
             live_branch_states.deinit();
         }
+        // Deferred per-arm exit blocks, in the same order as
+        // `live_branch_states`. A local consumed on some arms but not this
+        // one must be disposed of on this arm's path before the merge;
+        // without that compensation the merged register state disagrees
+        // (PhiStateConflict) and, for owned String/Vec values, the
+        // non-consuming path would leak the buffer. The balance set is
+        // the union of all arm-end released sets, which is only known
+        // after every arm has been generated, so fallthrough arms jump
+        // to their exit label and the exits are emitted after the loop.
+        var arm_exit_labels = std.array_list.Managed([]const u8).init(self.allocator);
+        defer arm_exit_labels.deinit();
 
         var any_fallthrough = false;
 
@@ -18288,7 +18381,9 @@ pub const Codegen = struct {
             };
             if (!terminated) {
                 try self.releaseLocalsFrom(branch_locals_len, null);
-                try self.emitJmp(merge_label);
+                const arm_exit_label = try self.newLabel("L_MATCH_ARM_EXIT");
+                try arm_exit_labels.append(arm_exit_label);
+                try self.emitJmp(arm_exit_label);
                 any_fallthrough = true;
                 try self.appendCurrentBranchEmitterState(&live_branch_states);
             }
@@ -18306,6 +18401,37 @@ pub const Codegen = struct {
         for (case_binding_regs.items) |regs| for (regs) |reg| try self.emitBranchRelease(reg);
         if (!val_is_local) try self.emitBranchRelease(val_reg);
         try self.emitPanicCode(1);
+
+        // Emit the deferred arm exits: on each fallthrough arm's path,
+        // dispose of every pre-match local that some other arm released
+        // but this arm did not, so all paths reach the merge with the
+        // same register states. The per-arm snapshot is restored first
+        // so the balance emission sees this arm's own end state.
+        {
+            var union_released = std.AutoHashMap(u32, void).init(self.allocator);
+            defer union_released.deinit();
+            for (live_branch_states.items) |snapshot| {
+                var released_iter = snapshot.released.iterator();
+                while (released_iter.next()) |entry| try union_released.put(entry.key_ptr.*, {});
+            }
+            for (arm_exit_labels.items, 0..) |arm_exit_label, live_idx| {
+                var snapshot = &live_branch_states.items[live_idx];
+                var branch_released = try snapshot.released.clone();
+                errdefer branch_released.deinit();
+                try self.restoreReleased(&snapshot.released);
+                try self.restoreRefCellBranchState(&snapshot.refcell_values, &snapshot.borrow_temps);
+                try self.emitLabel(arm_exit_label);
+                try self.balanceBranchReleasedLocals(branch_locals_len, &branch_released, &union_released);
+                try self.emitJmp(merge_label);
+                // The snapshot must reflect the balance drops just
+                // emitted on this path, or the merge intersection still
+                // treats the local as live here and post-merge cleanup
+                // releases it a second time.
+                snapshot.released.deinit();
+                snapshot.released = branch_released;
+            }
+        }
+
         try self.setMergeBranchEmitterState(live_branch_states.items, &pre_branch_state);
 
         if (any_fallthrough) {

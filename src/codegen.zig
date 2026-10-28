@@ -15375,11 +15375,26 @@ pub const Codegen = struct {
                                         if (method_func) |func| {
                                             if (i < func.params.len and arg.* == .literal and arg.literal == .string_val and isFormatStringType(func.params[i].ty)) {
                                                 const arg_reg = try self.genOwnedStringLiteral(arg.literal.string_val, hoisted_allocs);
-                                                arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
-                                                try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
-                                                    .reg = arg_reg,
-                                                    .release_after_call = true,
-                                                });
+                                                if (func.params[i].is_borrow) {
+                                                    arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+                                                    try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
+                                                        .reg = arg_reg,
+                                                        .release_after_call = true,
+                                                    });
+                                                } else {
+                                                    // BM-D2: a by-value String parameter consumes its argument
+                                                    // (`^s` contract). The freshly materialized literal StringBuf
+                                                    // must be MOVED into the call like a format() result; passing
+                                                    // it plain and freeing it in the caller (the previous shape)
+                                                    // traps CapabilityMismatch on the SA backend and leaves the
+                                                    // callee reading a released register on SAB.
+                                                    const move_reg = std.fmt.allocPrint(self.allocator, "^{s}", .{arg_reg}) catch return CodegenError.OutOfMemory;
+                                                    arg_regs.append(move_reg) catch return CodegenError.OutOfMemory;
+                                                    try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
+                                                        .reg = arg_reg,
+                                                        .release_after_call = false,
+                                                    });
+                                                }
                                                 continue;
                                             }
                                             if (i < func.params.len) {
@@ -15433,11 +15448,26 @@ pub const Codegen = struct {
                         if (maybe_func) |func| {
                             if (i < func.params.len and arg.* == .literal and arg.literal == .string_val and isFormatStringType(func.params[i].ty)) {
                                 const arg_reg = try self.genOwnedStringLiteral(arg.literal.string_val, hoisted_allocs);
-                                arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
-                                try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
-                                    .reg = arg_reg,
-                                    .release_after_call = true,
-                                });
+                                if (func.params[i].is_borrow) {
+                                    arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+                                    try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
+                                        .reg = arg_reg,
+                                        .release_after_call = true,
+                                    });
+                                } else {
+                                    // BM-D2: a by-value String parameter consumes its argument
+                                    // (`^s` contract). The freshly materialized literal StringBuf
+                                    // must be MOVED into the call like a format() result; passing
+                                    // it plain and freeing it in the caller (the previous shape)
+                                    // traps CapabilityMismatch on the SA backend and leaves the
+                                    // callee reading a released register on SAB.
+                                    const move_reg = std.fmt.allocPrint(self.allocator, "^{s}", .{arg_reg}) catch return CodegenError.OutOfMemory;
+                                    arg_regs.append(move_reg) catch return CodegenError.OutOfMemory;
+                                    try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
+                                        .reg = arg_reg,
+                                        .release_after_call = false,
+                                    });
+                                }
                                 continue;
                             }
                             if (i < func.params.len) {
@@ -15504,11 +15534,26 @@ pub const Codegen = struct {
                             if (maybe_func) |func| {
                                 if (i < func.params.len and arg.* == .literal and arg.literal == .string_val and isFormatStringType(func.params[i].ty)) {
                                     const arg_reg = try self.genOwnedStringLiteral(arg.literal.string_val, hoisted_allocs);
-                                    arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
-                                    try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
-                                        .reg = arg_reg,
-                                        .release_after_call = true,
-                                    });
+                                    if (func.params[i].is_borrow) {
+                                        arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+                                        try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
+                                            .reg = arg_reg,
+                                            .release_after_call = true,
+                                        });
+                                    } else {
+                                        // BM-D2: a by-value String parameter consumes its argument
+                                        // (`^s` contract). The freshly materialized literal StringBuf
+                                        // must be MOVED into the call like a format() result; passing
+                                        // it plain and freeing it in the caller (the previous shape)
+                                        // traps CapabilityMismatch on the SA backend and leaves the
+                                        // callee reading a released register on SAB.
+                                        const move_reg = std.fmt.allocPrint(self.allocator, "^{s}", .{arg_reg}) catch return CodegenError.OutOfMemory;
+                                        arg_regs.append(move_reg) catch return CodegenError.OutOfMemory;
+                                        try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
+                                            .reg = arg_reg,
+                                            .release_after_call = false,
+                                        });
+                                    }
                                     continue;
                                 }
                                 if (i < func.params.len) {

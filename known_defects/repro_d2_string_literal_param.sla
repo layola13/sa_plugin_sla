@@ -1,0 +1,47 @@
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/ip.sla"
+
+// BM-D2 regression: a bare string literal passed to a by-value
+// String parameter must be materialized as an owned String and
+// moved into the call. Pre-fix: SA backend trapped
+// CapabilityMismatch at the call site; SAB passed the raw slice
+// register, so the callee read a wrong length (and byte-scanning
+// callees such as ip_addr_parse segfaulted on the wild reads).
+
+fn lit_takes_len(s: String) -> u64 {
+    return len(s);
+}
+
+fn lit_takes_first_byte(s: String) -> u8 {
+    let p: ptr = STR_PTR(s);
+    return PTR_BYTE_AT(p, 0);
+}
+
+@test "bare literal to String param: length"() {
+    let n = lit_takes_len("8.8.8.8");
+    if n != 7 {
+        panic(4851);
+    };
+}
+
+@test "bare literal to String param: byte scan"() {
+    let b = lit_takes_first_byte("8.8.8.8");
+    if b != 56 {
+        panic(4852);
+    };
+}
+
+@test "bare literal to String param: ip parse"() {
+    let r = ip_addr_parse("8.8.8.8");
+    match r {
+        Some(a) => {
+            if ip_addr_is_ipv4(a) != true {
+                panic(4853);
+            };
+        },
+        None => {
+            panic(4854);
+        },
+    };
+}

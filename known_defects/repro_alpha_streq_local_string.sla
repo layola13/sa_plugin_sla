@@ -1,0 +1,30 @@
+@import "sa_std/string.sa"
+@import "sa_std/vec.sa"
+@import "sa_std/alloc/vec.sa"
+
+// DEFECT 3 (BG line, AW residual 13) — minimal repro, SAB referee false
+// BorrowConflict on str_eq(&local_string, ...).
+//
+// Run:  sa test repro_alpha_streq_local_string.sla            -> TRAPS
+//       sa sla test --test-backend sab <same>                 -> TRAPS
+//       sa sla test --test-backend sa  <same>                 -> passes
+//
+// Trap: {"trap":"BorrowConflict","trap_code":1008,
+//        "register":"tmp_4","expected_mask":1,"actual_mask":2}
+//        (expected Active, actual Locked_Read)
+// The String may equally be produced by format("hello") directly in
+// the test body (register tmp_0 in that variant). Passing controls:
+// len(m) instead of str_eq; str_eq on a struct FIELD (&u.path);
+// str_eq inside a fn whose String arrives BY VALUE as a parameter;
+// the same body as fn main (native path, no referee).
+
+fn mk() -> String {
+    return format("hello");
+}
+
+@test "alpha fnret string str_eq"() {
+    let m: String = mk();
+    if !str_eq(&m, "hello") {
+        panic(4842);
+    };
+}

@@ -42,10 +42,6 @@ pub const Lowerer = struct {
     /// program decls at the end of lowerProgram.
     slot_view_decls: std.array_list.Managed(*ast.Node) = undefined,
     slot_view_decls_ready: bool = false,
-    /// Synthesized String/Vec head-word helper fns by payload
-    /// type (see stringWordCall), declared through slot_view_decls.
-    word_fns: std.AutoHashMap(*ast.Type, []const u8) = undefined,
-    word_fns_ready: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, tc: *tc_mod.TypeChecker) Lowerer {
         return .{ .allocator = allocator, .tc = tc };
@@ -760,58 +756,26 @@ pub const Lowerer = struct {
         return payload_ty.* == .primitive or (payload_ty.* == .user_defined and self.tc.structs.get(payload_ty.user_defined.name) == null and self.tc.enums.get(payload_ty.user_defined.name) == null);
     }
 
-    fn payloadIsStringLike(self: *Lowerer, payload_ty: *ast.Type) bool {
-        _ = self;
-        if (payload_ty.* != .user_defined) return false;
-        return std.mem.eql(u8, payload_ty.user_defined.name, "String") or std.mem.eql(u8, payload_ty.user_defined.name, "Vec");
-    }
-
-    /// A call to a synthesized identity fn `fn __go_id_N(v:
-    /// Payload) -> Payload { return v; }` for String/Vec payloads.
-    /// Passing the value through a real fn boundary solves two
-    /// SAB-codegen problems at once: the move cap on the call
-    /// consumes the caller's binding (no scope-end double drop
-    /// once the channel owns the value), the return consumes the
-    /// parameter (no drop inside the helper), and the result is a
-    /// call-produced local whose head word a plain scalar read
-    /// picks up correctly — unlike a format()-produced local,
-    /// whose register a direct scalar read loses. The fn is
-    /// registered with the checker and queued for declaration in
-    /// the program.
-    fn stringIdCall(self: *Lowerer, value_node: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
-        if (!self.word_fns_ready) {
-            self.word_fns = std.AutoHashMap(*ast.Type, []const u8).init(self.allocator);
-            self.word_fns_ready = true;
-        }
-        if (!self.slot_view_decls_ready) {
-            self.slot_view_decls = std.array_list.Managed(*ast.Node).init(self.allocator);
-            self.slot_view_decls_ready = true;
-        }
-        const fname = self.word_fns.get(payload_ty) orelse blk: {
-            const name = try self.freshName("__go_id_");
-            const ret = try self.newNode(.{ .return_stmt = .{ .value = try self.identNode("v", payload_ty) } });
-            const body = try self.allocator.alloc(*ast.Node, 1);
-            body[0] = ret;
-            const params = try self.allocator.alloc(ast.Param, 1);
-            params[0] = .{ .name = "v", .ty = payload_ty, .is_move = true };
-            const decl = try self.allocator.create(ast.FuncDecl);
-            decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = payload_ty, .body = body, .is_inline = false };
-            try self.tc.funcs.put(name, decl);
-            try self.slot_view_decls.append(try self.newNode(.{ .func_decl = decl.* }));
-            try self.word_fns.put(payload_ty, name);
-            break :blk name;
-        };
-        const args = try self.allocator.alloc(*ast.Node, 1);
-        args[0] = value_node;
-        const call = try self.newNode(.{ .call_expr = .{
-            .func_name = fname,
-            .associated_target = null,
-            .generics = &.{},
-            .args = args,
-            .callee = null,
-        } });
-        self.registerType(call, payload_ty);
-        return call;
+    /// A-form send staging for word payloads (Jev ruling
+    /// 2026-10-29: chan send/recv ownership is uniformly
+    /// view+forget): view the slot through the synthesized
+    /// wrapper struct (slotViewType), store the payload into the
+    /// view field — the move send semantics want — and retire
+    /// the view borrow with mem::forget. The exact mirror of
+    /// slotValueFromPtrFull's load path: no staging lets, no
+    /// helper fns, no mem_copy for word payloads.
+    fn storeSlotValueViaView(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), ptr_expr: *ast.Node, payload_ty: *ast.Type, value_node: *ast.Node) LowerError!void {
+        const view_ty = try self.slotViewType(payload_ty);
+        const borrow_view_ty = try self.allocator.create(ast.Type);
+        borrow_view_ty.* = .{ .borrow = view_ty };
+        const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = borrow_view_ty } });
+        self.registerType(cast, borrow_view_ty);
+        const ref_name = try self.freshName("__sv_ref_");
+        try out.append(try self.letNode(ref_name, borrow_view_ty, cast));
+        const field = try self.newNode(.{ .field_expr = .{ .expr = try self.identNode(ref_name, borrow_view_ty), .field_name = "v" } });
+        self.registerType(field, payload_ty);
+        try out.append(try self.newNode(.{ .assign_stmt = .{ .target = field, .value = value_node } }));
+        try out.append(try self.forgetStmt(ref_name, borrow_view_ty));
     }
 
     // --- channel operation emission ----------------------------------------
@@ -876,43 +840,19 @@ pub const Lowerer = struct {
                 return try self.identNode(val_name, try self.tyChanOf(info.payload_ty));
             },
             .send => {
-                const size = try self.payloadSize(info.payload_ty);
-                var value_node = call.args[1];
-                var value_ty = self.tc.expr_types.get(call.args[1]) orelse info.payload_ty;
+                const slot_name = try self.freshName("__slot_");
+                try out.append(try self.slotArrayNode(slot_name, 16));
+                const slot_ty = try self.tyArrayOf(try self.tyPrim(.u8), 16);
                 if (self.payloadIsWord(info.payload_ty)) {
-                    // Stage the head word through a plain u64
-                    // binding and copy from its home: a borrow of a
-                    // word-typed binding yields the value itself in
-                    // the SAB codegen, so copying from the original
-                    // binding would read the heap head's first word
-                    // instead of the head word. For String/Vec the
-                    // word is read through a synthesized helper fn
-                    // (stringWordCall): a direct scalar read of a
-                    // format-produced string local picks up a stale
-                    // register in the SAB codegen, while the fn
-                    // argument/parameter path is canonical.
-                    if (self.payloadIsStringLike(info.payload_ty)) {
-                        // Pass the value through the identity fn
-                        // (its move cap consumes the source) into a
-                        // ptr-typed staging binding: the call result
-                        // register IS the head word, and a call
-                        // result stored into a let is released
-                        // correctly by both codegens (a cast of the
-                        // result leaks the cast temp at fn exit in
-                        // the text codegen). Copy from the staging
-                        // binding's home.
-                        const id_call = try self.stringIdCall(value_node, info.payload_ty);
-                        const bind_name = try self.freshName("__svw_");
-                        try out.append(try self.letNode(bind_name, try self.tyPrim(.raw_ptr), id_call));
-                        value_node = try self.identNode(bind_name, try self.tyPrim(.raw_ptr));
-                        value_ty = try self.tyPrim(.raw_ptr);
-                    } else {
-                        const bind_name = try self.freshName("__svw_");
-                        try out.append(try self.letNode(bind_name, try self.tyPrim(.u64), value_node));
-                        value_node = try self.identNode(bind_name, try self.tyPrim(.u64));
-                        value_ty = try self.tyPrim(.u64);
-                    }
+                    // A form (see storeSlotValueViaView): view
+                    // borrow of the slot, payload moved into the
+                    // view field, borrow retired with mem::forget.
+                    const addr = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
+                    try self.storeSlotValueViaView(out, addr, info.payload_ty, call.args[1]);
                 } else {
+                    const size = try self.payloadSize(info.payload_ty);
+                    var value_node = call.args[1];
+                    const value_ty = self.tc.expr_types.get(call.args[1]) orelse info.payload_ty;
                     const is_place = switch (value_node.*) {
                         .identifier, .field_expr, .index_expr, .deref_expr => true,
                         else => false,
@@ -922,13 +862,10 @@ pub const Lowerer = struct {
                         try out.append(try self.letNode(bind_name, info.payload_ty, value_node));
                         value_node = try self.identNode(bind_name, info.payload_ty);
                     }
+                    const dst = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
+                    const src = try self.borrowNode(value_node, value_ty);
+                    try self.emitMemCopy(out, dst, src, size);
                 }
-                const slot_name = try self.freshName("__slot_");
-                try out.append(try self.slotArrayNode(slot_name, 16));
-                const slot_ty = try self.tyArrayOf(try self.tyPrim(.u8), 16);
-                const dst = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
-                const src = try self.borrowNode(value_node, value_ty);
-                try self.emitMemCopy(out, dst, src, size);
                 const rc_name = try self.freshName("__ch_rc_");
                 const args = try self.allocator.alloc(*ast.Node, 2);
                 args[0] = receiver;
@@ -1210,20 +1147,12 @@ pub const Lowerer = struct {
             try out.append(try self.letNode(h_name, try self.tyPrim(.u64), call.args[0]));
             try handle_names.append(h_name);
             if (info.kind == .send) {
+                // Stage the payload in a payload-typed binding
+                // for every kind; word payloads are moved into
+                // their slot through the A-form view at slot
+                // staging time (see storeSlotValueViaView).
                 const sv_name = try self.freshName("__sel_sv_");
-                // Word payloads stage the head word in a u64
-                // binding, mirroring emitChanCall's send.
-                if (self.payloadIsWord(info.payload_ty)) {
-                    var word_expr = call.args[1];
-                    var stage_ty = try self.tyPrim(.u64);
-                    if (self.payloadIsStringLike(info.payload_ty)) {
-                        word_expr = try self.stringIdCall(word_expr, info.payload_ty);
-                        stage_ty = try self.tyPrim(.raw_ptr);
-                    }
-                    try out.append(try self.letNode(sv_name, stage_ty, word_expr));
-                } else {
-                    try out.append(try self.letNode(sv_name, info.payload_ty, call.args[1]));
-                }
+                try out.append(try self.letNode(sv_name, info.payload_ty, call.args[1]));
                 try send_binds.append(sv_name);
             } else {
                 try send_binds.append(null);
@@ -1264,11 +1193,19 @@ pub const Lowerer = struct {
         for (sel.cases, 0..) |case, i| {
             if (send_binds.items[i]) |sv_name| {
                 const info = self.tc.chan_calls.get(case.call) orelse return self.fail("internal: select case was not recorded by the checker", .{});
-                const size = try self.payloadSize(info.payload_ty);
-                const dst = try self.slotPtrArg(out, slots_name, slots_ty, 16 * i);
-                const sv_ty = if (self.payloadIsStringLike(info.payload_ty)) try self.tyPrim(.raw_ptr) else if (self.payloadIsWord(info.payload_ty)) try self.tyPrim(.u64) else info.payload_ty;
-                const src = try self.borrowNode(try self.identNode(sv_name, sv_ty), sv_ty);
-                try self.emitMemCopy(out, dst, src, size);
+                if (self.payloadIsWord(info.payload_ty)) {
+                    // A form, mirroring emitChanCall's send:
+                    // view the arm's slot, move the staged
+                    // payload into the view field, forget the
+                    // view borrow.
+                    const slot_ptr = try self.slotPtrLet(out, slots_name, slots_ty, 16 * i);
+                    try self.storeSlotValueViaView(out, slot_ptr, info.payload_ty, try self.identNode(sv_name, info.payload_ty));
+                } else {
+                    const size = try self.payloadSize(info.payload_ty);
+                    const dst = try self.slotPtrArg(out, slots_name, slots_ty, 16 * i);
+                    const src = try self.borrowNode(try self.identNode(sv_name, info.payload_ty), info.payload_ty);
+                    try self.emitMemCopy(out, dst, src, size);
+                }
             }
         }
 

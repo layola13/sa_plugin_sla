@@ -11323,7 +11323,18 @@ pub const Codegen = struct {
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.outPrint("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
                     self.outPrint("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
-                    if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
+                    // The value now lives in the cell; retire the source
+                    // register whenever genExpr materialized a fresh temp
+                    // for it (a materializing cast such as ptr -> &View
+                    // yields a ptr_add temp). callArgNeedsRelease is the
+                    // wrong predicate here: it is false for every cast, so
+                    // the address temp stayed Active to function exit and
+                    // the verifier trapped MemoryLeak (chan A-form send
+                    // view staging). fieldBaseResultNeedsRelease matches
+                    // the genCall/store retirement discipline: release on
+                    // expr-result-needs-release OR a fresh temp that is
+                    // not the resolved binding itself.
+                    if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitRelease(val_reg);
                 } else if (self.bindingNeedsAssignedValueSlot(let.name, let_ty) and !isStackAllocCall(let.value)) {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
@@ -11333,7 +11344,7 @@ pub const Codegen = struct {
                     self.outPrint("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
                     if (self.refcell_borrow_handles.contains(val_reg)) {
                         try self.storeResultSlotTransferredValueState(let.name, val_reg, let_ty, callArgNeedsRelease(let.value));
-                    } else if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
+                    } else if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitRelease(val_reg);
                     if (self.storedIdentifierNeedsRelease(let.value, let_ty)) try self.markConsumedBinding(val_reg);
                 } else if (isStackAllocCall(let.value)) {
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;

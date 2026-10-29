@@ -176,6 +176,10 @@ pub const TypeChecker = struct {
     dyn_box_coercions: std.AutoHashMap(*const ast.Node, []const u8),
     dyn_rc_coercions: std.AutoHashMap(*const ast.Node, []const u8),
     fn_ptr_calls: std.AutoHashMap(*const ast.Node, void),
+    // Goroutine syntax batch: for each go_expr node, the entry function
+    // type recorded at check time so the post-check lowering in
+    // syntax_lowering.zig can materialize the entry argument.
+    go_entry_types: std.AutoHashMap(*const ast.Node, *ast.Type),
     array_to_slice_borrow_args: std.AutoHashMap(*const ast.Node, void),
     resolved_call_symbols: std.AutoHashMap(*const ast.Node, []const u8),
     resolved_call_alias_metadata: std.AutoHashMap(*const ast.Node, FunctionAliasMetadata),
@@ -230,6 +234,7 @@ pub const TypeChecker = struct {
             .dyn_box_coercions = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .dyn_rc_coercions = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .fn_ptr_calls = std.AutoHashMap(*const ast.Node, void).init(allocator),
+            .go_entry_types = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
             .array_to_slice_borrow_args = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .resolved_call_symbols = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .resolved_call_alias_metadata = std.AutoHashMap(*const ast.Node, FunctionAliasMetadata).init(allocator),
@@ -564,6 +569,7 @@ pub const TypeChecker = struct {
         self.dyn_box_coercions.deinit();
         self.dyn_rc_coercions.deinit();
         self.fn_ptr_calls.deinit();
+        self.go_entry_types.deinit();
         self.array_to_slice_borrow_args.deinit();
         self.resolved_call_symbols.deinit();
         self.resolved_call_alias_metadata.deinit();
@@ -696,6 +702,140 @@ pub const TypeChecker = struct {
             .ret_ty = ret_ty,
             .is_async = is_async,
         });
+    }
+
+    /// Goroutine syntax batch (DESIGN section 1): whether a type may
+    /// cross a goroutine boundary as a spawn argument / channel
+    /// payload component. Borrows dangle into the spawner frame,
+    /// closures capture that frame by reference, and futures are
+    /// bound to an executor; all three are rejected. Raw pointers
+    /// are the sanctioned transfer mechanism (Box) and are followed
+    /// so a pointer to a borrow-carrying struct is still caught.
+    pub fn typeForbiddenAcrossBoundary(self: *TypeChecker, ty: *ast.Type, depth: usize) bool {
+        if (depth > 8) return false;
+        switch (ty.*) {
+            .borrow, .closure, .future => return true,
+            .pointer => |inner| return self.typeForbiddenAcrossBoundary(inner, depth + 1),
+            .array => |arr| return self.typeForbiddenAcrossBoundary(arr.elem, depth + 1),
+            .tuple => |tup| {
+                for (tup.elems) |elem| if (self.typeForbiddenAcrossBoundary(elem, depth + 1)) return true;
+                return false;
+            },
+            .user_defined => |ud| {
+                if (self.structs.get(ud.name)) |decl| {
+                    for (decl.fields) |field| if (self.typeForbiddenAcrossBoundary(field.ty, depth + 1)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    /// The goroutine entry receives exactly one word: pointer,
+    /// word-sized scalar, function pointer, or a Chan handle.
+    fn goParamIsWordOrPtr(ty: *ast.Type) bool {
+        switch (ty.*) {
+            .primitive => |prim| return prim != .void_type,
+            .pointer, .fn_ptr => return true,
+            .user_defined => |ud| return std.mem.eql(u8, ud.name, "Chan"),
+            else => return false,
+        }
+    }
+
+    fn checkGoExpr(self: *TypeChecker, expr: *ast.Node, go: ast.GoExpr, scope: *Scope) TypeError!*ast.Type {
+        const call_node = go.call;
+        if (call_node.* != .call_expr) return TypeError.CompileError;
+        const call = call_node.call_expr;
+        if (call.callee != null) {
+            self.setError("go: closure literals cannot be spawned in this batch; name the function or pass a function value", .{});
+            return TypeError.TypeMismatch;
+        }
+        if (call.associated_target != null) {
+            self.setError("go: associated-function callees cannot be spawned; use a free function", .{});
+            return TypeError.TypeMismatch;
+        }
+        var params: []const *ast.Type = &.{};
+        var ret_ty: *ast.Type = undefined;
+        var is_async = false;
+        var entry_ty: *ast.Type = undefined;
+        if (scope.lookup(call.func_name)) |sym| {
+            switch (sym.ty.*) {
+                .fn_ptr => |fp| {
+                    params = fp.params;
+                    ret_ty = fp.ret;
+                    entry_ty = sym.ty;
+                },
+                .closure => {
+                    self.setError("go: closure values cannot be spawned in this batch (the captured environment points into the spawner frame); use a named function and pass state explicitly", .{});
+                    return TypeError.TypeMismatch;
+                },
+                else => {
+                    self.setError("go: callee `{s}` is not a function value", .{call.func_name});
+                    return TypeError.TypeMismatch;
+                },
+            }
+        } else if (self.funcs.get(call.func_name)) |decl| {
+            if (decl.is_extern) {
+                self.setError("go: extern functions cannot be spawned; wrap the extern in an SLA function", .{});
+                return TypeError.TypeMismatch;
+            }
+            if (decl.params.len != call.args.len) {
+                self.setError("go: callee `{s}` does not resolve to a free function taking {} argument(s) (method callees are not supported in this batch)", .{ call.func_name, call.args.len });
+                return TypeError.TypeMismatch;
+            }
+            var ps = std.array_list.Managed(*ast.Type).init(self.allocator);
+            for (decl.params) |param| try ps.append(param.ty);
+            params = try ps.toOwnedSlice();
+            ret_ty = decl.ret_ty;
+            is_async = decl.is_async;
+            entry_ty = try self.makeFnPtrType(decl.abi, params, ret_ty);
+        } else if (self.imported_function_signatures.get(call.func_name)) |sig| {
+            if (sig.params.len != call.args.len) {
+                self.setError("go: callee `{s}` does not resolve to a free function taking {} argument(s) (method callees are not supported in this batch)", .{ call.func_name, call.args.len });
+                return TypeError.TypeMismatch;
+            }
+            var ps = std.array_list.Managed(*ast.Type).init(self.allocator);
+            for (sig.params) |param| try ps.append(param.ty);
+            params = try ps.toOwnedSlice();
+            ret_ty = sig.ret_ty;
+            is_async = sig.is_async;
+            entry_ty = try self.makeFnPtrType(null, params, ret_ty);
+        } else {
+            self.setError("go: callee `{s}` does not resolve to a free function or function value (method callees are not supported in this batch)", .{call.func_name});
+            return TypeError.UndefinedVariable;
+        }
+        // Ordinary call checking: argument types and ownership
+        // consumption at the spawn point.
+        _ = try self.checkExpr(call_node, scope);
+        if (is_async) {
+            self.setError("go: async function `{s}` cannot be spawned (goroutines run synchronous functions); drive it with a block_on wrapper in a synchronous function", .{call.func_name});
+            return TypeError.TypeMismatch;
+        }
+        if (!lowering_rules.isVoidType(ret_ty)) {
+            self.setError("go: spawned function `{s}` must return void (the goroutine entry discards results); wrap it if you need the value", .{call.func_name});
+            return TypeError.TypeMismatch;
+        }
+        if (params.len > 1) {
+            self.setError("go: spawned function `{s}` takes {} parameters; the goroutine entry convention is fn(ptr) - wrap the arguments in a heap struct (Box) and pass its pointer", .{ call.func_name, params.len });
+            return TypeError.TypeMismatch;
+        }
+        if (params.len == 1) {
+            if (params[0].* == .borrow) {
+                self.setError("go: spawned function `{s}` takes a borrowed parameter, which would dangle across the goroutine boundary; pass an owned value or a raw pointer instead", .{call.func_name});
+                return TypeError.TypeMismatch;
+            }
+            if (!goParamIsWordOrPtr(params[0])) {
+                self.setError("go: parameter of spawned function `{s}` must be a pointer or word-sized scalar (the entry receives one word); box larger values and pass the pointer", .{call.func_name});
+                return TypeError.TypeMismatch;
+            }
+            const arg_ty = self.expr_types.get(call.args[0]) orelse return TypeError.CompileError;
+            if (self.typeForbiddenAcrossBoundary(arg_ty, 0)) {
+                self.setError("go: argument cannot cross a goroutine boundary (borrow, closure, and future values would dangle or pin an executor); move an owned value, box it, or share through a channel/global cell", .{});
+                return TypeError.TypeMismatch;
+            }
+        }
+        try self.go_entry_types.put(expr, entry_ty);
+        return try self.makeU64Type();
     }
 
     fn receiverParamMatches(self: *TypeChecker, param: ast.Param, recv_ty: *ast.Type) bool {
@@ -1969,6 +2109,7 @@ pub const TypeChecker = struct {
         return switch (expr.*) {
             .identifier => |ident| std.mem.eql(u8, ident, name),
             .await_expr => |aw| exprUsesIdentifierValue(aw.expr, name),
+            .go_expr => |g| exprUsesIdentifierValue(g.call, name),
             .move_expr => |mv| exprUsesIdentifierValue(mv.expr, name),
             .cast_expr => |cast| exprUsesIdentifierValue(cast.expr, name),
             .binary_expr => |bin| exprUsesIdentifierValue(bin.left, name) or exprUsesIdentifierValue(bin.right, name),
@@ -2677,6 +2818,7 @@ pub const TypeChecker = struct {
             .deref_expr => |deref| self.macroNodeForwardedConsumption(deref.expr, name, visiting),
             .try_expr => |try_expr| self.macroNodeForwardedConsumption(try_expr.expr, name, visiting),
             .await_expr => |await_expr| self.macroNodeForwardedConsumption(await_expr.expr, name, visiting),
+            .go_expr => |g| self.macroNodeForwardedConsumption(g.call, name, visiting),
             .for_stmt => |for_stmt| blk: {
                 var effect = try self.macroNodeForwardedConsumption(for_stmt.start, name, visiting);
                 if (for_stmt.end) |end| effect = control_flow_rules.sequenceMacroParamConsumption(effect, try self.macroNodeForwardedConsumption(end, name, visiting));
@@ -3807,6 +3949,7 @@ pub const TypeChecker = struct {
                 }
                 return inner_ty;
             },
+            .go_expr => |go| return try self.checkGoExpr(expr, go, scope),
             .inline_asm_expr => |asm_expr| {
                 if (self.unsafe_depth == 0) {
                     self.setError("inline asm requires unsafe", .{});

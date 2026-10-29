@@ -2962,9 +2962,42 @@ pub const Parser = struct {
         return null;
     }
 
+    fn parseGoExpr(self: *Parser) ParserError!*ast.Node {
+        try self.expect(.keyword_go);
+        var supervised = false;
+        // Contextual `supervised`: the identifier `supervised` directly
+        // followed by another identifier (the callee name). `go
+        // supervised(...)` stays a plain spawn of a function that
+        // happens to be named `supervised`.
+        if (self.peek() == .identifier) {
+            const name = self.lexeme(self.tok.loc);
+            if (std.mem.eql(u8, name, "supervised")) {
+                var lex_copy = self.lex;
+                const tok_copy = lex_copy.next();
+                if (tok_copy.tag == .identifier) {
+                    supervised = true;
+                    self.advance();
+                }
+            }
+        }
+        const operand = try self.parseExpr(0);
+        if (operand.* != .call_expr) {
+            self.last_expected = "call expression after `go` (spawn takes a function call, e.g. `go worker(arg)`)";
+            return ParserError.SyntaxError;
+        }
+        if (operand.call_expr.callee != null) {
+            self.last_expected = "named function or function value after `go` (closure literals cannot be spawned in this batch)";
+            return ParserError.SyntaxError;
+        }
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{ .go_expr = .{ .supervised = supervised, .call = operand } };
+        return node;
+    }
+
     fn parsePrefixExpr(self: *Parser) ParserError!*ast.Node {
         const tag = self.peek();
         switch (tag) {
+            .keyword_go => return try self.parseGoExpr(),
             .int_literal => {
                 const tok = self.tok;
                 self.advance();

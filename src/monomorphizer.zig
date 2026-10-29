@@ -586,6 +586,38 @@ pub const Monomorphizer = struct {
                 res.* = .{ .await_expr = .{ .expr = new_expr } };
                 return res;
             },
+            .go_expr => |g| {
+                const new_call = try self.specializeNode(g.call);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .go_expr = .{ .supervised = g.supervised, .call = new_call } };
+                return res;
+            },
+            .defer_stmt => |d| {
+                const new_call = try self.specializeNode(d.call);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .defer_stmt = .{ .call = new_call } };
+                return res;
+            },
+            .select_stmt => |sel| {
+                var new_cases = std.array_list.Managed(ast.SelectCase).init(self.allocator);
+                for (sel.cases) |c| {
+                    try new_cases.append(.{
+                        .kind = c.kind,
+                        .call = try self.specializeNode(c.call),
+                        .bind_name = c.bind_name,
+                        .bind_closed = c.bind_closed,
+                        .body = try self.specializeBlock(c.body),
+                    });
+                }
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .select_stmt = .{
+                    .cases = try new_cases.toOwnedSlice(),
+                    .default_body = if (sel.default_body) |b| try self.specializeBlock(b) else null,
+                    .timeout_expr = if (sel.timeout_expr) |e| try self.specializeNode(e) else null,
+                    .timeout_body = if (sel.timeout_body) |b| try self.specializeBlock(b) else null,
+                } };
+                return res;
+            },
             .inline_asm_expr => |asm_expr| {
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .inline_asm_expr = .{ .template = asm_expr.template, .operands = asm_expr.operands } };
@@ -1704,6 +1736,38 @@ pub const Monomorphizer = struct {
                 const spec_expr = try self.substituteNode(aw.expr, params, args);
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .await_expr = .{ .expr = spec_expr } };
+                return res;
+            },
+            .go_expr => |g| {
+                const spec_call = try self.substituteNode(g.call, params, args);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .go_expr = .{ .supervised = g.supervised, .call = spec_call } };
+                return res;
+            },
+            .defer_stmt => |d| {
+                const spec_call = try self.substituteNode(d.call, params, args);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .defer_stmt = .{ .call = spec_call } };
+                return res;
+            },
+            .select_stmt => |sel| {
+                var spec_cases = std.array_list.Managed(ast.SelectCase).init(self.allocator);
+                for (sel.cases) |c| {
+                    try spec_cases.append(.{
+                        .kind = c.kind,
+                        .call = try self.substituteNode(c.call, params, args),
+                        .bind_name = c.bind_name,
+                        .bind_closed = c.bind_closed,
+                        .body = try self.substituteBlock(c.body, params, args),
+                    });
+                }
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .select_stmt = .{
+                    .cases = try spec_cases.toOwnedSlice(),
+                    .default_body = if (sel.default_body) |b| try self.substituteBlock(b, params, args) else null,
+                    .timeout_expr = if (sel.timeout_expr) |e| try self.substituteNode(e, params, args) else null,
+                    .timeout_body = if (sel.timeout_body) |b| try self.substituteBlock(b, params, args) else null,
+                } };
                 return res;
             },
             .inline_asm_expr => |asm_expr| {

@@ -31,11 +31,14 @@ pub const Node = union(enum) {
     break_stmt: BreakStmt,
     continue_stmt: ContinueStmt,
     release_stmt: ReleaseStmt,
+    defer_stmt: DeferStmt,
+    select_stmt: SelectStmt,
 
     // Expressions
     literal: Literal,
     identifier: []const u8,
     generic_func_ref: GenericFuncRef,
+    go_expr: GoExpr,
     if_expr: IfExpr,
     switch_expr: SwitchExpr,
     match_expr: MatchExpr,
@@ -233,6 +236,37 @@ pub const ContinueStmt = struct {};
 
 pub const ReleaseStmt = struct {
     var_name: []const u8,
+};
+
+/// `go f(args)` / `go supervised f(args)` — goroutine spawn expression.
+/// The operand is always a call expression (parser-enforced); the whole
+/// node evaluates to the u64 goroutine handle.
+pub const GoExpr = struct {
+    supervised: bool = false,
+    call: *Node,
+};
+
+/// `defer <call>;` — scope-exit deferred call (desugared pre-check).
+pub const DeferStmt = struct {
+    call: *Node,
+};
+
+pub const SelectCase = struct {
+    kind: enum { recv, send },
+    /// The full method-call node (`ch.recv()` / `ch.send(v)`); the
+    /// channel expression is its args[0].
+    call: *Node,
+    bind_name: ?[]const u8 = null,
+    bind_closed: ?[]const u8 = null,
+    body: []const *Node,
+};
+
+/// `select { case ... { } default { } timeout(e) { } }` — statement.
+pub const SelectStmt = struct {
+    cases: []const SelectCase,
+    default_body: ?[]const *Node = null,
+    timeout_expr: ?*Node = null,
+    timeout_body: ?[]const *Node = null,
 };
 
 pub const Literal = union(enum) {

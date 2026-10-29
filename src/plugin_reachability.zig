@@ -1011,6 +1011,7 @@ fn clearFactsForMutationsInNode(facts: *SyntacticFactSet, node: *const ast.Node)
         .array_literal => |lit| for (lit.elements) |elem| clearFactsForMutationsInNode(facts, elem),
         .closure_literal => |closure| clearFactsForMutationsInNode(facts, closure.body),
         .await_expr => |await_expr| clearFactsForMutationsInNode(facts, await_expr.expr),
+        .go_expr => |go_expr| clearFactsForMutationsInNode(facts, go_expr.call),
         .try_expr => |try_expr| clearFactsForMutationsInNode(facts, try_expr.expr),
         else => {},
     }
@@ -1152,6 +1153,7 @@ fn pruneKnownFalseBranchesInExprPos(
         },
         .unsafe_expr => |unsafe_expr| try pruneKnownFalseBranchesInBlock(allocator, unsafe_expr.body, facts),
         .await_expr => |await_expr| try pruneKnownFalseBranchesInExpr(allocator, await_expr.expr, facts),
+        .go_expr => |go_expr| try pruneKnownFalseBranchesInExpr(allocator, go_expr.call, facts),
         .try_expr => |try_expr| try pruneKnownFalseBranchesInExpr(allocator, try_expr.expr, facts),
         .binary_expr => |bin| {
             try pruneKnownFalseBranchesInExpr(allocator, bin.left, facts);
@@ -1281,6 +1283,7 @@ pub fn reachabilityNodeUsesIdentifier(node: *const ast.Node, name: []const u8) b
         },
         .unsafe_expr => |unsafe_expr| reachabilityBlockUsesIdentifier(unsafe_expr.body, name),
         .await_expr => |await_expr| reachabilityNodeUsesIdentifier(await_expr.expr, name),
+        .go_expr => |go_expr| reachabilityNodeUsesIdentifier(go_expr.call, name),
         .binary_expr => |bin| reachabilityNodeUsesIdentifier(bin.left, name) or reachabilityNodeUsesIdentifier(bin.right, name),
         .call_expr => |call| blk: {
             if (call.associated_target == null and std.mem.eql(u8, call.func_name, name)) break :blk true;
@@ -2490,6 +2493,7 @@ pub fn collectSyntacticReachableExpr(
         },
         .unsafe_expr => |unsafe_expr| try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, unsafe_expr.body),
         .await_expr => |await_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, await_expr.expr),
+        .go_expr => |go_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, go_expr.call),
         .try_expr => |try_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, try_expr.expr),
         .binary_expr => |bin| {
             try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, bin.left);

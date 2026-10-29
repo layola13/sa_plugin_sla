@@ -58,6 +58,9 @@ pub const Token = struct {
         keyword_macro,
         keyword_mut,
         keyword_type,
+        keyword_go,
+        keyword_defer,
+        keyword_select,
 
         // Symbols
         plus, // +
@@ -474,6 +477,9 @@ pub const Lexer = struct {
         if (std.mem.eql(u8, str, "macro")) return .keyword_macro;
         if (std.mem.eql(u8, str, "mut")) return .keyword_mut;
         if (std.mem.eql(u8, str, "type")) return .keyword_type;
+        if (std.mem.eql(u8, str, "go")) return .keyword_go;
+        if (std.mem.eql(u8, str, "defer")) return .keyword_defer;
+        if (std.mem.eql(u8, str, "select")) return .keyword_select;
         return .identifier;
     }
 };

@@ -783,7 +783,7 @@ pub const Lowerer = struct {
             const params = try self.allocator.alloc(ast.Param, 1);
             params[0] = .{ .name = "v", .ty = payload_ty };
             const decl = try self.allocator.create(ast.FuncDecl);
-            decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = try self.tyPrim(.u64), .body = body };
+            decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = try self.tyPrim(.u64), .body = body, .is_inline = false };
             try self.tc.funcs.put(name, decl);
             try self.slot_view_decls.append(try self.newNode(.{ .func_decl = decl.* }));
             try self.word_fns.put(payload_ty, name);

@@ -1712,6 +1712,10 @@ pub const Parser = struct {
             return try self.parseForStmt();
         } else if (self.peek() == .keyword_while) {
             return try self.parseWhileStmt();
+        } else if (self.peek() == .keyword_select) {
+            return try self.parseSelectStmt();
+        } else if (self.peek() == .keyword_defer) {
+            return try self.parseDeferStmt();
         } else if (self.peek() == .keyword_break) {
             return try self.parseBreakStmt();
         } else if (self.peek() == .keyword_continue) {
@@ -2076,6 +2080,88 @@ pub const Parser = struct {
                 .body = body,
             },
         };
+        return node;
+    }
+
+    /// Goroutine syntax batch: `defer call(...);` — the operand must
+    /// be a call expression; anything else is a syntax error here
+    /// (the desugar in defer_desugar.zig runs before type checking).
+    fn parseDeferStmt(self: *Parser) ParserError!*ast.Node {
+        try self.expect(.keyword_defer);
+        const call = try self.parseExpr(0);
+        if (call.* != .call_expr) return ParserError.SyntaxError;
+        try self.expect(.semicolon);
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{ .defer_stmt = .{ .call = call } };
+        return node;
+    }
+
+    /// Goroutine syntax batch: select statement. Arm headers are
+    /// `case [let name = | let (name, closed) =] ch.recv()`,
+    /// `case ch.send(v)`, `default`, and `timeout(expr)`; every arm
+    /// body is a block.
+    fn parseSelectStmt(self: *Parser) ParserError!*ast.Node {
+        try self.expect(.keyword_select);
+        try self.expect(.l_brace);
+        var cases = std.array_list.Managed(ast.SelectCase).init(self.allocator);
+        var default_body: ?[]const *ast.Node = null;
+        var timeout_expr: ?*ast.Node = null;
+        var timeout_body: ?[]const *ast.Node = null;
+        while (self.peek() != .r_brace and self.peek() != .eof) {
+            if (self.peek() != .identifier) return ParserError.SyntaxError;
+            const head = self.lexeme(self.tok.loc);
+            if (std.mem.eql(u8, head, "case")) {
+                self.advance();
+                var bind_name: ?[]const u8 = null;
+                var bind_closed: ?[]const u8 = null;
+                if (self.match(.keyword_let)) {
+                    if (self.match(.l_paren)) {
+                        if (self.peek() != .identifier) return ParserError.SyntaxError;
+                        bind_name = try self.allocator.dupe(u8, self.lexeme(self.tok.loc));
+                        self.advance();
+                        try self.expect(.comma);
+                        if (self.peek() != .identifier) return ParserError.SyntaxError;
+                        bind_closed = try self.allocator.dupe(u8, self.lexeme(self.tok.loc));
+                        self.advance();
+                        try self.expect(.r_paren);
+                    } else {
+                        if (self.peek() != .identifier) return ParserError.SyntaxError;
+                        bind_name = try self.allocator.dupe(u8, self.lexeme(self.tok.loc));
+                        self.advance();
+                    }
+                    try self.expect(.equal);
+                }
+                const call = try self.parseExpr(0);
+                if (call.* != .call_expr) return ParserError.SyntaxError;
+                const is_recv = std.mem.eql(u8, call.call_expr.func_name, "recv");
+                const is_send = std.mem.eql(u8, call.call_expr.func_name, "send");
+                if (!is_recv and !is_send) return ParserError.SyntaxError;
+                if (is_send and bind_name != null) return ParserError.SyntaxError;
+                const body = try self.parseBlock();
+                try cases.append(.{ .kind = if (is_recv) .recv else .send, .call = call, .bind_name = bind_name, .bind_closed = bind_closed, .body = body });
+            } else if (std.mem.eql(u8, head, "default")) {
+                self.advance();
+                if (default_body != null) return ParserError.SyntaxError;
+                default_body = try self.parseBlock();
+            } else if (std.mem.eql(u8, head, "timeout")) {
+                self.advance();
+                if (timeout_expr != null) return ParserError.SyntaxError;
+                try self.expect(.l_paren);
+                timeout_expr = try self.parseExpr(0);
+                try self.expect(.r_paren);
+                timeout_body = try self.parseBlock();
+            } else {
+                return ParserError.SyntaxError;
+            }
+        }
+        try self.expect(.r_brace);
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{ .select_stmt = .{
+            .cases = try cases.toOwnedSlice(),
+            .default_body = default_body,
+            .timeout_expr = timeout_expr,
+            .timeout_body = timeout_body,
+        } };
         return node;
     }
 

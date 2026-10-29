@@ -125,6 +125,12 @@ fn bindingIsLocalToLoop(scope: *Scope, loop_scope: *Scope, name: []const u8) boo
     return false;
 }
 
+/// Goroutine syntax batch (channels): intrinsic channel operations
+/// the checker validates and syntax_lowering.zig rewrites onto the
+/// sa_std task channel externs.
+pub const ChanCallKind = enum { new, send, recv, close, destroy, len, cap };
+pub const ChanCallInfo = struct { kind: ChanCallKind, payload_ty: *ast.Type };
+
 pub const TypeChecker = struct {
     pub const FunctionSignature = struct {
         params: []const ast.Param,
@@ -180,6 +186,14 @@ pub const TypeChecker = struct {
     // type recorded at check time so the post-check lowering in
     // syntax_lowering.zig can materialize the entry argument.
     go_entry_types: std.AutoHashMap(*const ast.Node, *ast.Type),
+    // Goroutine syntax batch (channels): every Chan::new call seen,
+    // the subset validated by a Chan<T>-annotated let binding, the
+    // payload type a let annotation supplied for a pending new call,
+    // and the per-call intrinsic record the lowering consumes.
+    chan_new_seen: std.AutoHashMap(*const ast.Node, void),
+    chan_new_validated: std.AutoHashMap(*const ast.Node, void),
+    chan_new_pending: std.AutoHashMap(*const ast.Node, *ast.Type),
+    chan_calls: std.AutoHashMap(*const ast.Node, ChanCallInfo),
     array_to_slice_borrow_args: std.AutoHashMap(*const ast.Node, void),
     resolved_call_symbols: std.AutoHashMap(*const ast.Node, []const u8),
     resolved_call_alias_metadata: std.AutoHashMap(*const ast.Node, FunctionAliasMetadata),
@@ -235,6 +249,10 @@ pub const TypeChecker = struct {
             .dyn_rc_coercions = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .fn_ptr_calls = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .go_entry_types = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
+            .chan_new_seen = std.AutoHashMap(*const ast.Node, void).init(allocator),
+            .chan_new_validated = std.AutoHashMap(*const ast.Node, void).init(allocator),
+            .chan_new_pending = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
+            .chan_calls = std.AutoHashMap(*const ast.Node, ChanCallInfo).init(allocator),
             .array_to_slice_borrow_args = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .resolved_call_symbols = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .resolved_call_alias_metadata = std.AutoHashMap(*const ast.Node, FunctionAliasMetadata).init(allocator),
@@ -570,6 +588,10 @@ pub const TypeChecker = struct {
         self.dyn_rc_coercions.deinit();
         self.fn_ptr_calls.deinit();
         self.go_entry_types.deinit();
+        self.chan_new_seen.deinit();
+        self.chan_new_validated.deinit();
+        self.chan_new_pending.deinit();
+        self.chan_calls.deinit();
         self.array_to_slice_borrow_args.deinit();
         self.resolved_call_symbols.deinit();
         self.resolved_call_alias_metadata.deinit();
@@ -836,6 +858,235 @@ pub const TypeChecker = struct {
         }
         try self.go_entry_types.put(expr, entry_ty);
         return try self.makeU64Type();
+    }
+
+    /// Goroutine syntax batch (channels): if `ty` is a Chan<T> type
+    /// (possibly behind a borrow/pointer peel), return the payload
+    /// type T.
+    pub fn chanPayloadTypeOf(ty: *ast.Type) ?*ast.Type {
+        const peeled = lowering_rules.peelBorrowPointerType(ty);
+        if (peeled.* != .user_defined) return null;
+        if (!std.mem.eql(u8, peeled.user_defined.name, "Chan")) return null;
+        if (peeled.user_defined.generics.len != 1) return null;
+        return peeled.user_defined.generics[0];
+    }
+
+    pub fn makeChanType(self: *TypeChecker, payload_ty: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = payload_ty;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Chan", .generics = generics } };
+        return ty;
+    }
+
+    fn makeVoidType(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .primitive = .void_type };
+        return ty;
+    }
+
+    /// Byte size of a value's storage at its address, following the
+    /// shared ABI layout rules: scalars at their natural size, every
+    /// user-defined value one handle word, tuples/arrays/structs by
+    /// the aggregate layouts in lowering_rules. Null when the size
+    /// cannot be determined (borrow/closure/future/infer payloads).
+    pub fn payloadStorageSize(self: *TypeChecker, ty: *ast.Type) ?usize {
+        switch (ty.*) {
+            .primitive => |prim| return switch (prim) {
+                .boolean, .u8, .i8 => 1,
+                .u16, .i16 => 2,
+                .u32, .i32, .f32 => 4,
+                .u64, .i64, .usize, .isize, .f64, .integer, .float, .raw_ptr => 8,
+                .void_type => null,
+            },
+            .pointer, .fn_ptr => return 8,
+            .tuple => |tup| return lowering_rules.tupleAbiSize(tup),
+            .array => |arr| {
+                if (self.payloadStorageSize(arr.elem) == null) return null;
+                return lowering_rules.inlineArraySize(arr);
+            },
+            .user_defined => |ud| {
+                if (self.structs.get(ud.name)) |decl| return lowering_rules.structAbiSize(decl);
+                if (self.enums.get(ud.name)) |decl| {
+                    var max_span: usize = 0;
+                    for (decl.variants) |variant| {
+                        var elems = std.array_list.Managed(*ast.Type).init(self.allocator);
+                        defer elems.deinit();
+                        for (variant.fields) |field| elems.append(field.ty) catch return null;
+                        const span = lowering_rules.tupleAbiSize(.{ .elems = elems.items });
+                        if (span > max_span) max_span = span;
+                    }
+                    return 8 + max_span;
+                }
+                return 8;
+            },
+            else => return null,
+        }
+    }
+
+    /// Channel payload rules C1/C2 (DESIGN section 2): the payload
+    /// must fit the runtime's fixed 16-byte slot under the ABI
+    /// storage model, and must not carry borrows, closures, or
+    /// futures across the goroutine boundary.
+    pub fn validateChanPayload(self: *TypeChecker, payload_ty: *ast.Type, context: []const u8) TypeError!usize {
+        if (self.typeForbiddenAcrossBoundary(payload_ty, 0)) {
+            self.setError("{s}: channel payload cannot cross a goroutine boundary (borrow, closure, and future values would dangle or pin an executor); move an owned value, box it, or share through a global cell", .{context});
+            return TypeError.TypeMismatch;
+        }
+        const size = self.payloadStorageSize(payload_ty) orelse {
+            self.setError("{s}: channel payload type {s} has no fixed storage size", .{ context, typeDesc(payload_ty) });
+            return TypeError.TypeMismatch;
+        };
+        if (size == 0 or size > 16) {
+            self.setError("{s}: channel payload type {s} occupies {} bytes; channel slots hold at most 16 bytes - box larger values and send the pointer", .{ context, typeDesc(payload_ty), size });
+            return TypeError.TypeMismatch;
+        }
+        return size;
+    }
+
+    /// Intrinsic Chan method dispatch. The receiver has already been
+    /// checked by the caller (recv_node_ty flow). Returns null when
+    /// the name is not a channel operation.
+    fn checkChanMethodCall(self: *TypeChecker, expr: *ast.Node, call: ast.CallExpr, payload_ty: *ast.Type, scope: *Scope) TypeError!?*ast.Type {
+        const kind: ChanCallKind = if (std.mem.eql(u8, call.func_name, "send"))
+            .send
+        else if (std.mem.eql(u8, call.func_name, "recv"))
+            .recv
+        else if (std.mem.eql(u8, call.func_name, "close"))
+            .close
+        else if (std.mem.eql(u8, call.func_name, "destroy"))
+            .destroy
+        else if (std.mem.eql(u8, call.func_name, "len"))
+            .len
+        else if (std.mem.eql(u8, call.func_name, "cap"))
+            .cap
+        else
+            return null;
+        switch (kind) {
+            .send => {
+                if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                _ = try self.validateChanPayload(payload_ty, "send");
+                const arg_ty = try self.checkExpr(call.args[1], scope);
+                if (!self.plainCallArgMatches(payload_ty, call.args[1], arg_ty)) {
+                    self.setError("send: payload type mismatch: channel holds {s}", .{typeDesc(payload_ty)});
+                    return TypeError.TypeMismatch;
+                }
+                const param = ast.Param{ .name = "value", .ty = payload_ty, .is_borrow = false, .is_move = false };
+                try self.consumeCallArgIfMoved(scope, param, call.args[1], arg_ty, "send");
+                try self.chan_calls.put(expr, .{ .kind = .send, .payload_ty = payload_ty });
+                return try self.makeVoidType();
+            },
+            .recv => {
+                if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                _ = try self.validateChanPayload(payload_ty, "recv");
+                try self.chan_calls.put(expr, .{ .kind = .recv, .payload_ty = payload_ty });
+                return try self.makeTupleType(&.{ payload_ty, try self.makeBoolType() });
+            },
+            .close, .destroy => {
+                if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                _ = try self.validateChanPayload(payload_ty, call.func_name);
+                try self.chan_calls.put(expr, .{ .kind = kind, .payload_ty = payload_ty });
+                return try self.makeVoidType();
+            },
+            .len, .cap => {
+                if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                try self.chan_calls.put(expr, .{ .kind = kind, .payload_ty = payload_ty });
+                return try self.makeU64Type();
+            },
+            .new => unreachable,
+        }
+    }
+
+    /// Chan::new intrinsic (associated form). The payload type comes
+    /// from the let's Chan<T> annotation via chan_new_pending; an
+    /// unannotated creation is recorded and rejected at the end of
+    /// checkProgram.
+    fn checkChanNewCall(self: *TypeChecker, expr: *ast.Node, call: ast.CallExpr, scope: *Scope) TypeError!*ast.Type {
+        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+        const cap_ty = try self.checkExpr(call.args[0], scope);
+        if (!isNumericType(cap_ty)) {
+            self.setError("Chan::new: capacity must be an integer", .{});
+            return TypeError.TypeMismatch;
+        }
+        try self.chan_new_seen.put(expr, {});
+        if (self.chan_new_pending.get(expr)) |payload_ty| {
+            try self.chan_calls.put(expr, .{ .kind = .new, .payload_ty = payload_ty });
+            return try self.makeChanType(payload_ty);
+        }
+        const infer_ty = try self.makeInferType();
+        try self.chan_calls.put(expr, .{ .kind = .new, .payload_ty = infer_ty });
+        return try self.makeChanType(infer_ty);
+    }
+
+    /// Goroutine syntax batch: select statement validation. Case
+    /// calls are validated here (not through checkExpr) because the
+    /// operations must not execute at the select statement itself;
+    /// their arguments are checked for types and ownership, and the
+    /// intrinsic record is stored for the lowering.
+    fn checkSelectStmt(self: *TypeChecker, sel: ast.SelectStmt, scope: *Scope, ret_ty: *ast.Type, current_loop_scope: ?*Scope) TypeError!void {
+        if (sel.cases.len == 0) {
+            self.setError("select requires at least one case", .{});
+            return TypeError.TypeMismatch;
+        }
+        if (sel.default_body != null and sel.timeout_expr != null) {
+            self.setError("select cannot have both a default case and a timeout case", .{});
+            return TypeError.TypeMismatch;
+        }
+        for (sel.cases) |case| {
+            if (case.call.* != .call_expr) return TypeError.CompileError;
+            const call = case.call.call_expr;
+            if (call.args.len == 0) return TypeError.CompileError;
+            const recv_ty = try self.checkExpr(call.args[0], scope);
+            const payload_ty = chanPayloadTypeOf(recv_ty) orelse {
+                self.setError("select case: receiver is not a Chan<T>", .{});
+                return TypeError.TypeMismatch;
+            };
+            _ = try self.validateChanPayload(payload_ty, "select");
+            const case_scope = try Scope.init(self.allocator, scope);
+            try self.scope_pool.append(case_scope);
+            switch (case.kind) {
+                .recv => {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    try self.chan_calls.put(case.call, .{ .kind = .recv, .payload_ty = payload_ty });
+                    if (case.bind_name) |bind_name| {
+                        try self.defineSymbol(case_scope, bind_name, payload_ty, false);
+                    }
+                    if (case.bind_closed) |bind_closed| {
+                        try self.defineSymbol(case_scope, bind_closed, try self.makeBoolType(), false);
+                    }
+                },
+                .send => {
+                    if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                    const arg_ty = try self.checkExpr(call.args[1], scope);
+                    if (!self.plainCallArgMatches(payload_ty, call.args[1], arg_ty)) {
+                        self.setError("select send case: payload type mismatch: channel holds {s}", .{typeDesc(payload_ty)});
+                        return TypeError.TypeMismatch;
+                    }
+                    const param = ast.Param{ .name = "value", .ty = payload_ty, .is_borrow = false, .is_move = false };
+                    try self.consumeCallArgIfMoved(scope, param, call.args[1], arg_ty, "select send");
+                    try self.chan_calls.put(case.call, .{ .kind = .send, .payload_ty = payload_ty });
+                },
+            }
+            try self.checkBlock(case.body, case_scope, ret_ty, null, current_loop_scope);
+        }
+        if (sel.timeout_expr) |timeout_expr| {
+            const timeout_ty = try self.checkExpr(timeout_expr, scope);
+            if (!isNumericType(timeout_ty)) {
+                self.setError("select timeout must be an integer nanosecond count", .{});
+                return TypeError.TypeMismatch;
+            }
+        }
+        if (sel.default_body) |default_body| {
+            const default_scope = try Scope.init(self.allocator, scope);
+            try self.scope_pool.append(default_scope);
+            try self.checkBlock(default_body, default_scope, ret_ty, null, current_loop_scope);
+        }
+        if (sel.timeout_body) |timeout_body| {
+            const timeout_scope = try Scope.init(self.allocator, scope);
+            try self.scope_pool.append(timeout_scope);
+            try self.checkBlock(timeout_body, timeout_scope, ret_ty, null, current_loop_scope);
+        }
     }
 
     fn receiverParamMatches(self: *TypeChecker, param: ast.Param, recv_ty: *ast.Type) bool {
@@ -2587,6 +2838,16 @@ pub const TypeChecker = struct {
                 try self.checkTest(&decl.test_decl);
             }
         }
+
+        // Goroutine syntax batch: every Chan::new must have been
+        // validated by an annotated let binding (see checkStmtImpl).
+        var chan_new_it = self.chan_new_seen.keyIterator();
+        while (chan_new_it.next()) |node| {
+            if (!self.chan_new_validated.contains(node.*)) {
+                self.setError("Chan::new must be bound directly by a let with a Chan<T> annotation so the payload type is known", .{});
+                return TypeError.TypeMismatch;
+            }
+        }
     }
 
     fn operatorName(op: ast.BinaryOp) ?[]const u8 {
@@ -3103,6 +3364,23 @@ pub const TypeChecker = struct {
                 try scope.using_modules.append(normalized);
             },
             .let_stmt => |let| {
+                // Goroutine syntax batch: a Chan::new initializer must
+                // be bound by an explicit Chan<T> annotation; validate
+                // the payload rules here and hand the payload type to
+                // the intrinsic through chan_new_pending.
+                if (let.value.* == .call_expr and let.value.call_expr.associated_target != null and std.mem.eql(u8, let.value.call_expr.associated_target.?, "Chan") and std.mem.eql(u8, let.value.call_expr.func_name, "new")) {
+                    const declared = let.ty orelse {
+                        self.setError("Chan::new requires an explicit Chan<T> type annotation on the binding so the payload type is known (for example `let ch: Chan<u64> = Chan::new(0);`)", .{});
+                        return TypeError.TypeMismatch;
+                    };
+                    const payload_ty = chanPayloadTypeOf(declared) orelse {
+                        self.setError("Chan::new binding annotation must be a Chan<T> type", .{});
+                        return TypeError.TypeMismatch;
+                    };
+                    _ = try self.validateChanPayload(payload_ty, "Chan::new");
+                    try self.chan_new_pending.put(let.value, payload_ty);
+                    try self.chan_new_validated.put(let.value, {});
+                }
                 const val_ty = try self.checkExpr(let.value, scope);
                 const declared_ty = let.ty orelse val_ty;
                 if (let.ty != null and val_ty.* == .array and declared_ty.* == .array) {
@@ -3437,6 +3715,9 @@ pub const TypeChecker = struct {
             },
             .expr_stmt => |expr| {
                 _ = try self.checkExpr(expr, scope);
+            },
+            .select_stmt => |sel| {
+                try self.checkSelectStmt(sel, scope, ret_ty, current_loop_scope);
             },
             .block_stmt => |blk| {
                 const inner_scope = try Scope.init(self.allocator, scope);
@@ -4007,6 +4288,12 @@ pub const TypeChecker = struct {
                 }
                 const recv_node_ty = if (call.args.len > 0 and call.args[0].* != .move_expr) try self.checkExpr(call.args[0], scope) else null;
 
+                if (recv_node_ty) |recv_ty| {
+                    if (chanPayloadTypeOf(recv_ty)) |payload_ty| {
+                        if (try self.checkChanMethodCall(expr, call, payload_ty, scope)) |ret_ty| return ret_ty;
+                    }
+                }
+
                 if (lowering_rules.isOptionSomeCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const inner_ty = try self.checkExpr(call.args[0], scope);
@@ -4516,6 +4803,9 @@ pub const TypeChecker = struct {
                         const ty = try self.allocator.create(ast.Type);
                         ty.* = .{ .user_defined = .{ .name = "Vec", .generics = generics } };
                         return ty;
+                    }
+                    if (std.mem.eql(u8, target_name, "Chan") and std.mem.eql(u8, call.func_name, "new")) {
+                        return try self.checkChanNewCall(expr, call, scope);
                     }
                     const method_key = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ target_name, call.func_name });
                     if (self.funcs.get(method_key)) |func| {

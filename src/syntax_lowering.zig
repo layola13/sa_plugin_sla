@@ -131,6 +131,7 @@ pub const Lowerer = struct {
 
     pub fn lowerProgram(self: *Lowerer, program: *ast.Node) LowerError!void {
         try self.ensureTaskExterns();
+        try self.ensureChanExterns();
         for (program.program.decls) |decl| {
             switch (decl.*) {
                 .func_decl => decl.func_decl.body = try self.lowerBlock(decl.func_decl.body),
@@ -158,7 +159,11 @@ pub const Lowerer = struct {
                     if (let.value.* == .go_expr) {
                         try self.emitSpawn(&out, let.value, let.name);
                     } else {
-                        try self.scanExpr(let.value);
+                        const replacement = (try self.expandExpr(let.value, &out)) orelse
+                            return self.fail("this channel operation produces no value and cannot be a let initializer", .{});
+                        if (replacement != let.value) {
+                            stmt.let_stmt.value = replacement;
+                        }
                         try out.append(stmt);
                     }
                 },
@@ -166,13 +171,14 @@ pub const Lowerer = struct {
                     if (expr.* == .go_expr) {
                         const discard = try self.freshName("__go_h_");
                         try self.emitSpawn(&out, expr, discard);
-                    } else {
-                        try self.scanExpr(expr);
-                        try out.append(stmt);
+                    } else if (try self.expandExpr(expr, &out)) |replacement| {
+                        try out.append(try self.newNode(.{ .expr_stmt = replacement }));
                     }
                 },
+                .select_stmt => try self.lowerSelect(stmt, &out),
+                .defer_stmt => return self.fail("internal: defer statement survived the desugar pass", .{}),
                 else => {
-                    try self.lowerStmtChildren(stmt);
+                    try self.lowerStmtChildren(stmt, &out);
                     try out.append(stmt);
                 },
             }
@@ -180,111 +186,208 @@ pub const Lowerer = struct {
         return try out.toOwnedSlice();
     }
 
-    fn lowerStmtChildren(self: *Lowerer, stmt: *ast.Node) LowerError!void {
+    fn lowerStmtChildren(self: *Lowerer, stmt: *ast.Node, out: *std.array_list.Managed(*ast.Node)) LowerError!void {
         switch (stmt.*) {
             .block_stmt => stmt.block_stmt.body = try self.lowerBlock(stmt.block_stmt.body),
             .while_stmt => {
-                try self.scanExpr(stmt.while_stmt.cond);
+                stmt.while_stmt.cond = (try self.expandExpr(stmt.while_stmt.cond, out)) orelse return self.fail("channel operation with no value in a while condition", .{});
                 stmt.while_stmt.body = try self.lowerBlock(stmt.while_stmt.body);
             },
             .for_stmt => {
-                try self.scanExpr(stmt.for_stmt.start);
-                if (stmt.for_stmt.end) |end| try self.scanExpr(end);
+                stmt.for_stmt.start = (try self.expandExpr(stmt.for_stmt.start, out)) orelse return self.fail("channel operation with no value in a for bound", .{});
+                if (stmt.for_stmt.end) |end| {
+                    stmt.for_stmt.end = (try self.expandExpr(end, out)) orelse return self.fail("channel operation with no value in a for bound", .{});
+                }
                 stmt.for_stmt.body = try self.lowerBlock(stmt.for_stmt.body);
             },
-            .let_stmt => |let| try self.scanExpr(let.value),
+            .let_stmt => |let| {
+                stmt.let_stmt.value = (try self.expandExpr(let.value, out)) orelse return self.fail("channel operation with no value in a let initializer", .{});
+            },
             .let_else_stmt => |let_else| {
-                try self.scanExpr(let_else.value);
+                stmt.let_else_stmt.value = (try self.expandExpr(let_else.value, out)) orelse return self.fail("channel operation with no value in a let-else initializer", .{});
                 stmt.let_else_stmt.else_block = try self.lowerBlock(let_else.else_block);
             },
-            .let_destructure_stmt => |letd| try self.scanExpr(letd.value),
-            .const_stmt => |c| try self.scanExpr(c.value),
-            .assign_stmt => |assign| {
-                try self.scanExpr(assign.target);
-                try self.scanExpr(assign.value);
+            .let_destructure_stmt => |letd| {
+                stmt.let_destructure_stmt.value = (try self.expandExpr(letd.value, out)) orelse return self.fail("channel operation with no value in a destructure initializer", .{});
             },
-            .return_stmt => |ret| if (ret.value) |value| try self.scanExpr(value),
-            .expr_stmt => |expr| try self.scanExpr(expr),
+            .const_stmt => |c| {
+                stmt.const_stmt.value = (try self.expandExpr(c.value, out)) orelse return self.fail("channel operation with no value in a const initializer", .{});
+            },
+            .assign_stmt => |assign| {
+                stmt.assign_stmt.target = (try self.expandExpr(assign.target, out)) orelse return self.fail("channel operation with no value in an assignment target", .{});
+                stmt.assign_stmt.value = (try self.expandExpr(assign.value, out)) orelse return self.fail("channel operation with no value in an assignment", .{});
+            },
+            .return_stmt => |ret| {
+                if (ret.value) |value| {
+                    stmt.return_stmt.value = (try self.expandExpr(value, out)) orelse return self.fail("channel operation with no value in a return", .{});
+                    }
+            },
+            .expr_stmt => |expr| {
+                _ = try self.expandExpr(expr, out);
+            },
             else => {},
         }
     }
 
-    /// Recurse an expression: lower any nested statement lists and
-    /// reject go expressions in positions this pass does not rewrite
-    /// (only statement / let-initializer positions are supported).
-    fn scanExpr(self: *Lowerer, expr: *ast.Node) LowerError!void {
+    /// Rewrite an expression, expanding channel operations into
+    /// prefix statements appended to `out` (in evaluation order) and
+    /// returning the replacement expression, or null when the
+    /// expression was a void channel operation consumed entirely as
+    /// statements. Also lowers nested statement lists and rejects
+    /// nested go expressions.
+    fn expandExpr(self: *Lowerer, expr: *ast.Node, out: *std.array_list.Managed(*ast.Node)) LowerError!?*ast.Node {
         switch (expr.*) {
             .go_expr => return self.fail("go expressions are only supported as a statement or a let initializer in this batch", .{}),
+            .call_expr => {
+                if (self.tc.chan_calls.get(expr)) |info| {
+                    return try self.emitChanCall(expr, info, out);
+                }
+                if (expr.call_expr.callee) |callee| {
+                    expr.call_expr.callee = (try self.expandExpr(callee, out)) orelse return self.fail("channel operation with no value as a call target", .{});
+                }
+                {
+                    const new_args = try self.allocator.alloc(*ast.Node, expr.call_expr.args.len);
+                    for (expr.call_expr.args, 0..) |arg, i| {
+                        new_args[i] = (try self.expandExpr(arg, out)) orelse return self.fail("channel operation with no value as a call argument", .{});
+                    }
+                    expr.call_expr.args = new_args;
+                }
+                return expr;
+            },
             .if_expr => {
-                try self.scanExpr(expr.if_expr.cond);
+                expr.if_expr.cond = (try self.expandExpr(expr.if_expr.cond, out)) orelse return self.fail("channel operation with no value in an if condition", .{});
                 expr.if_expr.then_block = try self.lowerBlock(expr.if_expr.then_block);
                 if (expr.if_expr.else_block) |else_block| {
                     expr.if_expr.else_block = try self.lowerBlock(else_block);
                 }
+                return expr;
             },
             .switch_expr => {
-                try self.scanExpr(expr.switch_expr.val);
+                expr.switch_expr.val = (try self.expandExpr(expr.switch_expr.val, out)) orelse return self.fail("channel operation with no value in a switch value", .{});
                 var cases = std.array_list.Managed(ast.Case).init(self.allocator);
                 errdefer cases.deinit();
                 for (expr.switch_expr.cases) |case| {
-                    try self.scanExpr(case.pattern);
                     var copy = case;
+                    copy.pattern = (try self.expandExpr(case.pattern, out)) orelse return self.fail("channel operation with no value in a switch pattern", .{});
                     copy.body = try self.lowerBlock(case.body);
                     try cases.append(copy);
                 }
                 expr.switch_expr.cases = try cases.toOwnedSlice();
+                return expr;
             },
             .match_expr => {
-                try self.scanExpr(expr.match_expr.val);
+                expr.match_expr.val = (try self.expandExpr(expr.match_expr.val, out)) orelse return self.fail("channel operation with no value in a match value", .{});
                 var cases = std.array_list.Managed(ast.MatchCase).init(self.allocator);
                 errdefer cases.deinit();
                 for (expr.match_expr.cases) |case| {
-                    if (case.guard) |guard| try self.scanExpr(guard);
+                    if (case.guard) |guard| {
+                        _ = (try self.expandExpr(guard, out)) orelse return self.fail("channel operation with no value in a match guard", .{});
+                    }
                     var copy = case;
                     copy.body = try self.lowerBlock(case.body);
                     try cases.append(copy);
                 }
                 expr.match_expr.cases = try cases.toOwnedSlice();
+                return expr;
             },
-            .unsafe_expr => expr.unsafe_expr.body = try self.lowerBlock(expr.unsafe_expr.body),
-            .await_expr => try self.scanExpr(expr.await_expr.expr),
-            .try_expr => try self.scanExpr(expr.try_expr.expr),
+            .unsafe_expr => {
+                expr.unsafe_expr.body = try self.lowerBlock(expr.unsafe_expr.body);
+                return expr;
+            },
+            .await_expr => {
+                expr.await_expr.expr = (try self.expandExpr(expr.await_expr.expr, out)) orelse return self.fail("channel operation with no value in an await", .{});
+                return expr;
+            },
+            .try_expr => {
+                expr.try_expr.expr = (try self.expandExpr(expr.try_expr.expr, out)) orelse return self.fail("channel operation with no value in a try expression", .{});
+                return expr;
+            },
             .binary_expr => {
-                try self.scanExpr(expr.binary_expr.left);
-                try self.scanExpr(expr.binary_expr.right);
+                expr.binary_expr.left = (try self.expandExpr(expr.binary_expr.left, out)) orelse return self.fail("channel operation with no value in a binary expression", .{});
+                expr.binary_expr.right = (try self.expandExpr(expr.binary_expr.right, out)) orelse return self.fail("channel operation with no value in a binary expression", .{});
+                return expr;
             },
-            .call_expr => {
-                if (expr.call_expr.callee) |callee| try self.scanExpr(callee);
-                for (expr.call_expr.args) |arg| try self.scanExpr(arg);
+            .closure_literal => {
+                expr.closure_literal.body = (try self.expandExpr(expr.closure_literal.body, out)) orelse return self.fail("channel operation with no value as a closure body", .{});
+                return expr;
             },
-            .closure_literal => try self.scanExpr(expr.closure_literal.body),
-            .borrow_expr => try self.scanExpr(expr.borrow_expr.expr),
-            .move_expr => try self.scanExpr(expr.move_expr.expr),
-            .deref_expr => try self.scanExpr(expr.deref_expr.expr),
-            .cast_expr => try self.scanExpr(expr.cast_expr.expr),
-            .field_expr => try self.scanExpr(expr.field_expr.expr),
+            .borrow_expr => {
+                expr.borrow_expr.expr = (try self.expandExpr(expr.borrow_expr.expr, out)) orelse return self.fail("channel operation with no value in a borrow", .{});
+                return expr;
+            },
+            .move_expr => {
+                expr.move_expr.expr = (try self.expandExpr(expr.move_expr.expr, out)) orelse return self.fail("channel operation with no value in a move", .{});
+                return expr;
+            },
+            .deref_expr => {
+                expr.deref_expr.expr = (try self.expandExpr(expr.deref_expr.expr, out)) orelse return self.fail("channel operation with no value in a deref", .{});
+                return expr;
+            },
+            .cast_expr => {
+                expr.cast_expr.expr = (try self.expandExpr(expr.cast_expr.expr, out)) orelse return self.fail("channel operation with no value in a cast", .{});
+                return expr;
+            },
+            .field_expr => {
+                expr.field_expr.expr = (try self.expandExpr(expr.field_expr.expr, out)) orelse return self.fail("channel operation with no value in a field access", .{});
+                return expr;
+            },
             .struct_literal => {
-                for (expr.struct_literal.fields) |field| try self.scanExpr(field.value);
-                if (expr.struct_literal.update_expr) |update| try self.scanExpr(update);
+                {
+                    const new_fields = try self.allocator.alloc(ast.StructLiteralField, expr.struct_literal.fields.len);
+                    for (expr.struct_literal.fields, 0..) |field, i| {
+                        new_fields[i] = field;
+                        new_fields[i].value = (try self.expandExpr(field.value, out)) orelse return self.fail("channel operation with no value in a struct literal", .{});
+                    }
+                    expr.struct_literal.fields = new_fields;
+                }
+                if (expr.struct_literal.update_expr) |update| {
+                    expr.struct_literal.update_expr = (try self.expandExpr(update, out)) orelse return self.fail("channel operation with no value in a struct update", .{});
+                }
+                return expr;
             },
-            .enum_literal => for (expr.enum_literal.fields) |field| try self.scanExpr(field.value),
-            .tuple_literal => for (expr.tuple_literal.elements) |elem| try self.scanExpr(elem),
-            .array_literal => for (expr.array_literal.elements) |elem| try self.scanExpr(elem),
-            .repeat_array_literal => try self.scanExpr(expr.repeat_array_literal.value),
+            .enum_literal => {
+                const new_fields = try self.allocator.alloc(ast.EnumLiteralField, expr.enum_literal.fields.len);
+                for (expr.enum_literal.fields, 0..) |field, i| {
+                    new_fields[i] = field;
+                    new_fields[i].value = (try self.expandExpr(field.value, out)) orelse return self.fail("channel operation with no value in an enum literal", .{});
+                }
+                expr.enum_literal.fields = new_fields;
+                return expr;
+            },
+            .tuple_literal => {
+                const new_elems = try self.allocator.alloc(*ast.Node, expr.tuple_literal.elements.len);
+                for (expr.tuple_literal.elements, 0..) |elem, i| {
+                    new_elems[i] = (try self.expandExpr(elem, out)) orelse return self.fail("channel operation with no value in a tuple literal", .{});
+                }
+                expr.tuple_literal.elements = new_elems;
+                return expr;
+            },
+            .array_literal => {
+                const new_elems = try self.allocator.alloc(*ast.Node, expr.array_literal.elements.len);
+                for (expr.array_literal.elements, 0..) |elem, i| {
+                    new_elems[i] = (try self.expandExpr(elem, out)) orelse return self.fail("channel operation with no value in an array literal", .{});
+                }
+                expr.array_literal.elements = new_elems;
+                return expr;
+            },
+            .repeat_array_literal => {
+                expr.repeat_array_literal.value = (try self.expandExpr(expr.repeat_array_literal.value, out)) orelse return self.fail("channel operation with no value in a repeat literal", .{});
+                return expr;
+            },
             .index_expr => {
-                try self.scanExpr(expr.index_expr.target);
-                try self.scanExpr(expr.index_expr.index);
+                expr.index_expr.target = (try self.expandExpr(expr.index_expr.target, out)) orelse return self.fail("channel operation with no value in an index target", .{});
+                expr.index_expr.index = (try self.expandExpr(expr.index_expr.index, out)) orelse return self.fail("channel operation with no value in an index", .{});
+                return expr;
             },
             .slice_expr => {
-                try self.scanExpr(expr.slice_expr.target);
-                try self.scanExpr(expr.slice_expr.start);
-                try self.scanExpr(expr.slice_expr.end);
+                expr.slice_expr.target = (try self.expandExpr(expr.slice_expr.target, out)) orelse return self.fail("channel operation with no value in a slice target", .{});
+                expr.slice_expr.start = (try self.expandExpr(expr.slice_expr.start, out)) orelse return self.fail("channel operation with no value in a slice bound", .{});
+                expr.slice_expr.end = (try self.expandExpr(expr.slice_expr.end, out)) orelse return self.fail("channel operation with no value in a slice bound", .{});
+                return expr;
             },
-            else => {},
+            else => return expr,
         }
     }
-
-    // --- spawn emission ----------------------------------------------------
 
     fn ptrNullNode(self: *Lowerer) !*ast.Node {
         const node = try self.newNode(.{ .call_expr = .{
@@ -384,5 +487,435 @@ pub const Lowerer = struct {
         // let <result>: u64 = __go_h_N;
         const result_ident = try self.identNode(handle_name, try self.tyPrim(.u64));
         try out.append(try self.letNode(result_name, try self.tyPrim(.u64), result_ident));
+    }
+
+    // --- channel contracts ----------------------------------------------
+
+    fn ensureChanExterns(self: *Lowerer) !void {
+        try self.ensureExtern(.{
+            .name = "sa_chan_make",
+            .params = &.{
+                .{ .name = "capacity", .ty = "u32", .is_borrow = false, .is_move = false },
+                .{ .name = "out_handle", .ty = "ptr", .is_borrow = true, .is_move = false },
+            },
+            .ret_ty = "i32",
+        });
+        try self.ensureExtern(.{
+            .name = "sa_chan_destroy",
+            .params = &.{.{ .name = "handle", .ty = "u64", .is_borrow = false, .is_move = false }},
+            .ret_ty = "i32",
+        });
+        try self.ensureExtern(.{
+            .name = "sa_chan_close",
+            .params = &.{.{ .name = "handle", .ty = "u64", .is_borrow = false, .is_move = false }},
+            .ret_ty = "i32",
+        });
+        try self.ensureExtern(.{
+            .name = "sa_chan_send",
+            .params = &.{
+                .{ .name = "handle", .ty = "u64", .is_borrow = false, .is_move = false },
+                .{ .name = "value", .ty = "ptr", .is_borrow = false, .is_move = false, .is_raw = true },
+            },
+            .ret_ty = "i32",
+        });
+        try self.ensureExtern(.{
+            .name = "sa_chan_recv",
+            .params = &.{
+                .{ .name = "handle", .ty = "u64", .is_borrow = false, .is_move = false },
+                .{ .name = "out_value", .ty = "ptr", .is_borrow = true, .is_move = false },
+                .{ .name = "out_closed", .ty = "ptr", .is_borrow = true, .is_move = false },
+            },
+            .ret_ty = "i32",
+        });
+        try self.ensureExtern(.{
+            .name = "sa_chan_len",
+            .params = &.{
+                .{ .name = "handle", .ty = "u64", .is_borrow = false, .is_move = false },
+                .{ .name = "out_len", .ty = "ptr", .is_borrow = true, .is_move = false },
+            },
+            .ret_ty = "i32",
+        });
+        try self.ensureExtern(.{
+            .name = "sa_chan_cap",
+            .params = &.{
+                .{ .name = "handle", .ty = "u64", .is_borrow = false, .is_move = false },
+                .{ .name = "out_cap", .ty = "ptr", .is_borrow = true, .is_move = false },
+            },
+            .ret_ty = "i32",
+        });
+        try self.ensureExtern(.{
+            .name = "sa_chan_select",
+            .params = &.{
+                .{ .name = "cases", .ty = "ptr", .is_borrow = false, .is_move = false, .is_raw = true },
+                .{ .name = "ops", .ty = "ptr", .is_borrow = false, .is_move = false, .is_raw = true },
+                .{ .name = "slots", .ty = "ptr", .is_borrow = false, .is_move = false, .is_raw = true },
+                .{ .name = "count", .ty = "u64", .is_borrow = false, .is_move = false },
+                .{ .name = "has_default", .ty = "u32", .is_borrow = false, .is_move = false },
+                .{ .name = "timeout_ns", .ty = "i64", .is_borrow = false, .is_move = false },
+                .{ .name = "out_index", .ty = "ptr", .is_borrow = true, .is_move = false },
+                .{ .name = "out_closed", .ty = "ptr", .is_borrow = true, .is_move = false },
+            },
+            .ret_ty = "i32",
+        });
+        try self.ensureExtern(.{
+            .name = "sa_mem_copy",
+            .params = &.{
+                .{ .name = "dst", .ty = "ptr", .is_borrow = true, .is_move = false },
+                .{ .name = "src", .ty = "ptr", .is_borrow = true, .is_move = false },
+                .{ .name = "count", .ty = "u64", .is_borrow = false, .is_move = false },
+            },
+            .ret_ty = "void",
+        });
+    }
+
+    // --- shared emission helpers -------------------------------------------
+
+    fn tyArrayOf(self: *Lowerer, elem: *ast.Type, len: usize) !*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .array = .{ .elem = elem, .len = len } };
+        return ty;
+    }
+
+    fn tyTupleOf(self: *Lowerer, elems: []const *ast.Type) !*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .tuple = .{ .elems = elems } };
+        return ty;
+    }
+
+    fn tyChanOf(self: *Lowerer, payload_ty: *ast.Type) !*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = payload_ty;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Chan", .generics = generics } };
+        return ty;
+    }
+
+    fn intNodeAs(self: *Lowerer, value: i64, prim: ast.Primitive) !*ast.Node {
+        const node = try self.newNode(.{ .literal = .{ .int_val = value } });
+        self.registerType(node, try self.tyPrim(prim));
+        return node;
+    }
+
+    fn externCallNode(self: *Lowerer, name: []const u8, args: []const *ast.Node, ret_ty: *ast.Type) !*ast.Node {
+        const node = try self.newNode(.{ .call_expr = .{
+            .func_name = name,
+            .associated_target = null,
+            .generics = &.{},
+            .args = args,
+            .callee = null,
+        } });
+        self.registerType(node, ret_ty);
+        return node;
+    }
+
+    fn borrowNode(self: *Lowerer, target: *ast.Node, pointee_ty: *ast.Type) !*ast.Node {
+        const node = try self.newNode(.{ .borrow_expr = .{ .expr = target } });
+        self.registerType(node, try self.tyPtrTo(pointee_ty));
+        return node;
+    }
+
+    fn emitRcCheck(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), rc_name: []const u8, code: i64) LowerError!void {
+        const rc_ident = try self.identNode(rc_name, try self.tyPrim(.i32));
+        const cond = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = rc_ident, .right = try self.intNode(0) } });
+        self.registerType(cond, try self.tyPrim(.boolean));
+        const panic_call = try self.newNode(.{ .call_expr = .{
+            .func_name = "panic",
+            .associated_target = null,
+            .generics = &.{},
+            .args = try self.sliceOf(*ast.Node, try self.intNode(code)),
+            .callee = null,
+        } });
+        self.registerType(panic_call, try self.tyPrim(.void_type));
+        const panic_stmt = try self.newNode(.{ .expr_stmt = panic_call });
+        const if_node = try self.newNode(.{ .if_expr = .{
+            .cond = cond,
+            .then_block = try self.sliceOf(*ast.Node, panic_stmt),
+            .else_block = null,
+        } });
+        self.registerType(if_node, try self.tyPrim(.void_type));
+        try out.append(try self.newNode(.{ .expr_stmt = if_node }));
+    }
+
+    fn slotArrayNode(self: *Lowerer, name: []const u8, total_bytes: usize) LowerError!*ast.Node {
+        const zero = try self.intNode(0);
+        const repeat = try self.newNode(.{ .repeat_array_literal = .{ .value = zero, .len = total_bytes } });
+        self.registerType(repeat, try self.tyArrayOf(try self.tyPrim(.u8), total_bytes));
+        return try self.letNode(name, try self.tyArrayOf(try self.tyPrim(.u8), total_bytes), repeat);
+    }
+
+    fn emitMemCopy(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), dst: *ast.Node, src: *ast.Node, size: usize) LowerError!void {
+        const args = try self.allocator.alloc(*ast.Node, 3);
+        args[0] = dst;
+        args[1] = src;
+        args[2] = try self.intNode(@intCast(size));
+        const call = try self.externCallNode("sa_mem_copy", args, try self.tyPrim(.void_type));
+        try out.append(try self.newNode(.{ .expr_stmt = call }));
+    }
+
+    fn payloadSize(self: *Lowerer, payload_ty: *ast.Type) LowerError!usize {
+        return self.tc.payloadStorageSize(payload_ty) orelse
+            return self.fail("internal: channel payload size was not validated by the checker", .{});
+    }
+
+    // --- channel operation emission ----------------------------------------
+
+    fn emitChanCall(self: *Lowerer, call_node: *ast.Node, info: tc_mod.ChanCallInfo, out: *std.array_list.Managed(*ast.Node)) LowerError!?*ast.Node {
+        const call = call_node.call_expr;
+        switch (info.kind) {
+            .new => {
+                const handle_name = try self.freshName("__ch_h_");
+                const rc_name = try self.freshName("__ch_rc_");
+                try out.append(try self.letNode(handle_name, try self.tyPrim(.u64), try self.intNode(0)));
+                const cast = try self.newNode(.{ .cast_expr = .{ .expr = call.args[0], .ty = try self.tyPrim(.u32) } });
+                self.registerType(cast, try self.tyPrim(.u32));
+                const handle_ident = try self.identNode(handle_name, try self.tyPrim(.u64));
+                const args = try self.allocator.alloc(*ast.Node, 2);
+                args[0] = cast;
+                args[1] = try self.borrowNode(handle_ident, try self.tyPrim(.u64));
+                const make_call = try self.externCallNode("sa_chan_make", args, try self.tyPrim(.i32));
+                try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), make_call));
+                try self.emitRcCheck(out, rc_name, 60911);
+                return try self.identNode(handle_name, try self.tyChanOf(info.payload_ty));
+            },
+            .send => {
+                const size = try self.payloadSize(info.payload_ty);
+                var value_node = call.args[1];
+                const is_place = switch (value_node.*) {
+                    .identifier, .field_expr, .index_expr, .deref_expr => true,
+                    else => false,
+                };
+                if (!is_place) {
+                    const bind_name = try self.freshName("__sv_");
+                    try out.append(try self.letNode(bind_name, info.payload_ty, value_node));
+                    value_node = try self.identNode(bind_name, info.payload_ty);
+                }
+                const slot_name = try self.freshName("__slot_");
+                try out.append(try self.slotArrayNode(slot_name, 16));
+                const slot_ty = try self.tyArrayOf(try self.tyPrim(.u8), 16);
+                const value_ty = self.tc.expr_types.get(call.args[1]) orelse info.payload_ty;
+                const dst = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
+                const src = try self.borrowNode(value_node, value_ty);
+                try self.emitMemCopy(out, dst, src, size);
+                const rc_name = try self.freshName("__ch_rc_");
+                const args = try self.allocator.alloc(*ast.Node, 2);
+                args[0] = call.args[0];
+                args[1] = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
+                const send_call = try self.externCallNode("sa_chan_send", args, try self.tyPrim(.i32));
+                try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), send_call));
+                try self.emitRcCheck(out, rc_name, 60912);
+                return null;
+            },
+            .recv => {
+                const size = try self.payloadSize(info.payload_ty);
+                const slot_name = try self.freshName("__slot_");
+                try out.append(try self.slotArrayNode(slot_name, 16));
+                const slot_ty = try self.tyArrayOf(try self.tyPrim(.u8), 16);
+                const closed_name = try self.freshName("__closed_");
+                try out.append(try self.letNode(closed_name, try self.tyPrim(.u32), try self.intNode(0)));
+                const rc_name = try self.freshName("__ch_rc_");
+                const args = try self.allocator.alloc(*ast.Node, 3);
+                args[0] = call.args[0];
+                args[1] = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
+                args[2] = try self.borrowNode(try self.identNode(closed_name, try self.tyPrim(.u32)), try self.tyPrim(.u32));
+                const recv_call = try self.externCallNode("sa_chan_recv", args, try self.tyPrim(.i32));
+                try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), recv_call));
+                try self.emitRcCheck(out, rc_name, 60915);
+                const value_name = try self.freshName("__rv_");
+                const var_node = try self.newNode(.{ .var_stmt = .{ .name = value_name, .ty = info.payload_ty } });
+                try out.append(var_node);
+                const dst = try self.borrowNode(try self.identNode(value_name, info.payload_ty), info.payload_ty);
+                const src = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
+                try self.emitMemCopy(out, dst, src, size);
+                const closed_ident = try self.identNode(closed_name, try self.tyPrim(.u32));
+                const closed_expr = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = closed_ident, .right = try self.intNode(0) } });
+                self.registerType(closed_expr, try self.tyPrim(.boolean));
+                const tuple_elems = try self.allocator.alloc(*ast.Node, 2);
+                tuple_elems[0] = try self.identNode(value_name, info.payload_ty);
+                tuple_elems[1] = closed_expr;
+                const tuple_node = try self.newNode(.{ .tuple_literal = .{ .elements = tuple_elems } });
+                const tuple_elem_tys = try self.allocator.alloc(*ast.Type, 2);
+                tuple_elem_tys[0] = info.payload_ty;
+                tuple_elem_tys[1] = try self.tyPrim(.boolean);
+                const tuple_ty = try self.tyTupleOf(tuple_elem_tys);
+                self.registerType(tuple_node, tuple_ty);
+                const tuple_name = try self.freshName("__rt_");
+                try out.append(try self.letNode(tuple_name, tuple_ty, tuple_node));
+                return try self.identNode(tuple_name, tuple_ty);
+            },
+            .close, .destroy => {
+                const rc_name = try self.freshName("__ch_rc_");
+                const args = try self.allocator.alloc(*ast.Node, 1);
+                args[0] = call.args[0];
+                const close_call = try self.externCallNode(if (info.kind == .close) "sa_chan_close" else "sa_chan_destroy", args, try self.tyPrim(.i32));
+                try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), close_call));
+                try self.emitRcCheck(out, rc_name, if (info.kind == .close) 60913 else 60914);
+                return null;
+            },
+            .len, .cap => {
+                const n_name = try self.freshName("__ch_n_");
+                try out.append(try self.letNode(n_name, try self.tyPrim(.u64), try self.intNode(0)));
+                const rc_name = try self.freshName("__ch_rc_");
+                const args = try self.allocator.alloc(*ast.Node, 2);
+                args[0] = call.args[0];
+                args[1] = try self.borrowNode(try self.identNode(n_name, try self.tyPrim(.u64)), try self.tyPrim(.u64));
+                const len_call = try self.externCallNode(if (info.kind == .len) "sa_chan_len" else "sa_chan_cap", args, try self.tyPrim(.i32));
+                try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), len_call));
+                try self.emitRcCheck(out, rc_name, if (info.kind == .len) 60917 else 60918);
+                return try self.identNode(n_name, try self.tyPrim(.u64));
+            },
+        }
+    }
+
+    // --- select emission -----------------------------------------------------
+
+    fn slotOffsetBorrow(self: *Lowerer, slots_name: []const u8, slots_ty: *ast.Type, offset: usize) LowerError!*ast.Node {
+        const slots_ident = try self.identNode(slots_name, slots_ty);
+        const index = try self.newNode(.{ .index_expr = .{ .target = slots_ident, .index = try self.intNode(@intCast(offset)) } });
+        self.registerType(index, try self.tyPrim(.u8));
+        return try self.borrowNode(index, try self.tyPrim(.u8));
+    }
+
+    fn lowerSelect(self: *Lowerer, stmt: *ast.Node, out: *std.array_list.Managed(*ast.Node)) LowerError!void {
+        const sel = stmt.select_stmt;
+        const n = sel.cases.len;
+
+        // Entry evaluation in arm order: bind handles and send payloads.
+        var handle_names = std.array_list.Managed([]const u8).init(self.allocator);
+        defer handle_names.deinit();
+        var send_binds = std.array_list.Managed(?[]const u8).init(self.allocator);
+        defer send_binds.deinit();
+        for (sel.cases) |case| {
+            const info = self.tc.chan_calls.get(case.call) orelse
+                return self.fail("internal: select case was not recorded by the checker", .{});
+            const call = case.call.call_expr;
+            const h_name = try self.freshName("__sel_h_");
+            try out.append(try self.letNode(h_name, try self.tyPrim(.u64), call.args[0]));
+            try handle_names.append(h_name);
+            if (info.kind == .send) {
+                const sv_name = try self.freshName("__sel_sv_");
+                try out.append(try self.letNode(sv_name, info.payload_ty, call.args[1]));
+                try send_binds.append(sv_name);
+            } else {
+                try send_binds.append(null);
+            }
+        }
+
+        // Handles / ops arrays.
+        const handles_name = try self.freshName("__sel_handles_");
+        {
+            const elems = try self.allocator.alloc(*ast.Node, n);
+            for (handle_names.items, 0..) |h_name, i| {
+                elems[i] = try self.identNode(h_name, try self.tyPrim(.u64));
+            }
+            const arr = try self.newNode(.{ .array_literal = .{ .elements = elems } });
+            const arr_ty = try self.tyArrayOf(try self.tyPrim(.u64), n);
+            self.registerType(arr, arr_ty);
+            try out.append(try self.letNode(handles_name, arr_ty, arr));
+        }
+        const ops_name = try self.freshName("__sel_ops_");
+        {
+            const elems = try self.allocator.alloc(*ast.Node, n);
+            for (sel.cases, 0..) |case, i| {
+                const info = self.tc.chan_calls.get(case.call) orelse return self.fail("internal: select case was not recorded by the checker", .{});
+                elems[i] = try self.intNodeAs(if (info.kind == .send) 1 else 0, .u32);
+            }
+            const arr = try self.newNode(.{ .array_literal = .{ .elements = elems } });
+            const arr_ty = try self.tyArrayOf(try self.tyPrim(.u32), n);
+            self.registerType(arr, arr_ty);
+            try out.append(try self.letNode(ops_name, arr_ty, arr));
+        }
+
+        // Flat slot array; stage send payloads into their slots.
+        const slots_name = try self.freshName("__sel_slots_");
+        const slots_ty = try self.tyArrayOf(try self.tyPrim(.u8), 16 * n);
+        try out.append(try self.slotArrayNode(slots_name, 16 * n));
+        for (sel.cases, 0..) |case, i| {
+            if (send_binds.items[i]) |sv_name| {
+                const info = self.tc.chan_calls.get(case.call) orelse return self.fail("internal: select case was not recorded by the checker", .{});
+                const size = try self.payloadSize(info.payload_ty);
+                const dst = try self.slotOffsetBorrow(slots_name, slots_ty, 16 * i);
+                const src = try self.borrowNode(try self.identNode(sv_name, info.payload_ty), info.payload_ty);
+                try self.emitMemCopy(out, dst, src, size);
+            }
+        }
+
+        // The select call.
+        const idx_name = try self.freshName("__sel_idx_");
+        try out.append(try self.letNode(idx_name, try self.tyPrim(.i64), try self.intNode(0)));
+        const closed_name = try self.freshName("__sel_closed_");
+        try out.append(try self.letNode(closed_name, try self.tyPrim(.u32), try self.intNode(0)));
+        const rc_name = try self.freshName("__sel_rc_");
+        {
+            const args = try self.allocator.alloc(*ast.Node, 8);
+            args[0] = try self.borrowNode(try self.identNode(handles_name, try self.tyArrayOf(try self.tyPrim(.u64), n)), try self.tyArrayOf(try self.tyPrim(.u64), n));
+            args[1] = try self.borrowNode(try self.identNode(ops_name, try self.tyArrayOf(try self.tyPrim(.u32), n)), try self.tyArrayOf(try self.tyPrim(.u32), n));
+            args[2] = try self.borrowNode(try self.identNode(slots_name, slots_ty), slots_ty);
+            args[3] = try self.intNode(@intCast(n));
+            args[4] = try self.intNodeAs(if (sel.default_body != null) 1 else 0, .u32);
+            args[5] = if (sel.timeout_expr) |timeout_expr| timeout_expr else try self.intNode(-1);
+            args[6] = try self.borrowNode(try self.identNode(idx_name, try self.tyPrim(.i64)), try self.tyPrim(.i64));
+            args[7] = try self.borrowNode(try self.identNode(closed_name, try self.tyPrim(.u32)), try self.tyPrim(.u32));
+            const select_call = try self.externCallNode("sa_chan_select", args, try self.tyPrim(.i32));
+            try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), select_call));
+        }
+        try self.emitRcCheck(out, rc_name, 60916);
+
+        // Dispatch chain, built from the last branch backwards.
+        const Branch = struct { value: i64, body: []const *ast.Node };
+        var branches = std.array_list.Managed(Branch).init(self.allocator);
+        defer branches.deinit();
+        if (sel.timeout_body) |timeout_body| {
+            try branches.append(.{ .value = -2, .body = try self.lowerBlock(timeout_body) });
+        }
+        if (sel.default_body) |default_body| {
+            try branches.append(.{ .value = -1, .body = try self.lowerBlock(default_body) });
+        }
+        for (sel.cases, 0..) |case, i| {
+            const info = self.tc.chan_calls.get(case.call) orelse return self.fail("internal: select case was not recorded by the checker", .{});
+            var body = std.array_list.Managed(*ast.Node).init(self.allocator);
+            errdefer body.deinit();
+            if (info.kind == .recv) {
+                const size = try self.payloadSize(info.payload_ty);
+                const value_name = try self.freshName("__sel_rv_");
+                try body.append(try self.newNode(.{ .var_stmt = .{ .name = value_name, .ty = info.payload_ty } }));
+                const dst = try self.borrowNode(try self.identNode(value_name, info.payload_ty), info.payload_ty);
+                const src = try self.slotOffsetBorrow(slots_name, slots_ty, 16 * i);
+                try self.emitMemCopy(&body, dst, src, size);
+                if (case.bind_name) |bind_name| {
+                    try body.append(try self.letNode(bind_name, info.payload_ty, try self.identNode(value_name, info.payload_ty)));
+                }
+                if (case.bind_closed) |bind_closed| {
+                    const closed_ident = try self.identNode(closed_name, try self.tyPrim(.u32));
+                    const closed_expr = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = closed_ident, .right = try self.intNode(0) } });
+                    self.registerType(closed_expr, try self.tyPrim(.boolean));
+                    try body.append(try self.letNode(bind_closed, try self.tyPrim(.boolean), closed_expr));
+                }
+            }
+            const lowered_body = try self.lowerBlock(case.body);
+            for (lowered_body) |body_stmt| try body.append(body_stmt);
+            try branches.append(.{ .value = @intCast(i), .body = try body.toOwnedSlice() });
+        }
+        var else_block: ?[]const *ast.Node = null;
+        var bi: usize = branches.items.len;
+        while (bi > 0) {
+            bi -= 1;
+            const branch = branches.items[bi];
+            const idx_ident = try self.identNode(idx_name, try self.tyPrim(.i64));
+            const cond = try self.newNode(.{ .binary_expr = .{ .op = .eq, .left = idx_ident, .right = try self.intNode(branch.value) } });
+            self.registerType(cond, try self.tyPrim(.boolean));
+            const if_node = try self.newNode(.{ .if_expr = .{
+                .cond = cond,
+                .then_block = branch.body,
+                .else_block = else_block,
+            } });
+            self.registerType(if_node, try self.tyPrim(.void_type));
+            const if_stmt = try self.newNode(.{ .expr_stmt = if_node });
+            const chain = try self.allocator.alloc(*ast.Node, 1);
+            chain[0] = if_stmt;
+            else_block = chain;
+        }
+        if (else_block) |chain| {
+            for (chain) |chain_stmt| try out.append(chain_stmt);
+        }
     }
 };

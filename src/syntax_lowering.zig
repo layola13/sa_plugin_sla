@@ -1065,6 +1065,7 @@ pub const Lowerer = struct {
     }
 
     fn slotValueFromPtr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), ptr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
+        _ = out;
         // Address-resident payloads (structs, tuples, enums,
         // arrays): the payload value IS the slot address in both
         // codegens' register model, so a plain value cast of the

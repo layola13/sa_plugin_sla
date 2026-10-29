@@ -4,6 +4,7 @@ const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
+const defer_desugar = @import("defer_desugar.zig");
 const source_expand = @import("source_expand.zig");
 const sci_bridge = @import("sci_bridge");
 const plugin_api = @import("plugin_api");
@@ -512,6 +513,14 @@ pub fn runSlaCommandImpl(
             return 1;
         };
         plugin_compile_options.slaProfileStage(stderr, profile, "check import expand", stage_start);
+
+        // Goroutine syntax batch: same defer desugar as the main
+        // frontend, before monomorphization.
+        var check_defer_desugarer = defer_desugar.Desugarer.init(allocator);
+        check_defer_desugarer.desugarProgram(expanded_prog) catch |err| {
+            try stderr.print("Defer Desugar Error: {s} ({})\n", .{ check_defer_desugarer.errorMessage(), err });
+            return 1;
+        };
 
         stage_start = sio.nanoTimestamp();
         var mono = monomorphizer_mod.Monomorphizer.init(allocator);

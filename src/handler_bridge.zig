@@ -4,6 +4,8 @@ const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
+const defer_desugar = @import("defer_desugar.zig");
+const syntax_lowering = @import("syntax_lowering.zig");
 const codegen_mod = @import("codegen.zig");
 const source_expand = @import("source_expand.zig");
 
@@ -257,6 +259,12 @@ pub fn compileHandlerWithSupport(
     const parsed_prog = try p.parseProgram();
     const prog = try expandSlaImports(a, parsed_prog, options.base_dir);
 
+    // Goroutine syntax batch: defer desugar before monomorphization,
+    // syntax lowering after type checking (same stages as the main
+    // frontend).
+    var defer_desugarer = defer_desugar.Desugarer.init(a);
+    defer_desugarer.desugarProgram(prog) catch return error.CodegenError;
+
     var mono = monomorphizer_mod.Monomorphizer.init(a);
     defer mono.deinit();
     const specialized_prog = try mono.monomorphize(prog, null, null);
@@ -285,6 +293,9 @@ pub fn compileHandlerWithSupport(
     var tc = type_checker_mod.TypeChecker.initWithOptions(a, .{ .injected_scope_bindings = scope_bindings });
     defer tc.deinit();
     try tc.checkProgram(specialized_prog);
+
+    var syntax_lowerer = syntax_lowering.Lowerer.init(a, &tc);
+    syntax_lowerer.lowerProgram(specialized_prog) catch return error.CodegenError;
 
     var cg = codegen_mod.Codegen.initWithOptions(a, &tc, .{ .injected_address_bindings = address_bindings });
     defer cg.deinit();

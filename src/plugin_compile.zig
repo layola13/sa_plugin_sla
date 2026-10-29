@@ -4,6 +4,7 @@ const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
 const syntax_lowering = @import("syntax_lowering.zig");
+const defer_desugar = @import("defer_desugar.zig");
 const type_checker_mod = @import("type_checker.zig");
 const codegen_mod = @import("codegen.zig");
 const sab_codegen_mod = @import("sab_codegen.zig");
@@ -658,6 +659,17 @@ fn runSlaFrontend(
         return null;
     };
     slaProfileStage(stderr, profile, "import expand", stage_start);
+
+    // Goroutine syntax batch: desugar `defer` into snapshot lets and
+    // exit-path call copies before monomorphization, so no later
+    // stage ever sees a defer_stmt.
+    stage_start = sio.nanoTimestamp();
+    var defer_desugarer = defer_desugar.Desugarer.init(allocator);
+    defer_desugarer.desugarProgram(expanded_prog) catch |err| {
+        try stderr.print("Defer Desugar Error: {s} ({})\n", .{ defer_desugarer.errorMessage(), err });
+        return null;
+    };
+    slaProfileStage(stderr, profile, "defer desugar", stage_start);
 
     stage_start = sio.nanoTimestamp();
     pruneTestsByFilter(allocator, expanded_prog, options.test_filter) catch |err| {

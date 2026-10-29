@@ -861,6 +861,21 @@ pub const Lowerer = struct {
         return try self.borrowNode(index, try self.tyPrim(.u8));
     }
 
+    /// Bind a select slot address to a borrow-typed let and
+    /// return the identifier. A borrow-of-index passed inline at
+    /// a call site materializes as a plain pointer temp and the
+    /// SA verifier rejects it for &-parameters
+    /// (CapabilityMismatch); a borrow-typed binding carries the
+    /// borrow capability in its register.
+    fn slotPtrLet(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slots_name: []const u8, slots_ty: *ast.Type, offset: usize) LowerError!*ast.Node {
+        const borrow_ty = try self.allocator.create(ast.Type);
+        borrow_ty.* = .{ .borrow = try self.tyPrim(.u8) };
+        const name = try self.freshName("__sel_sp_");
+        const addr = try self.slotOffsetBorrow(slots_name, slots_ty, offset);
+        try out.append(try self.letNode(name, borrow_ty, addr));
+        return try self.identNode(name, borrow_ty);
+    }
+
     fn lowerSelect(self: *Lowerer, stmt: *ast.Node, out: *std.array_list.Managed(*ast.Node)) LowerError!void {
         const sel = stmt.select_stmt;
         const n = sel.cases.len;
@@ -921,7 +936,7 @@ pub const Lowerer = struct {
             if (send_binds.items[i]) |sv_name| {
                 const info = self.tc.chan_calls.get(case.call) orelse return self.fail("internal: select case was not recorded by the checker", .{});
                 const size = try self.payloadSize(info.payload_ty);
-                const dst = try self.slotOffsetBorrow(slots_name, slots_ty, 16 * i);
+                const dst = try self.slotPtrLet(out, slots_name, slots_ty, 16 * i);
                 const src = try self.borrowNode(try self.identNode(sv_name, info.payload_ty), info.payload_ty);
                 try self.emitMemCopy(out, dst, src, size);
             }
@@ -967,7 +982,7 @@ pub const Lowerer = struct {
                 const value_name = try self.freshName("__sel_rv_");
                 try body.append(try self.newNode(.{ .var_stmt = .{ .name = value_name, .ty = info.payload_ty } }));
                 const dst = try self.borrowNode(try self.identNode(value_name, info.payload_ty), info.payload_ty);
-                const src = try self.slotOffsetBorrow(slots_name, slots_ty, 16 * i);
+                const src = try self.slotPtrLet(&body, slots_name, slots_ty, 16 * i);
                 try self.emitMemCopy(&body, dst, src, size);
                 if (case.bind_name) |bind_name| {
                     try body.append(try self.letNode(bind_name, info.payload_ty, try self.identNode(value_name, info.payload_ty)));

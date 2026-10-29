@@ -152,10 +152,24 @@ pub fn main() void {
             .canary = 0xc3a701ba,
             .check_write_after_free = true,
         });
+        // The stock test runner initializes `std.testing.io_instance` for
+        // every test body (lib/compiler/test_runner.zig); this runner
+        // originally skipped it, so `std.testing.io_instance` stayed
+        // `undefined` (0xAA-poisoned in Debug) and any test touching
+        // `std.testing.io` — first stop is almost always the `io.random`
+        // inside `std.testing.tmpDir` — waited forever on the Io.Threaded
+        // mutex (104 suite tests hung; see gosyntax-local/HANG_LOCALIZE.md).
+        // Init per test body, mirroring the stock lifecycle; the deinit
+        // defer is registered after the allocator one so LIFO order runs
+        // io deinit before allocator deinit, as in the stock runner.
+        // Workers are re-exec'd processes running this same legacy path,
+        // so this covers supervisor mode too.
+        testing.io_instance = .init(testing.allocator, .{});
         var leaked = false;
         defer {
             if (testing.allocator_instance.deinit() != 0) leaked = true;
         }
+        defer testing.io_instance.deinit();
         testing.log_level = .warn;
 
         std.debug.print("[{d}/{d}] {s} ... ", .{ i + 1, all.len, t.name });

@@ -1049,8 +1049,15 @@ pub const Lowerer = struct {
     /// and a tuple field projection through a borrow is
     /// UnsupportedSabDirectFeature.
     fn slotValueExpr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slot_name: []const u8, slot_ty: *ast.Type, payload_ty: *ast.Type) LowerError!*ast.Node {
+        // The cast source is a borrow of the slot, never the raw
+        // array identifier: the SA-text codegen renders a cast of
+        // a stack-array identifier as a move of the allocation
+        // register (its scope-end release then double-consumes),
+        // while a borrow materializes the address into a fresh
+        // pointer temp in both codegens.
         const slot_ident = try self.identNode(slot_name, slot_ty);
-        return try self.slotValueFromPtr(out, slot_ident, payload_ty);
+        const addr = try self.borrowNode(slot_ident, slot_ty);
+        return try self.slotValueFromPtr(out, addr, payload_ty);
     }
 
     fn slotValueFromPtr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), ptr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {

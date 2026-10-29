@@ -906,27 +906,33 @@ pub const Lowerer = struct {
     }
 
     /// The received payload as a value expression: the slot bytes
-    /// reinterpreted in place as a one-element array and projected
-    /// out, `(&slot as &[Payload; 1])[0]`. Index projection through
-    /// a borrow computes the element address without loading the
-    /// value — the only reliable aggregate-producing form in both
-    /// codegens (a payload var_stmt is scalar-only in the checker
-    /// and misallocated by the SAB var path, a synthetic tuple
-    /// value segfaults in SAB destructure, and `*p` on an
-    /// aggregate segfaults in both backends at base).
+    /// reinterpreted as a one-element array value and projected
+    /// out, `(&((slot as [Payload; 1])))[0]`. The detour through a
+    /// value cast plus a borrow matters: an array value is a cell
+    /// holding a pointer to the element storage, and the index
+    /// projection loads that pointer and reads through it. Every
+    /// shorter form miscompiles somewhere — a payload var_stmt is
+    /// scalar-only in the checker and misallocated by the SAB var
+    /// path, a synthetic tuple value segfaults in SAB destructure,
+    /// `*p` on an aggregate segfaults in both backends at base,
+    /// and borrowing the slot array directly makes the projection
+    /// load the payload's first word as the element address (the
+    /// repeat-literal slot binding holds the storage address
+    /// itself, not a cell).
     fn slotValueExpr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slot_name: []const u8, slot_ty: *ast.Type, payload_ty: *ast.Type) LowerError!*ast.Node {
-        const slot_borrow = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
-        return try self.slotValueFromBorrow(out, slot_borrow, payload_ty);
+        const slot_ident = try self.identNode(slot_name, slot_ty);
+        return try self.slotValueFromPtr(out, slot_ident, payload_ty);
     }
 
-    fn slotValueFromBorrow(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slot_borrow: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
+    fn slotValueFromPtr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), ptr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
         const arr_ty = try self.tyArrayOf(payload_ty, 1);
+        const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = arr_ty } });
+        self.registerType(cast, arr_ty);
         const borrow_arr_ty = try self.allocator.create(ast.Type);
         borrow_arr_ty.* = .{ .borrow = arr_ty };
-        const cast = try self.newNode(.{ .cast_expr = .{ .expr = slot_borrow, .ty = borrow_arr_ty } });
-        self.registerType(cast, borrow_arr_ty);
+        const borrow = try self.borrowNode(cast, arr_ty);
         const ref_name = try self.freshName("__rv_ref_");
-        try out.append(try self.letNode(ref_name, borrow_arr_ty, cast));
+        try out.append(try self.letNode(ref_name, borrow_arr_ty, borrow));
         const ref_ident = try self.identNode(ref_name, borrow_arr_ty);
         const index = try self.newNode(.{ .index_expr = .{ .target = ref_ident, .index = try self.intNode(0) } });
         self.registerType(index, payload_ty);
@@ -1077,8 +1083,8 @@ pub const Lowerer = struct {
                 // checker and misallocated by the SAB var path)
                 // and no whole-var move (StackEscape on text).
                 if (case.bind_name) |bind_name| {
-                    const slot_borrow = try self.slotOffsetBorrow(slots_name, slots_ty, 16 * i);
-                    const value_expr = try self.slotValueFromBorrow(&body, slot_borrow, info.payload_ty);
+                    const slot_ptr = try self.slotPtrLet(&body, slots_name, slots_ty, 16 * i);
+                    const value_expr = try self.slotValueFromPtr(&body, slot_ptr, info.payload_ty);
                     try body.append(try self.letNode(bind_name, info.payload_ty, value_expr));
                 }
                 if (case.bind_closed) |bind_closed| {

@@ -1817,6 +1817,9 @@ pub const Codegen = struct {
     }
 
     fn typeIsCopyValue(self: *Codegen, ty: *const ast.Type) bool {
+        // Goroutine syntax batch: mirror the checker's Chan rule —
+        // a Chan<T> value is a copyable runtime handle word.
+        if (ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "Chan")) return true;
         if (lowering_rules.typeIsCopyValueBase(ty)) |decision| return decision;
         return switch (ty.*) {
             .user_defined => self.typeHasCopyDerive(ty),
@@ -6454,6 +6457,10 @@ pub const Codegen = struct {
             const target = callTargetName(callInstructionBody(item) orelse continue) orelse continue;
             if (!self.tc.extern_funcs.contains(target)) continue;
             if (self.hasFunctionSig(target, .external)) continue;
+            // A symbol whose body was already included as a std
+            // dependency is defined locally; an extern declaration
+            // for it would be a duplicate.
+            if (self.included_imports.contains(target)) continue;
             try names.put(target, {});
         }
 
@@ -15377,6 +15384,15 @@ pub const Codegen = struct {
     }
 
     fn genCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!u32 {
+        // Goroutine syntax batch: the syntax lowering emits plain
+        // calls to sa_mem_copy (an SA-level std function in
+        // sa_std/core/mem.sa, registered as an extern contract by
+        // the lowering). Pull its body into the module so the call
+        // resolves locally instead of becoming an undefined native
+        // symbol at link time.
+        if (std.mem.eql(u8, call.func_name, "sa_mem_copy")) {
+            try self.ensureStdDeps("sa_std/core/mem.sa", &.{"sa_mem_copy"});
+        }
         // #13: immediately-invoked closure literal; bypasses every
         // func_name-keyed path below (func_name is "" for these calls).
         if (call.callee) |callee| {

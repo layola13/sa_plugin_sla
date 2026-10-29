@@ -37,6 +37,11 @@ pub const Lowerer = struct {
     /// collected in its scope to the block's exit cleanup list.
     block_alloc_stack: std.array_list.Managed(std.array_list.Managed([]const u8)) = undefined,
     block_alloc_stack_ready: bool = false,
+    /// Synthesized one-field wrapper struct decls for received
+    /// payload slot views (see slotValueFromPtr), appended to the
+    /// program decls at the end of lowerProgram.
+    slot_view_decls: std.array_list.Managed(*ast.Node) = undefined,
+    slot_view_decls_ready: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, tc: *tc_mod.TypeChecker) Lowerer {
         return .{ .allocator = allocator, .tc = tc };
@@ -156,7 +161,8 @@ pub const Lowerer = struct {
     pub fn lowerProgram(self: *Lowerer, program: *ast.Node) LowerError!void {
         try self.ensureTaskExterns();
         try self.ensureChanExterns();
-        for (program.program.decls) |decl| {
+        const orig_decls = program.program.decls;
+        for (orig_decls) |decl| {
             switch (decl.*) {
                 .func_decl => decl.func_decl.body = try self.lowerBlock(decl.func_decl.body),
                 .test_decl => decl.test_decl.body = try self.lowerBlock(decl.test_decl.body),
@@ -169,6 +175,12 @@ pub const Lowerer = struct {
                 },
                 else => {},
             }
+        }
+        if (self.slot_view_decls_ready and self.slot_view_decls.items.len > 0) {
+            const merged = try self.allocator.alloc(*ast.Node, orig_decls.len + self.slot_view_decls.items.len);
+            @memcpy(merged[0..orig_decls.len], orig_decls);
+            @memcpy(merged[orig_decls.len..], self.slot_view_decls.items);
+            program.program.decls = merged;
         }
     }
 
@@ -906,45 +918,68 @@ pub const Lowerer = struct {
     }
 
     /// The received payload as a value expression: the slot bytes
-    /// reinterpreted as the first element of a (Payload, bool)
-    /// tuple viewed through a borrow, `(slot as &(Payload, bool)).0`.
-    /// Field projection through a borrow is an address computation
-    /// in both codegens: an aggregate payload takes the slot
-    /// address as its value, a scalar loads through it, and a
-    /// String recovers the address of its {ptr, len} pair. Every
-    /// shorter form miscompiles somewhere — a payload var_stmt is
-    /// scalar-only in the checker and its SAB path allocates an
-    /// 8-byte pointer cell that a 16-byte copy overflows, a
-    /// synthetic tuple VALUE segfaults in SAB destructure (its
-    /// aggregate element is loaded through an uninitialized spill
-    /// slot), `*p` on an aggregate segfaults in both backends at
-    /// base, and an index projection loads the payload's first
-    /// word as the element address (array values are pointer
-    /// cells; the slot is raw storage, not a cell).
+    /// viewed through a synthesized one-field wrapper struct,
+    /// `(slot as &__go_slot_view_N).v` (see slotViewType). Field
+    /// projection through a struct borrow is an address
+    /// computation in both codegens: an aggregate payload takes
+    /// the slot address as its value, a scalar loads through it,
+    /// and a String recovers the address of its {ptr, len} pair.
+    /// Every shorter form miscompiles somewhere — a payload
+    /// var_stmt is scalar-only in the checker and its SAB path
+    /// allocates an 8-byte pointer cell that a 16-byte copy
+    /// overflows, a synthetic tuple VALUE segfaults in SAB
+    /// destructure (its aggregate element is loaded through an
+    /// uninitialized spill slot), `*p` on an aggregate segfaults
+    /// in both backends at base, an index projection loads the
+    /// payload's first word as the element address (array values
+    /// are pointer cells; the slot is raw storage, not a cell),
+    /// and a tuple field projection through a borrow is
+    /// UnsupportedSabDirectFeature.
     fn slotValueExpr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slot_name: []const u8, slot_ty: *ast.Type, payload_ty: *ast.Type) LowerError!*ast.Node {
         const slot_ident = try self.identNode(slot_name, slot_ty);
         return try self.slotValueFromPtr(out, slot_ident, payload_ty);
     }
 
     fn slotValueFromPtr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), ptr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
-        const tuple_elem_tys = try self.allocator.alloc(*ast.Type, 2);
-        tuple_elem_tys[0] = payload_ty;
-        tuple_elem_tys[1] = try self.tyPrim(.boolean);
-        const tuple_ty = try self.tyTupleOf(tuple_elem_tys);
-        const borrow_tuple_ty = try self.allocator.create(ast.Type);
-        borrow_tuple_ty.* = .{ .borrow = tuple_ty };
-        const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = borrow_tuple_ty } });
-        self.registerType(cast, borrow_tuple_ty);
+        const view_ty = try self.slotViewType(payload_ty);
+        const borrow_view_ty = try self.allocator.create(ast.Type);
+        borrow_view_ty.* = .{ .borrow = view_ty };
+        const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = borrow_view_ty } });
+        self.registerType(cast, borrow_view_ty);
         // The projection target must be a plain identifier (a cast
         // target is UnsupportedSabDirectFeature), so bind the
         // borrow to a borrow-typed let first — its register holds
         // the address as a value, like the select slot pointers.
         const ref_name = try self.freshName("__rv_ref_");
-        try out.append(try self.letNode(ref_name, borrow_tuple_ty, cast));
-        const ref_ident = try self.identNode(ref_name, borrow_tuple_ty);
-        const field = try self.newNode(.{ .field_expr = .{ .expr = ref_ident, .field_name = "0" } });
+        try out.append(try self.letNode(ref_name, borrow_view_ty, cast));
+        const ref_ident = try self.identNode(ref_name, borrow_view_ty);
+        const field = try self.newNode(.{ .field_expr = .{ .expr = ref_ident, .field_name = "v" } });
         self.registerType(field, payload_ty);
         return field;
+    }
+
+    /// A synthesized one-field struct type `__go_slot_view_N { v: Payload }`
+    /// registered with the checker and queued for declaration in
+    /// the program. Struct fields are inline in both codegens, so
+    /// viewing the receive slot through this wrapper makes the
+    /// payload's field projection an exact address computation
+    /// over the slot bytes — the one aggregate-producing form that
+    /// works identically in both backends.
+    fn slotViewType(self: *Lowerer, payload_ty: *ast.Type) LowerError!*ast.Type {
+        if (!self.slot_view_decls_ready) {
+            self.slot_view_decls = std.array_list.Managed(*ast.Node).init(self.allocator);
+            self.slot_view_decls_ready = true;
+        }
+        const name = try self.freshName("__go_slot_view_");
+        const fields = try self.allocator.alloc(ast.Field, 1);
+        fields[0] = .{ .name = "v", .ty = payload_ty };
+        const decl = try self.allocator.create(ast.StructDecl);
+        decl.* = .{ .name = name, .generics = &.{}, .fields = fields };
+        try self.tc.structs.put(name, decl);
+        try self.slot_view_decls.append(try self.newNode(.{ .struct_decl = decl.* }));
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = name, .generics = &.{} } };
+        return ty;
     }
 
     // --- select emission -----------------------------------------------------

@@ -1022,8 +1022,24 @@ pub const Lowerer = struct {
         const recv_call = try self.externCallNode("sa_chan_recv", args, try self.tyPrim(.i32));
         try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), recv_call));
         try self.emitRcCheck(out, rc_name, 60915);
-        const value_expr = try self.slotValueExpr(out, slot_name, slot_ty, info.payload_ty);
-        try out.append(try self.letNode(value_name, info.payload_ty, value_expr));
+        if (self.payloadIsWord(info.payload_ty)) {
+            // Word payloads take the var form: a payload-typed
+            // var cell filled by the slot copy, then read as the
+            // binding value. The wrapper-view load used for
+            // aggregates leaves its borrow register live at fn
+            // exit in the SA-text codegen (MemoryLeak trap); the
+            // var form is the native shape in both codegens and
+            // the cell is exactly the head word for word payloads.
+            const var_name = try self.freshName("__rv_");
+            try out.append(try self.newNode(.{ .var_stmt = .{ .name = var_name, .ty = info.payload_ty } }));
+            const dst = try self.borrowNode(try self.identNode(var_name, info.payload_ty), info.payload_ty);
+            const src = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
+            try self.emitMemCopy(out, dst, src, try self.payloadSize(info.payload_ty));
+            try out.append(try self.letNode(value_name, info.payload_ty, try self.identNode(var_name, info.payload_ty)));
+        } else {
+            const value_expr = try self.slotValueExpr(out, slot_name, slot_ty, info.payload_ty);
+            try out.append(try self.letNode(value_name, info.payload_ty, value_expr));
+        }
         const closed_ident = try self.identNode(closed_name, try self.tyPrim(.u32));
         const closed_expr = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = closed_ident, .right = try self.intNode(0) } });
         self.registerType(closed_expr, try self.tyPrim(.boolean));

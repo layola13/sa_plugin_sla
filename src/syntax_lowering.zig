@@ -922,7 +922,7 @@ pub const Lowerer = struct {
         borrow_ty.* = .{ .borrow = payload_ty };
         const cast = try self.newNode(.{ .cast_expr = .{ .expr = slot_borrow, .ty = borrow_ty } });
         self.registerType(cast, borrow_ty);
-        const deref = try self.newNode(.{ .deref_expr = cast });
+        const deref = try self.newNode(.{ .deref_expr = .{ .expr = cast } });
         self.registerType(deref, payload_ty);
         return deref;
     }

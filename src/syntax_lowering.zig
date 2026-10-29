@@ -29,9 +29,27 @@ pub const Lowerer = struct {
     counter: usize = 0,
     err_buf: [1024]u8 = undefined,
     err_len: usize = 0,
+    /// Stack of per-block lists of synthetic heap-alloc let names
+    /// (the [u8; N] transfer slots). SA emits those lets as owning
+    /// `alloc` registers, which the verifier requires to be
+    /// released; the checker never saw the synthetic names, so no
+    /// cleanup list mentions them. lowerBlock appends the names
+    /// collected in its scope to the block's exit cleanup list.
+    block_alloc_stack: std.array_list.Managed(std.array_list.Managed([]const u8)) = undefined,
+    block_alloc_stack_ready: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, tc: *tc_mod.TypeChecker) Lowerer {
         return .{ .allocator = allocator, .tc = tc };
+    }
+
+    fn noteAllocLet(self: *Lowerer, name: []const u8) LowerError!void {
+        if (!self.block_alloc_stack_ready) {
+            self.block_alloc_stack = std.array_list.Managed(std.array_list.Managed([]const u8)).init(self.allocator);
+            self.block_alloc_stack_ready = true;
+        }
+        if (self.block_alloc_stack.items.len == 0) return;
+        const top = &self.block_alloc_stack.items[self.block_alloc_stack.items.len - 1];
+        try top.append(name);
     }
 
     pub fn errorMessage(self: *const Lowerer) []const u8 {
@@ -157,9 +175,15 @@ pub const Lowerer = struct {
     // --- block transform -------------------------------------------------
 
     fn lowerBlock(self: *Lowerer, stmts: []const *ast.Node) LowerError![]const *ast.Node {
+        if (!self.block_alloc_stack_ready) {
+            self.block_alloc_stack = std.array_list.Managed(std.array_list.Managed([]const u8)).init(self.allocator);
+            self.block_alloc_stack_ready = true;
+        }
+        try self.block_alloc_stack.append(std.array_list.Managed([]const u8).init(self.allocator));
         var out = std.array_list.Managed(*ast.Node).init(self.allocator);
         errdefer out.deinit();
         for (stmts) |stmt| {
+            const before = out.items.len;
             switch (stmt.*) {
                 .let_stmt => |let| {
                     if (let.value.* == .go_expr) {
@@ -188,6 +212,30 @@ pub const Lowerer = struct {
                     try out.append(stmt);
                 },
             }
+            // The checker keys block-exit cleanup lists (register
+            // releases) by statement node. When this statement was
+            // replaced by a sequence (go, void channel ops,
+            // select, ...), the original node never reaches
+            // codegen and its cleanup list would be lost — the SA
+            // verifier then reports the still-active locals as
+            // leaks. Transfer the list to the last emitted
+            // statement so the releases still happen at block exit.
+            if (out.items.len > before and out.items[out.items.len - 1] != stmt) {
+                if (self.tc.cleanups.fetchRemove(stmt)) |entry| {
+                    try self.tc.cleanups.put(out.items[out.items.len - 1], entry.value);
+                }
+            }
+        }
+        // Release this block's synthetic heap-alloc lets (transfer
+        // slots) at block exit: append their names to the cleanup
+        // list attached to the last emitted statement.
+        var alloc_names = self.block_alloc_stack.pop() orelse std.array_list.Managed([]const u8).init(self.allocator);
+        defer alloc_names.deinit();
+        if (alloc_names.items.len > 0 and out.items.len > 0) {
+            const last = out.items[out.items.len - 1];
+            var list = self.tc.cleanups.get(last) orelse std.array_list.Managed([]const u8).init(self.allocator);
+            for (alloc_names.items) |name| try list.append(name);
+            try self.tc.cleanups.put(last, list);
         }
         return try out.toOwnedSlice();
     }
@@ -646,6 +694,7 @@ pub const Lowerer = struct {
     }
 
     fn slotArrayNode(self: *Lowerer, name: []const u8, total_bytes: usize) LowerError!*ast.Node {
+        try self.noteAllocLet(name);
         const zero = try self.intNode(0);
         const repeat = try self.newNode(.{ .repeat_array_literal = .{ .value = zero, .len = total_bytes } });
         self.registerType(repeat, try self.tyArrayOf(try self.tyPrim(.u8), total_bytes));
@@ -682,7 +731,11 @@ pub const Lowerer = struct {
         const mon_call = try self.externCallNode("sa_task_monitor", args, try self.tyPrim(.i32));
         try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), mon_call));
         try self.emitRcCheck(out, rc_name, 60921);
-        return try self.identNode(chan_name, chan_ty);
+        // Value-copy materialization, same as Chan::new (the
+        // address-taken slot must not be moved out as the result).
+        const val_name = try self.freshName("__mon_v_");
+        try out.append(try self.letNode(val_name, try self.tyPrim(.u64), try self.identNode(chan_name, try self.tyPrim(.u64))));
+        return try self.identNode(val_name, chan_ty);
     }
 
     fn emitChanCall(self: *Lowerer, call_node: *ast.Node, info: tc_mod.ChanCallInfo, out: *std.array_list.Managed(*ast.Node)) LowerError!?*ast.Node {
@@ -701,7 +754,14 @@ pub const Lowerer = struct {
                 const make_call = try self.externCallNode("sa_chan_make", args, try self.tyPrim(.i32));
                 try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), make_call));
                 try self.emitRcCheck(out, rc_name, 60911);
-                return try self.identNode(handle_name, try self.tyChanOf(info.payload_ty));
+                // Materialize the handle as a value copy before
+                // handing it out under the Chan<T> type: returning
+                // the address-taken slot itself would make the
+                // outer binding a move of the stack allocation
+                // (SA verifier: StackEscape) instead of a load.
+                const val_name = try self.freshName("__ch_v_");
+                try out.append(try self.letNode(val_name, try self.tyPrim(.u64), try self.identNode(handle_name, try self.tyPrim(.u64))));
+                return try self.identNode(val_name, try self.tyChanOf(info.payload_ty));
             },
             .send => {
                 const size = try self.payloadSize(info.payload_ty);
@@ -828,6 +888,7 @@ pub const Lowerer = struct {
 
         // Handles / ops arrays.
         const handles_name = try self.freshName("__sel_handles_");
+        try self.noteAllocLet(handles_name);
         {
             const elems = try self.allocator.alloc(*ast.Node, n);
             for (handle_names.items, 0..) |h_name, i| {
@@ -839,6 +900,7 @@ pub const Lowerer = struct {
             try out.append(try self.letNode(handles_name, arr_ty, arr));
         }
         const ops_name = try self.freshName("__sel_ops_");
+        try self.noteAllocLet(ops_name);
         {
             const elems = try self.allocator.alloc(*ast.Node, n);
             for (sel.cases, 0..) |case, i| {

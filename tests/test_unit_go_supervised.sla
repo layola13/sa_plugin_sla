@@ -78,7 +78,7 @@ fn sup_flaky_worker(arg: u64) {
     let r1 = sa_global_u64_set("sup_done", 8, 0);
     if r1 != 0 { panic(9723); };
     let notify: Chan<(u64, i32)> = Chan::new(8);
-    let policy = SupervisePolicy { max_restarts: 3, window_ms: 60000 };
+    let policy = supervise_policy(3, 60000);
     let result = supervise(sup_flaky_worker, 0, policy, notify);
     if result != 0 { panic(9724); };
     let (m1, ok1) = notify.recv();
@@ -103,7 +103,7 @@ fn sup_doomed_worker(arg: u64) {
 
 @test "supervise gives up after the restart budget"() {
     let notify: Chan<(u64, i32)> = Chan::new(8);
-    let policy = SupervisePolicy { max_restarts: 1, window_ms: 60000 };
+    let policy = supervise_policy(1, 60000);
     let result = supervise(sup_doomed_worker, 0, policy, notify);
     if result != 100 { panic(9740); };
     let (m1, ok1) = notify.recv();

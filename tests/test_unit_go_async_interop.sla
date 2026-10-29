@@ -6,6 +6,7 @@
 
 @import "sa_std/globals.sai"
 @import "sa_std/async.sla"
+@import "sa_std/task.sai"
 
 async fn go_base() -> i32 {
     return 40;

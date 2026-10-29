@@ -759,18 +759,11 @@ pub const Lowerer = struct {
     /// A-form send staging for word payloads (Jev ruling
     /// 2026-10-29: chan send/recv ownership is uniformly
     /// view+forget): view the slot through the synthesized
-    /// wrapper struct (slotViewType), take the view field's
-    /// address as a borrow, store the payload through it — the
-    /// move send semantics want — and retire both borrows with
-    /// mem::forget. The view borrow itself is only ever read
-    /// (field-address computation, like the receive path's
-    /// field load) and forgotten, never an assignment base:
-    /// the SA-text codegen gives an assignment-base borrow a
-    /// stack cell and never retires the address temp stored
-    /// into it (MemoryLeak at fn exit), while a read+forget
-    /// borrow stays a register alias in both codegens. No
-    /// staging lets, no helper fns, no mem_copy for word
-    /// payloads.
+    /// wrapper struct (slotViewType), store the payload into the
+    /// view field — the move send semantics want — and retire
+    /// the view borrow with mem::forget. The exact mirror of
+    /// slotValueFromPtrFull's load path: no staging lets, no
+    /// helper fns, no mem_copy for word payloads.
     fn storeSlotValueViaView(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), ptr_expr: *ast.Node, payload_ty: *ast.Type, value_node: *ast.Node) LowerError!void {
         const view_ty = try self.slotViewType(payload_ty);
         const borrow_view_ty = try self.allocator.create(ast.Type);
@@ -781,14 +774,7 @@ pub const Lowerer = struct {
         try out.append(try self.letNode(ref_name, borrow_view_ty, cast));
         const field = try self.newNode(.{ .field_expr = .{ .expr = try self.identNode(ref_name, borrow_view_ty), .field_name = "v" } });
         self.registerType(field, payload_ty);
-        const borrow_field_ty = try self.allocator.create(ast.Type);
-        borrow_field_ty.* = .{ .borrow = payload_ty };
-        const fp_name = try self.freshName("__sv_fp_");
-        try out.append(try self.letNode(fp_name, borrow_field_ty, try self.borrowNode(field, payload_ty)));
-        const deref = try self.newNode(.{ .deref_expr = .{ .expr = try self.identNode(fp_name, borrow_field_ty) } });
-        self.registerType(deref, payload_ty);
-        try out.append(try self.newNode(.{ .assign_stmt = .{ .target = deref, .value = value_node } }));
-        try out.append(try self.forgetStmt(fp_name, borrow_field_ty));
+        try out.append(try self.newNode(.{ .assign_stmt = .{ .target = field, .value = value_node } }));
         try out.append(try self.forgetStmt(ref_name, borrow_view_ty));
     }
 

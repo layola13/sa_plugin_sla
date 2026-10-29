@@ -42,6 +42,10 @@ pub const Lowerer = struct {
     /// program decls at the end of lowerProgram.
     slot_view_decls: std.array_list.Managed(*ast.Node) = undefined,
     slot_view_decls_ready: bool = false,
+    /// Synthesized String/Vec head-word helper fns by payload
+    /// type (see stringWordCall), declared through slot_view_decls.
+    word_fns: std.AutoHashMap(*ast.Type, []const u8) = undefined,
+    word_fns_ready: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, tc: *tc_mod.TypeChecker) Lowerer {
         return .{ .allocator = allocator, .tc = tc };
@@ -748,6 +752,56 @@ pub const Lowerer = struct {
         return payload_ty.* == .primitive or (payload_ty.* == .user_defined and self.tc.structs.get(payload_ty.user_defined.name) == null and self.tc.enums.get(payload_ty.user_defined.name) == null);
     }
 
+    fn payloadIsStringLike(self: *Lowerer, payload_ty: *ast.Type) bool {
+        _ = self;
+        if (payload_ty.* != .user_defined) return false;
+        return std.mem.eql(u8, payload_ty.user_defined.name, "String") or std.mem.eql(u8, payload_ty.user_defined.name, "Vec");
+    }
+
+    /// A call to a synthesized `fn __go_word_N(v: Payload) -> u64
+    /// { return v as u64; }` that reads a String/Vec payload's head
+    /// word through the canonical argument/parameter path (see the
+    /// send staging comment). The fn is registered with the
+    /// checker and queued for declaration in the program.
+    fn stringWordCall(self: *Lowerer, value_node: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
+        if (!self.word_fns_ready) {
+            self.word_fns = std.AutoHashMap(*ast.Type, []const u8).init(self.allocator);
+            self.word_fns_ready = true;
+        }
+        if (!self.slot_view_decls_ready) {
+            self.slot_view_decls = std.array_list.Managed(*ast.Node).init(self.allocator);
+            self.slot_view_decls_ready = true;
+        }
+        const fname = self.word_fns.get(payload_ty) orelse blk: {
+            const name = try self.freshName("__go_word_");
+            const param_ident = try self.identNode("v", payload_ty);
+            const cast = try self.newNode(.{ .cast_expr = .{ .expr = param_ident, .ty = try self.tyPrim(.u64) } });
+            self.registerType(cast, try self.tyPrim(.u64));
+            const ret = try self.newNode(.{ .return_stmt = .{ .value = cast } });
+            const body = try self.allocator.alloc(*ast.Node, 1);
+            body[0] = ret;
+            const params = try self.allocator.alloc(ast.Param, 1);
+            params[0] = .{ .name = "v", .ty = payload_ty };
+            const decl = try self.allocator.create(ast.FuncDecl);
+            decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = try self.tyPrim(.u64), .body = body };
+            try self.tc.funcs.put(name, decl);
+            try self.slot_view_decls.append(try self.newNode(.{ .func_decl = decl.* }));
+            try self.word_fns.put(payload_ty, name);
+            break :blk name;
+        };
+        const args = try self.allocator.alloc(*ast.Node, 1);
+        args[0] = value_node;
+        const call = try self.newNode(.{ .call_expr = .{
+            .func_name = fname,
+            .associated_target = null,
+            .generics = &.{},
+            .args = args,
+            .callee = null,
+        } });
+        self.registerType(call, try self.tyPrim(.u64));
+        return call;
+    }
+
     // --- channel operation emission ----------------------------------------
 
     fn emitMonitorCall(self: *Lowerer, call_node: *ast.Node, out: *std.array_list.Managed(*ast.Node)) LowerError!?*ast.Node {
@@ -814,20 +868,25 @@ pub const Lowerer = struct {
                 var value_node = call.args[1];
                 var value_ty = self.tc.expr_types.get(call.args[1]) orelse info.payload_ty;
                 if (self.payloadIsWord(info.payload_ty)) {
-                    // Stage the word through a fresh payload-typed
-                    // binding and copy from its home: a borrow of
-                    // the original binding yields the value itself
-                    // in the SAB codegen (so copying from it reads
-                    // the heap head's first word instead of the
-                    // head word), and reading the value into a u64
-                    // binding directly can pick up a stale register
-                    // for call-produced strings. A let-to-let copy
-                    // normalizes the binding into a clean home cell
-                    // whose first word is the head word.
+                    // Stage the head word through a plain u64
+                    // binding and copy from its home: a borrow of a
+                    // word-typed binding yields the value itself in
+                    // the SAB codegen, so copying from the original
+                    // binding would read the heap head's first word
+                    // instead of the head word. For String/Vec the
+                    // word is read through a synthesized helper fn
+                    // (stringWordCall): a direct scalar read of a
+                    // format-produced string local picks up a stale
+                    // register in the SAB codegen, while the fn
+                    // argument/parameter path is canonical.
+                    var word_expr = value_node;
+                    if (self.payloadIsStringLike(info.payload_ty)) {
+                        word_expr = try self.stringWordCall(value_node, info.payload_ty);
+                    }
                     const bind_name = try self.freshName("__svw_");
-                    try out.append(try self.letNode(bind_name, info.payload_ty, value_node));
-                    value_node = try self.identNode(bind_name, info.payload_ty);
-                    value_ty = info.payload_ty;
+                    try out.append(try self.letNode(bind_name, try self.tyPrim(.u64), word_expr));
+                    value_node = try self.identNode(bind_name, try self.tyPrim(.u64));
+                    value_ty = try self.tyPrim(.u64);
                 } else {
                     const is_place = switch (value_node.*) {
                         .identifier, .field_expr, .index_expr, .deref_expr => true,
@@ -1080,7 +1139,17 @@ pub const Lowerer = struct {
             try handle_names.append(h_name);
             if (info.kind == .send) {
                 const sv_name = try self.freshName("__sel_sv_");
-                try out.append(try self.letNode(sv_name, info.payload_ty, call.args[1]));
+                // Word payloads stage the head word in a u64
+                // binding, mirroring emitChanCall's send.
+                if (self.payloadIsWord(info.payload_ty)) {
+                    var word_expr = call.args[1];
+                    if (self.payloadIsStringLike(info.payload_ty)) {
+                        word_expr = try self.stringWordCall(word_expr, info.payload_ty);
+                    }
+                    try out.append(try self.letNode(sv_name, try self.tyPrim(.u64), word_expr));
+                } else {
+                    try out.append(try self.letNode(sv_name, info.payload_ty, call.args[1]));
+                }
                 try send_binds.append(sv_name);
             } else {
                 try send_binds.append(null);
@@ -1123,7 +1192,8 @@ pub const Lowerer = struct {
                 const info = self.tc.chan_calls.get(case.call) orelse return self.fail("internal: select case was not recorded by the checker", .{});
                 const size = try self.payloadSize(info.payload_ty);
                 const dst = try self.slotPtrArg(out, slots_name, slots_ty, 16 * i);
-                const src = try self.borrowNode(try self.identNode(sv_name, info.payload_ty), info.payload_ty);
+                const sv_ty = if (self.payloadIsWord(info.payload_ty)) try self.tyPrim(.u64) else info.payload_ty;
+                const src = try self.borrowNode(try self.identNode(sv_name, sv_ty), sv_ty);
                 try self.emitMemCopy(out, dst, src, size);
             }
         }

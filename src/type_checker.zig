@@ -186,6 +186,7 @@ pub const TypeChecker = struct {
     // type recorded at check time so the post-check lowering in
     // syntax_lowering.zig can materialize the entry argument.
     go_entry_types: std.AutoHashMap(*const ast.Node, *ast.Type),
+    monitor_calls: std.AutoHashMap(*const ast.Node, void),
     // Goroutine syntax batch (channels): every Chan::new call seen,
     // the subset validated by a Chan<T>-annotated let binding, the
     // payload type a let annotation supplied for a pending new call,
@@ -249,6 +250,7 @@ pub const TypeChecker = struct {
             .dyn_rc_coercions = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .fn_ptr_calls = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .go_entry_types = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
+            .monitor_calls = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .chan_new_seen = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .chan_new_validated = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .chan_new_pending = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
@@ -588,6 +590,7 @@ pub const TypeChecker = struct {
         self.dyn_rc_coercions.deinit();
         self.fn_ptr_calls.deinit();
         self.go_entry_types.deinit();
+        self.monitor_calls.deinit();
         self.chan_new_seen.deinit();
         self.chan_new_validated.deinit();
         self.chan_new_pending.deinit();
@@ -4303,6 +4306,23 @@ pub const TypeChecker = struct {
                 if (std.mem.eql(u8, call.func_name, "None") and call.associated_target == null) {
                     if (call.args.len != 0) return TypeError.InvalidArgsCount;
                     return try self.makeOptionType(try self.makeInferType());
+                }
+
+                if (std.mem.eql(u8, call.func_name, "monitor") and call.associated_target == null) {
+                    // Goroutine syntax batch: monitor(handle)
+                    // subscribes to a goroutine's exit and returns
+                    // the notification channel Chan<(u64, i32)>:
+                    // (watched handle, trap code; 0 = normal exit).
+                    if (call.args.len != 1) { self.setError("monitor(handle) expects exactly one argument: a goroutine handle (u64)", .{}); return TypeError.CompileError; }
+                    const h_ty = try self.checkExpr(call.args[0], scope);
+                    const h_base = lowering_rules.peelBorrowPointerType(h_ty);
+                    if (!(h_base.* == .primitive and h_base.primitive == .u64)) {
+                        self.setError("monitor(handle): the handle must be u64 (the value returned by `go`)", .{});
+                        return TypeError.CompileError;
+                    }
+                    const payload_ty = try self.makeTupleType(&.{ try self.makeU64Type(), try self.makeI32Type() });
+                    try self.monitor_calls.put(expr, {});
+                    return try self.makeChanType(payload_ty);
                 }
 
                 if (lowering_rules.isResultOkCall(call)) {

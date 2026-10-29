@@ -125,9 +125,15 @@ pub const Lowerer = struct {
             },
             .ret_ty = "i32",
         });
+        try self.ensureExtern(.{
+            .name = "sa_task_monitor",
+            .params = &.{
+                .{ .name = "handle", .ty = "u64", .is_borrow = false, .is_move = false },
+                .{ .name = "out_chan", .ty = "ptr", .is_borrow = true, .is_move = false },
+            },
+            .ret_ty = "i32",
+        });
     }
-
-    // --- entry point -----------------------------------------------------
 
     pub fn lowerProgram(self: *Lowerer, program: *ast.Node) LowerError!void {
         try self.ensureTaskExterns();
@@ -241,6 +247,9 @@ pub const Lowerer = struct {
             .call_expr => {
                 if (self.tc.chan_calls.get(expr)) |info| {
                     return try self.emitChanCall(expr, info, out);
+                }
+                if (self.tc.monitor_calls.contains(expr)) {
+                    return try self.emitMonitorCall(expr, out);
                 }
                 if (expr.call_expr.callee) |callee| {
                     expr.call_expr.callee = (try self.expandExpr(callee, out)) orelse return self.fail("channel operation with no value as a call target", .{});
@@ -658,6 +667,23 @@ pub const Lowerer = struct {
     }
 
     // --- channel operation emission ----------------------------------------
+
+    fn emitMonitorCall(self: *Lowerer, call_node: *ast.Node, out: *std.array_list.Managed(*ast.Node)) LowerError!?*ast.Node {
+        const call = call_node.call_expr;
+        const chan_ty = self.tc.expr_types.get(call_node) orelse return self.fail("internal: monitor call has no recorded type", .{});
+        const handle_arg = (try self.expandExpr(call.args[0], out)) orelse return self.fail("internal: monitor handle has no value", .{});
+        const chan_name = try self.freshName("__mon_ch_");
+        const rc_name = try self.freshName("__mon_rc_");
+        try out.append(try self.letNode(chan_name, try self.tyPrim(.u64), try self.intNode(0)));
+        const chan_ident = try self.identNode(chan_name, try self.tyPrim(.u64));
+        const args = try self.allocator.alloc(*ast.Node, 2);
+        args[0] = handle_arg;
+        args[1] = try self.borrowNode(chan_ident, try self.tyPrim(.u64));
+        const mon_call = try self.externCallNode("sa_task_monitor", args, try self.tyPrim(.i32));
+        try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), mon_call));
+        try self.emitRcCheck(out, rc_name, 60921);
+        return try self.identNode(chan_name, chan_ty);
+    }
 
     fn emitChanCall(self: *Lowerer, call_node: *ast.Node, info: tc_mod.ChanCallInfo, out: *std.array_list.Managed(*ast.Node)) LowerError!?*ast.Node {
         const call = call_node.call_expr;

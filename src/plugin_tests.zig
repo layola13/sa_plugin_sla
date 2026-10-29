@@ -7808,9 +7808,9 @@ test "sla checker rejects closure literal for extern ptr param" {
     const source =
         \\@import "spawn_like.sai"
         \\
-        \\@test "closure literal as extern entry"() {
+        \\fn spawn_it() -> i32 {
         \\    let dummy: u64 = 0;
-        \\    let rc: i32 = spawn_like(|a: ptr| a, &dummy);
+        \\    return spawn_like(|a: ptr| a, &dummy);
         \\}
     ;
     try tdir.writeFile(.{ .sub_path = "spawn_like.sai", .data = contract_source });

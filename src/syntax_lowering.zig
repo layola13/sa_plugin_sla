@@ -781,8 +781,8 @@ pub const Lowerer = struct {
                 }
                 return false;
             },
-            .tuple => |elems| {
-                for (elems) |elem| {
+            .tuple => |tt| {
+                for (tt.elems) |elem| {
                     if (self.payloadTransfersOwnership(elem)) return true;
                 }
                 return false;

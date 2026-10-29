@@ -46,10 +46,6 @@ pub const Lowerer = struct {
     /// type (see stringWordCall), declared through slot_view_decls.
     word_fns: std.AutoHashMap(*ast.Type, []const u8) = undefined,
     word_fns_ready: bool = false,
-    /// Synthesized slot-view load helper fns by payload type
-    /// (see loadWordCall), declared through slot_view_decls.
-    load_fns: std.AutoHashMap(*ast.Type, []const u8) = undefined,
-    load_fns_ready: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, tc: *tc_mod.TypeChecker) Lowerer {
         return .{ .allocator = allocator, .tc = tc };
@@ -1026,8 +1022,11 @@ pub const Lowerer = struct {
         const recv_call = try self.externCallNode("sa_chan_recv", args, try self.tyPrim(.i32));
         try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), recv_call));
         try self.emitRcCheck(out, rc_name, 60915);
-        const value_expr = try self.slotValueExpr(out, slot_name, slot_ty, info.payload_ty);
-        try out.append(try self.letNode(value_name, info.payload_ty, value_expr));
+        const sv = try self.slotValueForBinding(out, slot_name, slot_ty, info.payload_ty);
+        try out.append(try self.letNode(value_name, info.payload_ty, sv.expr));
+        if (sv.ref_name) |ref_name| {
+            try out.append(try self.forgetStmt(ref_name, sv.ref_ty.?));
+        }
         const closed_ident = try self.identNode(closed_name, try self.tyPrim(.u32));
         const closed_expr = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = closed_ident, .right = try self.intNode(0) } });
         self.registerType(closed_expr, try self.tyPrim(.boolean));
@@ -1064,8 +1063,44 @@ pub const Lowerer = struct {
         return try self.slotValueFromPtr(out, addr, payload_ty);
     }
 
+    const SlotValue = struct { expr: *ast.Node, ref_name: ?[]const u8, ref_ty: ?*ast.Type };
+
+    /// `mem::forget(<ident>);` — retires a binding in both
+    /// codegens with no drop emitted.
+    fn forgetStmt(self: *Lowerer, name: []const u8, ty: *ast.Type) LowerError!*ast.Node {
+        const args = try self.allocator.alloc(*ast.Node, 1);
+        args[0] = try self.identNode(name, ty);
+        const call = try self.newNode(.{ .call_expr = .{
+            .func_name = "forget",
+            .associated_target = "mem",
+            .generics = &.{},
+            .args = args,
+            .callee = null,
+        } });
+        self.registerType(call, try self.tyPrim(.void_type));
+        return try self.newNode(.{ .expr_stmt = call });
+    }
+
+    /// The receive-slot value for a statement-level binding,
+    /// addressed through a borrow of the slot (see slotValueExpr),
+    /// with the wrapper-view borrow's name so the caller can
+    /// retire it with mem::forget after the value binding: in the
+    /// SA-text codegen the borrow local otherwise stays live at
+    /// function exit (MemoryLeak trap), while the SAB cleanup
+    /// skips registers already marked consumed, so the explicit
+    /// forget is safe there.
+    fn slotValueForBinding(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slot_name: []const u8, slot_ty: *ast.Type, payload_ty: *ast.Type) LowerError!SlotValue {
+        const slot_ident = try self.identNode(slot_name, slot_ty);
+        const addr = try self.borrowNode(slot_ident, slot_ty);
+        return try self.slotValueFromPtrFull(out, addr, payload_ty);
+    }
+
     fn slotValueFromPtr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), ptr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
-        _ = out;
+        const sv = try self.slotValueFromPtrFull(out, ptr_expr, payload_ty);
+        return sv.expr;
+    }
+
+    fn slotValueFromPtrFull(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), ptr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!SlotValue {
         // Address-resident payloads (structs, tuples, enums,
         // arrays): the payload value IS the slot address in both
         // codegens' register model, so a plain value cast of the
@@ -1079,67 +1114,23 @@ pub const Lowerer = struct {
         if (!self.payloadIsWord(payload_ty)) {
             const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = payload_ty } });
             self.registerType(cast, payload_ty);
-            return cast;
+            return .{ .expr = cast, .ref_name = null, .ref_ty = null };
         }
-        // Word payloads load the head word through a synthesized
-        // helper fn: `__go_load_N(p: *Payload) -> Payload {
-        // return *p; }` called with the slot address cast to a
-        // payload pointer. Every shorter form strands a register
-        // in one codegen or the other: a direct field projection
-        // needs a borrow-typed let as its target (retired
-        // inconsistently by the two cleanups), a borrow argument
-        // to a user fn is not retired by the text codegen, and a
-        // cast stored into a let leaks its temp there. A by-value
-        // pointer parameter, a deref load, and a by-value call
-        // argument are retired deterministically in both.
-        const ptr_ty = try self.tyPtrTo(payload_ty);
-        const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = ptr_ty } });
-        self.registerType(cast, ptr_ty);
-        return try self.loadWordCall(cast, payload_ty);
-    }
-
-    /// A call to a synthesized `fn __go_load_N(p: *Payload)
-    /// -> Payload { return *p; }` (see slotValueFromPtr). The fn
-    /// is registered with the checker and queued for declaration
-    /// in the program like the identity fns.
-    fn loadWordCall(self: *Lowerer, addr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
-        if (!self.load_fns_ready) {
-            self.load_fns = std.AutoHashMap(*ast.Type, []const u8).init(self.allocator);
-            self.load_fns_ready = true;
-        }
-        if (!self.slot_view_decls_ready) {
-            self.slot_view_decls = std.array_list.Managed(*ast.Node).init(self.allocator);
-            self.slot_view_decls_ready = true;
-        }
-        const fname = self.load_fns.get(payload_ty) orelse blk: {
-            const name = try self.freshName("__go_load_");
-            const ptr_ty = try self.tyPtrTo(payload_ty);
-            const param_ident = try self.identNode("p", ptr_ty);
-            const deref = try self.newNode(.{ .deref_expr = .{ .expr = param_ident } });
-            self.registerType(deref, payload_ty);
-            const ret = try self.newNode(.{ .return_stmt = .{ .value = deref } });
-            const body = try self.allocator.alloc(*ast.Node, 1);
-            body[0] = ret;
-            const params = try self.allocator.alloc(ast.Param, 1);
-            params[0] = .{ .name = "p", .ty = ptr_ty };
-            const decl = try self.allocator.create(ast.FuncDecl);
-            decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = payload_ty, .body = body, .is_inline = false };
-            try self.tc.funcs.put(name, decl);
-            try self.slot_view_decls.append(try self.newNode(.{ .func_decl = decl.* }));
-            try self.load_fns.put(payload_ty, name);
-            break :blk name;
-        };
-        const args = try self.allocator.alloc(*ast.Node, 1);
-        args[0] = addr_expr;
-        const call = try self.newNode(.{ .call_expr = .{
-            .func_name = fname,
-            .associated_target = null,
-            .generics = &.{},
-            .args = args,
-            .callee = null,
-        } });
-        self.registerType(call, payload_ty);
-        return call;
+        const view_ty = try self.slotViewType(payload_ty);
+        const borrow_view_ty = try self.allocator.create(ast.Type);
+        borrow_view_ty.* = .{ .borrow = view_ty };
+        const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = borrow_view_ty } });
+        self.registerType(cast, borrow_view_ty);
+        // The projection target must be a plain identifier (a cast
+        // target is UnsupportedSabDirectFeature), so bind the
+        // borrow to a borrow-typed let first — its register holds
+        // the address as a value, like the select slot pointers.
+        const ref_name = try self.freshName("__rv_ref_");
+        try out.append(try self.letNode(ref_name, borrow_view_ty, cast));
+        const ref_ident = try self.identNode(ref_name, borrow_view_ty);
+        const field = try self.newNode(.{ .field_expr = .{ .expr = ref_ident, .field_name = "v" } });
+        self.registerType(field, payload_ty);
+        return .{ .expr = field, .ref_name = ref_name, .ref_ty = borrow_view_ty };
     }
 
     /// A synthesized one-field struct type `__go_slot_view_N { v: Payload }`
@@ -1324,8 +1315,14 @@ pub const Lowerer = struct {
                 // and no whole-var move (StackEscape on text).
                 if (case.bind_name) |bind_name| {
                     const slot_ptr = try self.slotPtrLet(&body, slots_name, slots_ty, 16 * i);
-                    const value_expr = try self.slotValueFromPtr(&body, slot_ptr, info.payload_ty);
-                    try body.append(try self.letNode(bind_name, info.payload_ty, value_expr));
+                    const sv = try self.slotValueFromPtrFull(&body, slot_ptr, info.payload_ty);
+                    try body.append(try self.letNode(bind_name, info.payload_ty, sv.expr));
+                    // Retire the view borrow like the plain recv
+                    // binding does (its register otherwise stays
+                    // live at fn exit in the text codegen).
+                    if (sv.ref_name) |ref_name| {
+                        try body.append(try self.forgetStmt(ref_name, sv.ref_ty.?));
+                    }
                 }
                 if (case.bind_closed) |bind_closed| {
                     const closed_ident = try self.identNode(closed_name, try self.tyPrim(.u32));

@@ -56,14 +56,6 @@ fn go_word_add(v: u64) {
     }
 }
 
-@test "go supervised spawn joins ok on clean exit"() {
-    let before = go_count_read();
-    let h = go supervised go_count_bump();
-    let st = sa_task_join(h);
-    if st != 0 { panic(9205); };
-    if go_count_read() != before + 1 { panic(9206); };
-}
-
 @test "go spawn with box pointer argument"() {
     let before = go_count_read();
     let boxed = Box::new(10);

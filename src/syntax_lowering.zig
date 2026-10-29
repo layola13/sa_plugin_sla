@@ -983,7 +983,8 @@ pub const Lowerer = struct {
                 // (the receiver owns the same heap object).
                 if (src_ident) |src_name| {
                     if (self.payloadTransfersOwnership(info.payload_ty)) {
-                        try out.append(try self.forgetStmt(src_name, info.payload_ty));
+                        _ = src_name;
+                        // BISECT: caller-side forget disabled.
                     }
                 }
                 return null;

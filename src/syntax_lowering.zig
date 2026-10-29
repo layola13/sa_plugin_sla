@@ -789,7 +789,10 @@ pub const Lowerer = struct {
             const body = try self.allocator.alloc(*ast.Node, 1);
             body[0] = ret;
             const params = try self.allocator.alloc(ast.Param, 1);
-            params[0] = .{ .name = "v", .ty = payload_ty };
+            // is_move: the helper consumes the payload, so the
+            // caller's binding is not dropped a second time after
+            // the send transferred ownership to the channel.
+            params[0] = .{ .name = "v", .ty = payload_ty, .is_move = true };
             const decl = try self.allocator.create(ast.FuncDecl);
             decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = try self.tyPrim(.raw_ptr), .body = body, .is_inline = false };
             try self.tc.funcs.put(name, decl);

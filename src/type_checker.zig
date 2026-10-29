@@ -915,6 +915,14 @@ pub const TypeChecker = struct {
             },
             .user_defined => |ud| {
                 if (self.structs.get(ud.name)) |decl| return lowering_rules.structAbiSize(decl);
+                // Builtin handle types with no struct declaration:
+                // the storage size is the inline ABI value size —
+                // String is a {ptr, len} pair (16), Vec a
+                // {ptr, len, cap} triple (24, which the C1 rule
+                // then rejects for the 16-byte slot); other opaque
+                // handles (Chan, Box, Rc, ...) are one word.
+                if (std.mem.eql(u8, ud.name, "String")) return 16;
+                if (std.mem.eql(u8, ud.name, "Vec")) return 24;
                 if (self.enums.get(ud.name)) |decl| {
                     var max_span: usize = 0;
                     for (decl.variants) |variant| {

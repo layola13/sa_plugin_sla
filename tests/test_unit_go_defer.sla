@@ -36,8 +36,10 @@ fn order_fn() {
 @test "defer runs lifo at block exits"() {
     dlog_reset();
     order_fn();
-    // execution: 4 (statement), 3 (inner block), 2, 1 (lifo)
-    if dlog_read() != 4321 { panic(9605); };
+    // execution: 3 (inner block exit, before the next statement),
+    // 4 (statement), 2, 1 (fn exit, lifo) — block-scoped defers run
+    // at their own block's exit (DESIGN section 5).
+    if dlog_read() != 3421 { panic(9605); };
 }
 
 fn snapshot_fn() {

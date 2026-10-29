@@ -199,6 +199,10 @@ pub const TypeChecker = struct {
     resolved_call_symbols: std.AutoHashMap(*const ast.Node, []const u8),
     resolved_call_alias_metadata: std.AutoHashMap(*const ast.Node, FunctionAliasMetadata),
     current_function_name: ?[]const u8,
+    // Goroutine syntax batch R2: whether the function body
+    // currently being checked is async (shallow: reset inside
+    // closure bodies and test bodies).
+    current_fn_is_async: bool,
     current_function_namespace: ?[]const u8,
     current_loop_scope: ?*Scope,
     current_loop_body_terminates: bool,
@@ -259,6 +263,7 @@ pub const TypeChecker = struct {
             .resolved_call_symbols = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .resolved_call_alias_metadata = std.AutoHashMap(*const ast.Node, FunctionAliasMetadata).init(allocator),
             .current_function_name = null,
+            .current_fn_is_async = false,
             .current_function_namespace = null,
             .current_loop_scope = null,
             .current_loop_body_terminates = false,
@@ -965,6 +970,14 @@ pub const TypeChecker = struct {
             .cap
         else
             return null;
+        // Effect rule R2: send/recv are blocking operations; used
+        // directly in an async function body they would park the
+        // executor. Non-blocking alternatives (select with a
+        // default/timeout) and the non-blocking ops stay legal.
+        if (self.current_fn_is_async and (kind == .send or kind == .recv)) {
+            self.setError("async: blocking channel {s} directly inside async function `{s}` is forbidden (it would park the executor); use a select with default/timeout, or move the channel work into a synchronous goroutine", .{ call.func_name, self.current_function_name orelse "?" });
+            return TypeError.TypeMismatch;
+        }
         switch (kind) {
             .send => {
                 if (call.args.len != 2) return TypeError.InvalidArgsCount;
@@ -1034,6 +1047,10 @@ pub const TypeChecker = struct {
         }
         if (sel.default_body != null and sel.timeout_expr != null) {
             self.setError("select cannot have both a default case and a timeout case", .{});
+            return TypeError.TypeMismatch;
+        }
+        if (self.current_fn_is_async and sel.default_body == null and sel.timeout_expr == null) {
+            self.setError("async: blocking select (no default or timeout case) directly inside async function `{s}` is forbidden (it would park the executor)", .{self.current_function_name orelse "?"});
             return TypeError.TypeMismatch;
         }
         for (sel.cases) |case| {
@@ -1367,6 +1384,11 @@ pub const TypeChecker = struct {
     }
 
     fn typeIsCopy(self: *TypeChecker, ty: *ast.Type) bool {
+        // Goroutine syntax batch: a Chan<T> value is a runtime
+        // handle word (u64) — copyable like Go's channels; lifetime
+        // is managed by the explicit destroy() operation, not by
+        // ownership transfer.
+        if (ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "Chan")) return true;
         // Use derive base (not full Copy-value base) so fn_ptr stays non-Copy in
         // typecheck, matching the pre-share behavior.
         if (lowering_rules.typeHasCopyDeriveBase(ty)) |decision| return decision;
@@ -1395,6 +1417,7 @@ pub const TypeChecker = struct {
     // consumes exactly those by-value identifier arguments that the SA
     // lowering actually moves without preserving the source binding.
     fn typeIsCopyValue(self: *TypeChecker, ty: *const ast.Type) bool {
+        if (ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "Chan")) return true;
         if (lowering_rules.typeIsCopyValueBase(ty)) |decision| return decision;
         return switch (ty.*) {
             .user_defined => self.typeHasCopyDerive(ty),
@@ -1617,6 +1640,12 @@ pub const TypeChecker = struct {
             try param_types.append(ctx_ty);
         }
 
+        // R2 is shallow ("directly in an async body"): a closure
+        // body is a separate body, so the async-blocking rule
+        // resets across this boundary.
+        const previous_fn_is_async = self.current_fn_is_async;
+        self.current_fn_is_async = false;
+        defer self.current_fn_is_async = previous_fn_is_async;
         const ret_ty = try self.checkExpr(lit.body, closure_scope);
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .closure = .{ .params = try param_types.toOwnedSlice(), .ret = ret_ty } };
@@ -3103,6 +3132,9 @@ pub const TypeChecker = struct {
     }
 
     fn checkTest(self: *TypeChecker, test_decl: *ast.TestDecl) !void {
+        const previous_fn_is_async = self.current_fn_is_async;
+        self.current_fn_is_async = false;
+        defer self.current_fn_is_async = previous_fn_is_async;
         var scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
 
@@ -3127,6 +3159,10 @@ pub const TypeChecker = struct {
         const previous_name = self.current_function_name;
         self.current_function_name = func.name;
         defer self.current_function_name = previous_name;
+
+        const previous_fn_is_async = self.current_fn_is_async;
+        self.current_fn_is_async = func.is_async;
+        defer self.current_fn_is_async = previous_fn_is_async;
 
         const previous_namespace = self.current_function_namespace;
         self.current_function_namespace = if (self.resolveFunctionAliasMetadata(func.name)) |metadata| metadata.namespace else null;
@@ -4268,6 +4304,11 @@ pub const TypeChecker = struct {
                     try param_types.append(p.ty);
                 }
 
+                // R2 resets across closure bodies (see
+                // checkClosureLiteralWithContext).
+                const previous_fn_is_async = self.current_fn_is_async;
+                self.current_fn_is_async = false;
+                defer self.current_fn_is_async = previous_fn_is_async;
                 const ret_ty = try self.checkExpr(lit.body, closure_scope);
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .closure = .{ .params = try param_types.toOwnedSlice(), .ret = ret_ty } };

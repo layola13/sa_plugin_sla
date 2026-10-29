@@ -831,7 +831,7 @@ pub const Lowerer = struct {
                 const closed_expr = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = closed_ident, .right = try self.intNode(0) } });
                 self.registerType(closed_expr, try self.tyPrim(.boolean));
                 const tuple_elems = try self.allocator.alloc(*ast.Node, 2);
-                tuple_elems[0] = try self.slotValueExpr(out, slot_name, slot_ty, info.payload_ty);
+                tuple_elems[0] = try self.slotValueExpr(slot_name, slot_ty, info.payload_ty);
                 tuple_elems[1] = closed_expr;
                 const tuple_node = try self.newNode(.{ .tuple_literal = .{ .elements = tuple_elems } });
                 const tuple_elem_tys = try self.allocator.alloc(*ast.Type, 2);
@@ -897,7 +897,7 @@ pub const Lowerer = struct {
         const recv_call = try self.externCallNode("sa_chan_recv", args, try self.tyPrim(.i32));
         try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), recv_call));
         try self.emitRcCheck(out, rc_name, 60915);
-        const value_expr = try self.slotValueExpr(out, slot_name, slot_ty, info.payload_ty);
+        const value_expr = try self.slotValueExpr(slot_name, slot_ty, info.payload_ty);
         try out.append(try self.letNode(value_name, info.payload_ty, value_expr));
         const closed_ident = try self.identNode(closed_name, try self.tyPrim(.u32));
         const closed_expr = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = closed_ident, .right = try self.intNode(0) } });
@@ -906,37 +906,38 @@ pub const Lowerer = struct {
     }
 
     /// The received payload as a value expression: the slot bytes
-    /// reinterpreted as a one-element array value and projected
-    /// out, `(&((slot as [Payload; 1])))[0]`. The detour through a
-    /// value cast plus a borrow matters: an array value is a cell
-    /// holding a pointer to the element storage, and the index
-    /// projection loads that pointer and reads through it. Every
+    /// reinterpreted as the first element of a (Payload, bool)
+    /// tuple viewed through a borrow, `(slot as &(Payload, bool)).0`.
+    /// Field projection through a borrow is an address computation
+    /// in both codegens: an aggregate payload takes the slot
+    /// address as its value, a scalar loads through it, and a
+    /// String recovers the address of its {ptr, len} pair. Every
     /// shorter form miscompiles somewhere — a payload var_stmt is
-    /// scalar-only in the checker and misallocated by the SAB var
-    /// path, a synthetic tuple value segfaults in SAB destructure,
-    /// `*p` on an aggregate segfaults in both backends at base,
-    /// and borrowing the slot array directly makes the projection
-    /// load the payload's first word as the element address (the
-    /// repeat-literal slot binding holds the storage address
-    /// itself, not a cell).
-    fn slotValueExpr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slot_name: []const u8, slot_ty: *ast.Type, payload_ty: *ast.Type) LowerError!*ast.Node {
+    /// scalar-only in the checker and its SAB path allocates an
+    /// 8-byte pointer cell that a 16-byte copy overflows, a
+    /// synthetic tuple VALUE segfaults in SAB destructure (its
+    /// aggregate element is loaded through an uninitialized spill
+    /// slot), `*p` on an aggregate segfaults in both backends at
+    /// base, and an index projection loads the payload's first
+    /// word as the element address (array values are pointer
+    /// cells; the slot is raw storage, not a cell).
+    fn slotValueExpr(self: *Lowerer, slot_name: []const u8, slot_ty: *ast.Type, payload_ty: *ast.Type) LowerError!*ast.Node {
         const slot_ident = try self.identNode(slot_name, slot_ty);
-        return try self.slotValueFromPtr(out, slot_ident, payload_ty);
+        return try self.slotValueFromPtr(slot_ident, payload_ty);
     }
 
-    fn slotValueFromPtr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), ptr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
-        const arr_ty = try self.tyArrayOf(payload_ty, 1);
-        const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = arr_ty } });
-        self.registerType(cast, arr_ty);
-        const borrow_arr_ty = try self.allocator.create(ast.Type);
-        borrow_arr_ty.* = .{ .borrow = arr_ty };
-        const borrow = try self.borrowNode(cast, arr_ty);
-        const ref_name = try self.freshName("__rv_ref_");
-        try out.append(try self.letNode(ref_name, borrow_arr_ty, borrow));
-        const ref_ident = try self.identNode(ref_name, borrow_arr_ty);
-        const index = try self.newNode(.{ .index_expr = .{ .target = ref_ident, .index = try self.intNode(0) } });
-        self.registerType(index, payload_ty);
-        return index;
+    fn slotValueFromPtr(self: *Lowerer, ptr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
+        const tuple_elem_tys = try self.allocator.alloc(*ast.Type, 2);
+        tuple_elem_tys[0] = payload_ty;
+        tuple_elem_tys[1] = try self.tyPrim(.boolean);
+        const tuple_ty = try self.tyTupleOf(tuple_elem_tys);
+        const borrow_tuple_ty = try self.allocator.create(ast.Type);
+        borrow_tuple_ty.* = .{ .borrow = tuple_ty };
+        const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = borrow_tuple_ty } });
+        self.registerType(cast, borrow_tuple_ty);
+        const field = try self.newNode(.{ .field_expr = .{ .expr = cast, .field_name = "0" } });
+        self.registerType(field, payload_ty);
+        return field;
     }
 
     // --- select emission -----------------------------------------------------
@@ -1084,7 +1085,7 @@ pub const Lowerer = struct {
                 // and no whole-var move (StackEscape on text).
                 if (case.bind_name) |bind_name| {
                     const slot_ptr = try self.slotPtrLet(&body, slots_name, slots_ty, 16 * i);
-                    const value_expr = try self.slotValueFromPtr(&body, slot_ptr, info.payload_ty);
+                    const value_expr = try self.slotValueFromPtr(slot_ptr, info.payload_ty);
                     try body.append(try self.letNode(bind_name, info.payload_ty, value_expr));
                 }
                 if (case.bind_closed) |bind_closed| {

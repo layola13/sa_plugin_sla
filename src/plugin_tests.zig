@@ -7720,6 +7720,124 @@ test "sla sab backend lowers function pointers directly" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab fn value materializes callable address for extern ptr param" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_fn_ptr_extern.sla",
+        ".sla-cache/sab/fn_ptr_extern.sab",
+        stderr_fw.writer(),
+        .{ .test_filter = "fn name passed directly to extern ptr param" },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    // The fn value's bits are the SLA_FNPTR_VT_fp_ext_worker_a address;
+    // the extern argument must be the callable address loaded out of
+    // vtable slot 0, detached from the vtable's interior-pointer state
+    // by a ptr bitcast before the call. Before the fix the vtable bits
+    // were passed directly (no slot-0 load, no bitcast).
+    var saw_fnptr_vtable = false;
+    var saw_load = false;
+    var saw_ptr_bitcast = false;
+    var saw_call = false;
+    for (module.const_decls) |decl| {
+        if (std.mem.eql(u8, decl.name, "SLA_FNPTR_VT_fp_ext_worker_a") and decl.value == .vtable) {
+            saw_fnptr_vtable = true;
+        }
+    }
+    for (module.instructions) |item| {
+        if (item.kind == .load) saw_load = true;
+        if (item.kind == .op and item.op_kind == .bitcast) saw_ptr_bitcast = true;
+        if (item.kind == .call) saw_call = true;
+    }
+    try std.testing.expect(saw_fnptr_vtable);
+    try std.testing.expect(saw_load);
+    try std.testing.expect(saw_ptr_bitcast);
+    try std.testing.expect(saw_call);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla text fn value materializes callable address for extern ptr param" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sa_text = (try compileSlaToSaString(
+        arena.allocator(),
+        "tests/test_unit_fn_ptr_extern.sla",
+        null,
+        stderr_fw.writer(),
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    // Slot-0 load of the vtable, and the extern call carrying the SA
+    // raw-capability (`*`) prefix the `*entry` contract requires.
+    try std.testing.expect(std.mem.indexOf(u8, sa_text, "+0 as ptr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_text, "call @pthread_spawn_detached(*") != null);
+    try stderr_fw.writer().flush();
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla checker rejects closure literal for extern ptr param" {
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    const contract_source =
+        \\@extern spawn_like(*entry: ptr, *arg: ptr) -> i32
+    ;
+    const source =
+        \\@import "spawn_like.sai"
+        \\
+        \\@test "closure literal as extern entry"() {
+        \\    let dummy: u64 = 0;
+        \\    let rc: i32 = spawn_like(|a: ptr| a, &dummy);
+        \\}
+    ;
+    try tdir.writeFile(.{ .sub_path = "spawn_like.sai", .data = contract_source });
+    try tdir.writeFile(.{ .sub_path = "closure_extern.sla", .data = source });
+
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    // A closure has no callable trampoline address: the checker must
+    // reject it explicitly instead of letting a wrong value through.
+    const sa_text = try compileSlaToSaString(
+        arena.allocator(),
+        "closure_extern.sla",
+        null,
+        stderr_fw.writer(),
+    );
+    try std.testing.expect(sa_text == null);
+    try stderr_fw.writer().flush();
+    try std.testing.expect(std.mem.indexOf(u8, stderr_buf.items, "no callable trampoline address") != null);
+}
+
 test "sla sab backend lowers escaped thread closure function pointer callee directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

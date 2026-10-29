@@ -1082,27 +1082,27 @@ pub const Lowerer = struct {
             return cast;
         }
         // Word payloads load the head word through a synthesized
-        // helper fn: `__go_load_N(p: &View) -> Payload { return
-        // p.v; }` called with the slot address cast to the view
-        // borrow. A direct field projection needs a borrow-typed
-        // let as its target, and that let's register is retired
-        // inconsistently by the two codegens' cleanups (live at
-        // fn exit in both, in different positions); a call
-        // argument temp and a borrow parameter are retired
-        // deterministically in both.
-        const view_ty = try self.slotViewType(payload_ty);
-        const borrow_view_ty = try self.allocator.create(ast.Type);
-        borrow_view_ty.* = .{ .borrow = view_ty };
-        const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = borrow_view_ty } });
-        self.registerType(cast, borrow_view_ty);
-        return try self.loadWordCall(cast, borrow_view_ty, payload_ty);
+        // helper fn: `__go_load_N(p: *Payload) -> Payload {
+        // return *p; }` called with the slot address cast to a
+        // payload pointer. Every shorter form strands a register
+        // in one codegen or the other: a direct field projection
+        // needs a borrow-typed let as its target (retired
+        // inconsistently by the two cleanups), a borrow argument
+        // to a user fn is not retired by the text codegen, and a
+        // cast stored into a let leaks its temp there. A by-value
+        // pointer parameter, a deref load, and a by-value call
+        // argument are retired deterministically in both.
+        const ptr_ty = try self.tyPtrTo(payload_ty);
+        const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = ptr_ty } });
+        self.registerType(cast, ptr_ty);
+        return try self.loadWordCall(cast, payload_ty);
     }
 
-    /// A call to a synthesized `fn __go_load_N(p: &__go_slot_view_M)
-    /// -> Payload { return p.v; }` (see slotValueFromPtr). The fn
+    /// A call to a synthesized `fn __go_load_N(p: *Payload)
+    /// -> Payload { return *p; }` (see slotValueFromPtr). The fn
     /// is registered with the checker and queued for declaration
     /// in the program like the identity fns.
-    fn loadWordCall(self: *Lowerer, addr_expr: *ast.Node, borrow_view_ty: *ast.Type, payload_ty: *ast.Type) LowerError!*ast.Node {
+    fn loadWordCall(self: *Lowerer, addr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
         if (!self.load_fns_ready) {
             self.load_fns = std.AutoHashMap(*ast.Type, []const u8).init(self.allocator);
             self.load_fns_ready = true;
@@ -1113,14 +1113,15 @@ pub const Lowerer = struct {
         }
         const fname = self.load_fns.get(payload_ty) orelse blk: {
             const name = try self.freshName("__go_load_");
-            const param_ident = try self.identNode("p", borrow_view_ty);
-            const field = try self.newNode(.{ .field_expr = .{ .expr = param_ident, .field_name = "v" } });
-            self.registerType(field, payload_ty);
-            const ret = try self.newNode(.{ .return_stmt = .{ .value = field } });
+            const ptr_ty = try self.tyPtrTo(payload_ty);
+            const param_ident = try self.identNode("p", ptr_ty);
+            const deref = try self.newNode(.{ .deref_expr = .{ .expr = param_ident } });
+            self.registerType(deref, payload_ty);
+            const ret = try self.newNode(.{ .return_stmt = .{ .value = deref } });
             const body = try self.allocator.alloc(*ast.Node, 1);
             body[0] = ret;
             const params = try self.allocator.alloc(ast.Param, 1);
-            params[0] = .{ .name = "p", .ty = borrow_view_ty, .is_borrow = true };
+            params[0] = .{ .name = "p", .ty = ptr_ty };
             const decl = try self.allocator.create(ast.FuncDecl);
             decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = payload_ty, .body = body, .is_inline = false };
             try self.tc.funcs.put(name, decl);

@@ -942,14 +942,17 @@ pub const Lowerer = struct {
 
     fn slotValueFromPtr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), ptr_expr: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
         // Address-resident payloads (structs, tuples, enums,
-        // arrays, String, Chan, and other user-defined handles):
-        // the payload value IS the slot address in both codegens'
-        // register model, so a plain value cast of the slot
-        // address is the binding — no load, no projection (a
+        // arrays): the payload value IS the slot address in both
+        // codegens' register model, so a plain value cast of the
+        // slot address is the binding — no load, no projection (a
         // projection would read the first payload word as an
         // address, since aggregate storage holds raw field words,
-        // not a pointer to them).
-        if (payload_ty.* != .primitive) {
+        // not a pointer to them). Word payloads — primitives and
+        // decl-less handle types (String, Vec, Chan, Box, ...),
+        // whose register holds the head word itself — take the
+        // load path below instead.
+        const is_word = payload_ty.* == .primitive or (payload_ty.* == .user_defined and self.tc.structs.get(payload_ty.user_defined.name) == null and self.tc.enums.get(payload_ty.user_defined.name) == null);
+        if (!is_word) {
             const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = payload_ty } });
             self.registerType(cast, payload_ty);
             return cast;

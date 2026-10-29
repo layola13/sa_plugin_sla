@@ -7929,12 +7929,15 @@ test "sla sab backend lowers imported std surface metadata directly" {
 
     var saw_vec_push = false;
     var saw_vec_new = false;
-    var saw_unrelated_vec_free = false;
+    // F-perf-2 designed semantics: the owned Vec local in this corpus is
+    // deep-released via @sa_vec_free at scope exit, so sa_vec_free is an
+    // expected (related) symbol here, not an unrelated dependency.
+    var saw_vec_free = false;
     var saw_call_indirect = false;
     for (module.function_sigs) |fsig| {
         if (std.mem.eql(u8, fsig.name, "sa_vec_push")) saw_vec_push = true;
         if (std.mem.eql(u8, fsig.name, "sa_vec_new")) saw_vec_new = true;
-        if (std.mem.eql(u8, fsig.name, "sa_vec_free")) saw_unrelated_vec_free = true;
+        if (std.mem.eql(u8, fsig.name, "sa_vec_free")) saw_vec_free = true;
     }
     for (module.instructions) |item| {
         try std.testing.expectEqualStrings("", item.raw_text);
@@ -7942,7 +7945,7 @@ test "sla sab backend lowers imported std surface metadata directly" {
     }
     try std.testing.expect(saw_vec_push);
     try std.testing.expect(saw_vec_new);
-    try std.testing.expect(!saw_unrelated_vec_free);
+    try std.testing.expect(saw_vec_free);
     try std.testing.expect(saw_call_indirect);
     try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);

@@ -3160,6 +3160,7 @@ pub const CallArgMaterializationKind = enum {
     copy_struct_value,
     generated_fn_ptr_value_slot,
     borrow_local_fn_ptr_value,
+    extern_fn_ptr_address,
     shallow_copy_preserved_value,
     value,
 };
@@ -3215,6 +3216,9 @@ pub const CallArgMaterializationPlan = struct {
     }
     pub fn isBorrowLocalFnPtrValue(self: CallArgMaterializationPlan) bool {
         return self.kind == .borrow_local_fn_ptr_value;
+    }
+    pub fn isExternFnPtrAddress(self: CallArgMaterializationPlan) bool {
+        return self.kind == .extern_fn_ptr_address;
     }
     pub fn isShallowCopyPreservedValue(self: CallArgMaterializationPlan) bool {
         return self.kind == .shallow_copy_preserved_value;
@@ -6456,10 +6460,39 @@ pub fn shallowCopyCallArgFieldShouldRecurse(
     return true;
 }
 
+/// Fn-typed argument bound for a by-value raw-pointer parameter. An SLA fn
+/// value's bits are the address of its `SLA_FNPTR_VT_<fn>` vtable, whose
+/// slot 0 holds the callable machine address — the vtable bits themselves
+/// are data, not code, so passing them to a native callee that invokes the
+/// pointer crashes. The only checker-legal pairing of an fn-typed argument
+/// with a raw-pointer parameter is an extern (FFI) call: the checker
+/// bypasses signature checks for externs, while SLA callees reject the
+/// fn-vs-ptr mismatch, so this shape needs no separate "callee is extern"
+/// fact. Closure literals are excluded — a closure has no callable
+/// trampoline address (its invocation needs the capture pointer), and the
+/// checker rejects them for extern pointer parameters explicitly.
+pub fn callArgIsExternFnPtrAddress(
+    arg: *const ast.Node,
+    param: ?ast.Param,
+    arg_ty_is_fn_ptr: bool,
+) bool {
+    const target = param orelse return false;
+    if (!byValueRawPointerParam(target)) return false;
+    if (!arg_ty_is_fn_ptr) return false;
+    const root = switch (arg.*) {
+        .move_expr => |mv| mv.expr,
+        else => arg,
+    };
+    return root.* != .closure_literal;
+}
+
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
     if (input.param) |param| {
         if (callArgUsesRawPointerStringLiteralValue(arg, param)) {
             return .{ .kind = .raw_pointer_string_literal, .release_after_call = true };
+        }
+        if (callArgIsExternFnPtrAddress(arg, param, if (input.arg_ty) |ty| ty.* == .fn_ptr else false)) {
+            return .{ .kind = .extern_fn_ptr_address, .release_after_call = false };
         }
     }
     if (input.array_to_slice_borrow) {

@@ -5,6 +5,10 @@ pub const Param = struct {
     ty: []const u8,
     is_borrow: bool,
     is_move: bool,
+    /// The `.sai` declaration marked this parameter with a `*` prefix
+    /// (e.g. `*entry: ptr`): the SA contract capability for it is `.raw`,
+    /// so SA-text call sites must pass the argument with a `*` prefix.
+    is_raw: bool = false,
 };
 
 pub const ExternalFunction = struct {
@@ -106,6 +110,7 @@ pub const ContractParser = struct {
 
             var is_borrow = false;
             var is_move = false;
+            var is_raw = false;
             var p_name = p_name_raw;
 
             if (std.mem.startsWith(u8, p_name, "&")) {
@@ -114,6 +119,9 @@ pub const ContractParser = struct {
             } else if (std.mem.startsWith(u8, p_name, "^")) {
                 is_move = true;
                 p_name = p_name[1..];
+            } else if (std.mem.startsWith(u8, p_name, "*")) {
+                is_raw = true;
+                p_name = p_name[1..];
             }
 
             try params.append(.{
@@ -121,6 +129,7 @@ pub const ContractParser = struct {
                 .ty = p_ty,
                 .is_borrow = is_borrow,
                 .is_move = is_move,
+                .is_raw = is_raw,
             });
         }
 

@@ -3537,6 +3537,17 @@ pub const TypeChecker = struct {
                 if (isPointerCarrierCastType(src_ty) and isPointerCarrierCastType(cast.ty)) {
                     return cast.ty;
                 }
+                // Fn values may be cast to a raw pointer or a pointer-sized
+                // integer: the cast materializes the callable machine
+                // address from vtable slot 0 (see the fn-pointer-to-extern
+                // materialization in lowering_rules). The reverse direction
+                // (integer/pointer -> fn) stays rejected: fn values cannot
+                // be fabricated.
+                if (src_ty.* == .fn_ptr and cast.ty.* == .primitive and
+                    (cast.ty.primitive == .raw_ptr or cast.ty.primitive == .u64 or cast.ty.primitive == .usize))
+                {
+                    return cast.ty;
+                }
                 if (src_ty.* == .infer) return cast.ty;
                 if (!isNumericType(src_ty) or !isNumericType(cast.ty)) {
                     self.setError("unsupported cast: only numeric primitive casts are currently allowed", .{});
@@ -5243,7 +5254,29 @@ pub const TypeChecker = struct {
                     if (ext.params.len != call.args.len) return TypeError.InvalidArgsCount;
                     for (ext.params, call.args) |param, arg| {
                         const arg_ty = try self.checkExpr(arg, scope);
-                        _ = arg_ty; // bypass signature checks for FFI pointers
+                        // bypass signature checks for FFI pointers
+                        // Fn values bound for a by-value pointer parameter
+                        // are materialized as callable machine addresses by
+                        // the emitters — except closures, which have no
+                        // trampoline address: invoking a closure needs its
+                        // capture pointer, which an arbitrary extern
+                        // `fn(ptr)` parameter cannot carry. A closure
+                        // argument's checked type is `.closure` (literals
+                        // and closure-typed bindings alike); reject it
+                        // explicitly instead of passing a wrong value.
+                        if (!param.is_borrow and !param.is_move and
+                            std.mem.eql(u8, std.mem.trim(u8, param.ty, " \t\r"), "ptr") and
+                            (arg_ty.* == .closure or (arg_ty.* == .fn_ptr and blk: {
+                                const root = switch (arg.*) {
+                                    .move_expr => |mv| mv.expr,
+                                    else => arg,
+                                };
+                                break :blk root.* == .closure_literal;
+                            })))
+                        {
+                            self.setError("cannot pass a closure to extern parameter `{s}` of `{s}`: a closure has no callable trampoline address (its invocation needs the capture pointer); pass a top-level named function instead", .{ param.name, call.func_name });
+                            return TypeError.TypeMismatch;
+                        }
                         try self.consumeExternMoveArg(scope, param, arg);
                     }
                     const ret = try self.allocator.create(ast.Type);

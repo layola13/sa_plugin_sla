@@ -2257,6 +2257,7 @@ pub const Codegen = struct {
             const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
                 .borrow => try self.abiPrefixedArg('&', lowered_arg.reg),
                 .move => try self.abiPrefixedArg('^', lowered_arg.reg),
+                .raw => try self.abiRawPrefixedArg(lowered_arg.reg),
                 .none => lowered_arg.reg,
             } else lowered_arg.reg;
             arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
@@ -2315,6 +2316,7 @@ pub const Codegen = struct {
             const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
                 .borrow => try self.abiPrefixedArg('&', lowered_arg.reg),
                 .move => try self.abiPrefixedArg('^', lowered_arg.reg),
+                .raw => try self.abiRawPrefixedArg(lowered_arg.reg),
                 .none => lowered_arg.reg,
             } else lowered_arg.reg;
             arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
@@ -2731,14 +2733,29 @@ pub const Codegen = struct {
         none,
         borrow,
         move,
+        raw,
     };
 
     fn abiCallArgPrefix(param: contract_parser.Param) AbiCallArgPrefix {
+        if (param.is_raw) return .raw;
         return switch (lowering_rules.abiCallArgCapKind(param.is_borrow, param.is_move)) {
             .borrow => .borrow,
             .move => .move,
             .none, .raw => .none,
         };
+    }
+
+    /// Prefix a lowered argument for a `.raw`-capability (`*`-marked)
+    /// extern parameter. The register carrying the pointer value stays
+    /// the same; only the capability annotation changes — a borrow/move
+    /// annotation on the operand is replaced by the raw `*` annotation
+    /// the SA contract expects (compare the `*%out_ptr` call-site form
+    /// in sa_std's own SA macros).
+    fn abiRawPrefixedArg(self: *Codegen, reg: []const u8) CodegenError![]const u8 {
+        if (reg.len != 0 and (reg[0] == '&' or reg[0] == '^')) {
+            return std.fmt.allocPrint(self.allocator, "*{s}", .{reg[1..]}) catch return CodegenError.OutOfMemory;
+        }
+        return try self.abiPrefixedArg('*', reg);
     }
 
     fn externPtrParamAsAstParam(self: *Codegen, param: contract_parser.Param) CodegenError!?ast.Param {
@@ -10245,6 +10262,28 @@ pub const Codegen = struct {
                 const moved_copy = std.fmt.allocPrint(self.allocator, "^{s}", .{copied}) catch return CodegenError.OutOfMemory;
                 break :blk .{ .reg = moved_copy, .release_after_call = false };
             };
+        } else if (materialization.isExternFnPtrAddress()) {
+            return blk: {
+                // Extern by-value raw-pointer parameter receiving an fn
+                // value: the fn value's bits are a vtable address (data),
+                // while the native callee invokes the pointer as code. The
+                // callable machine address lives in vtable slot 0 — load it
+                // and pass the loaded address as a plain temporary. The
+                // `as ptr` cast detaches the loaded value from the
+                // vtable's interior-pointer state (a load through the
+                // vtable borrow is InteriorPtr, which may not cross an
+                // FFI boundary).
+                const vt_reg = try self.genExpr(arg, hoisted_allocs);
+                const loaded_reg = try self.newTmp();
+                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ loaded_reg, vt_reg }) catch return CodegenError.CodegenError;
+                if (self.callArgResultTempNeedsRelease(arg, vt_reg)) {
+                    try self.emitRelease(vt_reg);
+                }
+                const addr_reg = try self.newTmp();
+                self.outPrint("    {s} = {s} as ptr\n", .{ addr_reg, loaded_reg }) catch return CodegenError.CodegenError;
+                try self.emitRelease(loaded_reg);
+                break :blk .{ .reg = addr_reg, .release_after_call = true };
+            };
         } else if (materialization.isGeneratedFnPtrValueSlot() or materialization.isBorrowLocalFnPtrValue()) {
             return CodegenError.CodegenError;
         } else if (materialization.isValue()) {
@@ -13673,6 +13712,25 @@ pub const Codegen = struct {
             .cast_expr => |cast| {
                 const inner = try self.genExpr(cast.expr, hoisted_allocs);
                 const src_ty = self.resolvedTypeForExpr(cast.expr) orelse return CodegenError.CodegenError;
+                if (src_ty.* == .fn_ptr) {
+                    // Fn value bits are a vtable address (data); the cast
+                    // yields the callable machine address stored in vtable
+                    // slot 0. The checker only admits raw_ptr / u64 / usize
+                    // targets here. For pointer targets the loaded value
+                    // is cast once more (`as ptr`) so it is detached from
+                    // the vtable's interior-pointer state and can cross
+                    // FFI boundaries (e.g. be passed on to an extern).
+                    const loaded = try self.newTmp();
+                    self.outPrint("    {s} = load {s}+0 as {s}\n", .{ loaded, inner, typeString(cast.ty) }) catch return CodegenError.CodegenError;
+                    if (self.callArgResultTempNeedsRelease(cast.expr, inner)) try self.emitRelease(inner);
+                    if (cast.ty.* == .primitive and cast.ty.primitive == .raw_ptr) {
+                        const reg = try self.newTmp();
+                        self.outPrint("    {s} = {s} as ptr\n", .{ reg, loaded }) catch return CodegenError.CodegenError;
+                        try self.emitRelease(loaded);
+                        return reg;
+                    }
+                    return loaded;
+                }
                 if (isPointerCarrierCastType(src_ty) and isPointerCarrierCastType(cast.ty)) {
                     return inner;
                 }

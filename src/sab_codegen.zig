@@ -11879,6 +11879,30 @@ pub const Codegen = struct {
 
     fn genCast(self: *Codegen, cast: ast.CastExpr) anyerror!u32 {
         const src_ast_ty = self.tc.expr_types.get(cast.expr) orelse return Error.MissingType;
+        if (src_ast_ty.* == .fn_ptr) {
+            // Fn value bits are a vtable address (data); the cast yields
+            // the callable machine address stored in vtable slot 0. The
+            // checker only admits raw_ptr / u64 / usize targets here. For
+            // pointer targets the loaded value is bitcast so it is
+            // detached from the vtable's interior-pointer state and can
+            // cross FFI boundaries (e.g. be passed on to an extern).
+            const src = try self.genExpr(cast.expr);
+            const dst_ty = try primType(cast.ty);
+            const loaded = try self.intern(try self.newTmp());
+            try self.emitLoad(loaded, src, 0, dst_ty);
+            if (!self.isLocalReg(src)) try self.emitRelease(src);
+            if (dst_ty != .ptr) return loaded;
+            const dst = try self.intern(try self.newTmp());
+            try self.recordReg(dst);
+            var item = self.makeInst(.op);
+            item.op_kind = .bitcast;
+            item.operands[0] = .{ .reg = dst };
+            item.operands[1] = .{ .reg = loaded };
+            item.operands[2] = .{ .ty = @intFromEnum(dst_ty) };
+            try self.appendInst(item);
+            try self.emitRelease(loaded);
+            return dst;
+        }
         const src_ty = try primType(src_ast_ty);
         const dst_ty = try primType(cast.ty);
         const src = try self.genExpr(cast.expr);
@@ -16324,6 +16348,36 @@ pub const Codegen = struct {
                 break :blk .{
                     .operand = self.symbols.items[arg_reg],
                     .release_reg = null,
+                };
+            };
+        } else if (materialization.isExternFnPtrAddress()) {
+            return blk: {
+                // Extern by-value raw-pointer parameter receiving an fn
+                // value: the fn value's bits are a vtable address (data),
+                // while the native callee invokes the pointer as code. The
+                // callable machine address lives in vtable slot 0 — load it
+                // and pass the loaded address as a plain temporary. The
+                // bitcast detaches the loaded value from the vtable's
+                // interior-pointer state (a load through the vtable borrow
+                // is InteriorPtr, which may not cross an FFI boundary).
+                const arg_reg = try self.genExpr(@constCast(arg));
+                const loaded_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(loaded_reg, arg_reg, 0, .ptr);
+                const addr_reg = try self.intern(try self.newTmp());
+                try self.recordReg(addr_reg);
+                var item = self.makeInst(.op);
+                item.op_kind = .bitcast;
+                item.operands[0] = .{ .reg = addr_reg };
+                item.operands[1] = .{ .reg = loaded_reg };
+                item.operands[2] = .{ .ty = @intFromEnum(sig.PrimType.ptr) };
+                try self.appendInst(item);
+                break :blk .{
+                    .operand = self.symbols.items[addr_reg],
+                    .release_reg = addr_reg,
+                    .release_regs = if (self.isLocalReg(arg_reg))
+                        try self.ownedReleaseRegs(&.{loaded_reg})
+                    else
+                        try self.ownedReleaseRegs(&.{ loaded_reg, arg_reg }),
                 };
             };
         } else if (materialization.isShallowCopyPreservedValue()) {

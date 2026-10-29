@@ -831,7 +831,7 @@ pub const Lowerer = struct {
                 const closed_expr = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = closed_ident, .right = try self.intNode(0) } });
                 self.registerType(closed_expr, try self.tyPrim(.boolean));
                 const tuple_elems = try self.allocator.alloc(*ast.Node, 2);
-                tuple_elems[0] = try self.slotValueExpr(slot_name, slot_ty, info.payload_ty);
+                tuple_elems[0] = try self.slotValueExpr(out, slot_name, slot_ty, info.payload_ty);
                 tuple_elems[1] = closed_expr;
                 const tuple_node = try self.newNode(.{ .tuple_literal = .{ .elements = tuple_elems } });
                 const tuple_elem_tys = try self.allocator.alloc(*ast.Type, 2);
@@ -897,7 +897,8 @@ pub const Lowerer = struct {
         const recv_call = try self.externCallNode("sa_chan_recv", args, try self.tyPrim(.i32));
         try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), recv_call));
         try self.emitRcCheck(out, rc_name, 60915);
-        try out.append(try self.letNode(value_name, info.payload_ty, try self.slotValueExpr(slot_name, slot_ty, info.payload_ty)));
+        const value_expr = try self.slotValueExpr(out, slot_name, slot_ty, info.payload_ty);
+        try out.append(try self.letNode(value_name, info.payload_ty, value_expr));
         const closed_ident = try self.identNode(closed_name, try self.tyPrim(.u32));
         const closed_expr = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = closed_ident, .right = try self.intNode(0) } });
         self.registerType(closed_expr, try self.tyPrim(.boolean));
@@ -905,26 +906,31 @@ pub const Lowerer = struct {
     }
 
     /// The received payload as a value expression: the slot bytes
-    /// reinterpreted in place, `*(&slot as &Payload)`. Aggregate
-    /// payloads are address-resident, so the deref yields the slot
-    /// address as the value; scalars load through it. This avoids
-    /// a payload var_stmt entirely (source `var` is scalar-only —
-    /// the checker rejects aggregate vars — and the SAB codegen's
-    /// var path allocates an 8-byte pointer cell for them, which
-    /// a 16-byte slot copy then overflows).
-    fn slotValueExpr(self: *Lowerer, slot_name: []const u8, slot_ty: *ast.Type, payload_ty: *ast.Type) LowerError!*ast.Node {
+    /// reinterpreted in place as a one-element array and projected
+    /// out, `(&slot as &[Payload; 1])[0]`. Index projection through
+    /// a borrow computes the element address without loading the
+    /// value — the only reliable aggregate-producing form in both
+    /// codegens (a payload var_stmt is scalar-only in the checker
+    /// and misallocated by the SAB var path, a synthetic tuple
+    /// value segfaults in SAB destructure, and `*p` on an
+    /// aggregate segfaults in both backends at base).
+    fn slotValueExpr(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slot_name: []const u8, slot_ty: *ast.Type, payload_ty: *ast.Type) LowerError!*ast.Node {
         const slot_borrow = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
-        return try self.slotValueFromBorrow(slot_borrow, payload_ty);
+        return try self.slotValueFromBorrow(out, slot_borrow, payload_ty);
     }
 
-    fn slotValueFromBorrow(self: *Lowerer, slot_borrow: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
-        const borrow_ty = try self.allocator.create(ast.Type);
-        borrow_ty.* = .{ .borrow = payload_ty };
-        const cast = try self.newNode(.{ .cast_expr = .{ .expr = slot_borrow, .ty = borrow_ty } });
-        self.registerType(cast, borrow_ty);
-        const deref = try self.newNode(.{ .deref_expr = .{ .expr = cast } });
-        self.registerType(deref, payload_ty);
-        return deref;
+    fn slotValueFromBorrow(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slot_borrow: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
+        const arr_ty = try self.tyArrayOf(payload_ty, 1);
+        const borrow_arr_ty = try self.allocator.create(ast.Type);
+        borrow_arr_ty.* = .{ .borrow = arr_ty };
+        const cast = try self.newNode(.{ .cast_expr = .{ .expr = slot_borrow, .ty = borrow_arr_ty } });
+        self.registerType(cast, borrow_arr_ty);
+        const ref_name = try self.freshName("__rv_ref_");
+        try out.append(try self.letNode(ref_name, borrow_arr_ty, cast));
+        const ref_ident = try self.identNode(ref_name, borrow_arr_ty);
+        const index = try self.newNode(.{ .index_expr = .{ .target = ref_ident, .index = try self.intNode(0) } });
+        self.registerType(index, payload_ty);
+        return index;
     }
 
     // --- select emission -----------------------------------------------------
@@ -1072,7 +1078,7 @@ pub const Lowerer = struct {
                 // and no whole-var move (StackEscape on text).
                 if (case.bind_name) |bind_name| {
                     const slot_borrow = try self.slotOffsetBorrow(slots_name, slots_ty, 16 * i);
-                    const value_expr = try self.slotValueFromBorrow(slot_borrow, info.payload_ty);
+                    const value_expr = try self.slotValueFromBorrow(&body, slot_borrow, info.payload_ty);
                     try body.append(try self.letNode(bind_name, info.payload_ty, value_expr));
                 }
                 if (case.bind_closed) |bind_closed| {

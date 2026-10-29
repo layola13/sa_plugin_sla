@@ -766,8 +766,8 @@ pub const Lowerer = struct {
         return std.mem.eql(u8, payload_ty.user_defined.name, "String") or std.mem.eql(u8, payload_ty.user_defined.name, "Vec");
     }
 
-    /// A call to a synthesized `fn __go_word_N(v: Payload) -> u64
-    /// { return v as u64; }` that reads a String/Vec payload's head
+    /// A call to a synthesized `fn __go_word_N(v: Payload) -> ptr
+    /// { return v as ptr; }` that reads a String/Vec payload's head
     /// word through the canonical argument/parameter path (see the
     /// send staging comment). The fn is registered with the
     /// checker and queued for declaration in the program.
@@ -783,15 +783,15 @@ pub const Lowerer = struct {
         const fname = self.word_fns.get(payload_ty) orelse blk: {
             const name = try self.freshName("__go_word_");
             const param_ident = try self.identNode("v", payload_ty);
-            const cast = try self.newNode(.{ .cast_expr = .{ .expr = param_ident, .ty = try self.tyPrim(.u64) } });
-            self.registerType(cast, try self.tyPrim(.u64));
+            const cast = try self.newNode(.{ .cast_expr = .{ .expr = param_ident, .ty = try self.tyPrim(.raw_ptr) } });
+            self.registerType(cast, try self.tyPrim(.raw_ptr));
             const ret = try self.newNode(.{ .return_stmt = .{ .value = cast } });
             const body = try self.allocator.alloc(*ast.Node, 1);
             body[0] = ret;
             const params = try self.allocator.alloc(ast.Param, 1);
             params[0] = .{ .name = "v", .ty = payload_ty };
             const decl = try self.allocator.create(ast.FuncDecl);
-            decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = try self.tyPrim(.u64), .body = body, .is_inline = false };
+            decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = try self.tyPrim(.raw_ptr), .body = body, .is_inline = false };
             try self.tc.funcs.put(name, decl);
             try self.slot_view_decls.append(try self.newNode(.{ .func_decl = decl.* }));
             try self.word_fns.put(payload_ty, name);
@@ -806,7 +806,7 @@ pub const Lowerer = struct {
             .args = args,
             .callee = null,
         } });
-        self.registerType(call, try self.tyPrim(.u64));
+        self.registerType(call, try self.tyPrim(.raw_ptr));
         return call;
     }
 
@@ -888,13 +888,15 @@ pub const Lowerer = struct {
                     // register in the SAB codegen, while the fn
                     // argument/parameter path is canonical.
                     var word_expr = value_node;
+                    var stage_ty = try self.tyPrim(.u64);
                     if (self.payloadIsStringLike(info.payload_ty)) {
                         word_expr = try self.stringWordCall(value_node, info.payload_ty);
+                        stage_ty = try self.tyPrim(.raw_ptr);
                     }
                     const bind_name = try self.freshName("__svw_");
-                    try out.append(try self.letNode(bind_name, try self.tyPrim(.u64), word_expr));
-                    value_node = try self.identNode(bind_name, try self.tyPrim(.u64));
-                    value_ty = try self.tyPrim(.u64);
+                    try out.append(try self.letNode(bind_name, stage_ty, word_expr));
+                    value_node = try self.identNode(bind_name, stage_ty);
+                    value_ty = stage_ty;
                 } else {
                     const is_place = switch (value_node.*) {
                         .identifier, .field_expr, .index_expr, .deref_expr => true,
@@ -1151,10 +1153,12 @@ pub const Lowerer = struct {
                 // binding, mirroring emitChanCall's send.
                 if (self.payloadIsWord(info.payload_ty)) {
                     var word_expr = call.args[1];
+                    var stage_ty = try self.tyPrim(.u64);
                     if (self.payloadIsStringLike(info.payload_ty)) {
                         word_expr = try self.stringWordCall(word_expr, info.payload_ty);
+                        stage_ty = try self.tyPrim(.raw_ptr);
                     }
-                    try out.append(try self.letNode(sv_name, try self.tyPrim(.u64), word_expr));
+                    try out.append(try self.letNode(sv_name, stage_ty, word_expr));
                 } else {
                     try out.append(try self.letNode(sv_name, info.payload_ty, call.args[1]));
                 }
@@ -1200,7 +1204,7 @@ pub const Lowerer = struct {
                 const info = self.tc.chan_calls.get(case.call) orelse return self.fail("internal: select case was not recorded by the checker", .{});
                 const size = try self.payloadSize(info.payload_ty);
                 const dst = try self.slotPtrArg(out, slots_name, slots_ty, 16 * i);
-                const sv_ty = if (self.payloadIsWord(info.payload_ty)) try self.tyPrim(.u64) else info.payload_ty;
+                const sv_ty = if (self.payloadIsStringLike(info.payload_ty)) try self.tyPrim(.raw_ptr) else if (self.payloadIsWord(info.payload_ty)) try self.tyPrim(.u64) else info.payload_ty;
                 const src = try self.borrowNode(try self.identNode(sv_name, sv_ty), sv_ty);
                 try self.emitMemCopy(out, dst, src, size);
             }

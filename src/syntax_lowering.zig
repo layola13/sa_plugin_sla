@@ -1315,8 +1315,14 @@ pub const Lowerer = struct {
                 // and no whole-var move (StackEscape on text).
                 if (case.bind_name) |bind_name| {
                     const slot_ptr = try self.slotPtrLet(&body, slots_name, slots_ty, 16 * i);
-                    const value_expr = try self.slotValueFromPtr(&body, slot_ptr, info.payload_ty);
-                    try body.append(try self.letNode(bind_name, info.payload_ty, value_expr));
+                    const sv = try self.slotValueFromPtrFull(&body, slot_ptr, info.payload_ty);
+                    try body.append(try self.letNode(bind_name, info.payload_ty, sv.expr));
+                    // Retire the view borrow like the plain recv
+                    // binding does (its register otherwise stays
+                    // live at fn exit in the text codegen).
+                    if (sv.ref_name) |ref_name| {
+                        try body.append(try self.forgetStmt(ref_name, sv.ref_ty.?));
+                    }
                 }
                 if (case.bind_closed) |bind_closed| {
                     const closed_ident = try self.identNode(closed_name, try self.tyPrim(.u32));

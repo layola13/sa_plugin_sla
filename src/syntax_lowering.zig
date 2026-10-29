@@ -1284,7 +1284,7 @@ pub const Lowerer = struct {
             .func_name = "panic",
             .associated_target = null,
             .generics = &.{},
-            .args = try self.sliceOf(*ast.Node, try self.intNode(60917)),
+            .args = try self.sliceOf(*ast.Node, try self.intNode(60919)),
             .callee = null,
         } });
         self.registerType(trap_call, try self.tyPrim(.void_type));

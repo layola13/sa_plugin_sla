@@ -5777,6 +5777,102 @@ pub const Codegen = struct {
         return false;
     }
 
+    // mem::forget emits EXPAND MEM_FORGET_U64, whose definition
+    // lives in sa_std/mem.sa. mem::forget is a compiler builtin,
+    // so a program may use it (and the goroutine syntax lowering
+    // may synthesize it) without importing mem.sa itself; the
+    // generated SA must still carry the import or the flattener
+    // traps with ForbiddenSyntax / InvalidMacroInvocation — the
+    // same defect class as the thread.sa import above (AD3 #19).
+    fn exprNeedsMemMacros(self: *Codegen, expr: *const ast.Node) bool {
+        return switch (expr.*) {
+            .call_expr => |call| blk: {
+                if (lowering_rules.isMemForgetCall(call)) break :blk true;
+                if (call.callee) |callee| {
+                    if (self.exprNeedsMemMacros(callee)) break :blk true;
+                }
+                for (call.args) |arg| {
+                    if (self.exprNeedsMemMacros(arg)) break :blk true;
+                }
+                break :blk false;
+            },
+            .binary_expr => |bin| self.exprNeedsMemMacros(bin.left) or self.exprNeedsMemMacros(bin.right),
+            .borrow_expr => |b| self.exprNeedsMemMacros(b.expr),
+            .move_expr => |m| self.exprNeedsMemMacros(m.expr),
+            .deref_expr => |d| self.exprNeedsMemMacros(d.expr),
+            .cast_expr => |c| self.exprNeedsMemMacros(c.expr),
+            .field_expr => |f| self.exprNeedsMemMacros(f.expr),
+            .index_expr => |idx| self.exprNeedsMemMacros(idx.target) or self.exprNeedsMemMacros(idx.index),
+            .slice_expr => |slc| self.exprNeedsMemMacros(slc.target) or self.exprNeedsMemMacros(slc.start) or self.exprNeedsMemMacros(slc.end),
+            .closure_literal => |lit| self.exprNeedsMemMacros(lit.body),
+            .await_expr => |aw| self.exprNeedsMemMacros(aw.expr),
+            .try_expr => |trye| self.exprNeedsMemMacros(trye.expr),
+            .struct_literal => |lit| blk: {
+                for (lit.fields) |field| if (self.exprNeedsMemMacros(field.value)) break :blk true;
+                break :blk false;
+            },
+            .enum_literal => |lit| blk: {
+                for (lit.fields) |field| if (self.exprNeedsMemMacros(field.value)) break :blk true;
+                break :blk false;
+            },
+            .tuple_literal => |lit| blk: {
+                for (lit.elements) |elem| if (self.exprNeedsMemMacros(elem)) break :blk true;
+                break :blk false;
+            },
+            .array_literal => |lit| blk: {
+                for (lit.elements) |elem| if (self.exprNeedsMemMacros(elem)) break :blk true;
+                break :blk false;
+            },
+            .repeat_array_literal => |lit| self.exprNeedsMemMacros(lit.value),
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsMemMacros, blockNeedsMemMacros, ife),
+            .switch_expr => |swe| blk: {
+                if (self.exprNeedsMemMacros(swe.val)) break :blk true;
+                for (swe.cases) |case| if (self.exprNeedsMemMacros(case.pattern) or self.blockNeedsMemMacros(case.body)) break :blk true;
+                break :blk false;
+            },
+            .match_expr => |mat| blk: {
+                if (self.exprNeedsMemMacros(mat.val)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsMemMacros(guard)) break :blk true;
+                    if (self.blockNeedsMemMacros(case.body)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    fn blockNeedsMemMacros(self: *Codegen, block: []const *ast.Node) bool {
+        for (block) |stmt| {
+            switch (stmt.*) {
+                .let_stmt => |let| if (self.exprNeedsMemMacros(let.value)) return true,
+                .let_destructure_stmt => |let| if (self.exprNeedsMemMacros(let.value)) return true,
+                .const_stmt => |c| if (self.exprNeedsMemMacros(c.value)) return true,
+                .assign_stmt => |assign| if (self.exprNeedsMemMacros(assign.target) or self.exprNeedsMemMacros(assign.value)) return true,
+                .expr_stmt => |expr| if (self.exprNeedsMemMacros(expr)) return true,
+                .return_stmt => |ret| if (ret.value) |v| if (self.exprNeedsMemMacros(v)) return true,
+                .for_stmt => |f| if (self.exprNeedsMemMacros(f.start) or (if (f.end) |end_expr| self.exprNeedsMemMacros(end_expr) else false) or self.blockNeedsMemMacros(f.body)) return true,
+                .while_stmt => |w| if (self.exprNeedsMemMacros(w.cond) or self.blockNeedsMemMacros(w.body)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn programNeedsMemMacros(self: *Codegen, program: *const ast.Node) bool {
+        for (program.program.decls) |decl| {
+            switch (decl.*) {
+                .func_decl => |f| if (self.blockNeedsMemMacros(f.body)) return true,
+                .impl_decl => |i| for (i.methods) |method| {
+                    if (method.* == .func_decl and self.blockNeedsMemMacros(method.func_decl.body)) return true;
+                },
+                .test_decl => |t| if (self.blockNeedsMemMacros(t.body)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
     fn exprNeedsRcMacros(self: *Codegen, expr: *const ast.Node) bool {
         return switch (expr.*) {
             .call_expr => |call| blk: {
@@ -7345,6 +7441,9 @@ pub const Codegen = struct {
         }
         if (self.programNeedsMpscMacros(program)) {
             self.outPrint("@import \"sa_std/sync/mpsc.sa\"\n", .{}) catch return CodegenError.CodegenError;
+        }
+        if (self.programNeedsMemMacros(program)) {
+            self.outPrint("@import \"sa_std/mem.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (self.programNeedsRcMacros(program)) {
             self.outPrint("@import \"sa_std/core/rc.sa\"\n", .{}) catch return CodegenError.CodegenError;

@@ -1272,7 +1272,24 @@ pub const Lowerer = struct {
             for (lowered_body) |body_stmt| try body.append(body_stmt);
             try branches.append(.{ .value = @intCast(i), .body = try body.toOwnedSlice() });
         }
-        var else_block: ?[]const *ast.Node = null;
+        // The dispatch chain is exhaustive by construction:
+        // sa_chan_select only returns -2 when a timeout arm exists,
+        // -1 when a default arm exists, and otherwise a case index.
+        // Terminate the chain with a trap instead of an empty else:
+        // an empty fallthrough makes both codegens emit the
+        // enclosing function's return of a result temp the select
+        // never produced (UnknownRegister when a select is a
+        // function's tail statement).
+        const trap_call = try self.newNode(.{ .call_expr = .{
+            .func_name = "panic",
+            .associated_target = null,
+            .generics = &.{},
+            .args = try self.sliceOf(*ast.Node, try self.intNode(60917)),
+            .callee = null,
+        } });
+        self.registerType(trap_call, try self.tyPrim(.void_type));
+        const trap_stmt = try self.newNode(.{ .expr_stmt = trap_call });
+        var else_block: ?[]const *ast.Node = try self.sliceOf(*ast.Node, trap_stmt);
         var bi: usize = branches.items.len;
         while (bi > 0) {
             bi -= 1;

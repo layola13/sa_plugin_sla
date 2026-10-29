@@ -3716,6 +3716,9 @@ pub const Codegen = struct {
     }
 
     fn typeIsCopyValue(self: *Codegen, ty: *const ast.Type) bool {
+        // Goroutine syntax batch: mirror the checker's Chan rule —
+        // a Chan<T> value is a copyable runtime handle word.
+        if (ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "Chan")) return true;
         if (lowering_rules.typeIsCopyValueBase(ty)) |decision| return decision;
         return switch (ty.*) {
             .user_defined => self.typeHasCopyDerive(ty),

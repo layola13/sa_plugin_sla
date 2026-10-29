@@ -740,6 +740,19 @@ pub const Lowerer = struct {
 
     fn emitChanCall(self: *Lowerer, call_node: *ast.Node, info: tc_mod.ChanCallInfo, out: *std.array_list.Managed(*ast.Node)) LowerError!?*ast.Node {
         const call = call_node.call_expr;
+        // Normalize a non-identifier receiver (field/index/deref
+        // shapes such as `pp.req`) into a handle binding first:
+        // passed raw, the text codegen materializes the projection
+        // address instead of the handle word and the runtime call
+        // fails with INVALID_HANDLE. Mirrors lowerSelect, which
+        // binds every arm handle to a let for the same reason.
+        var receiver: *ast.Node = call.args[0];
+        if (info.kind != .new and receiver.* != .identifier) {
+            const recv_ty = self.tc.expr_types.get(call.args[0]) orelse try self.tyChanOf(info.payload_ty);
+            const recv_name = try self.freshName("__ch_recv_");
+            try out.append(try self.letNode(recv_name, recv_ty, receiver));
+            receiver = try self.identNode(recv_name, recv_ty);
+        }
         switch (info.kind) {
             .new => {
                 const handle_name = try self.freshName("__ch_h_");
@@ -784,7 +797,7 @@ pub const Lowerer = struct {
                 try self.emitMemCopy(out, dst, src, size);
                 const rc_name = try self.freshName("__ch_rc_");
                 const args = try self.allocator.alloc(*ast.Node, 2);
-                args[0] = call.args[0];
+                args[0] = receiver;
                 args[1] = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
                 const send_call = try self.externCallNode("sa_chan_send", args, try self.tyPrim(.i32));
                 try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), send_call));
@@ -800,7 +813,7 @@ pub const Lowerer = struct {
                 try out.append(try self.letNode(closed_name, try self.tyPrim(.u32), try self.intNode(0)));
                 const rc_name = try self.freshName("__ch_rc_");
                 const args = try self.allocator.alloc(*ast.Node, 3);
-                args[0] = call.args[0];
+                args[0] = receiver;
                 args[1] = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
                 args[2] = try self.borrowNode(try self.identNode(closed_name, try self.tyPrim(.u32)), try self.tyPrim(.u32));
                 const recv_call = try self.externCallNode("sa_chan_recv", args, try self.tyPrim(.i32));
@@ -831,7 +844,7 @@ pub const Lowerer = struct {
             .close, .destroy => {
                 const rc_name = try self.freshName("__ch_rc_");
                 const args = try self.allocator.alloc(*ast.Node, 1);
-                args[0] = call.args[0];
+                args[0] = receiver;
                 const close_call = try self.externCallNode(if (info.kind == .close) "sa_chan_close" else "sa_chan_destroy", args, try self.tyPrim(.i32));
                 try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), close_call));
                 try self.emitRcCheck(out, rc_name, if (info.kind == .close) 60913 else 60914);
@@ -842,7 +855,7 @@ pub const Lowerer = struct {
                 try out.append(try self.letNode(n_name, try self.tyPrim(.u64), try self.intNode(0)));
                 const rc_name = try self.freshName("__ch_rc_");
                 const args = try self.allocator.alloc(*ast.Node, 2);
-                args[0] = call.args[0];
+                args[0] = receiver;
                 args[1] = try self.borrowNode(try self.identNode(n_name, try self.tyPrim(.u64)), try self.tyPrim(.u64));
                 const len_call = try self.externCallNode(if (info.kind == .len) "sa_chan_len" else "sa_chan_cap", args, try self.tyPrim(.i32));
                 try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), len_call));
@@ -874,6 +887,18 @@ pub const Lowerer = struct {
         const addr = try self.slotOffsetBorrow(slots_name, slots_ty, offset);
         try out.append(try self.letNode(name, borrow_ty, addr));
         return try self.identNode(name, borrow_ty);
+    }
+
+    /// Call-site form of a select slot address for sa_mem_copy:
+    /// a borrow expression over the slot-pointer binding. The SA
+    /// text verifier takes the capability from the call-site `&`
+    /// prefix (a bare register reads as a by-value pointer pass
+    /// and is rejected for `&ptr` parameters), so the operand must
+    /// be a borrow node — the same shape the plain chan send/recv
+    /// copies use. The SAB side materializes it identically.
+    fn slotPtrArg(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slots_name: []const u8, slots_ty: *ast.Type, offset: usize) LowerError!*ast.Node {
+        const ident = try self.slotPtrLet(out, slots_name, slots_ty, offset);
+        return try self.borrowNode(ident, try self.tyPrim(.u8));
     }
 
     fn lowerSelect(self: *Lowerer, stmt: *ast.Node, out: *std.array_list.Managed(*ast.Node)) LowerError!void {
@@ -936,7 +961,7 @@ pub const Lowerer = struct {
             if (send_binds.items[i]) |sv_name| {
                 const info = self.tc.chan_calls.get(case.call) orelse return self.fail("internal: select case was not recorded by the checker", .{});
                 const size = try self.payloadSize(info.payload_ty);
-                const dst = try self.slotPtrLet(out, slots_name, slots_ty, 16 * i);
+                const dst = try self.slotPtrArg(out, slots_name, slots_ty, 16 * i);
                 const src = try self.borrowNode(try self.identNode(sv_name, info.payload_ty), info.payload_ty);
                 try self.emitMemCopy(out, dst, src, size);
             }
@@ -982,7 +1007,7 @@ pub const Lowerer = struct {
                 const value_name = try self.freshName("__sel_rv_");
                 try body.append(try self.newNode(.{ .var_stmt = .{ .name = value_name, .ty = info.payload_ty } }));
                 const dst = try self.borrowNode(try self.identNode(value_name, info.payload_ty), info.payload_ty);
-                const src = try self.slotPtrLet(&body, slots_name, slots_ty, 16 * i);
+                const src = try self.slotPtrArg(&body, slots_name, slots_ty, 16 * i);
                 try self.emitMemCopy(&body, dst, src, size);
                 if (case.bind_name) |bind_name| {
                     try body.append(try self.letNode(bind_name, info.payload_ty, try self.identNode(value_name, info.payload_ty)));

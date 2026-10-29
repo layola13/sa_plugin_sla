@@ -893,17 +893,17 @@ pub const Lowerer = struct {
                     // argument/parameter path is canonical.
                     if (self.payloadIsStringLike(info.payload_ty)) {
                         // Pass the value through the identity fn
-                        // (its move cap consumes the source) and
-                        // cast the call result — a temporary, which
-                        // the cast releases with a bare register
-                        // release rather than the deep buffer
-                        // free — into a ptr staging binding; copy
-                        // the head word from its home.
+                        // (its move cap consumes the source) into a
+                        // ptr-typed staging binding: the call result
+                        // register IS the head word, and a call
+                        // result stored into a let is released
+                        // correctly by both codegens (a cast of the
+                        // result leaks the cast temp at fn exit in
+                        // the text codegen). Copy from the staging
+                        // binding's home.
                         const id_call = try self.stringIdCall(value_node, info.payload_ty);
-                        const cast = try self.newNode(.{ .cast_expr = .{ .expr = id_call, .ty = try self.tyPrim(.raw_ptr) } });
-                        self.registerType(cast, try self.tyPrim(.raw_ptr));
                         const bind_name = try self.freshName("__svw_");
-                        try out.append(try self.letNode(bind_name, try self.tyPrim(.raw_ptr), cast));
+                        try out.append(try self.letNode(bind_name, try self.tyPrim(.raw_ptr), id_call));
                         value_node = try self.identNode(bind_name, try self.tyPrim(.raw_ptr));
                         value_ty = try self.tyPrim(.raw_ptr);
                     } else {
@@ -1217,10 +1217,7 @@ pub const Lowerer = struct {
                     var word_expr = call.args[1];
                     var stage_ty = try self.tyPrim(.u64);
                     if (self.payloadIsStringLike(info.payload_ty)) {
-                        const id_call = try self.stringIdCall(word_expr, info.payload_ty);
-                        const cast = try self.newNode(.{ .cast_expr = .{ .expr = id_call, .ty = try self.tyPrim(.raw_ptr) } });
-                        self.registerType(cast, try self.tyPrim(.raw_ptr));
-                        word_expr = cast;
+                        word_expr = try self.stringIdCall(word_expr, info.payload_ty);
                         stage_ty = try self.tyPrim(.raw_ptr);
                     }
                     try out.append(try self.letNode(sv_name, stage_ty, word_expr));

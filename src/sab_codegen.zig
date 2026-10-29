@@ -14019,8 +14019,15 @@ pub const Codegen = struct {
     }
 
     /// Direct-SAB `mem::forget(value)`, mirroring the SA-text backend
-    /// (`EXPAND MEM_FORGET_U64` + consume): the value is intentionally leaked,
-    /// so the source is retired codegen-side with no release emitted.
+    /// (`EXPAND MEM_FORGET_U64` + `!value`): the value is intentionally
+    /// leaked, so no drop is emitted — but the retirement itself must be
+    /// verifier-visible. A codegen-side markConsumed alone leaves the
+    /// register Active in the instruction stream, and the host verifier
+    /// reports MemoryLeak at function exit (plain-fn contexts; the
+    /// synthesized chan view borrows hit exactly this). emitRelease
+    /// supplies the visible consume with the right shape per register
+    /// kind: `.release` for owning registers, `.move_` for non-owning
+    /// (borrow) registers, bookkeeping-only for stack slots.
     fn genMemForgetCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
         _ = expr;
         if (!lowering_rules.isMemForgetCall(call) or call.args.len != 1) return null;
@@ -14028,7 +14035,7 @@ pub const Codegen = struct {
         try self.emitStdMacroFragment("sa_std/mem.sa", "MEM_FORGET_U64", &.{
             self.symbols.items[value_reg],
         });
-        try self.markConsumed(value_reg);
+        try self.emitRelease(value_reg);
         const sentinel = try self.intern(try self.newTmp());
         try self.emitAssignImm(sentinel, 0);
         return sentinel;

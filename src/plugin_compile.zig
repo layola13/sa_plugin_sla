@@ -735,6 +735,15 @@ fn runSlaFrontend(
         try stderr.print("Syntax Lowering Error: {s} ({})\n", .{ syntax_lowerer.errorMessage(), err });
         return null;
     };
+    // Decls synthesized by the lowering (slot-view structs,
+    // head-word helper fns) are not in the primary set; keep them
+    // or the filter below drops their bodies before codegen.
+    for (syntax_lowerer.synthesizedDecls()) |synth_decl| {
+        specialized_primary_decls.put(synth_decl, {}) catch |err| {
+            try stderr.print("Syntax Lowering Error: failed to keep synthesized decl ({})\n", .{err});
+            return null;
+        };
+    }
     slaProfileStage(stderr, profile, "syntax lowering", stage_start);
 
     // Filter specialized_prog to only include primary declarations

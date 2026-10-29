@@ -65,6 +65,14 @@ pub const Lowerer = struct {
         return self.err_buf[0..self.err_len];
     }
 
+    /// Decl nodes synthesized by this pass (slot-view structs,
+    /// head-word helper fns). The frontend's primary-decl filter
+    /// must keep them or codegen loses the callees/layouts.
+    pub fn synthesizedDecls(self: *const Lowerer) []const *ast.Node {
+        if (!self.slot_view_decls_ready) return &.{};
+        return self.slot_view_decls.items;
+    }
+
     fn fail(self: *Lowerer, comptime fmt: []const u8, args: anytype) LowerError {
         const msg = std.fmt.bufPrint(&self.err_buf, fmt, args) catch "goroutine syntax lowering failed";
         self.err_len = msg.len;

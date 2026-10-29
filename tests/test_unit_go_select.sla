@@ -69,8 +69,8 @@
         }
     }
     if hit != 2 { panic(9535); };
-    let (v, ok) = a.recv();
-    if !ok { panic(9536); };
+    let (v, closed) = a.recv();
+    if closed { panic(9536); };
     if v != 55 { panic(9537); };
     a.destroy();
     b.destroy();

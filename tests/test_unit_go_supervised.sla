@@ -4,7 +4,7 @@
 
 @import "sa_std/globals.sai"
 @import "sa_std/task.sai"
-@import "sa_std/core/mem.sa"
+@import "sa_std/string.sai"
 @import "sa_std/ptr.sa"
 @import "sa_std/supervisor.sla"
 
@@ -46,10 +46,19 @@ fn sup_trap_worker(arg: u64) {
     if irc != 0 { panic(9712); };
     if code != 4 { panic(9713); };
     if msg_len != 23 { panic(9714); };
-    let buf: [u8; 32] = [0; 32];
-    sa_mem_copy(&buf, msg_ptr, msg_len);
-    if buf[0] != 99 { panic(9715); };
-    if buf[6] != 111 { panic(9716); };
+    // Byte-content readback via the string.sai codepoint surface
+    // (sa_mem_copy is an SA-level std function and is not callable
+    // from SLA source; the message is "close of closed channel").
+    let cp0: i32 = 0;
+    let cl0: u64 = 0;
+    let crc0 = sa_str_utf8_char_at_byte(msg_ptr, msg_len, 0, &cp0, &cl0);
+    if crc0 != 0 { panic(9715); };
+    if cp0 != 99 { panic(9715); };
+    let cp6: i32 = 0;
+    let cl6: u64 = 0;
+    let crc6 = sa_str_utf8_char_at_byte(msg_ptr, msg_len, 6, &cp6, &cl6);
+    if crc6 != 0 { panic(9716); };
+    if cp6 != 111 { panic(9716); };
     // Consumed: the handle is invalid now.
     let code2: i32 = 0;
     let p2: ptr = PTR_NULL();

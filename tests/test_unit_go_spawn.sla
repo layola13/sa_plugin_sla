@@ -16,6 +16,9 @@ fn go_count_bump() {
 fn go_count_read() -> u64 {
     let v: u64 = 0;
     let rc = sa_global_u64_get("go_syntax_ctr", 13, &v);
+    // An unset cell reads as 0: NOT_FOUND (3) is the contract's
+    // "no value yet", not an error.
+    if rc == 3 { return 0; };
     if rc != 0 { panic(9211); };
     return v;
 }

@@ -736,6 +736,18 @@ pub const Lowerer = struct {
             return self.fail("internal: channel payload size was not validated by the checker", .{});
     }
 
+    /// Word payloads: primitives and decl-less handle types
+    /// (String, Vec, Chan, Box, ...). Their register holds the
+    /// value word itself, so a borrow of the binding in the SAB
+    /// codegen yields the value, not the address of its home —
+    /// sends must stage the word through a plain u64 binding and
+    /// copy from there, and receives load the word from the slot.
+    /// Aggregate payloads (structs, tuples, enums, arrays) are
+    /// address-resident and transfer by address instead.
+    fn payloadIsWord(self: *Lowerer, payload_ty: *ast.Type) bool {
+        return payload_ty.* == .primitive or (payload_ty.* == .user_defined and self.tc.structs.get(payload_ty.user_defined.name) == null and self.tc.enums.get(payload_ty.user_defined.name) == null);
+    }
+
     // --- channel operation emission ----------------------------------------
 
     fn emitMonitorCall(self: *Lowerer, call_node: *ast.Node, out: *std.array_list.Managed(*ast.Node)) LowerError!?*ast.Node {
@@ -800,19 +812,31 @@ pub const Lowerer = struct {
             .send => {
                 const size = try self.payloadSize(info.payload_ty);
                 var value_node = call.args[1];
-                const is_place = switch (value_node.*) {
-                    .identifier, .field_expr, .index_expr, .deref_expr => true,
-                    else => false,
-                };
-                if (!is_place) {
-                    const bind_name = try self.freshName("__sv_");
-                    try out.append(try self.letNode(bind_name, info.payload_ty, value_node));
-                    value_node = try self.identNode(bind_name, info.payload_ty);
+                var value_ty = self.tc.expr_types.get(call.args[1]) orelse info.payload_ty;
+                if (self.payloadIsWord(info.payload_ty)) {
+                    // Stage the word through a plain u64 binding:
+                    // a borrow of a word-typed binding yields the
+                    // value itself in the SAB codegen, so copying
+                    // from it would read the heap head's first word
+                    // instead of the head word.
+                    const bind_name = try self.freshName("__svw_");
+                    try out.append(try self.letNode(bind_name, try self.tyPrim(.u64), value_node));
+                    value_node = try self.identNode(bind_name, try self.tyPrim(.u64));
+                    value_ty = try self.tyPrim(.u64);
+                } else {
+                    const is_place = switch (value_node.*) {
+                        .identifier, .field_expr, .index_expr, .deref_expr => true,
+                        else => false,
+                    };
+                    if (!is_place) {
+                        const bind_name = try self.freshName("__sv_");
+                        try out.append(try self.letNode(bind_name, info.payload_ty, value_node));
+                        value_node = try self.identNode(bind_name, info.payload_ty);
+                    }
                 }
                 const slot_name = try self.freshName("__slot_");
                 try out.append(try self.slotArrayNode(slot_name, 16));
                 const slot_ty = try self.tyArrayOf(try self.tyPrim(.u8), 16);
-                const value_ty = self.tc.expr_types.get(call.args[1]) orelse info.payload_ty;
                 const dst = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
                 const src = try self.borrowNode(value_node, value_ty);
                 try self.emitMemCopy(out, dst, src, size);
@@ -951,8 +975,7 @@ pub const Lowerer = struct {
         // decl-less handle types (String, Vec, Chan, Box, ...),
         // whose register holds the head word itself — take the
         // load path below instead.
-        const is_word = payload_ty.* == .primitive or (payload_ty.* == .user_defined and self.tc.structs.get(payload_ty.user_defined.name) == null and self.tc.enums.get(payload_ty.user_defined.name) == null);
-        if (!is_word) {
+        if (!self.payloadIsWord(payload_ty)) {
             const cast = try self.newNode(.{ .cast_expr = .{ .expr = ptr_expr, .ty = payload_ty } });
             self.registerType(cast, payload_ty);
             return cast;
@@ -1052,7 +1075,10 @@ pub const Lowerer = struct {
             try handle_names.append(h_name);
             if (info.kind == .send) {
                 const sv_name = try self.freshName("__sel_sv_");
-                try out.append(try self.letNode(sv_name, info.payload_ty, call.args[1]));
+                // Word payloads stage through a u64 binding for
+                // the same reason as in emitChanCall's send.
+                const sv_ty = if (self.payloadIsWord(info.payload_ty)) try self.tyPrim(.u64) else info.payload_ty;
+                try out.append(try self.letNode(sv_name, sv_ty, call.args[1]));
                 try send_binds.append(sv_name);
             } else {
                 try send_binds.append(null);
@@ -1095,7 +1121,8 @@ pub const Lowerer = struct {
                 const info = self.tc.chan_calls.get(case.call) orelse return self.fail("internal: select case was not recorded by the checker", .{});
                 const size = try self.payloadSize(info.payload_ty);
                 const dst = try self.slotPtrArg(out, slots_name, slots_ty, 16 * i);
-                const src = try self.borrowNode(try self.identNode(sv_name, info.payload_ty), info.payload_ty);
+                const sv_ty = if (self.payloadIsWord(info.payload_ty)) try self.tyPrim(.u64) else info.payload_ty;
+                const src = try self.borrowNode(try self.identNode(sv_name, sv_ty), sv_ty);
                 try self.emitMemCopy(out, dst, src, size);
             }
         }

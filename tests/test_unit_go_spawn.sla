@@ -53,7 +53,7 @@ fn go_word_add(v: u64) {
         sa_task_yield();
         spins = spins + 1;
         if spins > 1000000 { panic(9204); };
-    };
+    }
 }
 
 @test "go supervised spawn joins ok on clean exit"() {

@@ -766,56 +766,19 @@ pub const Lowerer = struct {
         return std.mem.eql(u8, payload_ty.user_defined.name, "String") or std.mem.eql(u8, payload_ty.user_defined.name, "Vec");
     }
 
-    /// Whether sending this payload moves heap ownership into the
-    /// channel: String/Vec heads, or an aggregate with such a field
-    /// or element anywhere inside. Copy payloads (scalars, Chan
-    /// handles, plain-data aggregates) keep their source binding.
-    fn payloadTransfersOwnership(self: *Lowerer, payload_ty: *ast.Type) bool {
-        if (self.payloadIsStringLike(payload_ty)) return true;
-        switch (payload_ty.*) {
-            .user_defined => |ud| {
-                if (self.tc.structs.get(ud.name)) |decl| {
-                    for (decl.fields) |field| {
-                        if (self.payloadTransfersOwnership(field.ty)) return true;
-                    }
-                }
-                return false;
-            },
-            .tuple => |tt| {
-                for (tt.elems) |elem| {
-                    if (self.payloadTransfersOwnership(elem)) return true;
-                }
-                return false;
-            },
-            .array => |arr| return self.payloadTransfersOwnership(arr.elem),
-            else => return false,
-        }
-    }
-
-    /// `mem::forget(<ident>);` — retires the source binding in both
-    /// codegens with no drop emitted: after a send copied the
-    /// payload into the channel, the channel owns the heap value
-    /// and the source must not be dropped a second time.
-    fn forgetStmt(self: *Lowerer, name: []const u8, ty: *ast.Type) LowerError!*ast.Node {
-        const args = try self.allocator.alloc(*ast.Node, 1);
-        args[0] = try self.identNode(name, ty);
-        const call = try self.newNode(.{ .call_expr = .{
-            .func_name = "forget",
-            .associated_target = "mem",
-            .generics = &.{},
-            .args = args,
-            .callee = null,
-        } });
-        self.registerType(call, try self.tyPrim(.void_type));
-        return try self.newNode(.{ .expr_stmt = call });
-    }
-
-    /// A call to a synthesized `fn __go_word_N(v: Payload) -> ptr
-    /// { return v as ptr; }` that reads a String/Vec payload's head
-    /// word through the canonical argument/parameter path (see the
-    /// send staging comment). The fn is registered with the
-    /// checker and queued for declaration in the program.
-    fn stringWordCall(self: *Lowerer, value_node: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
+    /// A call to a synthesized identity fn `fn __go_id_N(v:
+    /// Payload) -> Payload { return v; }` for String/Vec payloads.
+    /// Passing the value through a real fn boundary solves two
+    /// SAB-codegen problems at once: the move cap on the call
+    /// consumes the caller's binding (no scope-end double drop
+    /// once the channel owns the value), the return consumes the
+    /// parameter (no drop inside the helper), and the result is a
+    /// call-produced local whose head word a plain scalar read
+    /// picks up correctly — unlike a format()-produced local,
+    /// whose register a direct scalar read loses. The fn is
+    /// registered with the checker and queued for declaration in
+    /// the program.
+    fn stringIdCall(self: *Lowerer, value_node: *ast.Node, payload_ty: *ast.Type) LowerError!*ast.Node {
         if (!self.word_fns_ready) {
             self.word_fns = std.AutoHashMap(*ast.Type, []const u8).init(self.allocator);
             self.word_fns_ready = true;
@@ -825,28 +788,14 @@ pub const Lowerer = struct {
             self.slot_view_decls_ready = true;
         }
         const fname = self.word_fns.get(payload_ty) orelse blk: {
-            const name = try self.freshName("__go_word_");
-            const param_ident = try self.identNode("v", payload_ty);
-            const cast = try self.newNode(.{ .cast_expr = .{ .expr = param_ident, .ty = try self.tyPrim(.raw_ptr) } });
-            self.registerType(cast, try self.tyPrim(.raw_ptr));
-            // Body: let the word out through a temp, then forget
-            // the parameter — the helper only borrows the value to
-            // read its head word; the caller's binding keeps
-            // ownership until the send's own mem::forget retires
-            // it. Without the forget, the codegens drop the
-            // parameter at fn exit and free the payload early.
-            const w_name = try self.freshName("__w_");
-            const body = try self.allocator.alloc(*ast.Node, 3);
-            body[0] = try self.letNode(w_name, try self.tyPrim(.raw_ptr), cast);
-            body[1] = try self.forgetStmt("v", payload_ty);
-            body[2] = try self.newNode(.{ .return_stmt = .{ .value = try self.identNode(w_name, try self.tyPrim(.raw_ptr)) } });
+            const name = try self.freshName("__go_id_");
+            const ret = try self.newNode(.{ .return_stmt = .{ .value = try self.identNode("v", payload_ty) } });
+            const body = try self.allocator.alloc(*ast.Node, 1);
+            body[0] = ret;
             const params = try self.allocator.alloc(ast.Param, 1);
-            // is_move: the helper consumes the payload, so the
-            // caller's binding is not dropped a second time after
-            // the send transferred ownership to the channel.
             params[0] = .{ .name = "v", .ty = payload_ty, .is_move = true };
             const decl = try self.allocator.create(ast.FuncDecl);
-            decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = try self.tyPrim(.raw_ptr), .body = body, .is_inline = false };
+            decl.* = .{ .name = name, .generics = &.{}, .params = params, .ret_ty = payload_ty, .body = body, .is_inline = false };
             try self.tc.funcs.put(name, decl);
             try self.slot_view_decls.append(try self.newNode(.{ .func_decl = decl.* }));
             try self.word_fns.put(payload_ty, name);
@@ -861,7 +810,7 @@ pub const Lowerer = struct {
             .args = args,
             .callee = null,
         } });
-        self.registerType(call, try self.tyPrim(.raw_ptr));
+        self.registerType(call, payload_ty);
         return call;
     }
 
@@ -930,7 +879,6 @@ pub const Lowerer = struct {
                 const size = try self.payloadSize(info.payload_ty);
                 var value_node = call.args[1];
                 var value_ty = self.tc.expr_types.get(call.args[1]) orelse info.payload_ty;
-                const src_ident: ?[]const u8 = if (call.args[1].* == .identifier) call.args[1].identifier else null;
                 if (self.payloadIsWord(info.payload_ty)) {
                     // Stage the head word through a plain u64
                     // binding and copy from its home: a borrow of a
@@ -943,16 +891,27 @@ pub const Lowerer = struct {
                     // format-produced string local picks up a stale
                     // register in the SAB codegen, while the fn
                     // argument/parameter path is canonical.
-                    var word_expr = value_node;
-                    var stage_ty = try self.tyPrim(.u64);
                     if (self.payloadIsStringLike(info.payload_ty)) {
-                        word_expr = try self.stringWordCall(value_node, info.payload_ty);
-                        stage_ty = try self.tyPrim(.raw_ptr);
+                        // Pass the value through the identity fn
+                        // (its move cap consumes the source) and
+                        // cast the call result — a temporary, which
+                        // the cast releases with a bare register
+                        // release rather than the deep buffer
+                        // free — into a ptr staging binding; copy
+                        // the head word from its home.
+                        const id_call = try self.stringIdCall(value_node, info.payload_ty);
+                        const cast = try self.newNode(.{ .cast_expr = .{ .expr = id_call, .ty = try self.tyPrim(.raw_ptr) } });
+                        self.registerType(cast, try self.tyPrim(.raw_ptr));
+                        const bind_name = try self.freshName("__svw_");
+                        try out.append(try self.letNode(bind_name, try self.tyPrim(.raw_ptr), cast));
+                        value_node = try self.identNode(bind_name, try self.tyPrim(.raw_ptr));
+                        value_ty = try self.tyPrim(.raw_ptr);
+                    } else {
+                        const bind_name = try self.freshName("__svw_");
+                        try out.append(try self.letNode(bind_name, try self.tyPrim(.u64), value_node));
+                        value_node = try self.identNode(bind_name, try self.tyPrim(.u64));
+                        value_ty = try self.tyPrim(.u64);
                     }
-                    const bind_name = try self.freshName("__svw_");
-                    try out.append(try self.letNode(bind_name, stage_ty, word_expr));
-                    value_node = try self.identNode(bind_name, stage_ty);
-                    value_ty = stage_ty;
                 } else {
                     const is_place = switch (value_node.*) {
                         .identifier, .field_expr, .index_expr, .deref_expr => true,
@@ -977,16 +936,6 @@ pub const Lowerer = struct {
                 const send_call = try self.externCallNode("sa_chan_send", args, try self.tyPrim(.i32));
                 try out.append(try self.letNode(rc_name, try self.tyPrim(.i32), send_call));
                 try self.emitRcCheck(out, rc_name, 60912);
-                // The channel now owns the payload: retire an
-                // owning source binding without dropping it, or
-                // its scope-end drop frees the value a second time
-                // (the receiver owns the same heap object).
-                if (src_ident) |src_name| {
-                    if (self.payloadTransfersOwnership(info.payload_ty)) {
-                        _ = src_name;
-                        // BISECT: caller-side forget disabled.
-                    }
-                }
                 return null;
             },
             .recv => {
@@ -1221,7 +1170,10 @@ pub const Lowerer = struct {
                     var word_expr = call.args[1];
                     var stage_ty = try self.tyPrim(.u64);
                     if (self.payloadIsStringLike(info.payload_ty)) {
-                        word_expr = try self.stringWordCall(word_expr, info.payload_ty);
+                        const id_call = try self.stringIdCall(word_expr, info.payload_ty);
+                        const cast = try self.newNode(.{ .cast_expr = .{ .expr = id_call, .ty = try self.tyPrim(.raw_ptr) } });
+                        self.registerType(cast, try self.tyPrim(.raw_ptr));
+                        word_expr = cast;
                         stage_ty = try self.tyPrim(.raw_ptr);
                     }
                     try out.append(try self.letNode(sv_name, stage_ty, word_expr));
@@ -1327,15 +1279,6 @@ pub const Lowerer = struct {
                     const closed_expr = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = closed_ident, .right = try self.intNode(0) } });
                     self.registerType(closed_expr, try self.tyPrim(.boolean));
                     try body.append(try self.letNode(bind_closed, try self.tyPrim(.boolean), closed_expr));
-                }
-            }
-            if (info.kind == .send) {
-                // Only the winning send arm actually transferred
-                // its payload: retire the source binding here, in
-                // the arm that ran, mirroring emitChanCall.
-                const case_call = case.call.call_expr;
-                if (case_call.args[1].* == .identifier and self.payloadTransfersOwnership(info.payload_ty)) {
-                    try body.append(try self.forgetStmt(case_call.args[1].identifier, info.payload_ty));
                 }
             }
             const lowered_body = try self.lowerBlock(case.body);

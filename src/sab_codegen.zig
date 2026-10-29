@@ -3220,33 +3220,6 @@ pub const Codegen = struct {
         }
     }
 
-    /// True when `ty` is an owned heap-buffer value type whose buffer is
-    /// released by `@sa_vec_free`: SLA `String` and `Vec<T>` share the
-    /// Vec struct layout and the same free entry point. The check is
-    /// deliberately strict (no borrow/pointer peeling): a binding whose
-    /// declared type is exactly the owned user-defined type owns its
-    /// buffer, while `&String`/`&Vec<T>` bindings carry a borrow type and
-    /// must never be freed by the borrower.
-    fn ownedBufferDropType(ty: ?*const ast.Type) bool {
-        const t = ty orelse return false;
-        if (t.* != .user_defined) return false;
-        return std.mem.eql(u8, t.user_defined.name, "String") or
-            std.mem.eql(u8, t.user_defined.name, "Vec");
-    }
-
-    /// Emit the deep drop for an owned String/Vec value: `@sa_vec_free`
-    /// takes the buffer out of the Vec struct and releases both the
-    /// buffer and the struct. A bare SAB `release` on the struct pointer
-    /// frees only the struct allocation and leaks the buffer (the F1/F-perf-2
-    /// residual measured on slanginx/slaredis), so cleanup paths for
-    /// owned String/Vec values must route here instead of `emitRelease`.
-    fn emitOwnedBufferFree(self: *Codegen, reg: u32) !void {
-        if (self.released_regs.contains(reg)) return;
-        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_free"});
-        try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_vec_free(^{s})", .{self.symbols.items[reg]}));
-        try self.released_regs.put(reg, {});
-    }
-
     /// Full cleanup drop for one local, mirroring the sequential
     /// (non-branch) cleanup structure: parameter capability actions,
     /// stack-slot values, stack allocations, then register values.

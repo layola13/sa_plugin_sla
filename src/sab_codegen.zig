@@ -15501,6 +15501,7 @@ pub const Codegen = struct {
         if (try self.genIterFoldCall(call)) |reg| return reg;
         if (try self.genArrayFillCall(call)) |reg| return reg;
         if (try self.genPtrBuiltinCall(expr, call)) |reg| return reg;
+        if (try self.genStringAsBytesCall(call)) |reg| return reg;
         if (try self.genPointerMethodCall(call)) |reg| return reg;
         if (try self.genMutexNewCall(expr, call)) |reg| return reg;
         if (try self.genAtomicNewCall(expr, call)) |reg| return reg;
@@ -15537,6 +15538,35 @@ pub const Codegen = struct {
         const dst = try self.intern(try self.newTmp());
         try self.emitStdMacroFragment("sa_std/ptr.sa", macro_name, &.{ self.symbols.items[dst], self.symbols.items[ptr_reg] });
         if (!self.isLocalReg(ptr_reg) and lowering_rules.callArgNeedsRelease(call.args[0])) try self.emitRelease(ptr_reg);
+        return dst;
+    }
+
+    /// `s.as_bytes()` / `s.bytes()` on a string-like receiver (DEF-2):
+    /// mirror SA-text, which expands STR_AS_BYTES / STRING_BUF_AS_BYTES
+    /// (sa_std/string.sa) to build a fresh byte-slice view of the
+    /// string. Without this the generic static-call path fabricated a
+    /// call to a `@sla__as_bytes` symbol that is never defined, and the
+    /// SAB verifier rejected the module with UnknownRegister (1007).
+    fn genStringAsBytesCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!std.mem.eql(u8, call.func_name, "as_bytes") and !std.mem.eql(u8, call.func_name, "bytes")) return null;
+        if (call.args.len != 1) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (!lowering_rules.isStringLikeType(receiver_ty)) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        if (lowering_rules.isFormatStringType(receiver_ty)) {
+            try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_AS_BYTES", &.{
+                self.symbols.items[dst],
+                self.symbols.items[recv_reg],
+            });
+        } else {
+            try self.emitStdMacroFragment("sa_std/string.sa", "STR_AS_BYTES", &.{
+                self.symbols.items[dst],
+                self.symbols.items[recv_reg],
+            });
+        }
+        if (lowering_rules.callArgNeedsRelease(call.args[0]) and !self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
         return dst;
     }
 
@@ -16287,6 +16317,32 @@ pub const Codegen = struct {
         arg_index: usize,
         auto_borrow_receiver: bool,
     ) anyerror!SabLoweredCallArg {
+        // DEF-2 / BM-D2 (SAB side of POTENTIAL_ISSUES #15): a string literal
+        // passed to a String parameter must be materialized as an owned
+        // StringBuf. The generic literal path yields a bare Slice cell
+        // {ptr, len@8}, but String consumers rebuild views with the Vec
+        // layout (len@16), so the cell reads out of bounds and segfaults.
+        // The text backend performs this conversion in its call paths
+        // (genOwnedStringLiteral); mirror it here.
+        if (param) |target_param| {
+            if (arg.* == .literal and arg.literal == .string_val and lowering_rules.isFormatStringType(target_param.ty)) {
+                // The conversion chain (WITH_CAPACITY + PUSH_STR) calls
+                // vec allocation/copy std functions; declare them like the
+                // format-buffer path does (ensureDebugFormatDeps).
+                try self.ensureStdDeps("sa_std/string_format.sa", &.{ "sa_vec_with_capacity", "sa_vec_reserve", "sa_mem_copy" });
+                const slice_reg = try self.genStringLiteral(arg.literal.string_val);
+                const string_reg = try self.intern(try self.newTmp());
+                try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_FROM_UTF8_UNCHECKED", &.{ self.symbols.items[string_reg], self.symbols.items[slice_reg] });
+                if (target_param.is_borrow) {
+                    return .{ .operand = self.symbols.items[string_reg], .release_reg = string_reg };
+                }
+                return .{
+                    .operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[string_reg]}),
+                    .release_reg = null,
+                    .forget_reg = string_reg,
+                };
+            }
+        }
         const arg_ty = try self.callArgType(arg);
         const materialization = lowering_rules.planCallArgMaterialization(arg, .{
             .target = .direct_sab,

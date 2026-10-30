@@ -130,6 +130,7 @@ pub const Codegen = struct {
     mpsc_sender_channels: std.StringHashMap([]const u8),
     mpsc_receiver_bindings: std.StringHashMap(void),
     string_buf_bindings: std.StringHashMap(void),
+    inferred_string_slice_locals: std.StringHashMap(void),
     vec_buf_bindings: std.StringHashMap(void),
     hashmap_bindings: std.StringHashMap(void),
     btree_map_bindings: std.StringHashMap(void),
@@ -224,6 +225,7 @@ pub const Codegen = struct {
             .mpsc_sender_channels = std.StringHashMap([]const u8).init(allocator),
             .mpsc_receiver_bindings = std.StringHashMap(void).init(allocator),
             .string_buf_bindings = std.StringHashMap(void).init(allocator),
+            .inferred_string_slice_locals = std.StringHashMap(void).init(allocator),
             .vec_buf_bindings = std.StringHashMap(void).init(allocator),
             .hashmap_bindings = std.StringHashMap(void).init(allocator),
             .btree_map_bindings = std.StringHashMap(void).init(allocator),
@@ -300,6 +302,7 @@ pub const Codegen = struct {
         self.mpsc_sender_channels.deinit();
         self.mpsc_receiver_bindings.deinit();
         self.string_buf_bindings.deinit();
+        self.inferred_string_slice_locals.deinit();
         self.vec_buf_bindings.deinit();
         self.hashmap_bindings.deinit();
         self.btree_map_bindings.deinit();
@@ -5309,6 +5312,11 @@ pub const Codegen = struct {
     fn exprNeedsFfiCstrMacros(self: *Codegen, expr: *const ast.Node) bool {
         switch (expr.*) {
             .call_expr => |call| {
+                if (lowering_rules.isBareLenUnaryCall(call)) {
+                    if (self.tc.expr_types.get(call.args[0])) |ty| {
+                        if (ty.* == .primitive and ty.primitive == .raw_ptr) return true;
+                    }
+                }
                 if (std.mem.eql(u8, call.func_name, "format")) {
                     for (call.args) |arg| {
                         if (self.tc.expr_types.get(arg)) |ty| {
@@ -7822,6 +7830,7 @@ pub const Codegen = struct {
         self.mpsc_sender_channels.clearRetainingCapacity();
         self.mpsc_receiver_bindings.clearRetainingCapacity();
         self.string_buf_bindings.clearRetainingCapacity();
+        self.inferred_string_slice_locals.clearRetainingCapacity();
         self.vec_buf_bindings.clearRetainingCapacity();
         self.hashmap_bindings.clearRetainingCapacity();
         self.btree_map_bindings.clearRetainingCapacity();
@@ -8007,6 +8016,7 @@ pub const Codegen = struct {
         self.mpsc_sender_channels.clearRetainingCapacity();
         self.mpsc_receiver_bindings.clearRetainingCapacity();
         self.string_buf_bindings.clearRetainingCapacity();
+        self.inferred_string_slice_locals.clearRetainingCapacity();
         self.vec_buf_bindings.clearRetainingCapacity();
         self.hashmap_bindings.clearRetainingCapacity();
         self.btree_map_bindings.clearRetainingCapacity();
@@ -11265,6 +11275,24 @@ pub const Codegen = struct {
                 try self.rememberLocalBindingType(let.name, let_ty);
                 if (isFormatStringType(let_ty)) {
                     self.string_buf_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                }
+                if (let.value.* == .literal and let.value.literal == .string_val) {
+                    // Shared string-binding materialization contract
+                    // (#3/#5/#10, mirroring the SAB backend's sets): an
+                    // unannotated `let s = "lit"` binding is a Slice value
+                    // even though the checker tags it raw_ptr; record it
+                    // so raw_ptr consumers (len() above all) can tell it
+                    // apart from a genuine C-string pointer.
+                    const materialization = lowering_rules.classifyStringLetBinding(.{
+                        .value_is_string_literal = true,
+                        .has_explicit_ty = let.ty != null,
+                        .explicit_ty_is_pointer_scalar = if (let.ty) |explicit_ty| lowering_rules.typeIsPointerScalarValue(explicit_ty) else false,
+                    });
+                    if (materialization == .inferred_slice) {
+                        self.inferred_string_slice_locals.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                    } else {
+                        _ = self.inferred_string_slice_locals.remove(let.name);
+                    }
                 }
                 try self.markOwnedCollectionBinding(let.name, let_ty);
                 if (is_hoisted) {
@@ -14662,6 +14690,25 @@ pub const Codegen = struct {
                             self.outPrint("    EXPAND STRING_LEN {s}, {s}\n", .{ reg, slice_reg }) catch return CodegenError.CodegenError;
                             try self.emitRelease(slice_reg);
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(string_reg);
+                            return reg;
+                        }
+                        if (ty.* == .primitive and ty.primitive == .raw_ptr) {
+                            // DEF-2: a bare pointer carries no length field.
+                            // Shared plan (planLenRawPtrReceiver): inferred
+                            // `let s = "lit"` Slice bindings read the slice
+                            // length field; every other raw pointer (params,
+                            // STR_PTR results, extern pointers) is a C string
+                            // and must be NUL-scanned with CSTR_LEN. The old
+                            // fallthrough emitted STRING_LEN for both, reading
+                            // string bytes at +8 as a length for real pointers
+                            // (species text-backend parse/fnv failures).
+                            const inner = try self.genExpr(call.args[0], hoisted_allocs);
+                            const reg = try self.newTmp();
+                            const materialization: lowering_rules.StringBindingMaterialization = if (call.args[0].* == .identifier and self.inferred_string_slice_locals.contains(call.args[0].identifier)) .inferred_slice else .other;
+                            switch (lowering_rules.planLenRawPtrReceiver(materialization)) {
+                                .slice_len_field => self.outPrint("    EXPAND STRING_LEN {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError,
+                                .cstr_len_scan => self.outPrint("    EXPAND CSTR_LEN {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError,
+                            }
                             return reg;
                         }
                     }

@@ -682,6 +682,28 @@ pub const ImportedMacroCallPlan = struct {
         {
             return .pass_address_expression;
         }
+        // Direct-address-slot parameters are dereferenced as memory by
+        // the macro body (loads/stores through the passed pointer).
+        // For a projection of a std-owner handle type (String, Vec,
+        // Box, ...), the place slot holds a one-word pointer to the
+        // heap header — the place address is NOT the value's storage,
+        // and passing it makes the macro read/write the slot as if it
+        // were the header (STR_LEN(a.unit) read the word past the
+        // field, trapping BorrowConflict 1008 when the verifier could
+        // prove the overflow). Loading the handle yields exactly the
+        // pointer the body expects; mutations through it land in the
+        // shared header the place keeps pointing at. Plain aggregates
+        // keep the address path: their value is stored inline at the
+        // place. Assigned-output params keep the status quo (their
+        // write-back machinery is identifier-keyed).
+        if (self.callArgNeedsDirectAddressSlot(call_arg_index) and
+            !self.callArgIsAssignedOutput(call_arg_index) and
+            userDefinedStdOwnerIsNonCopy(arg_ty) and
+            (address_shape == .field or address_shape == .index or
+                address_shape == .deref_borrow_or_pointer or address_shape == .deref_smart_pointer))
+        {
+            return .pass_pointer_backed_projection;
+        }
         return switch (self.planAddressExpressionArgAction(call_arg_index, address_shape, has_existing_addressable_symbol)) {
             .pass_value => .pass_value,
             .pass_address_expression => .pass_address_expression,
@@ -7161,6 +7183,15 @@ test "shared imported macro address-expression args materialize stack slots" {
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.pass_value, address_slot_plan.planAddressExpressionArgAction(1, .value_temp, false));
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_address_expression, address_slot_plan.planAddressableArgLoweringAction(1, .field, false, &aggregate_ty));
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_value, address_slot_plan.planAddressableArgLoweringAction(1, .value_temp, false, &aggregate_ty));
+    // Std-owner handle projections under a direct-address-slot param
+    // load the handle instead of passing the place address (the slot
+    // holds a pointer to the heap header, not the header itself).
+    var string_ty = ast.Type{ .user_defined = .{ .name = "String", .generics = &.{} } };
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = &.{} } };
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_pointer_backed_projection, address_slot_plan.planAddressableArgLoweringAction(1, .field, false, &string_ty));
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_pointer_backed_projection, address_slot_plan.planAddressableArgLoweringAction(1, .index, false, &string_ty));
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_pointer_backed_projection, address_slot_plan.planAddressableArgLoweringAction(1, .deref_borrow_or_pointer, false, &vec_ty));
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_pointer_backed_projection, address_slot_plan.planAddressableArgLoweringAction(1, .deref_smart_pointer, false, &vec_ty));
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_value, address_slot_plan.planArgValueBypassAction(1, &ident, &infer_ty).?);
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_value, address_slot_plan.planArgValueBypassAction(1, &ident, &aggregate_ty).?);
 }

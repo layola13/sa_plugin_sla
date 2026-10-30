@@ -11943,7 +11943,20 @@ pub const Codegen = struct {
                             try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                         }
                         _ = self.consumed_bindings.remove(target_name);
-                    } else if (self.addressable_bindings.contains(target_name) or self.stack_alloc_bindings.contains(target_name)) {
+                    } else if (self.stack_alloc_bindings.contains(target_name)) {
+                        // DEF-6: the place-store is only valid when the
+                        // binding's register is genuinely a materialized
+                        // stack cell (stack_alloc_bindings membership is
+                        // established exactly where a cell is emitted).
+                        // Addressable-only bindings (marked because a
+                        // borrow or an imported-macro argument needs the
+                        // address on demand) keep their value IN the
+                        // register — for handle types like String that
+                        // value is the heap object pointer, and storing
+                        // through it wrote the new handle into the old
+                        // object's first word instead of rebinding.
+                        // Those fall through to the release-and-rebind
+                        // branch below.
                         self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                     } else {

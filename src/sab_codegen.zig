@@ -334,6 +334,7 @@ pub const Codegen = struct {
     result_slot_refcell_slots: std.AutoHashMap(u32, u32),
     borrow_address_temps: std.AutoHashMap(u32, BorrowAddressTempState),
     non_owning_regs: std.AutoHashMap(u32, void),
+    field_handle_view_regs: std.AutoHashMap(u32, void),
     // Anonymous stack_alloc temporaries (string/slice materialization etc).
     // Stack slots must never be explicitly released or moved (sci contract,
     // else verifier traps StackEscape); SA-text tracks the same set as
@@ -430,6 +431,7 @@ pub const Codegen = struct {
             .result_slot_refcell_slots = std.AutoHashMap(u32, u32).init(allocator),
             .borrow_address_temps = std.AutoHashMap(u32, BorrowAddressTempState).init(allocator),
             .non_owning_regs = std.AutoHashMap(u32, void).init(allocator),
+            .field_handle_view_regs = std.AutoHashMap(u32, void).init(allocator),
             .stack_alloc_regs = std.AutoHashMap(u32, void).init(allocator),
             .borrow_result_regs = std.AutoHashMap(u32, void).init(allocator),
             .future_state_vtables = std.AutoHashMap(u32, []const u8).init(allocator),
@@ -514,6 +516,7 @@ pub const Codegen = struct {
         self.clearBorrowAddressTemps();
         self.borrow_address_temps.deinit();
         self.non_owning_regs.deinit();
+        self.field_handle_view_regs.deinit();
         self.stack_alloc_regs.deinit();
         self.borrow_result_regs.deinit();
         self.future_state_vtables.deinit();
@@ -2457,6 +2460,7 @@ pub const Codegen = struct {
         self.result_slot_refcell_slots.clearRetainingCapacity();
         self.clearBorrowAddressTemps();
         self.non_owning_regs.clearRetainingCapacity();
+        self.field_handle_view_regs.clearRetainingCapacity();
         self.stack_alloc_regs.clearRetainingCapacity();
         self.hashmap_key_slots.clearRetainingCapacity();
         self.future_state_vtables.clearRetainingCapacity();
@@ -3796,6 +3800,20 @@ pub const Codegen = struct {
             try self.released_regs.put(reg, {});
             return;
         }
+        if (self.field_handle_view_regs.fetchRemove(reg)) |_| {
+            // DEF-KB-1: handle-typed field views must be disposed with a
+            // real release (see markLoadedFieldViewIfNeeded): move_ is a
+            // verifier no-op for raw-pointer registers and would leave
+            // the register Active|InteriorPtr at control-flow joins.
+            _ = self.non_owning_regs.fetchRemove(reg);
+            _ = self.future_state_vtables.remove(reg);
+            _ = self.future_readiness.remove(reg);
+            var item = self.makeInst(.release);
+            item.operands[0] = .{ .reg = reg };
+            try self.appendInst(item);
+            try self.released_regs.put(reg, {});
+            return;
+        }
         if (self.non_owning_regs.fetchRemove(reg)) |_| {
             var item = self.makeInst(.move_);
             item.operands[0] = .{ .reg = reg };
@@ -3875,6 +3893,19 @@ pub const Codegen = struct {
     fn markLoadedFieldViewIfNeeded(self: *Codegen, reg: u32, field_ty: *const ast.Type) !void {
         if (self.typeIsCopyValue(field_ty) or lowering_rules.isBorrowLikeType(field_ty)) return;
         try self.markNonOwningReg(reg);
+        // DEF-KB-1: a handle-typed field (Vec/String/maps/… — the field
+        // slot holds a pointer to the heap object) loads as a raw-pointer
+        // register carrying Active|InteriorPtr in the verifier. The
+        // generic non-owning disposal below emits move_ for such regs,
+        // but the verifier treats move_ on a raw-pointer register as a
+        // no-op, so the temp stays Active|InteriorPtr and any control
+        // flow join against a path that never materialized it traps
+        // PhiStateConflict (1015). A real release clears that state
+        // through the verifier's normal path; record the register so
+        // emitRelease uses it.
+        if (lowering_rules.abiPassesAsPointer(field_ty)) {
+            try self.field_handle_view_regs.put(reg, {});
+        }
     }
 
     fn transferFutureStateVTable(self: *Codegen, src: u32, dst: u32) !void {
@@ -3966,6 +3997,16 @@ pub const Codegen = struct {
         // borrows, stack slots, non-owning views) keep their own cleanup
         // paths and are exempt here.
         if (!self.assignSourceNeedsCleanup(src)) try self.markConsumed(src);
+        // DEF-KB-1 sibling (heng found phi shape): the verifier's assign
+        // consumes its source, but that consume is a no-op for
+        // raw-pointer-flagged registers, so a handle-typed field view
+        // assigned from inside one branch (e.g. `u = b.unit`) stays
+        // Active|InteriorPtr and traps PhiStateConflict at the join.
+        // Dispose of the view temp with a real release now.
+        if (self.field_handle_view_regs.contains(src)) {
+            _ = self.released_regs.remove(src);
+            try self.emitRelease(src);
+        }
     }
 
     /// Whether a register assigned-from keeps its normal scope-end cleanup.
@@ -12012,6 +12053,19 @@ pub const Codegen = struct {
             const owner = try self.intern(try self.newTmp());
             try self.emitLoad(owner, projection.reg, 0, .ptr);
             try self.markNonOwningReg(owner);
+            // DEF-KB-1: this owner temp is a handle-typed field view
+            // exactly like genField's load (see
+            // markLoadedFieldViewIfNeeded); register it so its disposal
+            // uses a real release instead of the verifier-no-op move_.
+            // Without this, `len(holder.values)` in a while condition
+            // leaves the temp Active|InteriorPtr at the loop head.
+            if (self.tc.expr_types.get(target.field_expr.expr)) |base_ty| {
+                if (self.fieldType(base_ty, target.field_expr.field_name)) |field_ty| {
+                    if (lowering_rules.abiPassesAsPointer(field_ty)) {
+                        try self.field_handle_view_regs.put(owner, {});
+                    }
+                }
+            }
             try self.releaseAddressSource(projection);
             return .{ .reg = owner };
         }

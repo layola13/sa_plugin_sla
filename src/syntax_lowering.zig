@@ -157,6 +157,13 @@ pub const Lowerer = struct {
             .ret_ty = "i32",
         });
         try self.ensureExtern(.{
+            .name = "sa_task_detach",
+            .params = &.{
+                .{ .name = "handle", .ty = "u64", .is_borrow = false, .is_move = false },
+            },
+            .ret_ty = "i32",
+        });
+        try self.ensureExtern(.{
             .name = "sa_task_monitor",
             .params = &.{
                 .{ .name = "handle", .ty = "u64", .is_borrow = false, .is_move = false },
@@ -207,7 +214,7 @@ pub const Lowerer = struct {
             switch (stmt.*) {
                 .let_stmt => |let| {
                     if (let.value.* == .go_expr) {
-                        try self.emitSpawn(&out, let.value, let.name);
+                        try self.emitSpawn(&out, let.value, let.name, false);
                     } else {
                         const replacement = (try self.expandExpr(let.value, &out)) orelse
                             return self.fail("this channel operation produces no value and cannot be a let initializer", .{});
@@ -220,7 +227,7 @@ pub const Lowerer = struct {
                 .expr_stmt => |expr| {
                     if (expr.* == .go_expr) {
                         const discard = try self.freshName("__go_h_");
-                        try self.emitSpawn(&out, expr, discard);
+                        try self.emitSpawn(&out, expr, discard, true);
                     } else if (try self.expandExpr(expr, &out)) |replacement| {
                         try out.append(try self.newNode(.{ .expr_stmt = replacement }));
                     }
@@ -490,7 +497,7 @@ pub const Lowerer = struct {
     /// Rewrite one go expression into the spawn sequence, appending
     /// the prefix statements plus a let binding `result_name` to the
     /// resulting handle.
-    fn emitSpawn(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), go_node: *ast.Node, result_name: []const u8) LowerError!void {
+    fn emitSpawn(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), go_node: *ast.Node, result_name: []const u8, detached: bool) LowerError!void {
         const go = go_node.go_expr;
         if (go.call.* != .call_expr) return self.fail("go operand is not a call expression", .{});
         const call = go.call.call_expr;
@@ -569,6 +576,24 @@ pub const Lowerer = struct {
         } });
         self.registerType(if_node, try self.tyPrim(.void_type));
         try out.append(try self.newNode(.{ .expr_stmt = if_node }));
+
+        // DEF-R1: a bare `go` statement discards the handle, so
+        // nobody can ever join this goroutine. Tell the runtime
+        // (sa_task_detach) so it reaps the completion record at
+        // exit instead of retaining it forever (~4,231 B/spawn).
+        if (detached) {
+            const det_ident = try self.identNode(handle_name, try self.tyPrim(.u64));
+            const detach_call = try self.newNode(.{ .call_expr = .{
+                .func_name = "sa_task_detach",
+                .associated_target = null,
+                .generics = &.{},
+                .args = try self.sliceOf(*ast.Node, det_ident),
+                .callee = null,
+            } });
+            self.registerType(detach_call, i32_ty);
+            const det_name = try self.freshName("__go_det_");
+            try out.append(try self.letNode(det_name, i32_ty, detach_call));
+        }
 
         // let <result>: u64 = __go_h_N;
         const result_ident = try self.identNode(handle_name, try self.tyPrim(.u64));

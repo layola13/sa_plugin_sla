@@ -14037,6 +14037,19 @@ pub const Codegen = struct {
                 self.symbols.items[dst],
                 self.symbols.items[value_reg],
             });
+            // DEF-3: the constructor macro stores the payload handle
+            // into the fresh enum object, so ownership of a non-Copy
+            // payload moves into the enum. Mark the source consumed
+            // instead of releasing it: releasing freed the payload
+            // while the enum still points at it (e.g.
+            // `let s = format!(...); return Ok(s);` segfaulted the
+            // caller on both backends).
+            if (self.tc.expr_types.get(call.args[0])) |value_ty| {
+                if (!self.typeIsCopyValue(value_ty)) {
+                    try self.markConsumed(value_reg);
+                    return dst;
+                }
+            }
             if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
         } else {
             try self.emitStdMacroFragment(import_path, macro_name, &.{

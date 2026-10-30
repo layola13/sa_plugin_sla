@@ -1044,6 +1044,25 @@ pub const Codegen = struct {
         try self.markConsumedBinding(reg);
     }
 
+    /// DEF-3: the Option/Result constructor macros (OPTION_NEW_SOME /
+    /// RESULT_NEW_OK / RESULT_NEW_ERR) store the payload handle into
+    /// the fresh enum object, so ownership of a non-Copy payload moves
+    /// into the enum. The source must be marked moved so its scope
+    /// drop does not fire: `let s = format!(...); return Ok(s);`
+    /// previously emitted STRING_BUF_FREE for s right after
+    /// RESULT_NEW_OK, leaving the caller a dangling payload
+    /// (segfault / corrupted string on both backends). Copy payloads
+    /// keep the plain temporary-release behavior.
+    fn releaseOrMarkMovedConstructorPayload(self: *Codegen, arg: *const ast.Node, value_reg: []const u8) CodegenError!void {
+        if (self.tc.expr_types.get(arg)) |value_ty| {
+            if (!self.typeIsCopyValue(value_ty)) {
+                try self.markMovedExprBinding(arg, value_reg);
+                return;
+            }
+        }
+        if (callArgNeedsRelease(arg)) try self.emitRelease(value_reg);
+    }
+
     fn rebindRefCellBorrowHandleOwners(self: *Codegen, src: []const u8, dst: []const u8) void {
         if (std.mem.eql(u8, src, dst)) return;
         var iter = self.refcell_borrow_handles.valueIterator();
@@ -14197,7 +14216,7 @@ pub const Codegen = struct {
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const reg = try self.newTmp();
                     self.outPrint("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
-                    if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                    try self.releaseOrMarkMovedConstructorPayload(call.args[0], value_reg);
                     return reg;
                 }
                 if (std.mem.eql(u8, call.func_name, "None") and call.associated_target == null) {
@@ -14211,7 +14230,7 @@ pub const Codegen = struct {
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const reg = try self.newTmp();
                     self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
-                    if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                    try self.releaseOrMarkMovedConstructorPayload(call.args[0], value_reg);
                     return reg;
                 }
                 if (lowering_rules.isResultErrCall(call)) {
@@ -14219,7 +14238,7 @@ pub const Codegen = struct {
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const reg = try self.newTmp();
                     self.outPrint("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
-                    if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                    try self.releaseOrMarkMovedConstructorPayload(call.args[0], value_reg);
                     return reg;
                 }
                 if (lowering_rules.isPtrNullCall(call)) {

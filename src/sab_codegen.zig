@@ -18880,6 +18880,37 @@ pub const Codegen = struct {
         return dst;
     }
 
+    /// Element-wise copy of an inline array value from
+    /// `source + source_offset` into `dst + dst_offset`. An inline array
+    /// field occupies its full contiguous extent inside the enclosing
+    /// struct allocation, so copying it with a single aggregate
+    /// load/store moves only one word and leaves the rest of the
+    /// destination unwritten (DEF-1). Scalar and pointer-represented
+    /// elements copy per element; nested arrays recurse; struct
+    /// elements (pointer-represented) are re-created through the same
+    /// deep/shallow copy used for direct struct fields.
+    fn copyArrayValueInto(self: *Codegen, dst: u32, dst_offset: usize, source: u32, source_offset: usize, arr: ast.ArrayType, deep: bool) anyerror!void {
+        for (0..arr.len) |idx| {
+            const elem_layout = arrayElementLayout(arr, idx) orelse return Error.UnsupportedSabDirectFeature;
+            const elem = arr.elem;
+            if (elem.* == .array) {
+                try self.copyArrayValueInto(dst, dst_offset + elem_layout.offset, source, source_offset + elem_layout.offset, elem.array, deep);
+            } else if (self.structDeclForType(elem) != null) {
+                const elem_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(elem_reg, source, source_offset + elem_layout.offset, elem_layout.ty);
+                const copied = if (deep) try self.genCopyValue(elem_reg, elem) else try self.genShallowCopyCallArgValue(elem_reg, elem);
+                try self.emitStore(dst, dst_offset + elem_layout.offset, copied, elem_layout.ty);
+                try self.emitConsumedMarker(copied);
+                try self.emitRelease(elem_reg);
+            } else {
+                const elem_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(elem_reg, source, source_offset + elem_layout.offset, elem_layout.ty);
+                try self.emitStore(dst, dst_offset + elem_layout.offset, elem_reg, elem_layout.ty);
+                try self.emitConsumedMarker(elem_reg);
+            }
+        }
+    }
+
     fn genCopyValue(self: *Codegen, source: u32, ty: *const ast.Type) anyerror!u32 {
         const decl = self.structDeclForType(ty) orelse return Error.UnsupportedSabDirectFeature;
         if (!self.typeHasCopyDerive(ty) or decl.is_opaque or decl.is_union) return Error.UnsupportedSabDirectFeature;
@@ -18888,6 +18919,10 @@ pub const Codegen = struct {
         try self.emitAlloc(dst, structSize(decl));
         for (decl.fields) |field| {
             const layout = try self.fieldLayout(ty, field.name);
+            if (field.ty.* == .array) {
+                try self.copyArrayValueInto(dst, layout.offset, source, layout.offset, field.ty.array, true);
+                continue;
+            }
             const field_reg = try self.intern(try self.newTmp());
             try self.emitLoad(field_reg, source, layout.offset, layout.ty);
             if (self.structDeclForType(field.ty) != null) {
@@ -18911,6 +18946,10 @@ pub const Codegen = struct {
         try self.emitAlloc(dst, structSize(decl));
         for (decl.fields) |field| {
             const layout = try self.fieldLayout(ty, field.name);
+            if (field.ty.* == .array) {
+                try self.copyArrayValueInto(dst, layout.offset, source, layout.offset, field.ty.array, false);
+                continue;
+            }
             const field_reg = try self.intern(try self.newTmp());
             try self.emitLoad(field_reg, source, layout.offset, layout.ty);
             if (lowering_rules.shallowCopyCallArgFieldShouldRecurse(self.structDeclForType(field.ty) != null, field.ty)) {
@@ -19050,6 +19089,18 @@ pub const Codegen = struct {
         const field_ty = self.fieldType(expr_ty, field.field_name) orelse return Error.UnsupportedSabDirectFeature;
 
         const base = try self.genExpr(field.expr);
+        // An inline array field read as a value decays to its address,
+        // exactly like the ManuallyDrop case below: the array value
+        // register elsewhere (array literals, params) is always the
+        // address of the contiguous elements, while a single aggregate
+        // load would hand back only the first word's bits (DEF-1).
+        if (field_ty.* == .array) {
+            const addr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(addr, base, .{ .imm_u64 = @intCast(layout.offset) });
+            try self.markLoadedFieldViewIfNeeded(addr, field_ty);
+            if (!self.isLocalReg(base)) try self.emitRelease(base);
+            return addr;
+        }
         // Mirror SA-text: a ManuallyDrop-typed field decays to its address
         // (callers like `into_inner` load through it); loading it as a
         // value would misread the inline payload as a pointer.

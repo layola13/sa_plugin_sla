@@ -116,6 +116,27 @@ pub const Scope = struct {
     }
 };
 
+/// Extern variadic batch: the result type of a `va_next_*` builtin, or
+/// null when the name is not one. The readable set is exactly the C
+/// promoted scalar set (the VaArgSafe analogue).
+fn vaNextReadType(name: []const u8) ?ast.Type {
+    const prim: ast.Primitive = if (std.mem.eql(u8, name, "va_next_i32"))
+        .i32
+    else if (std.mem.eql(u8, name, "va_next_i64"))
+        .i64
+    else if (std.mem.eql(u8, name, "va_next_u32"))
+        .u32
+    else if (std.mem.eql(u8, name, "va_next_u64"))
+        .u64
+    else if (std.mem.eql(u8, name, "va_next_f64"))
+        .f64
+    else if (std.mem.eql(u8, name, "va_next_ptr"))
+        .raw_ptr
+    else
+        return null;
+    return .{ .primitive = prim };
+}
+
 fn bindingIsLocalToLoop(scope: *Scope, loop_scope: *Scope, name: []const u8) bool {
     var curr: ?*Scope = scope;
     while (curr) |frame| : (curr = frame.parent) {
@@ -136,6 +157,7 @@ pub const TypeChecker = struct {
         params: []const ast.Param,
         ret_ty: *ast.Type,
         is_async: bool = false,
+        is_variadic: bool = false,
     };
 
     pub const FunctionAliasMetadata = struct {
@@ -196,6 +218,13 @@ pub const TypeChecker = struct {
     chan_new_pending: std.AutoHashMap(*const ast.Node, *ast.Type),
     chan_calls: std.AutoHashMap(*const ast.Node, ChanCallInfo),
     array_to_slice_borrow_args: std.AutoHashMap(*const ast.Node, void),
+    // Extern variadic batch: for each trailing argument of a call to a
+    // variadic extern, the C-promoted type the codegens must emit for it.
+    variadic_promotions: std.AutoHashMap(*const ast.Node, *ast.Type),
+    // Extern variadic batch: whether the function body currently being
+    // checked is an exported extern "C" variadic definition (gates the
+    // va_next_* builtins).
+    current_fn_is_variadic_def: bool = false,
     resolved_call_symbols: std.AutoHashMap(*const ast.Node, []const u8),
     resolved_call_alias_metadata: std.AutoHashMap(*const ast.Node, FunctionAliasMetadata),
     current_function_name: ?[]const u8,
@@ -262,6 +291,7 @@ pub const TypeChecker = struct {
             .chan_new_pending = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
             .chan_calls = std.AutoHashMap(*const ast.Node, ChanCallInfo).init(allocator),
             .array_to_slice_borrow_args = std.AutoHashMap(*const ast.Node, void).init(allocator),
+            .variadic_promotions = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
             .resolved_call_symbols = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .resolved_call_alias_metadata = std.AutoHashMap(*const ast.Node, FunctionAliasMetadata).init(allocator),
             .current_function_name = null,
@@ -812,6 +842,20 @@ pub const TypeChecker = struct {
         if (!prototype.is_extern) return false;
         if (!definition.is_extern and !definition.no_mangle) return false;
         if (prototype.abi != null and definition.abi != null and !std.mem.eql(u8, prototype.abi.?, definition.abi.?)) return false;
+        if (prototype.is_variadic != definition.is_variadic) return false;
+        if (prototype.is_variadic) {
+            // Extern variadic batch: the prototype lists only the fixed
+            // parameters (its list ends with `...`); the definition lists
+            // the same fixed parameters plus the trailing VaList binding.
+            if (definition.params.len == 0) return false;
+            const last = definition.params[definition.params.len - 1];
+            if (!(last.ty.* == .primitive and last.ty.primitive == .va_list)) return false;
+            if (prototype.params.len != definition.params.len - 1) return false;
+            for (prototype.params, definition.params[0 .. definition.params.len - 1]) |p, d| {
+                if (!typesStructurallyEqual(p.ty, d.ty)) return false;
+            }
+            return typesStructurallyEqual(prototype.ret_ty, definition.ret_ty);
+        }
         if (prototype.params.len != definition.params.len) return false;
         for (prototype.params, definition.params) |p, d| {
             if (!typesStructurallyEqual(p.ty, d.ty)) return false;
@@ -846,6 +890,7 @@ pub const TypeChecker = struct {
                 break :blk typesStructurallyEqual(c.ret, b.closure.ret);
             },
             .fn_ptr => |f| blk: {
+                if (f.is_variadic != b.fn_ptr.is_variadic) break :blk false;
                 if (f.params.len != b.fn_ptr.params.len) break :blk false;
                 for (f.params, b.fn_ptr.params) |x, y| {
                     if (!typesStructurallyEqual(x, y)) break :blk false;
@@ -1005,6 +1050,7 @@ pub const TypeChecker = struct {
         self.chan_new_pending.deinit();
         self.chan_calls.deinit();
         self.array_to_slice_borrow_args.deinit();
+        self.variadic_promotions.deinit();
         self.resolved_call_symbols.deinit();
         self.resolved_call_alias_metadata.deinit();
         for (self.scope_pool.items) |s| {
@@ -1130,11 +1176,12 @@ pub const TypeChecker = struct {
         }
     }
 
-    pub fn registerImportedFunctionSignature(self: *TypeChecker, name: []const u8, params: []const ast.Param, ret_ty: *ast.Type, is_async: bool) !void {
+    pub fn registerImportedFunctionSignature(self: *TypeChecker, name: []const u8, params: []const ast.Param, ret_ty: *ast.Type, is_async: bool, is_variadic: bool) !void {
         try self.imported_function_signatures.put(name, .{
             .params = params,
             .ret_ty = ret_ty,
             .is_async = is_async,
+            .is_variadic = is_variadic,
         });
     }
 
@@ -1309,6 +1356,7 @@ pub const TypeChecker = struct {
                 .u16, .i16 => 2,
                 .u32, .i32, .f32 => 4,
                 .u64, .i64, .usize, .isize, .f64, .integer, .float, .raw_ptr => 8,
+                .va_list => 8,
                 .void_type => null,
             },
             .pointer, .fn_ptr => return 8,
@@ -1532,7 +1580,67 @@ pub const TypeChecker = struct {
         call_name: []const u8,
         auto_borrow_receiver: bool,
     ) TypeError!void {
-        try self.checkCallArgsAgainstSignature(func.params, args, scope, call_name, auto_borrow_receiver);
+        // A variadic definition's parameter list ends in the VaList
+        // parameter, which is not a call argument: callers supply the
+        // fixed parameters plus trailing promoted arguments.
+        var params = func.params;
+        if (func.is_variadic and params.len > 0) {
+            const last = params[params.len - 1];
+            if (last.ty.* == .primitive and last.ty.primitive == .va_list) {
+                params = params[0 .. params.len - 1];
+            }
+        }
+        try self.checkCallArgsAgainstSignature(params, args, scope, call_name, auto_borrow_receiver, func.is_variadic);
+    }
+
+    /// Extern variadic batch: the C default argument promotion for one
+    /// trailing argument, or null when the argument's type may not pass
+    /// through `...` at all. Follows C11 6.5.2.2/6.3.1.1 exactly: integer
+    /// types narrower than int promote to int (u8/u16 included - int
+    /// represents all their values), float promotes to double.
+    fn variadicPromotedType(self: *TypeChecker, arg: *const ast.Node, arg_ty: *ast.Type) TypeError!?*ast.Type {
+        switch (arg_ty.*) {
+            .primitive => |prim| {
+                return switch (prim) {
+                    .i8, .i16, .u8, .u16 => try self.makeI32Type(),
+                    .f32 => try self.makeF64Type(),
+                    .integer => blk: {
+                        // Unannotated integer literal: int when it fits,
+                        // long otherwise (C literal-through-varargs rule).
+                        if (arg.* == .literal and arg.literal == .int_val) {
+                            const v = arg.literal.int_val;
+                            break :blk if (v >= std.math.minInt(i32) and v <= std.math.maxInt(i32)) try self.makeI32Type() else try self.makeI64Type();
+                        }
+                        break :blk try self.makeI64Type();
+                    },
+                    .float => try self.makeF64Type(),
+                    .i32, .u32, .i64, .u64, .isize, .usize, .f64, .raw_ptr => arg_ty,
+                    else => null,
+                };
+            },
+            .pointer => return arg_ty,
+            else => return null,
+        }
+    }
+
+    /// Extern variadic batch: validate one trailing argument of a call
+    /// to a variadic extern and record its promoted type for codegen.
+    fn checkVariadicTrailingArg(
+        self: *TypeChecker,
+        arg: *ast.Node,
+        scope: *Scope,
+        call_name: []const u8,
+    ) TypeError!void {
+        if (arg.* == .move_expr or arg.* == .borrow_expr) {
+            self.setError("variadic argument to {s} must be a plain scalar or raw pointer value; borrows and moves may not pass through `...`", .{call_name});
+            return TypeError.TypeMismatch;
+        }
+        const arg_ty = try self.checkExpr(arg, scope);
+        const promoted = (try self.variadicPromotedType(arg, arg_ty)) orelse {
+            self.setError("variadic argument to {s} has type {s}, which may not pass through `...`: only scalars and raw pointers are allowed (aggregates, String/Vec handles, borrows and owned values are rejected; pass a raw *u8 for C strings)", .{ call_name, typeDesc(arg_ty) });
+            return TypeError.TypeMismatch;
+        };
+        self.variadic_promotions.put(arg, promoted) catch return TypeError.OutOfMemory;
     }
 
     fn checkCallArgsAgainstSignature(
@@ -1542,13 +1650,20 @@ pub const TypeChecker = struct {
         scope: *Scope,
         call_name: []const u8,
         auto_borrow_receiver: bool,
+        is_variadic: bool,
     ) TypeError!void {
-        if (params.len != args.len) return TypeError.InvalidArgsCount;
+        if (is_variadic) {
+            if (args.len < params.len) {
+                self.setError("call to variadic function {s} needs at least {} arguments ({} fixed), got {}", .{ call_name, params.len, params.len, args.len });
+                return TypeError.InvalidArgsCount;
+            }
+        } else if (params.len != args.len) return TypeError.InvalidArgsCount;
+        const fixed_count = if (is_variadic) params.len else args.len;
         // View-types stage 1: pairwise field-place overlap validation
         // for this call's arguments (runs before per-arg checking so
         // overlapping borrows are reported as borrow conflicts).
-        try self.checkCallArgPlaceOverlaps(params, args, scope, call_name, self.funcs.get(call_name), 0);
-        for (params, args, 0..) |param, arg, i| {
+        try self.checkCallArgPlaceOverlaps(params, args[0..fixed_count], scope, call_name, self.funcs.get(call_name), 0);
+        for (params, args[0..fixed_count], 0..) |param, arg, i| {
             if (param.is_move and arg.* != .move_expr) return TypeError.TypeMismatch;
             if (param.is_borrow) {
                 if (dynTraitName(param.ty)) |trait_name| {
@@ -1619,6 +1734,11 @@ pub const TypeChecker = struct {
             // variable and this call) instead of reaching the SA referee.
             try self.consumeCallArgIfMoved(scope, param, arg, arg_ty, call_name);
         }
+        if (is_variadic) {
+            for (args[fixed_count..]) |arg| {
+                try self.checkVariadicTrailingArg(arg, scope, call_name);
+            }
+        }
     }
 
     fn checkStaticCallBySymbol(
@@ -1637,7 +1757,7 @@ pub const TypeChecker = struct {
             return func.ret_ty;
         }
         if (self.imported_function_signatures.get(symbol)) |signature| {
-            try self.checkCallArgsAgainstSignature(signature.params, args, scope, call_name, auto_borrow_receiver);
+            try self.checkCallArgsAgainstSignature(signature.params, args, scope, call_name, auto_borrow_receiver, signature.is_variadic);
             self.resolved_call_symbols.put(expr, symbol) catch return TypeError.OutOfMemory;
             if (signature.is_async) return try self.makeFutureType(signature.ret_ty);
             return signature.ret_ty;
@@ -2059,6 +2179,9 @@ pub const TypeChecker = struct {
         const previous_fn_is_async = self.current_fn_is_async;
         self.current_fn_is_async = false;
         defer self.current_fn_is_async = previous_fn_is_async;
+        const previous_fn_is_variadic_def = self.current_fn_is_variadic_def;
+        self.current_fn_is_variadic_def = false;
+        defer self.current_fn_is_variadic_def = previous_fn_is_variadic_def;
         const ret_ty = try self.checkExpr(lit.body, closure_scope);
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .closure = .{ .params = try param_types.toOwnedSlice(), .ret = ret_ty } };
@@ -2103,11 +2226,29 @@ pub const TypeChecker = struct {
     }
 
     fn makeFnPtrType(self: *TypeChecker, abi: ?[]const u8, params: []const *ast.Type, ret: *ast.Type) TypeError!*ast.Type {
+        return self.makeFnPtrTypeVariadic(abi, params, ret, false);
+    }
+
+    fn makeFnPtrTypeVariadic(self: *TypeChecker, abi: ?[]const u8, params: []const *ast.Type, ret: *ast.Type, is_variadic: bool) TypeError!*ast.Type {
         const owned_params = try self.allocator.alloc(*ast.Type, params.len);
         for (params, 0..) |param, i| owned_params[i] = param;
         const ty = try self.allocator.create(ast.Type);
-        ty.* = .{ .fn_ptr = .{ .abi = abi, .params = owned_params, .ret = ret } };
+        ty.* = .{ .fn_ptr = .{ .abi = abi, .params = owned_params, .ret = ret, .is_variadic = is_variadic } };
         return ty;
+    }
+
+    /// The fn-pointer parameter types of a function declaration: for a
+    /// variadic definition the trailing VaList parameter is dropped (the
+    /// fn-pointer spelling carries the fixed parameters plus the `...`
+    /// flag instead).
+    fn fnPtrParamTypes(self: *TypeChecker, decl: *const ast.FuncDecl) TypeError![]const *ast.Type {
+        var params = std.array_list.Managed(*ast.Type).init(self.allocator);
+        const n = if (decl.is_variadic and decl.params.len > 0 and decl.params[decl.params.len - 1].ty.* == .primitive and decl.params[decl.params.len - 1].ty.primitive == .va_list)
+            decl.params.len - 1
+        else
+            decl.params.len;
+        for (decl.params[0..n]) |param| try params.append(param.ty);
+        return params.toOwnedSlice();
     }
 
     fn makeInferType(self: *TypeChecker) TypeError!*ast.Type {
@@ -2198,6 +2339,12 @@ pub const TypeChecker = struct {
     fn makeI64Type(self: *TypeChecker) TypeError!*ast.Type {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .primitive = .i64 };
+        return ty;
+    }
+
+    fn makeF64Type(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .primitive = .f64 };
         return ty;
     }
 
@@ -3109,6 +3256,90 @@ pub const TypeChecker = struct {
         });
     }
 
+    /// Extern variadic batch: does this type mention VaList anywhere?
+    /// Whether a VALUE of this type is (or directly embeds) the VaList
+    /// object itself, as opposed to a function value whose signature
+    /// merely mentions VaList in a parameter. Used by the let-binding
+    /// copy guard: binding a variadic FUNCTION to a name is fine;
+    /// binding its VaList is not.
+    fn typeIsVaListValue(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |prim| prim == .va_list,
+            .pointer => |inner| typeIsVaListValue(inner),
+            .borrow => |inner| typeIsVaListValue(inner),
+            .future => |inner| typeIsVaListValue(inner),
+            .array => |arr| typeIsVaListValue(arr.elem),
+            .tuple => |tup| blk: {
+                for (tup.elems) |elem| {
+                    if (typeIsVaListValue(elem)) break :blk true;
+                }
+                break :blk false;
+            },
+            .user_defined => |ud| blk: {
+                for (ud.generics) |g| {
+                    if (typeIsVaListValue(g)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    fn typeContainsVaList(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |prim| prim == .va_list,
+            .pointer => |inner| typeContainsVaList(inner),
+            .borrow => |inner| typeContainsVaList(inner),
+            .future => |inner| typeContainsVaList(inner),
+            .array => |arr| typeContainsVaList(arr.elem),
+            .tuple => |tup| blk: {
+                for (tup.elems) |elem| {
+                    if (typeContainsVaList(elem)) break :blk true;
+                }
+                break :blk false;
+            },
+            .closure => |c| blk: {
+                for (c.params) |p| {
+                    if (typeContainsVaList(p)) break :blk true;
+                }
+                break :blk typeContainsVaList(c.ret);
+            },
+            .fn_ptr => |f| blk: {
+                for (f.params) |p| {
+                    if (typeContainsVaList(p)) break :blk true;
+                }
+                break :blk typeContainsVaList(f.ret);
+            },
+            .user_defined => |ud| blk: {
+                for (ud.generics) |g| {
+                    if (typeContainsVaList(g)) break :blk true;
+                }
+                break :blk false;
+            },
+            .infer => false,
+        };
+    }
+
+    /// Extern variadic batch: VaList is a non-copyable handle bound to
+    /// one variadic definition's frame. It may appear in exactly one
+    /// position: the trailing parameter of an exported extern "C"
+    /// variadic definition. Everywhere else is a loud error.
+    fn validateVaListPlacement(self: *TypeChecker, fd: *const ast.FuncDecl) TypeError!void {
+        if (typeContainsVaList(fd.ret_ty)) {
+            self.setError("VaList may not be used as a return type (function `{s}`)", .{fd.name});
+            return TypeError.TypeMismatch;
+        }
+        for (fd.params, 0..) |p, i| {
+            const is_trailing_valist = fd.is_variadic and fd.is_extern and !fd.is_decl_only and
+                i + 1 == fd.params.len and p.ty.* == .primitive and p.ty.primitive == .va_list;
+            if (is_trailing_valist) continue;
+            if (typeContainsVaList(p.ty)) {
+                self.setError("VaList may only appear as the trailing parameter of an exported extern \"C\" variadic definition (function `{s}`, parameter `{s}`)", .{ fd.name, p.name });
+                return TypeError.TypeMismatch;
+            }
+        }
+    }
+
     pub fn checkProgram(self: *TypeChecker, program: *ast.Node) !void {
         if (program.* != .program) return TypeError.CompileError;
 
@@ -3148,6 +3379,25 @@ pub const TypeChecker = struct {
             if (decl.* == .trait_decl) {
                 for (decl.trait_decl.supertraits) |supertrait| {
                     if (!self.traits.contains(supertrait)) return TypeError.UndefinedVariable;
+                }
+            }
+        }
+
+        // Extern variadic batch: VaList placement validation for every
+        // function-shaped declaration (definitions, prototypes, methods).
+        for (program.program.decls) |decl| {
+            if (decl.* == .func_decl) {
+                try self.validateVaListPlacement(&decl.func_decl);
+            } else if (decl.* == .struct_decl) {
+                for (decl.struct_decl.fields) |field| {
+                    if (typeContainsVaList(field.ty)) {
+                        self.setError("VaList may not be a struct field type (struct `{s}`, field `{s}`)", .{ decl.struct_decl.name, field.name });
+                        return TypeError.TypeMismatch;
+                    }
+                }
+            } else if (decl.* == .impl_decl) {
+                for (decl.impl_decl.methods) |method| {
+                    if (method.* == .func_decl) try self.validateVaListPlacement(&method.func_decl);
                 }
             }
         }
@@ -3548,6 +3798,9 @@ pub const TypeChecker = struct {
         const previous_fn_is_async = self.current_fn_is_async;
         self.current_fn_is_async = false;
         defer self.current_fn_is_async = previous_fn_is_async;
+        const previous_fn_is_variadic_def = self.current_fn_is_variadic_def;
+        self.current_fn_is_variadic_def = false;
+        defer self.current_fn_is_variadic_def = previous_fn_is_variadic_def;
         var scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
 
@@ -3576,6 +3829,10 @@ pub const TypeChecker = struct {
         const previous_fn_is_async = self.current_fn_is_async;
         self.current_fn_is_async = func.is_async;
         defer self.current_fn_is_async = previous_fn_is_async;
+
+        const previous_fn_is_variadic_def = self.current_fn_is_variadic_def;
+        self.current_fn_is_variadic_def = func.is_variadic and func.is_extern and !func.is_decl_only;
+        defer self.current_fn_is_variadic_def = previous_fn_is_variadic_def;
 
         const previous_namespace = self.current_function_namespace;
         self.current_function_namespace = if (self.resolveFunctionAliasMetadata(func.name)) |metadata| metadata.namespace else null;
@@ -3834,6 +4091,10 @@ pub const TypeChecker = struct {
                     try self.chan_new_validated.put(let.value, {});
                 }
                 const val_ty = try self.checkExpr(let.value, scope);
+                if (typeIsVaListValue(val_ty) or (let.ty != null and typeIsVaListValue(let.ty.?))) {
+                    self.setError("VaList is not copyable: it cannot be bound to a new name, stored, or returned; pass the variadic parameter itself to va_next_*", .{});
+                    return TypeError.TypeMismatch;
+                }
                 const declared_ty = let.ty orelse val_ty;
                 if (let.ty != null and val_ty.* == .array and declared_ty.* == .array) {
                     self.expr_types.put(let.value, declared_ty) catch return TypeError.OutOfMemory;
@@ -4291,11 +4552,8 @@ pub const TypeChecker = struct {
                     return sym.ty;
                 }
                 if (self.funcs.get(name)) |func| {
-                    var params = std.array_list.Managed(*ast.Type).init(self.allocator);
-                    for (func.params) |param| {
-                        try params.append(param.ty);
-                    }
-                    return try self.makeFnPtrType(func.abi, try params.toOwnedSlice(), func.ret_ty);
+                    const params = try self.fnPtrParamTypes(func);
+                    return try self.makeFnPtrTypeVariadic(func.abi, params, func.ret_ty, func.is_variadic);
                 }
                 self.setError("UndefinedVariable: identifier `{s}` is not defined in this scope", .{name});
                 return TypeError.UndefinedVariable;
@@ -4897,6 +5155,32 @@ pub const TypeChecker = struct {
                     return try self.checkFuturePairAccessorCall(call, scope, false);
                 }
 
+                // Extern variadic batch: va_next_* builtins read the next
+                // promoted argument from the current function's VaList.
+                if (vaNextReadType(call.func_name)) |read_ty| {
+                    if (!self.current_fn_is_variadic_def) {
+                        self.setError("{s} may only be used inside an exported extern \"C\" variadic definition", .{call.func_name});
+                        return TypeError.TypeMismatch;
+                    }
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    if (call.args[0].* != .identifier) {
+                        self.setError("{s} argument must be the VaList parameter binding itself (VaList is not copyable)", .{call.func_name});
+                        return TypeError.TypeMismatch;
+                    }
+                    const list_ty = try self.checkExpr(call.args[0], scope);
+                    if (!(list_ty.* == .primitive and list_ty.primitive == .va_list)) {
+                        self.setError("{s} argument must be the VaList parameter, got {s}", .{ call.func_name, typeDesc(list_ty) });
+                        return TypeError.TypeMismatch;
+                    }
+                    const ret = try self.allocator.create(ast.Type);
+                    ret.* = read_ty;
+                    return ret;
+                }
+                if (std.mem.startsWith(u8, call.func_name, "va_next_")) {
+                    self.setError("unknown variadic read builtin `{s}` (supported: va_next_i32, va_next_i64, va_next_u32, va_next_u64, va_next_f64, va_next_ptr)", .{call.func_name});
+                    return TypeError.UndefinedVariable;
+                }
+
                 if (std.mem.eql(u8, call.func_name, "future__select2")) {
                     return try self.checkFutureSelect2Call(call, scope);
                 }
@@ -5483,11 +5767,22 @@ pub const TypeChecker = struct {
                     }
                     if (sym.ty.* == .fn_ptr) {
                         const fn_ptr = sym.ty.fn_ptr;
-                        if (fn_ptr.params.len != call.args.len) return TypeError.InvalidArgsCount;
-                        for (fn_ptr.params, call.args) |param_ty, arg| {
+                        if (fn_ptr.is_variadic) {
+                            if (call.args.len < fn_ptr.params.len) {
+                                self.setError("call through variadic function pointer needs at least {} arguments ({} fixed), got {}", .{ fn_ptr.params.len, fn_ptr.params.len, call.args.len });
+                                return TypeError.InvalidArgsCount;
+                            }
+                        } else if (fn_ptr.params.len != call.args.len) return TypeError.InvalidArgsCount;
+                        const fn_fixed = if (fn_ptr.is_variadic) fn_ptr.params.len else call.args.len;
+                        for (fn_ptr.params, call.args[0..fn_fixed]) |param_ty, arg| {
                             const arg_ty = try self.checkExpr(arg, scope);
                             if (!self.plainCallArgMatches(param_ty, arg, arg_ty)) return TypeError.TypeMismatch;
                             if (!self.arrayCallArgStrictMatches(param_ty, arg_ty)) return TypeError.TypeMismatch;
+                        }
+                        if (fn_ptr.is_variadic) {
+                            for (call.args[fn_fixed..]) |arg| {
+                                try self.checkVariadicTrailingArg(arg, scope, call.func_name);
+                            }
                         }
                         self.fn_ptr_calls.put(expr, {}) catch return TypeError.OutOfMemory;
                         return fn_ptr.ret;
@@ -5520,7 +5815,7 @@ pub const TypeChecker = struct {
                 }
 
                 if (self.imported_function_signatures.get(resolved_func_name)) |signature| {
-                    try self.checkCallArgsAgainstSignature(signature.params, call.args, scope, call.func_name, false);
+                    try self.checkCallArgsAgainstSignature(signature.params, call.args, scope, call.func_name, false, signature.is_variadic);
                     if (!std.mem.eql(u8, resolved_func_name, call.func_name) or
                         self.resolveFunctionAliasMetadata(call.func_name) != null or
                         self.resolveFunctionAliasMetadata(resolved_func_name) != null)
@@ -6107,7 +6402,7 @@ pub const TypeChecker = struct {
                         return func.ret_ty;
                     }
                     if (self.imported_function_signatures.get(method_name)) |signature| {
-                        try self.checkCallArgsAgainstSignature(signature.params, call.args, scope, call.func_name, true);
+                        try self.checkCallArgsAgainstSignature(signature.params, call.args, scope, call.func_name, true, signature.is_variadic);
                         const resolved = std.fmt.allocPrint(self.allocator, "{s}", .{method_name}) catch return TypeError.OutOfMemory;
                         self.resolved_call_symbols.put(expr, resolved) catch return TypeError.OutOfMemory;
                         if (signature.is_async) return try self.makeFutureType(signature.ret_ty);
@@ -6233,8 +6528,13 @@ pub const TypeChecker = struct {
 
                 // 2. Check FFI functions
                 if (self.extern_funcs.get(call.func_name)) |ext| {
-                    if (ext.params.len != call.args.len) return TypeError.InvalidArgsCount;
-                    for (ext.params, call.args) |param, arg| {
+                    if (ext.is_variadic) {
+                        if (call.args.len < ext.params.len) {
+                            self.setError("call to variadic function {s} needs at least {} arguments ({} fixed), got {}", .{ call.func_name, ext.params.len, ext.params.len, call.args.len });
+                            return TypeError.InvalidArgsCount;
+                        }
+                    } else if (ext.params.len != call.args.len) return TypeError.InvalidArgsCount;
+                    for (ext.params, call.args[0..ext.params.len]) |param, arg| {
                         const arg_ty = try self.checkExpr(arg, scope);
                         // bypass signature checks for FFI pointers
                         // Fn values bound for a by-value pointer parameter
@@ -6260,6 +6560,11 @@ pub const TypeChecker = struct {
                             return TypeError.TypeMismatch;
                         }
                         try self.consumeExternMoveArg(scope, param, arg);
+                    }
+                    if (ext.is_variadic) {
+                        for (call.args[ext.params.len..]) |arg| {
+                            try self.checkVariadicTrailingArg(arg, scope, call.func_name);
+                        }
                     }
                     const ret = try self.allocator.create(ast.Type);
                     setTypeFromAbiReturn(self.allocator, ret, ext.ret_ty);
@@ -6992,6 +7297,7 @@ pub const TypeChecker = struct {
                 } else if (b.fn_ptr.abi == null or !std.mem.eql(u8, fa.abi.?, b.fn_ptr.abi.?)) {
                     return false;
                 }
+                if (fa.is_variadic != b.fn_ptr.is_variadic) return false;
                 if (fa.params.len != b.fn_ptr.params.len) return false;
                 for (fa.params, b.fn_ptr.params) |pa, pb| {
                     if (!self.typesEqual(pa, pb)) return false;
@@ -7064,6 +7370,7 @@ pub const TypeChecker = struct {
             .future => |inner| return actual.* == .future and self.typeEqualsWithSelf(actual.future, inner, self_ty),
             .fn_ptr => |fn_ptr| {
                 if (actual.* != .fn_ptr) return false;
+                if (fn_ptr.is_variadic != actual.fn_ptr.is_variadic) return false;
                 if (fn_ptr.params.len != actual.fn_ptr.params.len) return false;
                 for (actual.fn_ptr.params, fn_ptr.params) |a, e| {
                     if (!self.typeEqualsWithSelf(a, e, self_ty)) return false;
@@ -7169,7 +7476,7 @@ test "type checker resolves imported function signature without function body" {
 
     var ret_ty = ast.Type{ .primitive = .i32 };
     try tc.registerFunctionAliasWithMetadata("dep__imported_a", "imported_a", "dep", "/tmp/dep.sla");
-    try tc.registerImportedFunctionSignature("imported_a", &.{}, &ret_ty, false);
+    try tc.registerImportedFunctionSignature("imported_a", &.{}, &ret_ty, false, false);
 
     var call_node = ast.Node{ .call_expr = .{
         .func_name = "dep__imported_a",

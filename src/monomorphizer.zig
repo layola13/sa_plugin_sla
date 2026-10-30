@@ -334,6 +334,7 @@ pub const Monomorphizer = struct {
                         .body = new_body,
                         .is_inline = f.is_inline,
                         .is_async = f.is_async,
+                        .is_variadic = f.is_variadic,
                         .operator = f.operator,
                     },
                 };
@@ -1114,7 +1115,7 @@ pub const Monomorphizer = struct {
                 }
                 const new_ret = try self.specializeType(fn_ptr.ret);
                 const res = try self.allocator.create(ast.Type);
-                res.* = .{ .fn_ptr = .{ .abi = fn_ptr.abi, .params = try new_params.toOwnedSlice(), .ret = new_ret } };
+                res.* = .{ .fn_ptr = .{ .abi = fn_ptr.abi, .params = try new_params.toOwnedSlice(), .ret = new_ret, .is_variadic = fn_ptr.is_variadic } };
                 return res;
             },
             .user_defined => |ud| {
@@ -1240,6 +1241,7 @@ pub const Monomorphizer = struct {
                     .float => try buf.appendSlice("float"),
                     .boolean => try buf.appendSlice("bool"),
                     .raw_ptr => try buf.appendSlice("ptr"),
+                    .va_list => try buf.appendSlice("valist"),
                     .void_type => try buf.appendSlice("void"),
                 }
             },
@@ -1399,6 +1401,7 @@ pub const Monomorphizer = struct {
                 .body = fully_spec_body,
                 .is_inline = template.is_inline,
                 .is_async = template.is_async,
+                .is_variadic = template.is_variadic,
                 .operator = template.operator,
             },
         };
@@ -1459,7 +1462,7 @@ pub const Monomorphizer = struct {
                 }
                 const spec_ret = try self.substituteType(fn_ptr.ret, params, args);
                 const res = try self.allocator.create(ast.Type);
-                res.* = .{ .fn_ptr = .{ .abi = fn_ptr.abi, .params = try spec_params.toOwnedSlice(), .ret = spec_ret } };
+                res.* = .{ .fn_ptr = .{ .abi = fn_ptr.abi, .params = try spec_params.toOwnedSlice(), .ret = spec_ret, .is_variadic = fn_ptr.is_variadic } };
                 return res;
             },
             .user_defined => |ud| {
@@ -1529,6 +1532,7 @@ pub const Monomorphizer = struct {
                         .body = try self.substituteBlock(f.body, params, args),
                         .is_inline = f.is_inline,
                         .is_async = f.is_async,
+                        .is_variadic = f.is_variadic,
                         .operator = f.operator,
                     },
                 };

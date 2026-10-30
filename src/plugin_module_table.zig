@@ -31,6 +31,7 @@ pub const SlaModuleExports = struct {
         abi: ?[]const u8,
         no_mangle: bool,
         is_async: bool,
+        is_variadic: bool = false,
         module_path: []const u8,
     };
 
@@ -124,6 +125,7 @@ pub const SlaModuleExports = struct {
             .abi = fd.abi,
             .no_mangle = fd.no_mangle,
             .is_async = fd.is_async,
+            .is_variadic = fd.is_variadic,
             .module_path = self.module_path,
         });
     }

@@ -143,6 +143,10 @@ pub const FuncDecl = struct {
     is_inline: bool,
     is_async: bool = false,
     operator: ?BinaryOp = null,
+    /// Extern variadic batch: the parameter list ends with a trailing
+    /// `...` marker. Only legal on extern declarations and on exported
+    /// extern "C" definitions (whose final Param is the VaList binding).
+    is_variadic: bool = false,
 };
 
 pub const Param = struct {
@@ -489,6 +493,9 @@ pub const Primitive = enum {
     boolean,
     raw_ptr,
     void_type,
+    /// C va_list handle. Only valid as the trailing parameter type of an
+    /// exported extern "C" variadic definition (spelled `...` or `VaList`).
+    va_list,
 };
 
 pub const UserDefined = struct {
@@ -514,4 +521,7 @@ pub const FnPtrType = struct {
     abi: ?[]const u8 = null,
     params: []const *Type,
     ret: *Type,
+    /// Extern variadic batch: trailing `...` in the parameter list; only
+    /// legal when `abi` names the C ABI.
+    is_variadic: bool = false,
 };

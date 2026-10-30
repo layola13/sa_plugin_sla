@@ -291,6 +291,20 @@ const DecodedModuleLocalRemap = struct {
     }
 };
 
+/// Extern variadic batch: SA PrimType tag for a `va_next_*` builtin's
+/// read, or null when the name is not one. Tags mirror sci's PrimType
+/// (i32=4, i64=5, u32=10, u64=11, f64=13 in the vendored enum order —
+/// resolved symbolically through the sig module at the use site).
+fn vaNextPrimTag(name: []const u8) ?u32 {
+    if (std.mem.eql(u8, name, "va_next_i32")) return @intFromEnum(sig.PrimType.i32);
+    if (std.mem.eql(u8, name, "va_next_i64")) return @intFromEnum(sig.PrimType.i64);
+    if (std.mem.eql(u8, name, "va_next_u32")) return @intFromEnum(sig.PrimType.u32);
+    if (std.mem.eql(u8, name, "va_next_u64")) return @intFromEnum(sig.PrimType.u64);
+    if (std.mem.eql(u8, name, "va_next_f64")) return @intFromEnum(sig.PrimType.f64);
+    if (std.mem.eql(u8, name, "va_next_ptr")) return @intFromEnum(sig.PrimType.ptr);
+    return null;
+}
+
 pub const Codegen = struct {
     allocator: std.mem.Allocator,
     tc: *type_checker.TypeChecker,
@@ -376,6 +390,12 @@ pub const Codegen = struct {
     escaped_closure_idx: usize = 0,
     in_function_body: bool = false,
     current_async_return: bool = false,
+    /// Extern variadic batch: register id of the current variadic
+    /// definition's VaList parameter (bound by va_start in the
+    /// prologue); emitReturn prepends va_end while it is set.
+    current_variadic_list_reg: ?u32 = null,
+    /// Set by genFuncSig when it registers a VaList parameter local.
+    pending_variadic_param_id: ?u32 = null,
     current_async_return_ty: ?*const ast.Type = null,
     current_expr_result_escapes: bool = false,
     current_block: ?[]const *ast.Node = null,
@@ -1590,6 +1610,7 @@ pub const Codegen = struct {
                 .f64, .float => .f64,
                 .boolean => .i1,
                 .raw_ptr => .ptr,
+                .va_list => .ptr,
                 .void_type => .void,
             },
             else => if (lowering_rules.isFileType(ty)) .u64 else if (lowering_rules.abiPassesAsPointer(ty)) .ptr else Error.UnsupportedSabDirectFeature,
@@ -4881,6 +4902,7 @@ pub const Codegen = struct {
             .return_fallible = source.return_fallible,
             .entry_inst_idx = source.entry_inst_idx,
             .is_ffi_wrapper = source.is_ffi_wrapper,
+            .is_variadic = source.is_variadic,
             .upstream_file = null,
             .upstream_loc = null,
             .param_ids = &.{},
@@ -4987,6 +5009,7 @@ pub const Codegen = struct {
             .return_fallible = source.return_fallible,
             .entry_inst_idx = @intCast(entry_inst_idx),
             .is_ffi_wrapper = source.is_ffi_wrapper,
+            .is_variadic = source.is_variadic,
             .upstream_file = try self.cloneOptionalText(source.upstream_file),
             .upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc),
             .param_ids = try self.remapModuleIds(symbols, source.param_ids),
@@ -5022,6 +5045,7 @@ pub const Codegen = struct {
             .return_fallible = source.return_fallible,
             .entry_inst_idx = @intCast(entry_inst_idx),
             .is_ffi_wrapper = source.is_ffi_wrapper,
+            .is_variadic = source.is_variadic,
             .upstream_file = try self.cloneOptionalText(source.upstream_file),
             .upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc),
             .param_ids = param_ids,
@@ -6080,18 +6104,34 @@ pub const Codegen = struct {
         else
             try self.loweredFuncSymbol(name);
         _ = try self.intern(lowered);
-        const specs = try self.allocator.alloc(sig.ParamSpec, params.len);
-        const param_ids = try self.allocator.alloc(u32, params.len);
+        // Extern variadic batch: a VaList parameter is not an SA-level
+        // parameter. It stays out of the signature's ParamSpec list (the
+        // sig carries is_variadic instead) but its local is registered
+        // so the body can name it; genFuncDeclNamed binds it via
+        // va_start and remembers the id in pending_variadic_param_id.
+        var fixed_count: usize = 0;
+        for (params) |param| {
+            if (!(param.ty.* == .primitive and param.ty.primitive == .va_list)) fixed_count += 1;
+        }
+        const specs = try self.allocator.alloc(sig.ParamSpec, fixed_count);
+        const param_ids = try self.allocator.alloc(u32, fixed_count);
+        var spec_idx: usize = 0;
         for (params, 0..) |param, i| {
             const scoped_param_name = try std.fmt.allocPrint(self.allocator, "{s}__param_{d}_{s}", .{ lowered, i, param.name });
             const param_id = try self.intern(scoped_param_name);
             const cap: inst.CapPrefix = self.paramCapability(param);
-            specs[i] = .{
+            if (param.ty.* == .primitive and param.ty.primitive == .va_list) {
+                self.pending_variadic_param_id = param_id;
+                try self.pushParamLocal(param.name, param_id, param.ty, cap);
+                continue;
+            }
+            specs[spec_idx] = .{
                 .name = param.name,
                 .ty = try paramPrimType(param.ty),
                 .cap = cap,
             };
-            param_ids[i] = param_id;
+            param_ids[spec_idx] = param_id;
+            spec_idx += 1;
             try self.pushParamLocal(param.name, param_id, param.ty, cap);
         }
         return .{
@@ -6324,11 +6364,21 @@ pub const Codegen = struct {
         try self.prepareMultiLetBindings(f.body);
         try self.collectBorrowedBindingsInBlock(f.body);
         const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
-        const fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
+        self.pending_variadic_param_id = null;
+        var fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
+        fsig.is_variadic = f.is_variadic;
         const sig_idx = self.function_sigs.items.len;
         try self.function_sigs.append(fsig);
         try self.appendDeclInst(fsig);
         try self.emitLabel("L_ENTRY");
+        const prev_variadic_list_reg = self.current_variadic_list_reg;
+        self.current_variadic_list_reg = null;
+        defer self.current_variadic_list_reg = prev_variadic_list_reg;
+        if (f.is_variadic) {
+            const list_id = self.pending_variadic_param_id orelse return Error.UnsupportedSabDirectFeature;
+            try self.emitVaStart(list_id);
+            self.current_variadic_list_reg = list_id;
+        }
         try self.materializeBorrowedParams(f.params);
         const ret_prim = try primType(async_plan.abi_ret_ty);
         // #7: a terminating tail (e.g. an all-return `switch`) is compiled
@@ -6378,7 +6428,24 @@ pub const Codegen = struct {
     }
 
     fn genExternDecl(self: *Codegen, f: *const ast.FuncDecl) !void {
+        // An extern declaration has no body: genFuncSig's parameter
+        // registration (locals / current scope bookkeeping) is for the
+        // function being generated, so roll it back here. Leaving the
+        // entries behind leaks the extern's parameter registers into
+        // the NEXT function's epilogue, which then emits move_/release
+        // for registers that are not in its scope (pre-existing defect
+        // on the SAB path for `extern "C" { ... }` blocks in test
+        // files; it also blocked variadic block declarations).
+        const locals_snapshot = self.locals.items.len;
+        const reg_ids_snapshot = self.current_reg_ids.items.len;
         var fsig = try self.genFuncSig(f.name, .external, f.params, f.ret_ty, false, false, false);
+        fsig.is_variadic = f.is_variadic;
+        for (fsig.param_ids) |param_id| {
+            _ = self.current_reg_seen.remove(param_id);
+            _ = self.non_owning_regs.remove(param_id);
+        }
+        self.locals.shrinkRetainingCapacity(locals_snapshot);
+        self.current_reg_ids.shrinkRetainingCapacity(reg_ids_snapshot);
         try self.appendDeclInst(fsig);
         fsig.reg_ids = fsig.param_ids;
         try self.function_sigs.append(fsig);
@@ -6442,6 +6509,7 @@ pub const Codegen = struct {
             .llvm_name = null,
             .ignored = false,
             .should_panic = false,
+            .is_variadic = ext.is_variadic,
         };
     }
 
@@ -10943,6 +11011,19 @@ pub const Codegen = struct {
             },
             .binary_expr => |bin| try self.genBinary(bin),
             .call_expr => |call| blk: {
+                // Extern variadic batch: va_next_* reads lower to va_arg.
+                if (vaNextPrimTag(call.func_name)) |tag| {
+                    if (call.args.len != 1 or call.args[0].* != .identifier) return Error.UnsupportedSabDirectFeature;
+                    const list_reg = self.localReg(call.args[0].identifier) orelse return Error.UnsupportedSabDirectFeature;
+                    const dst = try self.intern(try self.newTmp());
+                    try self.recordReg(dst);
+                    var item = self.makeInst(.va_arg);
+                    item.operands[0] = .{ .reg = dst };
+                    item.operands[1] = .{ .reg = list_reg };
+                    item.operands[2] = .{ .ty = tag };
+                    try self.appendInst(item);
+                    break :blk dst;
+                }
                 if (lowering_rules.planDynCoercion(self.tc, expr)) |plan| break :blk try self.genDynCoercionExpr(expr, plan);
                 if (self.tc.fn_ptr_calls.contains(expr)) break :blk try self.genFnPtrCall(expr, call);
                 break :blk try self.genCall(expr, call);
@@ -16515,6 +16596,48 @@ pub const Codegen = struct {
         arg_index: usize,
         auto_borrow_receiver: bool,
     ) anyerror!SabLoweredCallArg {
+        const lowered = try self.genPlannedSabCallArgInner(arg, call_plan, param, abi_borrow_auto_borrow, abi_move_auto_move, arg_index, auto_borrow_receiver);
+        // Extern variadic batch: materialise the C default argument
+        // promotion the checker recorded for this trailing argument.
+        if (self.tc.variadic_promotions.get(arg)) |target_ty| {
+            const src_ast_ty = self.tc.expr_types.get(arg) orelse return lowered;
+            if (src_ast_ty.* == .primitive and target_ty.* == .primitive and src_ast_ty.primitive != target_ty.primitive) {
+                if (lowered.operand.len == 0 or lowered.operand[0] == '&' or lowered.operand[0] == '^') return lowered;
+                const src_reg = try self.intern(lowered.operand);
+                const src_prim = try primType(src_ast_ty);
+                const dst_prim = try primType(target_ty);
+                const dst = try self.intern(try self.newTmp());
+                try self.recordReg(dst);
+                var item = self.makeInst(.op);
+                item.op_kind = try opKindForCast(src_prim, dst_prim);
+                item.operands[0] = .{ .reg = dst };
+                item.operands[1] = .{ .reg = src_reg };
+                item.operands[2] = .{ .ty = @intFromEnum(dst_prim) };
+                try self.appendInst(item);
+                var out = lowered;
+                out.operand = self.symbols.items[dst];
+                out.release_reg = dst;
+                if (lowered.release_reg) |orig| {
+                    if (orig != src_reg) {
+                        out.release_regs = try self.allocator.dupe(u32, &.{orig});
+                    }
+                }
+                return out;
+            }
+        }
+        return lowered;
+    }
+
+    fn genPlannedSabCallArgInner(
+        self: *Codegen,
+        arg: *const ast.Node,
+        call_plan: lowering_rules.StaticCallPlan,
+        param: ?ast.Param,
+        abi_borrow_auto_borrow: bool,
+        abi_move_auto_move: bool,
+        arg_index: usize,
+        auto_borrow_receiver: bool,
+    ) anyerror!SabLoweredCallArg {
         // DEF-2 / BM-D2 (SAB side of POTENTIAL_ISSUES #15): a string literal
         // passed to a String parameter must be materialized as an owned
         // StringBuf. The generic literal path yields a bare Slice cell
@@ -18284,14 +18407,33 @@ pub const Codegen = struct {
         for (call.args, 0..) |arg, i| {
             const arg_reg = try self.genExpr(@constCast(arg));
             const call_arg_reg = blk: {
+                var reg = arg_reg;
                 if (arg.* == .identifier) {
                     const arg_ty = self.tc.expr_types.get(arg) orelse return Error.MissingType;
                     if (self.typeIsCopyValue(arg_ty) or lowering_rules.isBorrowLikeType(arg_ty)) {
-                        const tmp = try self.copyFnPtrCallArg(arg_reg, arg_ty);
-                        break :blk tmp;
+                        reg = try self.copyFnPtrCallArg(arg_reg, arg_ty);
                     }
                 }
-                break :blk arg_reg;
+                // Extern variadic batch: materialise the C default
+                // argument promotion the checker recorded for a
+                // trailing argument (mirrors genPlannedSabCallArg).
+                if (self.tc.variadic_promotions.get(arg)) |target_ty| {
+                    const src_ast_ty = self.tc.expr_types.get(arg) orelse return Error.MissingType;
+                    if (src_ast_ty.* == .primitive and target_ty.* == .primitive and src_ast_ty.primitive != target_ty.primitive) {
+                        const src_prim = try primType(src_ast_ty);
+                        const dst_prim = try primType(target_ty);
+                        const promoted_reg = try self.intern(try self.newTmp());
+                        try self.recordReg(promoted_reg);
+                        var cast = self.makeInst(.op);
+                        cast.op_kind = try opKindForCast(src_prim, dst_prim);
+                        cast.operands[0] = .{ .reg = promoted_reg };
+                        cast.operands[1] = .{ .reg = reg };
+                        cast.operands[2] = .{ .ty = @intFromEnum(dst_prim) };
+                        try self.appendInst(cast);
+                        break :blk promoted_reg;
+                    }
+                }
+                break :blk reg;
             };
             try arg_regs.append(call_arg_reg);
             if (i > 0) try body.appendSlice(", ");
@@ -19847,7 +19989,23 @@ pub const Codegen = struct {
         try self.appendInst(item);
     }
 
+    fn emitVaStart(self: *Codegen, dst: u32) !void {
+        try self.recordReg(dst);
+        var item = self.makeInst(.va_start);
+        item.operands[0] = .{ .reg = dst };
+        try self.appendInst(item);
+    }
+
+    fn emitVaEnd(self: *Codegen, list_reg: u32) !void {
+        var item = self.makeInst(.va_end);
+        item.operands[0] = .{ .reg = list_reg };
+        try self.appendInst(item);
+    }
+
     fn emitReturn(self: *Codegen, value: ?u32) !void {
+        if (self.current_variadic_list_reg) |list_reg| {
+            try self.emitVaEnd(list_reg);
+        }
         var item = self.makeInst(.return_);
         if (value) |reg| item.operands[0] = .{ .reg = reg };
         try self.appendInst(item);

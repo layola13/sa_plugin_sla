@@ -16,6 +16,9 @@ pub const ExternalFunction = struct {
     params: []const Param,
     ret_ty: []const u8,
     return_fallible: bool = false,
+    /// Extern variadic batch: the `.sai` declaration ended its parameter
+    /// list with `...`; `params` holds only the fixed parameters.
+    is_variadic: bool = false,
 };
 
 pub const LayoutDefine = struct {
@@ -98,10 +101,19 @@ pub const ContractParser = struct {
         var params = std.array_list.Managed(Param).init(self.allocator);
         errdefer params.deinit();
 
+        var is_variadic = false;
         var param_split = std.mem.splitScalar(u8, params_str, ',');
         while (param_split.next()) |p_raw| {
             const p_trim = std.mem.trim(u8, p_raw, " \t");
             if (p_trim.len == 0) continue;
+            if (std.mem.eql(u8, p_trim, "...")) {
+                // Extern variadic batch: trailing marker; must be last
+                // and follow at least one fixed parameter.
+                if (param_split.rest().len != 0) return error.SaiParseError;
+                if (params.items.len == 0) return error.SaiParseError;
+                is_variadic = true;
+                continue;
+            }
 
             // p_trim is like: &out_ptr: ptr
             var colon_split = std.mem.splitScalar(u8, p_trim, ':');
@@ -138,6 +150,7 @@ pub const ContractParser = struct {
             .params = try params.toOwnedSlice(),
             .ret_ty = ret_ty,
             .return_fallible = return_fallible,
+            .is_variadic = is_variadic,
         };
     }
 

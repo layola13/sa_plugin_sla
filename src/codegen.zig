@@ -97,6 +97,18 @@ pub const Options = struct {
     injected_address_bindings: []const InjectedAddressBinding = &.{},
 };
 
+/// Extern variadic batch: SA type name for a `va_next_*` builtin's read,
+/// or null when the name is not one.
+fn vaNextPrimName(name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, name, "va_next_i32")) return "i32";
+    if (std.mem.eql(u8, name, "va_next_i64")) return "i64";
+    if (std.mem.eql(u8, name, "va_next_u32")) return "u32";
+    if (std.mem.eql(u8, name, "va_next_u64")) return "u64";
+    if (std.mem.eql(u8, name, "va_next_f64")) return "f64";
+    if (std.mem.eql(u8, name, "va_next_ptr")) return "ptr";
+    return null;
+}
+
 pub const Codegen = struct {
     allocator: std.mem.Allocator,
     tc: *type_checker.TypeChecker,
@@ -172,6 +184,10 @@ pub const Codegen = struct {
     rebind_move_out_stmt: ?*const ast.Node = null,
     rebind_move_out_name: ?[]const u8 = null,
     current_async: bool,
+    /// Extern variadic batch: while generating a variadic definition,
+    /// the register name of its VaList parameter (`x = va_start` is
+    /// emitted in the prologue; `va_end x` precedes every return).
+    current_variadic_list: ?[]const u8 = null,
     current_async_return_ty: ?*const ast.Type,
     async_pending_return_emitted: bool,
     thread_helper_idx: usize,
@@ -1834,6 +1850,7 @@ pub const Codegen = struct {
             const prefix: []const u8 = self.abiParamPrefix(p);
             self.outPrint("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
         }
+        if (f.is_variadic) self.outPrint(", ...", .{}) catch return CodegenError.CodegenError;
         if (isVoidType(f.ret_ty)) {
             self.outPrint(") -> void\n", .{}) catch return CodegenError.CodegenError;
         } else {
@@ -7828,10 +7845,19 @@ pub const Codegen = struct {
         }
     }
 
+    fn emitVaEndIfVariadic(self: *Codegen) CodegenError!void {
+        if (self.current_variadic_list) |list_name| {
+            self.outPrint("    va_end {s}\n", .{list_name}) catch return CodegenError.CodegenError;
+        }
+    }
+
     fn genFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl) CodegenError!void {
         const prev_async = self.current_async;
         const prev_async_return_ty = self.current_async_return_ty;
         const prev_async_pending_return = self.async_pending_return_emitted;
+        const prev_variadic_list = self.current_variadic_list;
+        self.current_variadic_list = null;
+        defer self.current_variadic_list = prev_variadic_list;
         self.current_async = f.is_async;
         self.current_async_return_ty = if (f.is_async) f.ret_ty else null;
         self.async_pending_return_emitted = false;
@@ -7902,11 +7928,21 @@ pub const Codegen = struct {
         const lowered_name = try self.loweredFuncSymbol(name);
         defer self.allocator.free(lowered_name);
         self.outPrint("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
-        for (f.params, 0..) |p, i| {
-            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+        var printed_params: usize = 0;
+        for (f.params) |p| {
+            // The VaList parameter of a variadic definition is not an SA
+            // parameter: the SA header carries the trailing `...` marker
+            // and the body binds the name via va_start.
+            if (p.ty.* == .primitive and p.ty.primitive == .va_list) {
+                self.current_variadic_list = p.name;
+                continue;
+            }
+            if (printed_params > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+            printed_params += 1;
             const prefix: []const u8 = self.abiParamPrefix(p);
             self.outPrint("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
         }
+        if (f.is_variadic) self.outPrint(", ...", .{}) catch return CodegenError.CodegenError;
         const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
         const ret_type_str = abiReturnTypeString(async_return_plan.abi_ret_ty);
         if (isVoidType(f.ret_ty) and !f.is_async) {
@@ -7915,6 +7951,9 @@ pub const Codegen = struct {
             self.outPrint(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
         }
         self.outPrint("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
+        if (self.current_variadic_list) |list_name| {
+            self.outPrint("    {s} = va_start\n", .{list_name}) catch return CodegenError.CodegenError;
+        }
 
         // 1. Loop allocation hoisting pre-pass
         // Detect all stack allocations inside for loops in this function body
@@ -7936,6 +7975,7 @@ pub const Codegen = struct {
 
         for (f.params) |p| {
             try self.rememberLocalBindingType(p.name, p.ty);
+            if (p.ty.* == .primitive and p.ty.primitive == .va_list) continue;
             // By-value String/Vec parameters own their heap buffer, but
             // unlike let bindings they were never registered in the drop
             // sets, so scope cleanup fell back to a bare `!param` register
@@ -7995,6 +8035,7 @@ pub const Codegen = struct {
                         tail_reg = try self.genReadyFutureI64(tail_reg);
                     }
                     try self.emitFunctionTailCleanups(f.body[f.body.len - 1], tail_expr);
+                    try self.emitVaEndIfVariadic();
                     self.outPrint("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
                 }
             }
@@ -8014,6 +8055,7 @@ pub const Codegen = struct {
             // a `return` into the final block; emitting the implicit void
             // epilogue as well produced `return` + `return` in one block,
             // which the SA verifier rejects as FallthroughForbidden.
+            try self.emitVaEndIfVariadic();
             self.outPrint("    return\n", .{}) catch return CodegenError.CodegenError;
         }
         self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
@@ -10580,7 +10622,27 @@ pub const Codegen = struct {
             .shallow_copy_value = shallow_copy_value,
             .value_arg_transfers_ownership = self.valueArgTransfersOwnership(options.param, arg_ty),
         });
-        return try self.genCallArgFromMaterializationPlan(arg, options.param, materialization, hoisted_allocs);
+        const lowered = try self.genCallArgFromMaterializationPlan(arg, options.param, materialization, hoisted_allocs);
+        // Extern variadic batch: the checker recorded a C default
+        // argument promotion for this trailing argument; materialise
+        // the widening conversion now so the callee reads the promoted
+        // type. The SA `as` conversion consumes its operand, so a bare
+        // identifier is copied first (mirrors the cast-expression path).
+        if (self.tc.variadic_promotions.get(arg)) |target_ty| {
+            const src_ty = self.tc.expr_types.get(arg) orelse return lowered;
+            if (src_ty.* == .primitive and target_ty.* == .primitive and src_ty.primitive != target_ty.primitive) {
+                var src_reg = lowered.reg;
+                if (arg.* == .identifier) {
+                    const copied = try self.newTmp();
+                    try self.emitPrimitiveCopy(copied, lowered.reg, src_ty);
+                    src_reg = copied;
+                }
+                const promoted = try self.newTmp();
+                self.outPrint("    {s} = {s} as {s}\n", .{ promoted, src_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                return .{ .reg = promoted, .release_after_call = lowered.release_after_call, .release_reg = lowered.release_reg, .consume_reg = lowered.consume_reg };
+            }
+        }
+        return lowered;
     }
 
     fn genCallArgForParam(
@@ -12028,6 +12090,7 @@ pub const Codegen = struct {
                         }
                     }
                 }
+                try self.emitVaEndIfVariadic();
                 if (val_reg) |vr| {
                     self.outPrint("    return {s}\n", .{vr}) catch return CodegenError.CodegenError;
                 } else {
@@ -14300,6 +14363,14 @@ pub const Codegen = struct {
                 return try self.genSliceExpr(&slc, hoisted_allocs);
             },
             .call_expr => |call| {
+                // Extern variadic batch: va_next_* reads lower to va_arg.
+                if (vaNextPrimName(call.func_name)) |prim_name| {
+                    if (call.args.len != 1 or call.args[0].* != .identifier) return CodegenError.CodegenError;
+                    const list_reg = self.resolveBindingName(call.args[0].identifier);
+                    const reg = try self.newTmp();
+                    self.outPrint("    {s} = va_arg {s}, {s}\n", .{ reg, list_reg, prim_name }) catch return CodegenError.CodegenError;
+                    return reg;
+                }
                 // #13: immediately-invoked closure literal; bypasses every
                 // func_name-keyed path below (func_name is "" for these calls).
                 if (call.callee) |callee| {
@@ -15031,7 +15102,12 @@ pub const Codegen = struct {
                     else
                         self.resolveBindingName(call.func_name);
                     const fn_ptr_ty = self.localBindingTypeForName(call.func_name) orelse return CodegenError.CodegenError;
-                    if (fn_ptr_ty.* != .fn_ptr or fn_ptr_ty.fn_ptr.params.len != call.args.len) return CodegenError.CodegenError;
+                    if (fn_ptr_ty.* != .fn_ptr) return CodegenError.CodegenError;
+                    // Extern variadic batch: a variadic fn-pointer type
+                    // accepts any argument count >= its fixed count.
+                    if (fn_ptr_ty.fn_ptr.is_variadic) {
+                        if (call.args.len < fn_ptr_ty.fn_ptr.params.len) return CodegenError.CodegenError;
+                    } else if (fn_ptr_ty.fn_ptr.params.len != call.args.len) return CodegenError.CodegenError;
 
                     var lowered_args = std.array_list.Managed(LoweredCallArg).init(self.allocator);
                     defer lowered_args.deinit();
@@ -15039,21 +15115,40 @@ pub const Codegen = struct {
                     defer release_regs.deinit();
                     var consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer consume_regs.deinit();
-                    for (call.args, fn_ptr_ty.fn_ptr.params) |arg, param_ty| {
-                        const param = ast.Param{
-                            .name = "",
-                            .ty = param_ty,
-                            .is_borrow = param_ty.* == .borrow,
-                            .is_move = !lowering_rules.byValueRawPointerParam(.{
+                    for (call.args, 0..) |arg, arg_index| {
+                        const lowered_arg = if (arg_index < fn_ptr_ty.fn_ptr.params.len) blk: {
+                            const param_ty = fn_ptr_ty.fn_ptr.params[arg_index];
+                            const param = ast.Param{
                                 .name = "",
                                 .ty = param_ty,
                                 .is_borrow = param_ty.* == .borrow,
-                                .is_move = false,
-                            }) and !self.typeIsCopyValue(param_ty) and !lowering_rules.isBorrowLikeType(param_ty),
+                                .is_move = !lowering_rules.byValueRawPointerParam(.{
+                                    .name = "",
+                                    .ty = param_ty,
+                                    .is_borrow = param_ty.* == .borrow,
+                                    .is_move = false,
+                                }) and !self.typeIsCopyValue(param_ty) and !lowering_rules.isBorrowLikeType(param_ty),
+                            };
+                            break :blk try self.genCallArgForParam(arg, param, hoisted_allocs);
+                        } else blk: {
+                            // Extern variadic batch: trailing arguments
+                            // lower exactly like direct-call trailing
+                            // arguments (no parameter; the checker's
+                            // recorded promotion applies inside).
+                            break :blk try self.genPlannedCallArg(arg, hoisted_allocs, .{});
                         };
-                        const lowered_arg = try self.genCallArgForParam(arg, param, hoisted_allocs);
                         lowered_args.append(lowered_arg) catch return CodegenError.OutOfMemory;
                         try self.appendLoweredCallArgCleanups(&release_regs, &consume_regs, lowered_arg);
+                        // Extern variadic batch: unlike a direct call
+                        // (whose arguments the SA verifier consumes via
+                        // the callee signature), an indirect call's
+                        // arguments are released by this cleanup list
+                        // alone. A promoted trailing argument lives in a
+                        // fresh temp that the planned release register
+                        // does not cover when it is null; register it.
+                        if (self.tc.variadic_promotions.get(arg) != null and self.plannedCallArgReleaseReg(lowered_arg) == null) {
+                            release_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
+                        }
                     }
 
                     var candidates = std.array_list.Managed([]const u8).init(self.allocator);

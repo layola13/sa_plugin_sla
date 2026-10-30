@@ -660,6 +660,14 @@ pub const Parser = struct {
         return try self.parseAggregateDecl(false, try derives.toOwnedSlice());
     }
 
+    /// Extern variadic batch: the ABIs under which C variadic parameters
+    /// are meaningful. A missing abi string on an extern declaration or
+    /// definition defaults to the C ABI.
+    fn isCAbiName(abi: ?[]const u8) bool {
+        const name = abi orelse return true;
+        return std.mem.eql(u8, name, "C") or std.mem.eql(u8, name, "C-unwind");
+    }
+
     fn parseOptionalExternAbi(self: *Parser) ParserError!?[]const u8 {
         if (self.peek() != .string_literal) return null;
         const abi_tok = self.tok;
@@ -1205,14 +1213,63 @@ pub const Parser = struct {
         try self.expect(.l_paren);
 
         var params = std.array_list.Managed(ast.Param).init(self.allocator);
+        var is_variadic = false;
         while (self.peek() != .r_paren and self.peek() != .eof) {
+            if (self.peek() == .range) {
+                // Extern variadic batch: trailing `...` marker (the lexer
+                // emits `..` + `.`). Only extern declarations may end their
+                // parameter list with a bare `...`.
+                _ = self.match(.range);
+                try self.expect(.dot);
+                if (!is_extern or !is_decl_only or !isCAbiName(abi)) {
+                    self.last_expected = "r_paren (a trailing `...` variadic marker is only supported on extern declarations; exported extern \"C\" definitions spell it as a final `args: ...` parameter)";
+                    return ParserError.SyntaxError;
+                }
+                if (params.items.len == 0) {
+                    self.last_expected = "identifier (a variadic declaration needs at least one fixed parameter before `...`)";
+                    return ParserError.SyntaxError;
+                }
+                is_variadic = true;
+                break;
+            }
             const is_borrow = self.match(.ampersand);
             const is_move = if (!is_borrow) self.match(.caret) else false;
             const p_tok = self.tok;
             try self.expect(.identifier);
             const p_name = self.lexeme(p_tok.loc);
             try self.expect(.colon);
-            const p_ty = try self.parseType();
+            var p_ty: *ast.Type = undefined;
+            var param_is_va_list = false;
+            if (self.peek() == .range) {
+                _ = self.match(.range);
+                try self.expect(.dot);
+                p_ty = try self.allocator.create(ast.Type);
+                p_ty.* = .{ .primitive = .va_list };
+                param_is_va_list = true;
+            } else {
+                p_ty = try self.parseType();
+                if (p_ty.* == .primitive and p_ty.primitive == .va_list) param_is_va_list = true;
+            }
+            if (param_is_va_list) {
+                // Extern variadic batch, definition face: the final
+                // parameter of an exported extern "C" definition binds the
+                // C va_list (`args: ...`, Rust 1.99 form).
+                if (is_borrow or is_move) {
+                    self.last_expected = "identifier (the VaList parameter takes no borrow/move capability prefix)";
+                    return ParserError.SyntaxError;
+                }
+                if (!is_extern or is_decl_only or !isCAbiName(abi) or generics.len != 0) {
+                    self.last_expected = "r_paren (a VaList parameter is only supported as the final parameter of an exported extern \"C\" function definition)";
+                    return ParserError.SyntaxError;
+                }
+                if (params.items.len == 0) {
+                    self.last_expected = "identifier (a variadic definition needs at least one fixed parameter before the VaList parameter)";
+                    return ParserError.SyntaxError;
+                }
+                is_variadic = true;
+                try params.append(.{ .name = p_name, .ty = p_ty, .is_borrow = false, .is_move = false });
+                break;
+            }
             if (self.peek() == .equal) {
                 self.last_expected = "r_paren (default parameter values such as `= 1` are not supported; define f_default() + f_full(...) instead, see demos/basic/47_default_args)";
                 return ParserError.SyntaxError;
@@ -1222,6 +1279,11 @@ pub const Parser = struct {
         }
 
         try self.expect(.r_paren);
+
+        if (is_variadic and is_async) {
+            self.last_expected = "r_paren (async functions cannot be variadic: the C ABI has no async variadic form)";
+            return ParserError.SyntaxError;
+        }
 
         var ret_ty: *ast.Type = undefined;
         if (self.match(.arrow)) {
@@ -1251,6 +1313,7 @@ pub const Parser = struct {
                 .body = body_result.body,
                 .is_inline = is_inline,
                 .is_async = is_async,
+                .is_variadic = is_variadic,
             },
         };
         try self.rememberFunctionBodySpan(node, body_result.span);
@@ -3761,6 +3824,8 @@ pub const Parser = struct {
                     return try makePrimitive(self.allocator, .void_type);
                 } else if (std.mem.eql(u8, name, "ptr")) {
                     return try makePrimitive(self.allocator, .raw_ptr);
+                } else if (std.mem.eql(u8, name, "VaList")) {
+                    return try makePrimitive(self.allocator, .va_list);
                 } else if (std.mem.eql(u8, name, "i8")) {
                     return try makePrimitive(self.allocator, .i8);
                 } else if (std.mem.eql(u8, name, "i16")) {
@@ -3890,7 +3955,24 @@ pub const Parser = struct {
     fn parseFunctionType(self: *Parser, abi: ?[]const u8) ParserError!*ast.Type {
         try self.expect(.l_paren);
         var params = std.array_list.Managed(*ast.Type).init(self.allocator);
+        var is_variadic = false;
         while (self.peek() != .r_paren and self.peek() != .eof) {
+            if (self.peek() == .range) {
+                // Extern variadic batch: trailing `...` in a C-ABI
+                // function-pointer type.
+                _ = self.match(.range);
+                try self.expect(.dot);
+                if (!isCAbiName(abi)) {
+                    self.last_expected = "r_paren (a variadic function type needs the extern \"C\" ABI)";
+                    return ParserError.SyntaxError;
+                }
+                if (params.items.len == 0) {
+                    self.last_expected = "valid type expression (a variadic function type needs at least one fixed parameter before `...`)";
+                    return ParserError.SyntaxError;
+                }
+                is_variadic = true;
+                break;
+            }
             const param_ty = try self.parseType();
             try params.append(param_ty);
             if (!self.match(.comma)) break;
@@ -3904,7 +3986,7 @@ pub const Parser = struct {
         }
 
         const ty = try self.allocator.create(ast.Type);
-        ty.* = .{ .fn_ptr = .{ .abi = abi, .params = try params.toOwnedSlice(), .ret = ret_ty } };
+        ty.* = .{ .fn_ptr = .{ .abi = abi, .params = try params.toOwnedSlice(), .ret = ret_ty, .is_variadic = is_variadic } };
         return ty;
     }
 };

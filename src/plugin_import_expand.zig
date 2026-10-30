@@ -1296,8 +1296,8 @@ pub fn registerImportedFunctionAliasesFromResolvedImports(
                 const signature = entry.value_ptr.*;
                 const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ namespace, name });
                 try tc.registerFunctionAliasWithMetadata(alias, name, namespace, module.path);
-                try tc.registerImportedFunctionSignature(name, signature.params, signature.ret_ty, signature.is_async);
-                try tc.registerImportedFunctionSignature(alias, signature.params, signature.ret_ty, signature.is_async);
+                try tc.registerImportedFunctionSignature(name, signature.params, signature.ret_ty, signature.is_async, signature.is_variadic);
+                try tc.registerImportedFunctionSignature(alias, signature.params, signature.ret_ty, signature.is_async, signature.is_variadic);
             }
             for (module.exports.impl_decls.items) |impl_node| {
                 const impl_decl = impl_node.impl_decl;
@@ -1308,7 +1308,7 @@ pub fn registerImportedFunctionAliasesFromResolvedImports(
                         try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
                     else
                         try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                    try tc.registerImportedFunctionSignature(symbol, method.func_decl.params, method.func_decl.ret_ty, method.func_decl.is_async);
+                    try tc.registerImportedFunctionSignature(symbol, method.func_decl.params, method.func_decl.ret_ty, method.func_decl.is_async, method.func_decl.is_variadic);
                 }
             }
         }

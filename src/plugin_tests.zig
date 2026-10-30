@@ -3919,7 +3919,7 @@ test "sla reachable collector records namespace alias call targets" {
     defer tc.deinit();
     try tc.registerFunctionAliasWithMetadata("dep__imported_a", "imported_a", "dep", "/tmp/dep.sla");
     try tc.registerFunctionAliasWithMetadata("sibling__imported_a", "imported_a", "sibling", "/tmp/sibling.sla");
-    try tc.registerImportedFunctionSignature("imported_a", &.{}, &ret_ty, false);
+    try tc.registerImportedFunctionSignature("imported_a", &.{}, &ret_ty, false, false);
 
     var dep_call = ast.Node{ .call_expr = .{
         .func_name = "dep__imported_a",

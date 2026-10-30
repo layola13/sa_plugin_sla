@@ -6852,6 +6852,55 @@ pub const Codegen = struct {
         return out;
     }
 
+    fn genStringCloneValue(self: *Codegen, source_reg: u32) anyerror!u32 {
+        const out = try self.intern(try self.newTmp());
+        try self.recordReg(out);
+        try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_CLONE", &.{
+            self.symbols.items[out],
+            self.symbols.items[source_reg],
+        });
+        return out;
+    }
+
+    /// DEF-5 / borrowed handle-field extraction (Jev ruling:
+    /// clone_on_extract, 0.86). A handle-typed field (String/Vec) read
+    /// out of a place rooted in a borrow or a pointer deref loads as a
+    /// non-owning view of the field's heap object; binding, assigning,
+    /// or returning that view hands the new owner an alias it will
+    /// drop — double-free/UAF against the still-live source struct,
+    /// and verifier state traps (BorrowConflict/PhiStateConflict) on
+    /// the SAB side. At ownership-transfer points, materialize a deep
+    /// clone instead: the new owner truly owns an independent object
+    /// and the source place is untouched. Method receivers and other
+    /// read-only uses keep the view (they mutate/read through the
+    /// handle in place and never take ownership). Returns the clone
+    /// register, or null when the shape does not apply.
+    fn cloneBorrowedHandleFieldValue(self: *Codegen, expr: *ast.Node, src: u32) anyerror!?u32 {
+        if (expr.* != .field_expr) return null;
+        const result_ty = self.tc.expr_types.get(expr) orelse return null;
+        var root: *ast.Node = expr;
+        while (root.* == .field_expr) root = root.field_expr.expr;
+        const root_borrowed = blk: {
+            if (root.* == .borrow_expr or root.* == .deref_expr) break :blk true;
+            if (self.tc.expr_types.get(root)) |root_ty| {
+                if (lowering_rules.isBorrowLikeType(root_ty)) break :blk true;
+            }
+            break :blk false;
+        };
+        if (!root_borrowed) return null;
+        if (lowering_rules.isStringType(result_ty)) {
+            const cloned = try self.genStringCloneValue(src);
+            if (!self.isLocalReg(src)) try self.emitRelease(src);
+            return cloned;
+        }
+        if (lowering_rules.vecElementType(result_ty)) |elem_ty| {
+            const cloned = try self.genVecCloneValue(src, elem_ty);
+            if (!self.isLocalReg(src)) try self.emitRelease(src);
+            return cloned;
+        }
+        return null;
+    }
+
     fn structLiteralFieldPlans(
         self: *Codegen,
         decl: *const ast.StructDecl,
@@ -7156,7 +7205,10 @@ pub const Codegen = struct {
             if (!self.isLocalReg(src)) try self.emitRelease(src);
             return;
         }
-        try self.genLetFromValue(let.name, let.ty, let.value, src);
+        // DEF-5 clone_on_extract: `let u = (&s).field` / `let u = (*p).field`
+        // for a String/Vec field binds a deep clone, not the aliased view.
+        const bound_src = (try self.cloneBorrowedHandleFieldValue(let.value, src)) orelse src;
+        try self.genLetFromValue(let.name, let.ty, let.value, bound_src);
     }
 
     fn consumeDiscardedLocalBinding(self: *Codegen, name: []const u8) !bool {
@@ -10390,6 +10442,13 @@ pub const Codegen = struct {
                     };
                 }
                 if (self.lastIsTerminator()) return;
+                // DEF-5 clone_on_extract: `return q.field` through a
+                // borrow hands the caller a deep clone it truly owns.
+                if (value) |v| {
+                    if (ret.value) |rv| {
+                        if (try self.cloneBorrowedHandleFieldValue(rv, v)) |cloned| value = cloned;
+                    }
+                }
                 if (self.current_async_return) {
                     if (value == null) {
                         const zero = try self.intern(try self.newTmp());
@@ -10613,7 +10672,10 @@ pub const Codegen = struct {
 
         if (assign.target.* != .identifier) return Error.UnsupportedSabDirectFeature;
         const name = assign.target.identifier;
-        const value = try self.genExpr(assign.value);
+        const raw_value = try self.genExpr(assign.value);
+        // DEF-5 clone_on_extract: `u = b.field` through a borrow assigns
+        // a deep clone so both phi arms hold owned values.
+        const value = (try self.cloneBorrowedHandleFieldValue(assign.value, raw_value)) orelse raw_value;
         try self.assignToIdentifier(name, value);
         const target_ty = self.localType(name) orelse (try self.exprTypeOrFallback(assign.target)) orelse return Error.MissingType;
         if (assign.value.* == .identifier) {

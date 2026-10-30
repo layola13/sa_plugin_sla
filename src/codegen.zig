@@ -10191,6 +10191,44 @@ pub const Codegen = struct {
         return out;
     }
 
+    /// DEF-5 / borrowed handle-field extraction (Jev ruling:
+    /// clone_on_extract, 0.86) — SA-text mirror of the SAB backend's
+    /// cloneBorrowedHandleFieldValue. A handle-typed field (String/Vec)
+    /// read out of a place rooted in a borrow or a pointer deref loads
+    /// as an alias of the field's heap object; binding, assigning, or
+    /// returning that alias hands the new owner a value it will drop —
+    /// double-free/UAF plus the text PhiStateConflict (1015) at branch
+    /// joins. At ownership-transfer points, materialize a deep clone
+    /// instead and retire the view temp. Method receivers and other
+    /// read-only uses keep the in-place view semantics. Returns the
+    /// clone register, or null when the shape does not apply.
+    fn cloneBorrowedHandleFieldValue(self: *Codegen, expr: *ast.Node, src: []const u8) CodegenError!?[]const u8 {
+        if (expr.* != .field_expr) return null;
+        const result_ty = self.tc.expr_types.get(expr) orelse return null;
+        var root: *ast.Node = expr;
+        while (root.* == .field_expr) root = root.field_expr.expr;
+        const root_borrowed = blk: {
+            if (root.* == .borrow_expr or root.* == .deref_expr) break :blk true;
+            if (self.tc.expr_types.get(root)) |root_ty| {
+                if (lowering_rules.isBorrowLikeType(root_ty)) break :blk true;
+            }
+            break :blk false;
+        };
+        if (!root_borrowed) return null;
+        if (lowering_rules.isStringType(result_ty)) {
+            const out = try self.newTmp();
+            self.outPrint("    EXPAND STRING_BUF_CLONE {s}, {s}\n", .{ out, src }) catch return CodegenError.CodegenError;
+            try self.emitRelease(src);
+            return out;
+        }
+        if (vecElementType(result_ty)) |elem_ty| {
+            const out = try self.genVecCloneValue(src, elem_ty);
+            try self.emitRelease(src);
+            return out;
+        }
+        return null;
+    }
+
     fn pushCallSiblingArgExprs(self: *Codegen, args: []const *ast.Node, arg_index: usize) CodegenError!usize {
         const mark = self.current_expr_later_nodes.items.len;
         for (args, 0..) |arg, i| {
@@ -11383,8 +11421,11 @@ pub const Codegen = struct {
                     // not the resolved binding itself.
                     if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitRelease(val_reg);
                 } else if (self.bindingNeedsAssignedValueSlot(let.name, let_ty) and !isStackAllocCall(let.value)) {
-                    const val_reg = try self.genExpr(let.value, hoisted_allocs);
+                    const raw_val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
+                    // DEF-5 clone_on_extract: the slot must hold an owned
+                    // clone, not the borrowed field view.
+                    const val_reg = (try self.cloneBorrowedHandleFieldValue(let.value, raw_val_reg)) orelse raw_val_reg;
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.assigned_value_slots.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.outPrint("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
@@ -11426,8 +11467,11 @@ pub const Codegen = struct {
                     const val_reg = try self.genDynCoercionExpr(let.value, plan, hoisted_allocs);
                     self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
-                    const val_reg = try self.genExpr(let.value, hoisted_allocs);
+                    const raw_val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
+                    // DEF-5 clone_on_extract: bind a deep clone when the
+                    // value is a handle field read through a borrow/deref.
+                    const val_reg = (try self.cloneBorrowedHandleFieldValue(let.value, raw_val_reg)) orelse raw_val_reg;
                     if (self.task_future_objects.get(val_reg)) |future_obj| {
                         self.task_future_objects.put(let.name, future_obj) catch return CodegenError.OutOfMemory;
                         _ = self.task_future_objects.remove(val_reg);
@@ -11860,7 +11904,10 @@ pub const Codegen = struct {
                         _ = self.consumed_bindings.remove(target_name);
                         return;
                     }
-                    const val_reg = try self.genExpr(assign.value, hoisted_allocs);
+                    const raw_val_reg = try self.genExpr(assign.value, hoisted_allocs);
+                    // DEF-5 clone_on_extract: `u = b.field` through a
+                    // borrow assigns a deep clone both phi arms own.
+                    const val_reg = (try self.cloneBorrowedHandleFieldValue(assign.value, raw_val_reg)) orelse raw_val_reg;
                     const stored_val_reg = if (assign.value.* == .move_expr and std.mem.startsWith(u8, val_reg, "^")) val_reg[1..] else val_reg;
                     const target_name = self.resolveBindingName(assign.target.identifier);
                     // REG-BR-6 move-out: the right-hand tail call claimed
@@ -11928,8 +11975,11 @@ pub const Codegen = struct {
             .return_stmt => |ret| {
                 var val_reg: ?[]const u8 = null;
                 if (ret.value) |v| {
-                    val_reg = try self.genExpr(v, hoisted_allocs);
+                    const raw_val_reg = try self.genExpr(v, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
+                    // DEF-5 clone_on_extract: `return q.field` through a
+                    // borrow hands the caller a deep clone it truly owns.
+                    val_reg = (try self.cloneBorrowedHandleFieldValue(v, raw_val_reg)) orelse raw_val_reg;
                 }
                 if (self.current_async) {
                     if (val_reg == null) {

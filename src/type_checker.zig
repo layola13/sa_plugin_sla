@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const control_flow_rules = @import("control_flow_rules.zig");
@@ -192,6 +193,16 @@ pub const TypeChecker = struct {
     function_aliases: std.StringHashMap([]const u8),
     function_alias_metadata: std.StringHashMap(FunctionAliasMetadata),
     imported_function_signatures: std.StringHashMap(FunctionSignature),
+    // Function overloading (full range, exact-after-inference discipline):
+    // same-name multi-signature candidate sets. Singletons never enter these
+    // tables and keep the legacy single-signature paths untouched. Members of
+    // a set are registered under a mangled member key (`<name>__ov_<tag>`);
+    // FuncDecl members are renamed to their member key at registration.
+    func_overload_sets: std.StringHashMap(std.array_list.Managed(*ast.FuncDecl)),
+    overload_decl_plain_name: std.AutoHashMap(*const ast.FuncDecl, []const u8),
+    imported_overload_sets: std.StringHashMap(std.array_list.Managed([]const u8)),
+    imported_overload_members: std.StringHashMap(FunctionSignature),
+    extern_overload_sets: std.StringHashMap(std.array_list.Managed(contract_parser.ExternalFunction)),
     // Tracks user-defined macros
     macros: std.StringHashMap(*ast.MacroDecl),
     imported_macros: std.StringHashMap(ImportedMacro),
@@ -274,6 +285,11 @@ pub const TypeChecker = struct {
             .function_aliases = std.StringHashMap([]const u8).init(allocator),
             .function_alias_metadata = std.StringHashMap(FunctionAliasMetadata).init(allocator),
             .imported_function_signatures = std.StringHashMap(FunctionSignature).init(allocator),
+            .func_overload_sets = std.StringHashMap(std.array_list.Managed(*ast.FuncDecl)).init(allocator),
+            .overload_decl_plain_name = std.AutoHashMap(*const ast.FuncDecl, []const u8).init(allocator),
+            .imported_overload_sets = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
+            .imported_overload_members = std.StringHashMap(FunctionSignature).init(allocator),
+            .extern_overload_sets = std.StringHashMap(std.array_list.Managed(contract_parser.ExternalFunction)).init(allocator),
             .macros = std.StringHashMap(*ast.MacroDecl).init(allocator),
             .imported_macros = std.StringHashMap(ImportedMacro).init(allocator),
             .overloads = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
@@ -826,7 +842,7 @@ pub const TypeChecker = struct {
     }
 
     fn ensureTopLevelNameUnused(self: *TypeChecker, name: []const u8, kind: []const u8) TypeError!void {
-        if (self.structs.contains(name) or self.enums.contains(name) or self.traits.contains(name) or self.funcs.contains(name) or self.macros.contains(name)) {
+        if (self.structs.contains(name) or self.enums.contains(name) or self.traits.contains(name) or self.funcs.contains(name) or self.func_overload_sets.contains(name) or self.macros.contains(name)) {
             self.setError("Redeclaration: {s} `{s}` is already defined", .{ kind, name });
             return TypeError.Redeclaration;
         }
@@ -906,6 +922,228 @@ pub const TypeChecker = struct {
                 break :blk true;
             },
         };
+    }
+
+    /// Strict type identity for overload signatures: unlike `typesEqual`,
+    /// integer widths are NOT interchangeable (i32 != i64) and untyped
+    /// literal types (.integer/.float) equal only themselves. Used both for
+    /// declaration-time signature identity and call-site exact matching.
+    fn strictTypesEqual(a: *const ast.Type, b: *const ast.Type) bool {
+        if (std.meta.activeTag(a.*) != std.meta.activeTag(b.*)) return false;
+        return switch (a.*) {
+            .infer => true,
+            .primitive => |p| p == b.primitive,
+            .pointer => strictTypesEqual(a.pointer, b.pointer),
+            .borrow => strictTypesEqual(a.borrow, b.borrow),
+            .future => strictTypesEqual(a.future, b.future),
+            .array => |arr| arr.len == b.array.len and strictTypesEqual(arr.elem, b.array.elem),
+            .tuple => |tup| blk: {
+                if (tup.elems.len != b.tuple.elems.len) break :blk false;
+                for (tup.elems, b.tuple.elems) |x, y| {
+                    if (!strictTypesEqual(x, y)) break :blk false;
+                }
+                break :blk true;
+            },
+            .closure => |c| blk: {
+                if (c.params.len != b.closure.params.len) break :blk false;
+                for (c.params, b.closure.params) |x, y| {
+                    if (!strictTypesEqual(x, y)) break :blk false;
+                }
+                break :blk strictTypesEqual(c.ret, b.closure.ret);
+            },
+            .fn_ptr => |f| blk: {
+                if (f.params.len != b.fn_ptr.params.len) break :blk false;
+                for (f.params, b.fn_ptr.params) |x, y| {
+                    if (!strictTypesEqual(x, y)) break :blk false;
+                }
+                break :blk strictTypesEqual(f.ret, b.fn_ptr.ret);
+            },
+            .user_defined => |ud| blk: {
+                if (!std.mem.eql(u8, ud.name, b.user_defined.name)) break :blk false;
+                if (ud.generics.len != b.user_defined.generics.len) break :blk false;
+                for (ud.generics, b.user_defined.generics) |x, y| {
+                    if (!strictTypesEqual(x, y)) break :blk false;
+                }
+                break :blk true;
+            },
+        };
+    }
+
+    /// Parameter-list identity for overload declarations: arity, strict
+    /// parameter types, and capability markers (borrow/move) must all agree.
+    /// Return type is deliberately excluded — declarations whose parameter
+    /// lists agree collide even if their return types differ.
+    fn paramSignaturesEqual(a: []const ast.Param, b: []const ast.Param) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |pa, pb| {
+            if (pa.is_borrow != pb.is_borrow or pa.is_move != pb.is_move) return false;
+            if (!strictTypesEqual(pa.ty, pb.ty)) return false;
+        }
+        return true;
+    }
+
+    /// Short type rendering for overload diagnostics: `name(i32, &String) -> bool`.
+    fn appendTypeShort(list: *std.array_list.Managed(u8), ty: *const ast.Type) !void {
+        switch (ty.*) {
+            .infer => try list.appendSlice("_"),
+            .primitive => |p| try list.appendSlice(switch (p) {
+                .boolean => "bool",
+                .void_type => "void",
+                .raw_ptr => "ptr",
+                .integer => "int",
+                .float => "float",
+                else => @tagName(p),
+            }),
+            .pointer => |inner| {
+                try list.append('*');
+                try appendTypeShort(list, inner);
+            },
+            .borrow => |inner| {
+                try list.append('&');
+                try appendTypeShort(list, inner);
+            },
+            .future => |inner| {
+                try list.appendSlice("Future<");
+                try appendTypeShort(list, inner);
+                try list.append('>');
+            },
+            .array => |arr| {
+                try list.append('[');
+                try appendTypeShort(list, arr.elem);
+                sio.managedPrint(list, "; {}]", .{arr.len}) catch return error.OutOfMemory;
+            },
+            .tuple => |tup| {
+                try list.append('(');
+                for (tup.elems, 0..) |elem, i| {
+                    if (i > 0) try list.appendSlice(", ");
+                    try appendTypeShort(list, elem);
+                }
+                try list.append(')');
+            },
+            .closure => |c| {
+                try list.appendSlice("fn(");
+                for (c.params, 0..) |param, i| {
+                    if (i > 0) try list.appendSlice(", ");
+                    try appendTypeShort(list, param);
+                }
+                try list.appendSlice(") -> ");
+                try appendTypeShort(list, c.ret);
+            },
+            .fn_ptr => |f| {
+                try list.appendSlice("fn(");
+                for (f.params, 0..) |param, i| {
+                    if (i > 0) try list.appendSlice(", ");
+                    try appendTypeShort(list, param);
+                }
+                try list.appendSlice(") -> ");
+                try appendTypeShort(list, f.ret);
+            },
+            .user_defined => |ud| {
+                try list.appendSlice(ud.name);
+                if (ud.generics.len > 0) {
+                    try list.append('<');
+                    for (ud.generics, 0..) |g, i| {
+                        if (i > 0) try list.appendSlice(", ");
+                        try appendTypeShort(list, g);
+                    }
+                    try list.append('>');
+                }
+            },
+        }
+    }
+
+    fn renderParamsShort(self: *TypeChecker, params: []const ast.Param) ![]const u8 {
+        var list = std.array_list.Managed(u8).init(self.allocator);
+        for (params, 0..) |param, i| {
+            if (i > 0) try list.appendSlice(", ");
+            try appendTypeShort(&list, param.ty);
+        }
+        return list.toOwnedSlice();
+    }
+
+    /// Canonical tag encoding of one type for overload member keys.
+    /// Grammar (recursive, `_` joins parameters at the key level):
+    /// primitive = its spelling; `*T` = "p"+enc; `&T` = "r"+enc;
+    /// [T; N] = "a{N}_"+enc; tuple = "t"+encs+"e"; closure/fn_ptr =
+    /// "f"+encs+"e"; Future<T> = "fu"+enc; user type = "u{len}{Name}"+encs.
+    fn appendOverloadTypeTag(list: *std.array_list.Managed(u8), ty: *const ast.Type) !void {
+        switch (ty.*) {
+            .infer => try list.appendSlice("infer"),
+            .primitive => |p| try list.appendSlice(switch (p) {
+                .boolean => "bool",
+                .void_type => "void",
+                .raw_ptr => "ptr",
+                else => @tagName(p),
+            }),
+            .pointer => |inner| {
+                try list.append('p');
+                try appendOverloadTypeTag(list, inner);
+            },
+            .borrow => |inner| {
+                try list.append('r');
+                try appendOverloadTypeTag(list, inner);
+            },
+            .future => |inner| {
+                try list.appendSlice("fu");
+                try appendOverloadTypeTag(list, inner);
+            },
+            .array => |arr| {
+                sio.managedPrint(list, "a{}_", .{arr.len}) catch return error.OutOfMemory;
+                try appendOverloadTypeTag(list, arr.elem);
+            },
+            .tuple => |tup| {
+                try list.append('t');
+                for (tup.elems, 0..) |elem, i| {
+                    if (i > 0) try list.append('_');
+                    try appendOverloadTypeTag(list, elem);
+                }
+                try list.append('e');
+            },
+            .closure => |c| {
+                try list.append('f');
+                for (c.params, 0..) |param, i| {
+                    if (i > 0) try list.append('_');
+                    try appendOverloadTypeTag(list, param);
+                }
+                try list.appendSlice("_e");
+            },
+            .fn_ptr => |f| {
+                try list.append('f');
+                for (f.params, 0..) |param, i| {
+                    if (i > 0) try list.append('_');
+                    try appendOverloadTypeTag(list, param);
+                }
+                try list.appendSlice("_e");
+            },
+            .user_defined => |ud| {
+                sio.managedPrint(list, "u{}{s}", .{ ud.name.len, ud.name }) catch return error.OutOfMemory;
+                for (ud.generics) |g| {
+                    try list.append('_');
+                    try appendOverloadTypeTag(list, g);
+                }
+            },
+        }
+    }
+
+    /// Member key for one overload candidate: `<name>__ov_<tag>`, with a
+    /// trailing capability marker per parameter (`b` = borrow, `m` = move)
+    /// so capability-only signature differences still produce distinct keys.
+    /// The empty parameter list encodes as `v`. `__ov_` is a reserved marker:
+    /// source-level function names containing it are rejected at registration.
+    pub fn overloadMemberKey(self: *TypeChecker, name: []const u8, params: []const ast.Param) ![]const u8 {
+        var tag = std.array_list.Managed(u8).init(self.allocator);
+        defer tag.deinit();
+        if (params.len == 0) {
+            try tag.append('v');
+        } else {
+            for (params, 0..) |param, i| {
+                if (i > 0) try tag.append('_');
+                try appendOverloadTypeTag(&tag, param.ty);
+                if (param.is_borrow) try tag.append('b');
+                if (param.is_move) try tag.append('m');
+            }
+        }
+        return std.fmt.allocPrint(self.allocator, "{s}__ov_{s}", .{ name, tag.items });
     }
 
     fn normalizeUsingPath(self: *TypeChecker, using_path: []const u8) TypeError![]const u8 {
@@ -1029,6 +1267,17 @@ pub const TypeChecker = struct {
         self.function_aliases.deinit();
         self.function_alias_metadata.deinit();
         self.imported_function_signatures.deinit();
+        var fos_it = self.func_overload_sets.valueIterator();
+        while (fos_it.next()) |list| list.deinit();
+        self.func_overload_sets.deinit();
+        self.overload_decl_plain_name.deinit();
+        var ios_it = self.imported_overload_sets.valueIterator();
+        while (ios_it.next()) |list| list.deinit();
+        self.imported_overload_sets.deinit();
+        self.imported_overload_members.deinit();
+        var eos_it = self.extern_overload_sets.valueIterator();
+        while (eos_it.next()) |list| list.deinit();
+        self.extern_overload_sets.deinit();
         self.funcs.deinit();
         self.macros.deinit();
         self.imported_macros.deinit();
@@ -1185,6 +1434,457 @@ pub const TypeChecker = struct {
         });
     }
 
+    /// Register one member of an imported .sla overload set. `member_key` is
+    /// the canonical key computed from the plain (defining-module) name, so
+    /// calls resolved through either the plain name or a module alias set
+    /// converge on the same emitted symbol.
+    pub fn registerImportedFunctionOverloadMember(self: *TypeChecker, set_name: []const u8, member_key: []const u8, params: []const ast.Param, ret_ty: *ast.Type, is_async: bool) !void {
+        try self.imported_overload_members.put(member_key, .{
+            .params = params,
+            .ret_ty = ret_ty,
+            .is_async = is_async,
+        });
+        const gop = try self.imported_overload_sets.getOrPut(set_name);
+        if (!gop.found_existing) gop.value_ptr.* = std.array_list.Managed([]const u8).init(self.allocator);
+        for (gop.value_ptr.items) |existing| {
+            if (std.mem.eql(u8, existing, member_key)) return;
+        }
+        try gop.value_ptr.append(member_key);
+    }
+
+    // --- Overload resolution (exact-after-inference) ---
+
+    const SymbolMark = struct {
+        scope: *Scope,
+        name: []const u8,
+        state: ValueState,
+        consumed_by_call: ?[]const u8,
+        borrow_source: ?[]const u8,
+    };
+
+    /// Probing argument types for overload resolution re-runs checkExpr on
+    /// arguments whose nested calls would otherwise consume bindings a
+    /// second time when the winning candidate is validated for real.
+    /// Snapshot the scope chain's symbol states before probing and roll
+    /// them back afterwards; the final validation re-checks (and consumes)
+    /// from the restored state.
+    fn snapshotOverloadProbeStates(self: *TypeChecker, scope: *Scope) !std.array_list.Managed(SymbolMark) {
+        var marks = std.array_list.Managed(SymbolMark).init(self.allocator);
+        var current: ?*Scope = scope;
+        while (current) |frame| {
+            var it = frame.symbols.iterator();
+            while (it.next()) |entry| {
+                try marks.append(.{
+                    .scope = frame,
+                    .name = entry.key_ptr.*,
+                    .state = entry.value_ptr.state,
+                    .consumed_by_call = entry.value_ptr.consumed_by_call,
+                    .borrow_source = entry.value_ptr.borrow_source,
+                });
+            }
+            current = frame.parent;
+        }
+        return marks;
+    }
+
+    fn restoreOverloadProbeStates(self: *TypeChecker, marks: std.array_list.Managed(SymbolMark)) void {
+        _ = self;
+        for (marks.items) |mark| {
+            if (mark.scope.symbols.getPtr(mark.name)) |sym| {
+                sym.state = mark.state;
+                sym.consumed_by_call = mark.consumed_by_call;
+                sym.borrow_source = mark.borrow_source;
+            }
+        }
+    }
+
+    /// Call-site matching comparison: strict identity, except untyped
+    /// literal types on the argument side adapt to any same-class concrete
+    /// primitive (.integer -> any integer type, .float -> f32/f64), and
+    /// `.infer` components (e.g. unannotated closure parameters) act as
+    /// wildcards. Deliberately NOT typesEqual: integer widths never blur.
+    fn callMatchTypesEqual(param_ty: *const ast.Type, arg_ty: *const ast.Type) bool {
+        if (param_ty.* == .infer or arg_ty.* == .infer) return true;
+        if (param_ty.* == .primitive and arg_ty.* == .primitive) {
+            if (param_ty.primitive == arg_ty.primitive) return true;
+            if (arg_ty.primitive == .integer) return isIntegerPrimitive(param_ty.primitive);
+            if (arg_ty.primitive == .float) return param_ty.primitive == .f32 or param_ty.primitive == .f64;
+            return false;
+        }
+        if (std.meta.activeTag(param_ty.*) != std.meta.activeTag(arg_ty.*)) {
+            // A borrow argument may satisfy a pointer parameter (and vice
+            // versa) when the pointees match, mirroring plainCallArgMatches.
+            if (param_ty.* == .pointer and arg_ty.* == .borrow) return callMatchTypesEqual(param_ty.pointer, arg_ty.borrow);
+            if (param_ty.* == .borrow and arg_ty.* == .pointer) return callMatchTypesEqual(param_ty.borrow, arg_ty.pointer);
+            return false;
+        }
+        return switch (param_ty.*) {
+            .infer, .primitive => unreachable,
+            .pointer => callMatchTypesEqual(param_ty.pointer, arg_ty.pointer),
+            .borrow => callMatchTypesEqual(param_ty.borrow, arg_ty.borrow),
+            .future => callMatchTypesEqual(param_ty.future, arg_ty.future),
+            .array => |arr| arr.len == arg_ty.array.len and callMatchTypesEqual(arr.elem, arg_ty.array.elem),
+            .tuple => |tup| blk: {
+                if (tup.elems.len != arg_ty.tuple.elems.len) break :blk false;
+                for (tup.elems, arg_ty.tuple.elems) |x, y| {
+                    if (!callMatchTypesEqual(x, y)) break :blk false;
+                }
+                break :blk true;
+            },
+            .closure => |c| blk: {
+                if (c.params.len != arg_ty.closure.params.len) break :blk false;
+                for (c.params, arg_ty.closure.params) |x, y| {
+                    if (!callMatchTypesEqual(x, y)) break :blk false;
+                }
+                break :blk callMatchTypesEqual(c.ret, arg_ty.closure.ret);
+            },
+            .fn_ptr => |f| blk: {
+                if (f.params.len != arg_ty.fn_ptr.params.len) break :blk false;
+                for (f.params, arg_ty.fn_ptr.params) |x, y| {
+                    if (!callMatchTypesEqual(x, y)) break :blk false;
+                }
+                break :blk callMatchTypesEqual(f.ret, arg_ty.fn_ptr.ret);
+            },
+            .user_defined => |ud| blk: {
+                if (!std.mem.eql(u8, ud.name, arg_ty.user_defined.name)) break :blk false;
+                if (ud.generics.len != arg_ty.user_defined.generics.len) break :blk false;
+                for (ud.generics, arg_ty.user_defined.generics) |x, y| {
+                    if (!callMatchTypesEqual(x, y)) break :blk false;
+                }
+                break :blk true;
+            },
+        };
+    }
+
+    fn overloadParamMatches(param: ast.Param, arg: *ast.Node, arg_ty: *ast.Type) bool {
+        if (param.is_move and arg.* != .move_expr) return false;
+        if (arg.* == .literal) {
+            // Untyped literal nodes adapt to any same-class concrete
+            // parameter type; if several candidates are distinguished only
+            // by such a position, all of them win and the resolver reports
+            // ambiguity (the call site must annotate).
+            switch (arg.literal) {
+                .string_val => if (isStringType(param.ty)) return true,
+                .int_val => if (param.ty.* == .primitive and isIntegerPrimitive(param.ty.primitive)) return true,
+                .float_val => if (param.ty.* == .primitive and (param.ty.primitive == .f32 or param.ty.primitive == .f64)) return true,
+                .bool_val => {},
+            }
+        }
+        if (param.ty.* == .borrow) {
+            if (arg_ty.* == .borrow) return callMatchTypesEqual(param.ty.borrow, arg_ty.borrow);
+            return false;
+        }
+        return callMatchTypesEqual(param.ty, unwrapBorrowForCallArg(arg, arg_ty));
+    }
+
+    fn primitiveFromSpelling(name: []const u8) ?ast.Primitive {
+        const names = .{ "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize", "f32", "f64" };
+        inline for (names) |n| {
+            if (std.mem.eql(u8, name, n)) return @field(ast.Primitive, n);
+        }
+        if (std.mem.eql(u8, name, "bool")) return .boolean;
+        return null;
+    }
+
+    /// Matching for .sai contract parameters, whose types are ABI spellings.
+    /// The legacy FFI path performs no argument type checking at all; this
+    /// matcher exists only to distinguish overload candidates, so pointer
+    /// spellings accept any pointer-like argument and named spellings
+    /// accept the same-named user type. Anything it cannot distinguish
+    /// simply leaves multiple winners, which the resolver reports as
+    /// ambiguity rather than guessing.
+    fn contractParamMatches(spelling_raw: []const u8, arg: *ast.Node, arg_ty: *ast.Type) bool {
+        const spelling = std.mem.trim(u8, spelling_raw, " \t\r");
+        const effective = unwrapBorrowForCallArg(arg, arg_ty);
+        if (std.mem.eql(u8, spelling, "ptr")) {
+            return effective.* == .pointer or effective.* == .borrow or effective.* == .fn_ptr or
+                (effective.* == .primitive and effective.primitive == .raw_ptr);
+        }
+        if (spelling.len > 0 and (spelling[0] == '*' or spelling[0] == '^')) {
+            return effective.* == .pointer or effective.* == .borrow or
+                (effective.* == .primitive and effective.primitive == .raw_ptr);
+        }
+        if (spelling.len > 0 and spelling[0] == '&') {
+            return arg_ty.* == .borrow;
+        }
+        if (primitiveFromSpelling(spelling)) |prim| {
+            if (arg.* == .literal) {
+                switch (arg.literal) {
+                    .int_val => return isIntegerPrimitive(prim),
+                    .float_val => return prim == .f32 or prim == .f64,
+                    else => {},
+                }
+            }
+            if (effective.* != .primitive) return false;
+            if (effective.primitive == prim) return true;
+            if (effective.primitive == .integer) return isIntegerPrimitive(prim);
+            if (effective.primitive == .float) return prim == .f32 or prim == .f64;
+            return false;
+        }
+        if (effective.* == .user_defined) return std.mem.eql(u8, effective.user_defined.name, spelling);
+        return false;
+    }
+
+    const OverloadCandidate = struct {
+        member_key: []const u8,
+        kind: enum { func_decl, imported, extern_contract },
+        func: ?*ast.FuncDecl = null,
+        imported_sig: ?FunctionSignature = null,
+        ext: ?contract_parser.ExternalFunction = null,
+
+        fn arity(self: OverloadCandidate) usize {
+            return switch (self.kind) {
+                .func_decl => self.func.?.params.len,
+                .imported => self.imported_sig.?.params.len,
+                .extern_contract => self.ext.?.params.len,
+            };
+        }
+
+        fn matches(self: OverloadCandidate, args: []const *ast.Node, arg_tys: []const *ast.Type) bool {
+            if (self.arity() != args.len) return false;
+            switch (self.kind) {
+                .func_decl => {
+                    for (self.func.?.params, args, arg_tys) |param, arg, arg_ty| {
+                        if (!overloadParamMatches(param, arg, arg_ty)) return false;
+                    }
+                },
+                .imported => {
+                    for (self.imported_sig.?.params, args, arg_tys) |param, arg, arg_ty| {
+                        if (!overloadParamMatches(param, arg, arg_ty)) return false;
+                    }
+                },
+                .extern_contract => {
+                    for (self.ext.?.params, args, arg_tys) |param, arg, arg_ty| {
+                        if (param.is_move and arg.* != .move_expr) return false;
+                        if (!contractParamMatches(param.ty, arg, arg_ty)) return false;
+                    }
+                },
+            }
+            return true;
+        }
+    };
+
+    fn renderArgTypesShort(self: *TypeChecker, arg_tys: []const *ast.Type) ![]const u8 {
+        var list = std.array_list.Managed(u8).init(self.allocator);
+        for (arg_tys, 0..) |ty, i| {
+            if (i > 0) try list.appendSlice(", ");
+            try appendTypeShort(&list, ty);
+        }
+        return list.toOwnedSlice();
+    }
+
+    fn renderCandidateShort(self: *TypeChecker, display_name: []const u8, candidate: OverloadCandidate) ![]const u8 {
+        var list = std.array_list.Managed(u8).init(self.allocator);
+        try list.appendSlice(display_name);
+        try list.append('(');
+        switch (candidate.kind) {
+            .func_decl => {
+                const params = try self.renderParamsShort(candidate.func.?.params);
+                defer self.allocator.free(params);
+                try list.appendSlice(params);
+                try list.appendSlice(") -> ");
+                try appendTypeShort(&list, candidate.func.?.ret_ty);
+            },
+            .imported => {
+                const params = try self.renderParamsShort(candidate.imported_sig.?.params);
+                defer self.allocator.free(params);
+                try list.appendSlice(params);
+                try list.appendSlice(") -> ");
+                try appendTypeShort(&list, candidate.imported_sig.?.ret_ty);
+            },
+            .extern_contract => {
+                for (candidate.ext.?.params, 0..) |param, i| {
+                    if (i > 0) try list.appendSlice(", ");
+                    try list.appendSlice(std.mem.trim(u8, param.ty, " \t\r"));
+                }
+                try list.appendSlice(") -> ");
+                try list.appendSlice(candidate.ext.?.ret_ty);
+            },
+        }
+        return list.toOwnedSlice();
+    }
+
+    fn renderCandidateList(self: *TypeChecker, display_name: []const u8, candidates: []const OverloadCandidate) ![]const u8 {
+        var list = std.array_list.Managed(u8).init(self.allocator);
+        for (candidates, 0..) |candidate, i| {
+            if (i > 0) try list.appendSlice("; ");
+            const rendered = try self.renderCandidateShort(display_name, candidate);
+            defer self.allocator.free(rendered);
+            try list.appendSlice(rendered);
+        }
+        return list.toOwnedSlice();
+    }
+
+    /// The FFI argument validation shared by the legacy single-contract
+    /// path and by overload winners: arguments are type-checked, closures
+    /// are rejected for by-value pointer parameters (no trampoline
+    /// address), move arguments are consumed per the contract, and the
+    /// return type comes from the ABI return spelling.
+    fn checkExternContractCall(self: *TypeChecker, ext: contract_parser.ExternalFunction, call: ast.CallExpr, scope: *Scope) TypeError!*ast.Type {
+        if (ext.is_variadic) {
+            if (call.args.len < ext.params.len) {
+                self.setError("call to variadic function {s} needs at least {} arguments ({} fixed), got {}", .{ call.func_name, ext.params.len, ext.params.len, call.args.len });
+                return TypeError.InvalidArgsCount;
+            }
+        } else if (ext.params.len != call.args.len) return TypeError.InvalidArgsCount;
+        for (ext.params, call.args[0..ext.params.len]) |param, arg| {
+            const arg_ty = try self.checkExpr(arg, scope);
+            // bypass signature checks for FFI pointers
+            // Fn values bound for a by-value pointer parameter
+            // are materialized as callable machine addresses by
+            // the emitters — except closures, which have no
+            // trampoline address: invoking a closure needs its
+            // capture pointer, which an arbitrary extern
+            // `fn(ptr)` parameter cannot carry. A closure
+            // argument's checked type is `.closure` (literals
+            // and closure-typed bindings alike); reject it
+            // explicitly instead of passing a wrong value.
+            if (!param.is_borrow and !param.is_move and
+                std.mem.eql(u8, std.mem.trim(u8, param.ty, " \t\r"), "ptr") and
+                (arg_ty.* == .closure or (arg_ty.* == .fn_ptr and blk: {
+                    const root = switch (arg.*) {
+                        .move_expr => |mv| mv.expr,
+                        else => arg,
+                    };
+                    break :blk root.* == .closure_literal;
+                })))
+            {
+                self.setError("cannot pass a closure to extern parameter `{s}` of `{s}`: a closure has no callable trampoline address (its invocation needs the capture pointer); pass a top-level named function instead", .{ param.name, call.func_name });
+                return TypeError.TypeMismatch;
+            }
+            try self.consumeExternMoveArg(scope, param, arg);
+        }
+        if (ext.is_variadic) {
+            for (call.args[ext.params.len..]) |arg| {
+                try self.checkVariadicTrailingArg(arg, scope, call.func_name);
+            }
+        }
+        const ret = try self.allocator.create(ast.Type);
+        setTypeFromAbiReturn(self.allocator, ret, ext.ret_ty);
+        return ret;
+    }
+
+    /// Overload resolution entry point for plain (non-associated) calls.
+    /// Returns null when no overload set exists for the name, leaving the
+    /// legacy single-signature paths untouched. When a set exists (in any
+    /// of the func / imported-signature / extern-contract sources),
+    /// candidates from every source compete under exact-after-inference
+    /// matching; singleton entries from other sources join the candidate
+    /// pool so a name is never silently shadowed across sources.
+    fn appendOverloadCandidateUnique(candidates: *std.array_list.Managed(OverloadCandidate), candidate: OverloadCandidate) !void {
+        for (candidates.items) |existing| {
+            if (std.mem.eql(u8, existing.member_key, candidate.member_key)) return;
+        }
+        try candidates.append(candidate);
+    }
+
+    fn tryResolveOverloadCall(self: *TypeChecker, expr: *ast.Node, call: ast.CallExpr, resolved_name: []const u8, module_local_name: ?[]const u8, scope: *Scope) TypeError!?*ast.Type {
+        // Effective lookup name, extending the legacy precedence (a
+        // module-local name shadows the plain name) to overload sets.
+        var effective_name = resolved_name;
+        if (module_local_name) |local_name| {
+            if (self.func_overload_sets.contains(local_name) or self.imported_overload_sets.contains(local_name) or
+                self.funcs.contains(local_name) or self.imported_function_signatures.contains(local_name))
+            {
+                effective_name = local_name;
+            }
+        }
+        const func_set = self.func_overload_sets.get(effective_name);
+        const imp_set = self.imported_overload_sets.get(effective_name);
+        const ext_set = self.extern_overload_sets.get(call.func_name);
+        if (func_set == null and imp_set == null and ext_set == null) return null;
+
+        // The same member can be registered through several surfaces at
+        // once (an imported .sla module's declarations are inlined into
+        // this program AND registered as imported signatures); candidates
+        // are deduped by member key, with body-carrying declarations
+        // taking precedence by append order.
+        var candidates = std.array_list.Managed(OverloadCandidate).init(self.allocator);
+        defer candidates.deinit();
+        if (func_set) |set| {
+            for (set.items) |func| {
+                try appendOverloadCandidateUnique(&candidates, .{ .member_key = func.name, .kind = .func_decl, .func = func });
+            }
+        } else if (self.funcs.get(effective_name)) |func| {
+            try appendOverloadCandidateUnique(&candidates, .{ .member_key = effective_name, .kind = .func_decl, .func = func });
+        }
+        if (imp_set) |set| {
+            for (set.items) |member_key| {
+                if (self.imported_overload_members.get(member_key)) |sig| {
+                    try appendOverloadCandidateUnique(&candidates, .{ .member_key = member_key, .kind = .imported, .imported_sig = sig });
+                }
+            }
+        } else if (self.imported_function_signatures.get(effective_name)) |sig| {
+            try appendOverloadCandidateUnique(&candidates, .{ .member_key = effective_name, .kind = .imported, .imported_sig = sig });
+        }
+        if (ext_set) |set| {
+            for (set.items) |ext| {
+                try appendOverloadCandidateUnique(&candidates, .{ .member_key = try self.externMemberKey(ext), .kind = .extern_contract, .ext = ext });
+            }
+        } else if (self.extern_funcs.get(call.func_name)) |ext| {
+            try appendOverloadCandidateUnique(&candidates, .{ .member_key = call.func_name, .kind = .extern_contract, .ext = ext });
+        }
+
+        // Probe argument types under a scope-state snapshot, then roll
+        // back: the winning candidate's real validation below re-checks
+        // (and consumes) from the restored state.
+        var winners = std.array_list.Managed(OverloadCandidate).init(self.allocator);
+        defer winners.deinit();
+        var arg_tys = std.array_list.Managed(*ast.Type).init(self.allocator);
+        defer arg_tys.deinit();
+        {
+            const marks = try self.snapshotOverloadProbeStates(scope);
+            defer {
+                self.restoreOverloadProbeStates(marks);
+                marks.deinit();
+            }
+            for (call.args) |arg| {
+                try arg_tys.append(try self.checkExpr(arg, scope));
+            }
+            for (candidates.items) |candidate| {
+                if (candidate.matches(call.args, arg_tys.items)) try winners.append(candidate);
+            }
+        }
+
+        if (winners.items.len == 0) {
+            const arg_desc = try self.renderArgTypesShort(arg_tys.items);
+            defer self.allocator.free(arg_desc);
+            const cand_desc = try self.renderCandidateList(call.func_name, candidates.items);
+            defer self.allocator.free(cand_desc);
+            self.setError("no overload of `{s}` matches the argument types ({s}); candidates: {s}", .{ call.func_name, arg_desc, cand_desc });
+            return TypeError.TypeMismatch;
+        }
+        if (winners.items.len > 1) {
+            const cand_desc = try self.renderCandidateList(call.func_name, winners.items);
+            defer self.allocator.free(cand_desc);
+            self.setError("AmbiguousCall: call to `{s}` matches multiple overloads: {s}", .{ call.func_name, cand_desc });
+            return TypeError.AmbiguousCall;
+        }
+
+        const winner = winners.items[0];
+        switch (winner.kind) {
+            .func_decl => {
+                const func = winner.func.?;
+                try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, false);
+                self.resolved_call_symbols.put(expr, winner.member_key) catch return TypeError.OutOfMemory;
+                if (func.is_async) return try self.makeFutureType(func.ret_ty);
+                return func.ret_ty;
+            },
+            .imported => {
+                const sig = winner.imported_sig.?;
+                try self.checkCallArgsAgainstSignature(sig.params, call.args, scope, call.func_name, false);
+                self.resolved_call_symbols.put(expr, winner.member_key) catch return TypeError.OutOfMemory;
+                if (sig.is_async) return try self.makeFutureType(sig.ret_ty);
+                return sig.ret_ty;
+            },
+            .extern_contract => {
+                const ret = try self.checkExternContractCall(winner.ext.?, call, scope);
+                self.resolved_call_symbols.put(expr, winner.member_key) catch return TypeError.OutOfMemory;
+                return ret;
+            },
+        }
+    }
+
     /// Goroutine syntax batch (DESIGN section 1): whether a type may
     /// cross a goroutine boundary as a spawn argument / channel
     /// payload component. Borrows dangle into the spawner frame,
@@ -1255,6 +1955,34 @@ pub const TypeChecker = struct {
                     return TypeError.TypeMismatch;
                 },
             }
+        } else if (self.func_overload_sets.get(call.func_name)) |set| {
+            // Goroutine entry resolution over an overload set: the member
+            // must be unique at the call's arity (the entry signature is
+            // fixed before the call itself is checked); the subsequent
+            // checkExpr of the call runs full overload resolution.
+            var found: ?*ast.FuncDecl = null;
+            for (set.items) |func| {
+                if (func.params.len != call.args.len) continue;
+                if (found != null) {
+                    self.setError("go: callee `{s}` is an overload set with several members taking {} argument(s); the spawn entry cannot choose between them - wrap the intended member in a named function", .{ call.func_name, call.args.len });
+                    return TypeError.AmbiguousCall;
+                }
+                found = func;
+            }
+            const decl = found orelse {
+                self.setError("go: callee `{s}` does not resolve to a free function taking {} argument(s) (method callees are not supported in this batch)", .{ call.func_name, call.args.len });
+                return TypeError.TypeMismatch;
+            };
+            if (decl.is_extern) {
+                self.setError("go: extern functions cannot be spawned; wrap the extern in an SLA function", .{});
+                return TypeError.TypeMismatch;
+            }
+            var ps = std.array_list.Managed(*ast.Type).init(self.allocator);
+            for (decl.params) |param| try ps.append(param.ty);
+            params = try ps.toOwnedSlice();
+            ret_ty = decl.ret_ty;
+            is_async = decl.is_async;
+            entry_ty = try self.makeFnPtrType(decl.abi, params, ret_ty);
         } else if (self.funcs.get(call.func_name)) |decl| {
             if (decl.is_extern) {
                 self.setError("go: extern functions cannot be spawned; wrap the extern in an SLA function", .{});
@@ -3230,12 +3958,91 @@ pub const TypeChecker = struct {
         }
     }
 
+    /// Identity for .sai contract parameters: arity plus the ABI type
+    /// spelling and capability markers of each parameter.
+    fn externParamsEqual(a: contract_parser.ExternalFunction, b: contract_parser.ExternalFunction) bool {
+        if (a.params.len != b.params.len) return false;
+        for (a.params, b.params) |pa, pb| {
+            if (pa.is_borrow != pb.is_borrow or pa.is_move != pb.is_move or pa.is_raw != pb.is_raw) return false;
+            if (!std.mem.eql(u8, std.mem.trim(u8, pa.ty, " \t\r"), std.mem.trim(u8, pb.ty, " \t\r"))) return false;
+        }
+        return true;
+    }
+
+    fn externMemberKey(self: *TypeChecker, f: contract_parser.ExternalFunction) ![]const u8 {
+        var tag = std.array_list.Managed(u8).init(self.allocator);
+        defer tag.deinit();
+        if (f.params.len == 0) {
+            try tag.append('v');
+        } else {
+            for (f.params, 0..) |param, i| {
+                if (i > 0) try tag.append('_');
+                for (std.mem.trim(u8, param.ty, " \t\r")) |ch| {
+                    try tag.append(if (std.ascii.isAlphanumeric(ch)) ch else '_');
+                }
+                if (param.is_borrow) try tag.append('b');
+                if (param.is_move) try tag.append('m');
+                if (param.is_raw) try tag.append('r');
+            }
+        }
+        return std.fmt.allocPrint(self.allocator, "{s}__ov_{s}", .{ f.name, tag.items });
+    }
+
+    /// Register one .sai contract declaration. Identical redeclarations
+    /// (same name, same parameters, same return) dedupe silently — sa_std
+    /// itself declares some contracts in two files (e.g. sa_print_bytes),
+    /// and source expansion may inline several files into one load, so the
+    /// duplicate boundary cannot be per-file. A second declaration with
+    /// different parameters promotes the name to an overload set whose
+    /// members live in extern_funcs under their member keys; the same
+    /// parameters with a different return type are a loud conflict.
+    fn registerExternContract(self: *TypeChecker, f: contract_parser.ExternalFunction) !void {
+        if (self.extern_overload_sets.getPtr(f.name)) |set| {
+            for (set.items) |existing| {
+                if (externParamsEqual(existing, f)) {
+                    if (!std.mem.eql(u8, existing.ret_ty, f.ret_ty)) {
+                        self.setError("Redeclaration: extern contract `{s}` is declared with the same parameters but a different return type", .{f.name});
+                        return TypeError.Redeclaration;
+                    }
+                    return;
+                }
+            }
+            const key = try self.externMemberKey(f);
+            if (self.extern_funcs.contains(key)) {
+                self.setError("Redeclaration: extern contract `{s}` is already defined", .{f.name});
+                return TypeError.Redeclaration;
+            }
+            try set.append(f);
+            try self.extern_funcs.put(key, f);
+            return;
+        }
+        if (self.extern_funcs.get(f.name)) |existing| {
+            if (externParamsEqual(existing, f)) {
+                if (!std.mem.eql(u8, existing.ret_ty, f.ret_ty)) {
+                    self.setError("Redeclaration: extern contract `{s}` is declared with the same parameters but a different return type", .{f.name});
+                    return TypeError.Redeclaration;
+                }
+                return;
+            }
+            var set = std.array_list.Managed(contract_parser.ExternalFunction).init(self.allocator);
+            errdefer set.deinit();
+            try set.append(existing);
+            try set.append(f);
+            _ = self.extern_funcs.remove(f.name);
+            try self.extern_funcs.put(try self.externMemberKey(existing), existing);
+            try self.extern_funcs.put(try self.externMemberKey(f), f);
+            try self.extern_overload_sets.put(f.name, set);
+            return;
+        }
+        try self.extern_funcs.put(f.name, f);
+    }
+
     pub fn loadContracts(self: *TypeChecker, sai_content: []const u8, sal_content: []const u8) !void {
         var parser = contract_parser.ContractParser.init(self.allocator);
 
         const funcs = try parser.parseSai(sai_content);
         for (funcs) |f| {
-            try self.extern_funcs.put(f.name, f);
+            try self.registerExternContract(f);
         }
 
         const layouts = try parser.parseSal(sal_content);
@@ -3340,6 +4147,105 @@ pub const TypeChecker = struct {
         }
     }
 
+    /// Function overloading registration. Top-level FuncDecls are grouped by
+    /// name; a group whose members all share one parameter signature follows
+    /// the legacy path (including the extern prototype/definition pair rule),
+    /// while a group with two or more distinct parameter signatures becomes
+    /// an overload set: every member is renamed to its member key
+    /// (`<name>__ov_<tag>`) and registered under that key, and the set is
+    /// recorded under the plain name for call-site resolution. Two members
+    /// with identical parameter signatures are a redeclaration — differing
+    /// only in return type does not rescue them.
+    fn registerTopLevelFunctions(self: *TypeChecker, program: *ast.Node) !void {
+        var groups = std.StringHashMap(std.array_list.Managed(*ast.FuncDecl)).init(self.allocator);
+        defer {
+            var it = groups.valueIterator();
+            while (it.next()) |list| list.deinit();
+            groups.deinit();
+        }
+        var order = std.array_list.Managed([]const u8).init(self.allocator);
+        defer order.deinit();
+        for (program.program.decls) |decl| {
+            if (decl.* != .func_decl) continue;
+            const fd = &decl.func_decl;
+            if (std.mem.indexOf(u8, fd.name, "__ov_") != null) {
+                self.setError("function name `{s}` uses the reserved `__ov_` marker (reserved for overload member symbols)", .{fd.name});
+                return TypeError.CompileError;
+            }
+            const gop = try groups.getOrPut(fd.name);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = std.array_list.Managed(*ast.FuncDecl).init(self.allocator);
+                try order.append(fd.name);
+            }
+            try gop.value_ptr.append(fd);
+        }
+        for (order.items) |name| {
+            try self.registerFunctionGroup(name, groups.get(name).?.items);
+        }
+    }
+
+    fn registerFunctionGroup(self: *TypeChecker, name: []const u8, group: []*ast.FuncDecl) !void {
+        const Class = struct {
+            rep: *ast.FuncDecl,
+            others: std.array_list.Managed(*ast.FuncDecl),
+        };
+        var classes = std.array_list.Managed(Class).init(self.allocator);
+        defer {
+            for (classes.items) |*class| class.others.deinit();
+            classes.deinit();
+        }
+        for (group) |fd| {
+            var matched: ?*Class = null;
+            for (classes.items) |*class| {
+                if (paramSignaturesEqual(class.rep.params, fd.params)) {
+                    matched = class;
+                    break;
+                }
+            }
+            if (matched) |class| {
+                // Identical parameter signature: only the C-style extern
+                // prototype/definition pair may share a class.
+                if (externPrototypePairsWith(class.rep, fd)) {
+                    if (class.rep.is_decl_only and !fd.is_decl_only) {
+                        try class.others.append(class.rep);
+                        class.rep = fd;
+                    } else {
+                        try class.others.append(fd);
+                    }
+                    continue;
+                }
+                if (!strictTypesEqual(class.rep.ret_ty, fd.ret_ty)) {
+                    self.setError("Redeclaration: function `{s}` is already defined (overloads may not differ by return type only)", .{name});
+                } else {
+                    self.setError("Redeclaration: function `{s}` is already defined", .{name});
+                }
+                return TypeError.Redeclaration;
+            }
+            try classes.append(.{ .rep = fd, .others = std.array_list.Managed(*ast.FuncDecl).init(self.allocator) });
+        }
+        if (classes.items.len == 1) {
+            try self.ensureTopLevelNameUnused(name, "function");
+            try self.funcs.put(name, classes.items[0].rep);
+            return;
+        }
+        try self.ensureTopLevelNameUnused(name, "function");
+        var set = std.array_list.Managed(*ast.FuncDecl).init(self.allocator);
+        errdefer set.deinit();
+        for (classes.items) |class| {
+            const key = try self.overloadMemberKey(name, class.rep.params);
+            if (self.funcs.contains(key)) {
+                self.setError("Redeclaration: function `{s}` is already defined", .{name});
+                return TypeError.Redeclaration;
+            }
+            class.rep.name = key;
+            for (class.others.items) |proto| proto.name = key;
+            try self.funcs.put(key, class.rep);
+            try self.overload_decl_plain_name.put(class.rep, name);
+            try set.append(class.rep);
+        }
+        try self.func_overload_sets.put(name, set);
+    }
+
     pub fn checkProgram(self: *TypeChecker, program: *ast.Node) !void {
         if (program.* != .program) return TypeError.CompileError;
 
@@ -3403,20 +4309,14 @@ pub const TypeChecker = struct {
         }
 
         // Register functions first
+        // Register functions first (overload-aware grouping; see
+        // registerTopLevelFunctions). The legacy per-decl registration is
+        // subsumed by the grouping pass, which preserves singleton and
+        // extern prototype-pair behaviour exactly.
+        try self.registerTopLevelFunctions(program);
         for (program.program.decls) |decl| {
             if (decl.* == .func_decl) {
-                const fd = &decl.func_decl;
-                if (self.funcs.get(fd.name)) |existing| {
-                    // C-style forward declaration: an `extern "C" { fn f(...); }` prototype
-                    // may be completed by a matching definition in the same program (and the
-                    // prototype may equally follow the definition). Keep the definition.
-                    if (externPrototypePairsWith(existing, fd)) {
-                        if (existing.is_decl_only and !fd.is_decl_only) try self.funcs.put(fd.name, fd);
-                        continue;
-                    }
-                }
-                try self.ensureTopLevelNameUnused(fd.name, "function");
-                try self.funcs.put(fd.name, fd);
+                continue;
             } else if (decl.* == .overload_decl) {
                 const type_name = try self.typeName(decl.overload_decl.target_ty);
                 for (decl.overload_decl.methods) |method| {
@@ -4554,6 +5454,21 @@ pub const TypeChecker = struct {
                 if (self.funcs.get(name)) |func| {
                     const params = try self.fnPtrParamTypes(func);
                     return try self.makeFnPtrTypeVariadic(func.abi, params, func.ret_ty, func.is_variadic);
+                }
+                if (self.func_overload_sets.get(name)) |set| {
+                    // A bare reference carries no expected signature, so it
+                    // cannot choose a member. Name the candidates and the
+                    // member-symbol remedy instead of guessing.
+                    var cands = std.array_list.Managed(OverloadCandidate).init(self.allocator);
+                    defer cands.deinit();
+                    for (set.items) |func| {
+                        cands.append(.{ .member_key = func.name, .kind = .func_decl, .func = func }) catch return TypeError.OutOfMemory;
+                    }
+                    const cand_desc = try self.renderCandidateList(name, cands.items);
+                    defer self.allocator.free(cand_desc);
+                    const first_key = if (set.items.len > 0) set.items[0].name else name;
+                    self.setError("AmbiguousCall: `{s}` is an overload set and a bare function reference cannot choose a member; candidates: {s}; call it with arguments, or reference one member by its member symbol (e.g. `{s}`)", .{ name, cand_desc, first_key });
+                    return TypeError.AmbiguousCall;
                 }
                 self.setError("UndefinedVariable: identifier `{s}` is not defined in this scope", .{name});
                 return TypeError.UndefinedVariable;
@@ -5800,6 +6715,12 @@ pub const TypeChecker = struct {
                     call.func_name
                 else
                     self.resolveFunctionAlias(call.func_name);
+                if (call.associated_target == null) {
+                    if (try self.tryResolveOverloadCall(expr, call, resolved_func_name, module_local_name, scope)) |ret_ty| {
+                        return ret_ty;
+                    }
+                }
+
                 if (self.funcs.get(resolved_func_name)) |func| {
                     try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, false);
                     if (!std.mem.eql(u8, resolved_func_name, call.func_name) or
@@ -6526,49 +7447,10 @@ pub const TypeChecker = struct {
                     return TypeError.TypeMismatch;
                 }
 
-                // 2. Check FFI functions
+                // 2. Check FFI functions (validation shared with the
+                // overload resolver's extern-contract winners).
                 if (self.extern_funcs.get(call.func_name)) |ext| {
-                    if (ext.is_variadic) {
-                        if (call.args.len < ext.params.len) {
-                            self.setError("call to variadic function {s} needs at least {} arguments ({} fixed), got {}", .{ call.func_name, ext.params.len, ext.params.len, call.args.len });
-                            return TypeError.InvalidArgsCount;
-                        }
-                    } else if (ext.params.len != call.args.len) return TypeError.InvalidArgsCount;
-                    for (ext.params, call.args[0..ext.params.len]) |param, arg| {
-                        const arg_ty = try self.checkExpr(arg, scope);
-                        // bypass signature checks for FFI pointers
-                        // Fn values bound for a by-value pointer parameter
-                        // are materialized as callable machine addresses by
-                        // the emitters — except closures, which have no
-                        // trampoline address: invoking a closure needs its
-                        // capture pointer, which an arbitrary extern
-                        // `fn(ptr)` parameter cannot carry. A closure
-                        // argument's checked type is `.closure` (literals
-                        // and closure-typed bindings alike); reject it
-                        // explicitly instead of passing a wrong value.
-                        if (!param.is_borrow and !param.is_move and
-                            std.mem.eql(u8, std.mem.trim(u8, param.ty, " \t\r"), "ptr") and
-                            (arg_ty.* == .closure or (arg_ty.* == .fn_ptr and blk: {
-                                const root = switch (arg.*) {
-                                    .move_expr => |mv| mv.expr,
-                                    else => arg,
-                                };
-                                break :blk root.* == .closure_literal;
-                            })))
-                        {
-                            self.setError("cannot pass a closure to extern parameter `{s}` of `{s}`: a closure has no callable trampoline address (its invocation needs the capture pointer); pass a top-level named function instead", .{ param.name, call.func_name });
-                            return TypeError.TypeMismatch;
-                        }
-                        try self.consumeExternMoveArg(scope, param, arg);
-                    }
-                    if (ext.is_variadic) {
-                        for (call.args[ext.params.len..]) |arg| {
-                            try self.checkVariadicTrailingArg(arg, scope, call.func_name);
-                        }
-                    }
-                    const ret = try self.allocator.create(ast.Type);
-                    setTypeFromAbiReturn(self.allocator, ret, ext.ret_ty);
-                    return ret;
+                    return try self.checkExternContractCall(ext, call, scope);
                 }
 
                 // 3. Check if it's a built-in: stack_alloc, panic

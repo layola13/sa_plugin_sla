@@ -4,6 +4,7 @@ const ast = @import("ast.zig");
 
 pub const MonomorphizeError = error{
     TemplateNotFound,
+    GenericOverloadConflict,
     MonomorphizeError,
     OutOfMemory,
 };
@@ -29,6 +30,7 @@ pub const Monomorphizer = struct {
     // Accumulators for the generated concrete declarations
     new_decls: std.array_list.Managed(*ast.Node),
     last_missing_template: ?[]const u8,
+    last_generic_overload_conflict: ?[]const u8,
 
     pub fn init(allocator: std.mem.Allocator) Monomorphizer {
         return .{
@@ -43,6 +45,7 @@ pub const Monomorphizer = struct {
             .specialized_funcs = std.StringHashMap([]const u8).init(allocator),
             .new_decls = std.array_list.Managed(*ast.Node).init(allocator),
             .last_missing_template = null,
+            .last_generic_overload_conflict = null,
         };
     }
 
@@ -88,6 +91,10 @@ pub const Monomorphizer = struct {
 
     pub fn missingTemplateName(self: *const Monomorphizer) ?[]const u8 {
         return self.last_missing_template;
+    }
+
+    pub fn genericOverloadConflictName(self: *const Monomorphizer) ?[]const u8 {
+        return self.last_generic_overload_conflict;
     }
 
     fn templateNotFound(self: *Monomorphizer, name: []const u8) MonomorphizeError {
@@ -153,7 +160,39 @@ pub const Monomorphizer = struct {
         specialized_primary_decls: ?*std.AutoHashMap(*const ast.Node, void),
     ) MonomorphizeError!*ast.Node {
         self.last_missing_template = null;
+        self.last_generic_overload_conflict = null;
         if (program.* != .program) return MonomorphizeError.MonomorphizeError;
+
+        // Function overloading boundary: generic templates are indexed by
+        // name alone and instantiated before type checking, so a name
+        // cannot carry a generic template together with any other function
+        // declaration (a second template would silently overwrite the
+        // first in func_templates, and concrete overload members cannot be
+        // resolved against a template by the exact-after-inference rule).
+        // Reject the combination loudly; a generic name must stand alone.
+        {
+            var template_names = std.StringHashMap(void).init(self.allocator);
+            defer template_names.deinit();
+            var concrete_names = std.StringHashMap(void).init(self.allocator);
+            defer concrete_names.deinit();
+            for (program.program.decls) |decl| {
+                if (decl.* != .func_decl) continue;
+                const f = &decl.func_decl;
+                if (f.generics.len > 0) {
+                    if (template_names.contains(f.name) or concrete_names.contains(f.name)) {
+                        self.last_generic_overload_conflict = f.name;
+                        return MonomorphizeError.GenericOverloadConflict;
+                    }
+                    try template_names.put(f.name, {});
+                } else {
+                    if (template_names.contains(f.name)) {
+                        self.last_generic_overload_conflict = f.name;
+                        return MonomorphizeError.GenericOverloadConflict;
+                    }
+                    try concrete_names.put(f.name, {});
+                }
+            }
+        }
 
         var regular_decls = std.array_list.Managed(*ast.Node).init(self.allocator);
         errdefer regular_decls.deinit();

@@ -124,6 +124,24 @@ pub const SlaCallableIndex = struct {
             if (!src_entry.found_existing) src_entry.value_ptr.* = mp;
         }
         try self.addFlattenedSuffixCandidates(name);
+        // Overload member keys (`<plain>__ov_<tag>`) are produced by the
+        // type checker's registration renaming, while call sites still
+        // spell the plain name. Index the plain prefix as an alias of the
+        // set so syntactic reachability can find the set from the plain
+        // spelling; the prune pass expands a reachable plain name to all
+        // member keys (see plugin_compile's overload member expansion).
+        if (std.mem.indexOf(u8, name, "__ov_")) |marker| {
+            if (marker > 0) {
+                const plain = name[0..marker];
+                try self.names.put(plain, {});
+                const plain_entry = try self.decls.getOrPut(plain);
+                if (!plain_entry.found_existing) plain_entry.value_ptr.* = fd;
+                if (module_path) |mp| {
+                    const src_entry = try self.module_sources.getOrPut(plain);
+                    if (!src_entry.found_existing) src_entry.value_ptr.* = mp;
+                }
+            }
+        }
     }
 
     pub fn addFunction(self: *SlaCallableIndex, name: []const u8, fd: *ast.FuncDecl) !void {
@@ -1885,6 +1903,33 @@ pub fn buildReachableSymbols(
     try initializeReachabilityBuildState(&state, root_program, modules, module_table, options, imported_macros, out_reachable, out_referenced_types);
 }
 
+/// True when the module exports an overload set (two or more signatures
+/// under one plain name) whose plain name (or its module-qualified alias
+/// spelling) is reachable. Body selection and materialization are keyed
+/// by plain name and cannot distinguish same-name members, so such a
+/// module must be materialized with ALL bodies (null selection) instead
+/// of a name-selected subset; the name-selected paths would otherwise
+/// restore at most one member's body and stub the rest.
+fn moduleHasReachableOverloadSet(
+    allocator: std.mem.Allocator,
+    module: *const SlaModule,
+    reachable: *const std.StringHashMap(void),
+) !bool {
+    var iter = module.exports.function_signature_sets.iterator();
+    var namespace: ?[]const u8 = null;
+    defer if (namespace) |ns| allocator.free(ns);
+    while (iter.next()) |entry| {
+        if (entry.value_ptr.items.len < 2) continue;
+        const name = entry.key_ptr.*;
+        if (reachable.contains(name)) return true;
+        if (namespace == null) namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
+        const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ namespace.?, name });
+        defer allocator.free(alias);
+        if (reachable.contains(alias)) return true;
+    }
+    return false;
+}
+
 pub fn collectReachableModuleBodyNames(
     allocator: std.mem.Allocator,
     module: *const SlaModule,
@@ -1985,6 +2030,23 @@ pub fn materializeReachableImportedModuleBodiesWithState(
         var changed = false;
         for (ordered_modules) |module| {
             if (module.has_function_bodies and module.has_macro_bodies) continue;
+            if (try moduleHasReachableOverloadSet(allocator, module, reachable)) {
+                // Overload sets defeat name-keyed body selection: take the
+                // whole module's bodies, then scan every member body so
+                // transitive callees of ALL members become reachable (the
+                // callable index alone would only surface one member).
+                _ = try modules.reparseModuleWithSelectedBodies(module, null, null);
+                stats.reparses += 1;
+                try state.callable_index.refreshDeclsFromModule(module);
+                for (module.program.program.decls) |decl| {
+                    if (decl.* != .func_decl) continue;
+                    const fd = &decl.func_decl;
+                    if (!reachable.contains(fd.name)) continue;
+                    try collectSyntacticReachableBlock(&state.callable_index, modules, imported_macros, null, fd.name, reachable, referenced_types, &state.worklist, fd.body);
+                }
+                changed = true;
+                continue;
+            }
             {
                 const select_start = sio.nanoTimestamp();
                 var selected_functions = std.StringHashMap(void).init(allocator);
@@ -2116,6 +2178,20 @@ pub fn materializeImportedModuleBodiesOneShot(
 
     for (ordered_modules) |module| {
         if (module.has_function_bodies and module.has_macro_bodies) continue;
+        if (try moduleHasReachableOverloadSet(allocator, module, reachable)) {
+            // See materializeReachableImportedModuleBodiesWithState: a
+            // reachable overload set requires whole-module bodies.
+            if (!any_reparse) {
+                for (ordered_modules) |m| {
+                    try state.callable_index.addDeclsFromModule(m.program.program.decls, m);
+                }
+            }
+            _ = try modules.reparseModuleWithSelectedBodies(module, null, null);
+            stats.reparses += 1;
+            any_reparse = true;
+            try state.callable_index.refreshDeclsFromModule(module);
+            continue;
+        }
         var selected_functions = std.StringHashMap(void).init(allocator);
         defer selected_functions.deinit();
         var selected_macros = std.StringHashMap(void).init(allocator);
@@ -2279,6 +2355,15 @@ pub fn markSyntacticReachableFunc(
         return try markSyntacticReachableFunc(funcs, modules, analysis, call_facts, caller_name, reachable, referenced_types, worklist, qualified);
     }
     if (!funcs.names.contains(name)) {
+        // Overload member spellings (`<plain>__ov_<tag>`) can be written
+        // directly at call/reference sites; they denote the plain set,
+        // whose declarations the filter keeps by the plain name (pre-check)
+        // or expands from it (post-check).
+        if (std.mem.indexOf(u8, name, "__ov_")) |marker| {
+            if (marker > 0 and funcs.names.contains(name[0..marker])) {
+                return try markSyntacticReachableFunc(funcs, modules, analysis, call_facts, caller_name, reachable, referenced_types, worklist, name[0..marker]);
+            }
+        }
         if (modules) |mod_table| {
             if (mod_table.functionSignatureForImportedMangledNameByNamespace(name)) |signature| {
                 return try markSyntacticReachableFunc(funcs, modules, analysis, call_facts, caller_name, reachable, referenced_types, worklist, signature.name);

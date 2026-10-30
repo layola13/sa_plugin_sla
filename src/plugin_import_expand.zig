@@ -1294,10 +1294,31 @@ pub fn registerImportedFunctionAliasesFromResolvedImports(
             while (fn_iter.next()) |entry| {
                 const name = entry.key_ptr.*;
                 const signature = entry.value_ptr.*;
+                // Overload sets register per member below; a single
+                // representative signature must not shadow the set.
+                if (module.exports.function_signature_sets.get(name)) |set| {
+                    if (set.items.len >= 2) continue;
+                }
                 const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ namespace, name });
                 try tc.registerFunctionAliasWithMetadata(alias, name, namespace, module.path);
                 try tc.registerImportedFunctionSignature(name, signature.params, signature.ret_ty, signature.is_async, signature.is_variadic);
                 try tc.registerImportedFunctionSignature(alias, signature.params, signature.ret_ty, signature.is_async, signature.is_variadic);
+            }
+            // Overload sets: every member registers under its canonical
+            // member key (computed from the plain defining-module name) in
+            // both the plain-name set and the module-alias set, so calls
+            // resolve to the same emitted symbol from either spelling.
+            var set_iter = module.exports.function_signature_sets.iterator();
+            while (set_iter.next()) |entry| {
+                const name = entry.key_ptr.*;
+                const members = entry.value_ptr.items;
+                if (members.len < 2) continue;
+                const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ namespace, name });
+                for (members) |signature| {
+                    const member_key = try tc.overloadMemberKey(name, signature.params);
+                    try tc.registerImportedFunctionOverloadMember(name, member_key, signature.params, signature.ret_ty, signature.is_async);
+                    try tc.registerImportedFunctionOverloadMember(alias, member_key, signature.params, signature.ret_ty, signature.is_async);
+                }
             }
             for (module.exports.impl_decls.items) |impl_node| {
                 const impl_decl = impl_node.impl_decl;

@@ -527,7 +527,13 @@ pub fn runSlaCommandImpl(
         defer mono.deinit();
         var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
         const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
-            if (err == error.TemplateNotFound) {
+            if (err == error.GenericOverloadConflict) {
+                if (mono.genericOverloadConflictName()) |name| {
+                    try stderr.print("Monomorphization Error: generic function `{s}` shares its name with another function declaration; generic templates do not participate in overloading, so a name with a generic template must stand alone\n", .{name});
+                } else {
+                    try stderr.print("Monomorphization Error: generic function name conflicts with another function declaration (generic templates do not participate in overloading)\n", .{});
+                }
+            } else if (err == error.TemplateNotFound) {
                 if (mono.missingTemplateName()) |name| {
                     try stderr.print("Monomorphization Error: failed to specialize generics: {}: {s}\n", .{ err, name });
                 } else {

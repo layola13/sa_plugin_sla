@@ -62,6 +62,9 @@ pub const SlaModuleExports = struct {
     type_signatures: std.StringHashMap(TypeSignature),
     function_decls: std.StringHashMap(*ast.Node),
     function_signatures: std.StringHashMap(FunctionSignature),
+    // All signatures per name (overload sets); function_signatures keeps a
+    // single representative for legacy name-keyed readers.
+    function_signature_sets: std.StringHashMap(std.array_list.Managed(FunctionSignature)),
     associated_function_decls: std.StringHashMap(*ast.Node),
     associated_function_signatures: std.StringHashMap(FunctionSignature),
     const_decls: std.StringHashMap(*ast.Node),
@@ -79,6 +82,7 @@ pub const SlaModuleExports = struct {
             .type_signatures = std.StringHashMap(TypeSignature).init(allocator),
             .function_decls = std.StringHashMap(*ast.Node).init(allocator),
             .function_signatures = std.StringHashMap(FunctionSignature).init(allocator),
+            .function_signature_sets = std.StringHashMap(std.array_list.Managed(FunctionSignature)).init(allocator),
             .associated_function_decls = std.StringHashMap(*ast.Node).init(allocator),
             .associated_function_signatures = std.StringHashMap(FunctionSignature).init(allocator),
             .const_decls = std.StringHashMap(*ast.Node).init(allocator),
@@ -102,6 +106,9 @@ pub const SlaModuleExports = struct {
         self.associated_function_signatures.deinit();
         self.associated_function_decls.deinit();
         self.function_signatures.deinit();
+        var fss_it = self.function_signature_sets.valueIterator();
+        while (fss_it.next()) |list| list.deinit();
+        self.function_signature_sets.deinit();
         self.function_decls.deinit();
         self.type_signatures.deinit();
         self.type_decls.deinit();
@@ -113,6 +120,24 @@ pub const SlaModuleExports = struct {
 
     pub fn addFunctionSignature(self: *SlaModuleExports, fd: *ast.FuncDecl) !void {
         try self.addFunctionSignatureNamed(&self.function_signatures, fd.name, fd);
+        const gop = try self.function_signature_sets.getOrPut(fd.name);
+        if (!gop.found_existing) gop.value_ptr.* = std.array_list.Managed(FunctionSignature).init(self.allocator);
+        // buildFromDecls may revisit the same declarations; the params
+        // slice identity is a stable dedupe key for a repeated visit.
+        for (gop.value_ptr.items) |existing| {
+            if (existing.params.ptr == fd.params.ptr and existing.params.len == fd.params.len) return;
+        }
+        try gop.value_ptr.append(.{
+            .name = fd.name,
+            .params = fd.params,
+            .ret_ty = fd.ret_ty,
+            .is_pub = fd.is_pub,
+            .is_extern = fd.is_extern,
+            .abi = fd.abi,
+            .no_mangle = fd.no_mangle,
+            .is_async = fd.is_async,
+            .module_path = self.module_path,
+        });
     }
 
     pub fn addFunctionSignatureNamed(self: *SlaModuleExports, table: *std.StringHashMap(FunctionSignature), name: []const u8, fd: *ast.FuncDecl) !void {

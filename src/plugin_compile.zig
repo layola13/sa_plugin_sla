@@ -109,6 +109,44 @@ pub fn testFilterSelectsNoTests(
     return true;
 }
 
+/// Overload sets: after type checking, member declarations carry member
+/// keys (`<plain>__ov_<tag>`) while syntactic reachability marks the plain
+/// name. When a plain name is reachable, mark every member key reachable
+/// and scan each member body so transitive callees survive the filter.
+/// Returns true when at least one member was newly expanded.
+fn expandReachableOverloadMembers(
+    allocator: std.mem.Allocator,
+    callable_index: *SlaCallableIndex,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    analysis: *ReachabilityAnalysis,
+    program: *ast.Node,
+    reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
+    worklist: *std.array_list.Managed([]const u8),
+) !bool {
+    _ = allocator;
+    var added = false;
+    for (program.program.decls) |decl| {
+        if (decl.* != .func_decl) continue;
+        const fd = &decl.func_decl;
+        const marker = std.mem.indexOf(u8, fd.name, "__ov_") orelse continue;
+        if (marker == 0) continue;
+        if (!reachable.contains(fd.name[0..marker])) continue;
+        if (reachable.contains(fd.name)) continue;
+        try reachable.put(fd.name, {});
+        const prev_facts = analysis.current_facts;
+        if (analysis.function_facts.get(fd.name)) |entry| {
+            analysis.current_facts = &entry.facts;
+        } else {
+            analysis.current_facts = null;
+        }
+        try collectSyntacticReachableBlock(callable_index, null, imported_macros, analysis, fd.name, reachable, referenced_types, worklist, fd.body);
+        analysis.current_facts = prev_facts;
+        added = true;
+    }
+    return added;
+}
+
 pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
     allocator: std.mem.Allocator,
     program: *ast.Node,
@@ -200,7 +238,9 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
             try collectSyntacticReachableBlock(&callable_index, null, imported_macros, &analysis, name, &reachable, &referenced_types, &worklist, fd.body);
             analysis.current_facts = prev_facts;
         }
-        if (!try scanReferencedSymbolRoots(&callable_index, null, imported_macros, &analysis, &reachable, &referenced_types, &scanned_symbol_roots, &worklist)) break;
+        const expanded = try expandReachableOverloadMembers(allocator, &callable_index, imported_macros, &analysis, program, &reachable, &referenced_types, &worklist);
+        const scanned = try scanReferencedSymbolRoots(&callable_index, null, imported_macros, &analysis, &reachable, &referenced_types, &scanned_symbol_roots, &worklist);
+        if (!expanded and !scanned) break;
     }
 
     if (prune_known_branches) {
@@ -681,6 +721,14 @@ fn runSlaFrontend(
     stage_start = sio.nanoTimestamp();
     var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
+        if (err == error.GenericOverloadConflict) {
+            if (mono.genericOverloadConflictName()) |name| {
+                try stderr.print("Monomorphization Error: generic function `{s}` shares its name with another function declaration; generic templates do not participate in overloading, so a name with a generic template must stand alone\n", .{name});
+            } else {
+                try stderr.print("Monomorphization Error: generic function name conflicts with another function declaration (generic templates do not participate in overloading)\n", .{});
+            }
+            return null;
+        }
         if (err == error.TemplateNotFound) {
             if (mono.missingTemplateName()) |name| {
                 try stderr.print("Monomorphization Error: failed to specialize generics: {}: {s}\n", .{ err, name });

@@ -9426,14 +9426,19 @@ pub const Codegen = struct {
 
     fn genMacroAddressOf(self: *Codegen, expr: *ast.Node, ctx: *MacroExpansionContext) anyerror!AddressSource {
         var deref_source_ty: ?*const ast.Type = null;
+        var deref_target_ty: ?*const ast.Type = null;
         var index_target_ty: ?*const ast.Type = null;
         switch (expr.*) {
-            .deref_expr => |deref| deref_source_ty = (try self.macroExprType(deref.expr, ctx)) orelse return Error.MissingType,
+            .deref_expr => |deref| {
+                deref_source_ty = (try self.macroExprType(deref.expr, ctx)) orelse return Error.MissingType;
+                deref_target_ty = try self.macroExprType(expr, ctx);
+            },
             .index_expr => |idx| index_target_ty = (try self.macroExprType(idx.target, ctx)) orelse return Error.MissingType,
             else => {},
         }
         const address_plan = lowering_rules.planAddressOf(expr, .{
             .deref_source_ty = deref_source_ty,
+            .deref_target_ty = deref_target_ty,
             .index_target_ty = index_target_ty,
         });
         return switch (address_plan.shape) {
@@ -9442,6 +9447,16 @@ pub const Codegen = struct {
                 break :blk try self.genMacroIdentifierAddress(expr.identifier, ctx);
             },
             .deref_borrow_or_pointer => .{ .reg = try self.genMacroExpr(expr.deref_expr.expr, ctx) },
+            .deref_pointer_aggregate => blk: {
+                const source = try self.genMacroExpr(expr.deref_expr.expr, ctx);
+                const loaded = try self.intern(try self.newTmp());
+                try self.emitLoad(loaded, source, 0, .ptr);
+                try self.markNonOwningReg(loaded);
+                break :blk .{
+                    .reg = loaded,
+                    .release_regs = if (!self.isLocalReg(source)) try self.singleReleaseReg(source) else &.{},
+                };
+            },
             .deref_smart_pointer => blk: {
                 const source_ty = deref_source_ty orelse return Error.MissingType;
                 const source = try self.genMacroExpr(expr.deref_expr.expr, ctx);
@@ -12318,14 +12333,19 @@ pub const Codegen = struct {
 
     fn genAddressOf(self: *Codegen, expr: *ast.Node) anyerror!AddressSource {
         var deref_source_ty: ?*const ast.Type = null;
+        var deref_target_ty: ?*const ast.Type = null;
         var index_target_ty: ?*const ast.Type = null;
         switch (expr.*) {
-            .deref_expr => |deref| deref_source_ty = self.tc.expr_types.get(deref.expr) orelse return Error.MissingType,
+            .deref_expr => |deref| {
+                deref_source_ty = self.tc.expr_types.get(deref.expr) orelse return Error.MissingType;
+                deref_target_ty = self.tc.expr_types.get(expr);
+            },
             .index_expr => |idx| index_target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType,
             else => {},
         }
         const address_plan = lowering_rules.planAddressOf(expr, .{
             .deref_source_ty = deref_source_ty,
+            .deref_target_ty = deref_target_ty,
             .index_target_ty = index_target_ty,
         });
         return switch (address_plan.shape) {
@@ -12337,6 +12357,19 @@ pub const Codegen = struct {
             .deref_borrow_or_pointer => blk: {
                 const source = try self.genExpr(expr.deref_expr.expr);
                 break :blk .{ .reg = source };
+            },
+            .deref_pointer_aggregate => blk: {
+                // DEF-5/D-1: the place `*p` lives at the address stored
+                // in p's cell — the same load genDeref uses as the
+                // field-access base.
+                const source = try self.genExpr(expr.deref_expr.expr);
+                const loaded = try self.intern(try self.newTmp());
+                try self.emitLoad(loaded, source, 0, .ptr);
+                try self.markNonOwningReg(loaded);
+                break :blk .{
+                    .reg = loaded,
+                    .release_regs = if (!self.isLocalReg(source)) try self.singleReleaseReg(source) else &.{},
+                };
             },
             .deref_smart_pointer => blk: {
                 const source_ty = deref_source_ty orelse return Error.MissingType;
@@ -14878,14 +14911,19 @@ pub const Codegen = struct {
         }
 
         var deref_source_ty: ?*const ast.Type = null;
+        var deref_target_ty: ?*const ast.Type = null;
         var index_target_ty: ?*const ast.Type = null;
         switch (arg.*) {
-            .deref_expr => |deref| deref_source_ty = (try self.importedMacroArgType(deref.expr, ctx)) orelse return Error.MissingType,
+            .deref_expr => |deref| {
+                deref_source_ty = (try self.importedMacroArgType(deref.expr, ctx)) orelse return Error.MissingType;
+                deref_target_ty = try self.importedMacroArgType(arg, ctx);
+            },
             .index_expr => |idx| index_target_ty = (try self.importedMacroArgType(idx.target, ctx)) orelse return Error.MissingType,
             else => {},
         }
         return lowering_rules.planAddressOf(arg, .{
             .deref_source_ty = deref_source_ty,
+            .deref_target_ty = deref_target_ty,
             .index_target_ty = index_target_ty,
         }).shape;
     }

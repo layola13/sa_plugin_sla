@@ -10659,14 +10659,19 @@ pub const Codegen = struct {
 
     fn importedMacroArgAddressShape(self: *Codegen, arg: *const ast.Node) CodegenError!lowering_rules.AddressOfShape {
         var deref_source_ty: ?*const ast.Type = null;
+        var deref_target_ty: ?*const ast.Type = null;
         var index_target_ty: ?*const ast.Type = null;
         switch (arg.*) {
-            .deref_expr => deref_source_ty = try self.importedMacroArgType(arg.deref_expr.expr),
+            .deref_expr => {
+                deref_source_ty = try self.importedMacroArgType(arg.deref_expr.expr);
+                deref_target_ty = self.resolvedTypeForExpr(arg);
+            },
             .index_expr => |idx| index_target_ty = try self.importedMacroArgType(idx.target),
             else => {},
         }
         return lowering_rules.planAddressOf(arg, .{
             .deref_source_ty = deref_source_ty,
+            .deref_target_ty = deref_target_ty,
             .index_target_ty = index_target_ty,
         }).shape;
     }
@@ -10705,7 +10710,7 @@ pub const Codegen = struct {
                 try self.emitRelease(address.ptr);
                 break :blk loaded;
             },
-            .deref_borrow_or_pointer => blk: {
+            .deref_borrow_or_pointer, .deref_pointer_aggregate => blk: {
                 const source = try self.genExpr(arg.deref_expr.expr, hoisted_allocs);
                 const loaded = try self.newTmp();
                 self.outPrint("    {s} = load {s}+0 as {s}\n", .{ loaded, source, typeString(arg_ty) }) catch return CodegenError.CodegenError;
@@ -10737,6 +10742,16 @@ pub const Codegen = struct {
                 const source = try self.genExpr(arg.deref_expr.expr, hoisted_allocs);
                 const addr = try self.newTmp();
                 self.outPrint("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
+                const temp_plan = lowering_rules.planBorrowAddressTemps(exprResultNeedsRelease(arg.deref_expr.expr), false);
+                if (temp_plan.track_primary_temp) {
+                    self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
+                }
+                break :blk addr;
+            },
+            .deref_pointer_aggregate => blk: {
+                const source = try self.genExpr(arg.deref_expr.expr, hoisted_allocs);
+                const addr = try self.newTmp();
+                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ addr, source }) catch return CodegenError.CodegenError;
                 const temp_plan = lowering_rules.planBorrowAddressTemps(exprResultNeedsRelease(arg.deref_expr.expr), false);
                 if (temp_plan.track_primary_temp) {
                     self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
@@ -13782,9 +13797,13 @@ pub const Codegen = struct {
             },
             .borrow_expr => |borrow| {
                 var deref_source_ty: ?*const ast.Type = null;
+                var deref_target_ty: ?*const ast.Type = null;
                 var index_target_ty: ?*const ast.Type = null;
                 switch (borrow.expr.*) {
-                    .deref_expr => deref_source_ty = self.resolvedTypeForExpr(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError,
+                    .deref_expr => {
+                        deref_source_ty = self.resolvedTypeForExpr(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError;
+                        deref_target_ty = self.resolvedTypeForExpr(borrow.expr);
+                    },
                     .index_expr => |idx| index_target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError,
                     else => {},
                 }
@@ -13804,6 +13823,7 @@ pub const Codegen = struct {
                 }
                 const address_plan = lowering_rules.planAddressOf(borrow.expr, .{
                     .deref_source_ty = deref_source_ty,
+                    .deref_target_ty = deref_target_ty,
                     .index_target_ty = index_target_ty,
                 });
                 switch (address_plan.shape) {
@@ -13826,6 +13846,19 @@ pub const Codegen = struct {
                         const source = try self.genExpr(borrow.expr.deref_expr.expr, hoisted_allocs);
                         const addr = try self.newTmp();
                         self.outPrint("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
+                        const temp_plan = lowering_rules.planBorrowAddressTemps(exprResultNeedsRelease(borrow.expr.deref_expr.expr), false);
+                        if (temp_plan.track_primary_temp) {
+                            self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
+                        }
+                        return addr;
+                    },
+                    .deref_pointer_aggregate => {
+                        // DEF-5/D-1: the place `*p` lives at the address
+                        // stored in p's cell — the same load the deref
+                        // and field-access paths use as their base.
+                        const source = try self.genExpr(borrow.expr.deref_expr.expr, hoisted_allocs);
+                        const addr = try self.newTmp();
+                        self.outPrint("    {s} = load {s}+0 as ptr\n", .{ addr, source }) catch return CodegenError.CodegenError;
                         const temp_plan = lowering_rules.planBorrowAddressTemps(exprResultNeedsRelease(borrow.expr.deref_expr.expr), false);
                         if (temp_plan.track_primary_temp) {
                             self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;

@@ -101,6 +101,15 @@ pub fn planParamCleanup(facts: ParamCleanupFacts) ParamCleanupAction {
 pub const AddressOfShape = enum {
     identifier,
     deref_borrow_or_pointer,
+    /// DEF-5/D-1: `&(*p)` where `p` is a raw pointer to a pointer-backed
+    /// aggregate. Under the SLA pointer model a `*T` register denotes a
+    /// cell whose content is the aggregate's address (the same load the
+    /// deref/field-access paths use as their base), so the address of
+    /// the place `*p` is `load p+0 as ptr`, not the cell address itself.
+    /// Returning the cell address made the borrow view the cell: scalar
+    /// fields read the stored address bits and callee writes landed on
+    /// the cell — silent corruption.
+    deref_pointer_aggregate,
     deref_smart_pointer,
     field,
     index,
@@ -109,6 +118,7 @@ pub const AddressOfShape = enum {
 
 pub const AddressOfInput = struct {
     deref_source_ty: ?*const ast.Type = null,
+    deref_target_ty: ?*const ast.Type = null,
     index_target_ty: ?*const ast.Type = null,
 };
 
@@ -625,13 +635,13 @@ pub const ImportedMacroCallPlan = struct {
         if (self.callArgNeedsDirectAddressSlot(call_arg_index)) {
             return switch (address_shape) {
                 .identifier => if (has_existing_addressable_symbol) .reuse_existing_addressable else .materialize_stack_slot,
-                .deref_borrow_or_pointer, .deref_smart_pointer, .field, .index => .pass_address_expression,
+                .deref_borrow_or_pointer, .deref_pointer_aggregate, .deref_smart_pointer, .field, .index => .pass_address_expression,
                 .value_temp => .pass_value,
             };
         }
         return switch (address_shape) {
             .identifier => if (has_existing_addressable_symbol) .reuse_existing_addressable else .materialize_stack_slot,
-            .deref_borrow_or_pointer, .deref_smart_pointer, .field, .index => .materialize_address_expression_stack_slot,
+            .deref_borrow_or_pointer, .deref_pointer_aggregate, .deref_smart_pointer, .field, .index => .materialize_address_expression_stack_slot,
             .value_temp => .materialize_stack_slot,
         };
     }
@@ -678,7 +688,7 @@ pub const ImportedMacroCallPlan = struct {
         if (self.callArgNeedsAddressableSlot(call_arg_index) and
             !self.callArgNeedsDirectAddressSlot(call_arg_index) and
             abiPassesAsPointer(arg_ty) and
-            (address_shape == .deref_borrow_or_pointer or address_shape == .deref_smart_pointer))
+            (address_shape == .deref_borrow_or_pointer or address_shape == .deref_pointer_aggregate or address_shape == .deref_smart_pointer))
         {
             return .pass_address_expression;
         }
@@ -700,7 +710,7 @@ pub const ImportedMacroCallPlan = struct {
             !self.callArgIsAssignedOutput(call_arg_index) and
             userDefinedStdOwnerIsNonCopy(arg_ty) and
             (address_shape == .field or address_shape == .index or
-                address_shape == .deref_borrow_or_pointer or address_shape == .deref_smart_pointer))
+                address_shape == .deref_borrow_or_pointer or address_shape == .deref_pointer_aggregate or address_shape == .deref_smart_pointer))
         {
             return .pass_pointer_backed_projection;
         }
@@ -5923,7 +5933,19 @@ pub fn planAddressOf(expr: *const ast.Node, input: AddressOfInput) AddressOfPlan
         .identifier => .identifier,
         .deref_expr => blk: {
             const source_ty = input.deref_source_ty orelse break :blk .value_temp;
-            if (plainBorrowOrPointerAddressSource(source_ty)) break :blk .deref_borrow_or_pointer;
+            if (plainBorrowOrPointerAddressSource(source_ty)) {
+                // A borrow source already holds the place address
+                // directly. A raw-pointer source holds a cell: for a
+                // pointer-backed aggregate pointee the place address is
+                // the cell's content (DEF-5/D-1); for a scalar/pointer
+                // pointee the cell itself is the place.
+                if (source_ty.* == .pointer) {
+                    if (input.deref_target_ty) |target_ty| {
+                        if (structFieldIsPointerBacked(target_ty)) break :blk .deref_pointer_aggregate;
+                    }
+                }
+                break :blk .deref_borrow_or_pointer;
+            }
             if (smartPointerDerefType(source_ty) != null) break :blk .deref_smart_pointer;
             break :blk .value_temp;
         },
@@ -6933,6 +6955,13 @@ test "shared lowering rules classify address-of shapes" {
     try std.testing.expectEqual(AddressOfShape.identifier, planAddressOf(&value, .{}).shape);
     try std.testing.expectEqual(AddressOfShape.deref_borrow_or_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_i32_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.deref_borrow_or_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &pointer_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.deref_borrow_or_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &pointer_i32_ty, .deref_target_ty = &i32_ty }).shape);
+    var cfg_ty = ast.Type{ .user_defined = .{ .name = "Cfg", .generics = &.{} } };
+    var pointer_cfg_ty = ast.Type{ .pointer = &cfg_ty };
+    var borrow_cfg_ty = ast.Type{ .borrow = &cfg_ty };
+    try std.testing.expectEqual(AddressOfShape.deref_pointer_aggregate, planAddressOf(&deref_value, .{ .deref_source_ty = &pointer_cfg_ty, .deref_target_ty = &cfg_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.deref_borrow_or_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_cfg_ty, .deref_target_ty = &cfg_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.deref_borrow_or_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &pointer_cfg_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &box_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.deref_smart_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &box_i32_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.deref_smart_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_box_i32_ty }).shape);

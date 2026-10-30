@@ -10183,3 +10183,35 @@ test "sla generalized rebind move-out drops the clone in both backends" {
     try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
+
+fn expectSlaCheckBorrowConflictDiagnostic(file: []const u8, expected: []const u8) !void {
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", file };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
+
+    try std.testing.expectEqual(@as(?u8, 1), code);
+    try stderr_fw.writer().flush();
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "Type Check Error"));
+    try stderr_fw.writer().flush();
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "BorrowConflict"));
+    try stderr_fw.writer().flush();
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, expected));
+}
+
+test "sla check rejects overlapping field borrows (view types stage 1)" {
+    try expectSlaCheckBorrowConflictDiagnostic("tests/test_error_view_args_same_field.sla", "`s.a`");
+    try expectSlaCheckBorrowConflictDiagnostic("tests/test_error_view_local_same_field.sla", "`s.a`");
+    try expectSlaCheckBorrowConflictDiagnostic("tests/test_error_view_local_same_field_offset.sla", "`s.b`");
+    try expectSlaCheckBorrowConflictDiagnostic("tests/test_error_view_args_field_and_whole.sla", "`s`");
+    try expectSlaCheckBorrowConflictDiagnostic("tests/test_error_view_root_reassign_while_borrowed.sla", "cannot reassign `s`");
+    try expectSlaCheckBorrowConflictDiagnostic("tests/test_error_view_args_prefix_overlap.sla", "`o.inner`");
+    try expectSlaCheckBorrowConflictDiagnostic("tests/test_error_view_direct_write_borrowed_field.sla", "`s.b`");
+    try expectSlaCheckBorrowConflictDiagnostic("tests/test_error_view_direct_write_borrowed_field_offset0.sla", "`s.a`");
+}

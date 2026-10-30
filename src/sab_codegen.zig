@@ -18450,6 +18450,12 @@ pub const Codegen = struct {
             item.operands[0] = .{ .text = try body.toOwnedSlice() };
             try self.recordCallBodyRegs(item.operands[0].text);
         }
+        // C2 sab_carried_indirect_sig: carry the fn-pointer type's
+        // full signature in operands[3] so the host never has to guess
+        // which same-prefix signature an indirect call targets.
+        if (try self.fnPtrCarriedSigText(call.func_name)) |sig_text| {
+            item.operands[3] = .{ .text = sig_text };
+        }
         try self.appendInst(item);
         try self.releaseNonLocalTemps(arg_regs.items);
         try self.emitMove(call_reg);
@@ -18458,6 +18464,35 @@ pub const Codegen = struct {
         const sentinel = try self.intern(try self.newTmp());
         try self.emitAssignImm(sentinel, 0);
         return sentinel;
+    }
+
+    /// C2 sab_carried_indirect_sig: render the declared fn-pointer
+    /// type of local `name` as an SA signature text `(i32, ...) -> f64`
+    /// for operands[3] of a call_indirect. The rendering caliber
+    /// matches genFuncSig: paramPrimType for fixed parameters,
+    /// abiReturnPrimType for the return. A type with no SA primitive
+    /// rendering yields null — no record is carried and the host keeps
+    /// its legacy inference behaviour for that call.
+    fn fnPtrCarriedSigText(self: *Codegen, name: []const u8) !?[]const u8 {
+        const ty = self.localType(name) orelse return null;
+        if (ty.* != .fn_ptr) return null;
+        const fp = ty.fn_ptr;
+        var buf = std.array_list.Managed(u8).init(self.allocator);
+        errdefer buf.deinit();
+        try buf.append('(');
+        for (fp.params, 0..) |param_ty, i| {
+            if (i > 0) try buf.appendSlice(", ");
+            const prim = paramPrimType(param_ty) catch return null;
+            try buf.appendSlice(sig.primTypeName(prim));
+        }
+        if (fp.is_variadic) {
+            if (fp.params.len > 0) try buf.appendSlice(", ");
+            try buf.appendSlice("...");
+        }
+        try buf.appendSlice(") -> ");
+        const ret_prim = self.abiReturnPrimType(fp.ret) catch return null;
+        try buf.appendSlice(sig.primTypeName(ret_prim));
+        return try buf.toOwnedSlice();
     }
 
     fn copyFnPtrCallArg(self: *Codegen, source: u32, ty: *const ast.Type) anyerror!u32 {

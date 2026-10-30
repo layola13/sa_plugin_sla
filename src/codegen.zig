@@ -39,6 +39,71 @@ fn branchCompensationNameLessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
+/// C2 sab_carried_indirect_sig: SA primitive name for one parameter of
+/// a carried fn-pointer signature in the SA-text backend. Mirrors the
+/// SAB backend's paramPrimType caliber exactly (including the file
+/// handle and pointer-passing rules); a type with no SA primitive
+/// rendering yields null and the call carries no record.
+fn fnPtrSigParamName(ty: *const ast.Type) ?[]const u8 {
+    if (ty.* == .primitive) {
+        return switch (ty.primitive) {
+            .i8 => "i8",
+            .i16 => "i16",
+            .i32 => "i32",
+            .i64, .integer, .isize => "i64",
+            .u8 => "u8",
+            .u16 => "u16",
+            .u32 => "u32",
+            .u64, .usize => "u64",
+            .f32 => "f32",
+            .f64, .float => "f64",
+            .boolean => "i1",
+            .raw_ptr => "ptr",
+            .va_list => "ptr",
+            .void_type => "void",
+        };
+    }
+    if (lowering_rules.isFileType(ty)) return "u64";
+    if (lowering_rules.abiPassesAsPointer(ty)) return "ptr";
+    return null;
+}
+
+/// C2 sab_carried_indirect_sig: return-type name for a carried
+/// signature; mirrors the SAB backend's abiReturnPrimType (a boolean
+/// return rides i32).
+fn fnPtrSigRetName(ty: *const ast.Type) ?[]const u8 {
+    if (ty.* == .primitive and ty.primitive == .boolean) return "i32";
+    return fnPtrSigParamName(ty);
+}
+
+/// C2 sab_carried_indirect_sig: render a fn-pointer type as the SA
+/// signature text the host parses back (`(i32, ...) -> f64`). Null
+/// when any component has no SA primitive rendering.
+fn fnPtrCarriedSigText(allocator: std.mem.Allocator, fp: ast.FnPtrType) !?[]const u8 {
+    var buf = std.array_list.Managed(u8).init(allocator);
+    errdefer buf.deinit();
+    try buf.append('(');
+    for (fp.params, 0..) |param_ty, i| {
+        if (i > 0) try buf.appendSlice(", ");
+        const name = fnPtrSigParamName(param_ty) orelse {
+            buf.deinit();
+            return null;
+        };
+        try buf.appendSlice(name);
+    }
+    if (fp.is_variadic) {
+        if (fp.params.len > 0) try buf.appendSlice(", ");
+        try buf.appendSlice("...");
+    }
+    try buf.appendSlice(") -> ");
+    const ret_name = fnPtrSigRetName(fp.ret) orelse {
+        buf.deinit();
+        return null;
+    };
+    try buf.appendSlice(ret_name);
+    return try buf.toOwnedSlice();
+}
+
 const RefCellBorrowHandle = struct {
     cell_reg: []const u8,
     kind: lowering_rules.RefCellBorrowKind,
@@ -15183,7 +15248,17 @@ pub const Codegen = struct {
                             if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
                             self.outPrint("{s}", .{lowered_arg.reg}) catch return CodegenError.CodegenError;
                         }
-                        self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
+                        // C2 sab_carried_indirect_sig: append the
+                        // fn-pointer type's signature so the host
+                        // resolves this call from the record, never
+                        // from ambiguous inference.
+                        const carried_sig = fnPtrCarriedSigText(self.allocator, fn_ptr_ty.fn_ptr) catch null;
+                        if (carried_sig) |sig_text| {
+                            defer self.allocator.free(sig_text);
+                            self.outPrint(") : {s}\n", .{sig_text}) catch return CodegenError.CodegenError;
+                        } else {
+                            self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
+                        }
                         try self.emitRelease(call_reg);
                     } else {
                         const end_label = try self.newLabel("L_FNPTR_CALL_END");

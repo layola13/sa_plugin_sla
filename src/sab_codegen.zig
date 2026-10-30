@@ -9486,7 +9486,10 @@ pub const Codegen = struct {
                 }
             }
         }
-        const source = try self.genMacroAddressOf(borrow.expr, ctx);
+        var source = try self.genMacroAddressOf(borrow.expr, ctx);
+        if (borrow.expr.* == .field_expr or borrow.expr.* == .index_expr) {
+            source = try self.borrowPlaceSource(source);
+        }
         const dst = try self.intern(try self.newTmp());
         try self.emitBorrowReg(dst, source.reg, "read");
         try self.rememberBorrowAddressTemps(dst, source);
@@ -12373,6 +12376,31 @@ pub const Codegen = struct {
         return try self.genExpr(arg);
     }
 
+    /// View-types stage 1: a borrow of a field/index projection must lock
+    /// the projection's place, not the root allocation. When the
+    /// accumulated offset is 0, genFieldAddress/genIndexAddress return the
+    /// root register itself, and a `borrow` on it locks the whole struct
+    /// (the SAB verifier's granularity is the borrowed register), so any
+    /// later direct access to a sibling field traps BorrowConflict.
+    /// Materialize a distinct place register via ptr_add 0 so offset-0
+    /// projections behave exactly like nonzero-offset ones, which already
+    /// borrow a ptr_add temp. Borrow targets only — loads/stores keep
+    /// using the shared address path. Places carrying a restore slot
+    /// (smart-pointer as_ptr takes) keep their original register: their
+    /// restore bookkeeping is tied to it.
+    fn borrowPlaceSource(self: *Codegen, source: AddressSource) !AddressSource {
+        if (source.restore_slot != null) return source;
+        const place = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(place, source.reg, .{ .imm_u64 = 0 });
+        var regs = std.array_list.Managed(u32).init(self.allocator);
+        defer regs.deinit();
+        if (!self.isLocalReg(source.reg)) try regs.append(source.reg);
+        for (source.release_regs) |reg| {
+            if (reg != source.reg) try regs.append(reg);
+        }
+        return .{ .reg = place, .release_regs = try self.ownedReleaseRegs(regs.items) };
+    }
+
     fn genBorrow(self: *Codegen, borrow: ast.BorrowExpr) anyerror!u32 {
         // Y-SHARE parity with SA-text `&field`: a borrow of a pointer-backed
         // owning field (Vec/String/nested aggregate) denotes the stored buffer
@@ -12397,7 +12425,10 @@ pub const Codegen = struct {
                 }
             }
         }
-        const source = try self.genAddressOf(borrow.expr);
+        var source = try self.genAddressOf(borrow.expr);
+        if (borrow.expr.* == .field_expr or borrow.expr.* == .index_expr) {
+            source = try self.borrowPlaceSource(source);
+        }
         const dst = try self.intern(try self.newTmp());
         try self.emitBorrowReg(dst, source.reg, "read");
         try self.rememberBorrowAddressTemps(dst, source);

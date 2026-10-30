@@ -213,6 +213,7 @@ pub const TypeChecker = struct {
     // itself.
     assign_rhs_target_name: ?[]const u8 = null,
     assign_rhs_value: ?*const ast.Node = null,
+    field_borrows: std.array_list.Managed(FieldBorrow),
     global_scope: ?*Scope,
     unsafe_depth: usize,
     injected_scope_bindings: []const InjectedScopeBinding,
@@ -226,6 +227,7 @@ pub const TypeChecker = struct {
     pub fn initWithOptions(allocator: std.mem.Allocator, options: Options) TypeChecker {
         return .{
             .allocator = allocator,
+            .field_borrows = std.array_list.Managed(FieldBorrow).init(allocator),
             .structs = std.StringHashMap(*ast.StructDecl).init(allocator),
             .type_aliases = std.StringHashMap(*ast.TypeAliasDecl).init(allocator),
             .alias_struct_cache = std.StringHashMap(*ast.StructDecl).init(allocator),
@@ -348,6 +350,408 @@ pub const TypeChecker = struct {
             }
         }
         return false;
+    }
+
+    // ---- View-types stage 1: field-granularity borrow accounting ----
+    // A place is a root binding plus a path of segments: field names,
+    // "@" for a deref step, "*" for a dynamic index, or the literal
+    // index digits. Two places overlap when they share a root and one
+    // segment list is a prefix of the other ("*" matches any single
+    // segment). The checker tracks live borrows at this granularity so
+    // disjoint field borrows are legal everywhere (locals, call args,
+    // any offset, both backends) while overlapping mutable borrows are
+    // rejected loudly at check time instead of depending on which
+    // register a backend happened to lock.
+    const FieldPlace = struct {
+        root: []const u8,
+        segs: []const []const u8,
+    };
+
+    const FieldBorrow = struct {
+        place: FieldPlace,
+        borrower: []const u8,
+        def_scope: *Scope,
+    };
+
+    fn placeOfExpr(self: *TypeChecker, expr: *const ast.Node) ?FieldPlace {
+        var segs = std.array_list.Managed([]const u8).init(self.allocator);
+        defer segs.deinit();
+        var cur = expr;
+        while (true) {
+            switch (cur.*) {
+                .field_expr => |f| {
+                    segs.append(f.field_name) catch return null;
+                    cur = f.expr;
+                },
+                .index_expr => |ix| {
+                    if (ix.index.* == .literal and ix.index.literal == .int_val) {
+                        const digits = std.fmt.allocPrint(self.allocator, "{}", .{ix.index.literal.int_val}) catch return null;
+                        segs.append(digits) catch return null;
+                    } else {
+                        segs.append("*") catch return null;
+                    }
+                    cur = ix.target;
+                },
+                .deref_expr => |d| {
+                    segs.append("@") catch return null;
+                    cur = d.expr;
+                },
+                .borrow_expr => |b| {
+                    cur = b.expr;
+                },
+                .move_expr => |m| {
+                    cur = m.expr;
+                },
+                .identifier => |name| {
+                    const owned = segs.toOwnedSlice() catch return null;
+                    std.mem.reverse([]const u8, owned);
+                    return .{ .root = name, .segs = owned };
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn fieldPlacesOverlap(a: FieldPlace, b: FieldPlace) bool {
+        if (!std.mem.eql(u8, a.root, b.root)) return false;
+        const n = @min(a.segs.len, b.segs.len);
+        for (a.segs[0..n], b.segs[0..n]) |x, y| {
+            if (std.mem.eql(u8, x, y)) continue;
+            if (std.mem.eql(u8, x, "*") or std.mem.eql(u8, y, "*")) continue;
+            return false;
+        }
+        return true;
+    }
+
+    fn fieldPlacesIdentical(a: FieldPlace, b: FieldPlace) bool {
+        if (!std.mem.eql(u8, a.root, b.root)) return false;
+        if (a.segs.len != b.segs.len) return false;
+        for (a.segs, b.segs) |x, y| {
+            if (!std.mem.eql(u8, x, y)) return false;
+        }
+        return true;
+    }
+
+    fn fieldPlaceDesc(self: *TypeChecker, place: FieldPlace) []const u8 {
+        var buf = std.array_list.Managed(u8).init(self.allocator);
+        buf.appendSlice(place.root) catch return place.root;
+        for (place.segs) |seg| {
+            if (std.mem.eql(u8, seg, "@")) {
+                buf.appendSlice(".*") catch {};
+            } else if (std.mem.eql(u8, seg, "*")) {
+                buf.appendSlice("[_]") catch {};
+            } else {
+                buf.append('.') catch {};
+                buf.appendSlice(seg) catch {};
+            }
+        }
+        return buf.items;
+    }
+
+    fn fieldBorrowIsLive(self: *TypeChecker, scope: *Scope, entry: FieldBorrow) bool {
+        _ = self;
+        var curr: ?*Scope = scope;
+        while (curr) |frame| : (curr = frame.parent) {
+            if (frame == entry.def_scope) {
+                if (frame.symbols.get(entry.borrower)) |sym| return sym.state == .active;
+                return false;
+            }
+        }
+        return false;
+    }
+
+    fn liveFieldBorrowConflict(self: *TypeChecker, scope: *Scope, place: FieldPlace) ?FieldBorrow {
+        for (self.field_borrows.items) |entry| {
+            if (!self.fieldBorrowIsLive(scope, entry)) continue;
+            if (fieldPlacesOverlap(entry.place, place)) return entry;
+        }
+        return null;
+    }
+
+    fn rootHasLiveFieldBorrow(self: *TypeChecker, scope: *Scope, root: []const u8) ?FieldBorrow {
+        for (self.field_borrows.items) |entry| {
+            if (!std.mem.eql(u8, entry.place.root, root)) continue;
+            if (!self.fieldBorrowIsLive(scope, entry)) continue;
+            return entry;
+        }
+        return null;
+    }
+
+    fn dropFieldBorrowsOf(self: *TypeChecker, scope: *Scope, borrower: []const u8) void {
+        // Resolve the scope that defines `borrower` from here; entries are
+        // keyed by that exact frame so a shadowed name in a child scope
+        // does not drop the outer borrow.
+        var def_scope: ?*Scope = null;
+        var curr: ?*Scope = scope;
+        while (curr) |frame| : (curr = frame.parent) {
+            if (frame.symbols.contains(borrower)) {
+                def_scope = frame;
+                break;
+            }
+        }
+        const ds = def_scope orelse return;
+        var i = self.field_borrows.items.len;
+        while (i > 0) {
+            i -= 1;
+            const e = self.field_borrows.items[i];
+            if (e.def_scope == ds and std.mem.eql(u8, e.borrower, borrower)) {
+                _ = self.field_borrows.orderedRemove(i);
+            }
+        }
+    }
+
+    fn registerFieldBorrow(self: *TypeChecker, scope: *Scope, place: FieldPlace, borrower: []const u8) TypeError!void {
+        self.dropFieldBorrowsOf(scope, borrower);
+        self.field_borrows.append(.{ .place = place, .borrower = borrower, .def_scope = scope }) catch return TypeError.OutOfMemory;
+    }
+
+    /// The place a let/assign value borrows from, when the value is a
+    /// direct borrow of a place, an alias of a tracked borrow binding,
+    /// an alias of a direct borrow source, or a borrow-typed field/index
+    /// extraction out of a place.
+    fn borrowPlaceOfValue(self: *TypeChecker, scope: *Scope, value: *const ast.Node) ?FieldPlace {
+        if (value.* == .borrow_expr) return self.placeOfExpr(value.borrow_expr.expr);
+        if (value.* == .identifier) {
+            for (self.field_borrows.items) |entry| {
+                if (std.mem.eql(u8, entry.borrower, value.identifier) and self.fieldBorrowIsLive(scope, entry)) {
+                    return entry.place;
+                }
+            }
+            if (scope.lookup(value.identifier)) |sym| {
+                if (sym.borrow_source) |src| return .{ .root = src, .segs = &.{} };
+            }
+            return null;
+        }
+        if (value.* == .field_expr or value.* == .index_expr) return self.placeOfExpr(value);
+        return null;
+    }
+
+    /// Root binding of a place expression, walking deref steps too
+    /// (rootIdentifier deliberately does not: `*x = v` writes through
+    /// the borrow binding x).
+    fn placeRootName(node: *const ast.Node) ?[]const u8 {
+        return switch (node.*) {
+            .identifier => |n| n,
+            .field_expr => |f| placeRootName(f.expr),
+            .index_expr => |ix| placeRootName(ix.target),
+            .deref_expr => |d| placeRootName(d.expr),
+            .borrow_expr => |b| placeRootName(b.expr),
+            .move_expr => |m| placeRootName(m.expr),
+            else => null,
+        };
+    }
+
+    /// Conservative scan: true when a function body may write through
+    /// the named parameter (direct assignment, borrow creation that can
+    /// escape into another binding, or forwarding the parameter's place
+    /// into any call). Unknown node shapes count as writes.
+    fn nodeMayWriteThroughParam(node: *const ast.Node, name: []const u8) bool {
+        switch (node.*) {
+            .identifier, .literal => return false,
+            .assign_stmt => |a| {
+                if (placeRootName(a.target)) |r| {
+                    if (std.mem.eql(u8, r, name)) return true;
+                }
+                return nodeMayWriteThroughParam(a.target, name) or nodeMayWriteThroughParam(a.value, name);
+            },
+            .call_expr => |c| {
+                if (c.callee) |callee| {
+                    if (nodeMayWriteThroughParam(callee, name)) return true;
+                }
+                for (c.args) |arg| {
+                    if (rootIdentifier(arg)) |r| {
+                        if (std.mem.eql(u8, r, name)) return true;
+                    }
+                    if (nodeMayWriteThroughParam(arg, name)) return true;
+                }
+                return false;
+            },
+            .borrow_expr => |b| {
+                if (placeRootName(b.expr)) |r| {
+                    if (std.mem.eql(u8, r, name)) return true;
+                }
+                return nodeMayWriteThroughParam(b.expr, name);
+            },
+            .move_expr => |m| {
+                if (placeRootName(m.expr)) |r| {
+                    if (std.mem.eql(u8, r, name)) return true;
+                }
+                return nodeMayWriteThroughParam(m.expr, name);
+            },
+            .let_stmt => |l| return nodeMayWriteThroughParam(l.value, name),
+            .const_stmt => |c| return nodeMayWriteThroughParam(c.value, name),
+            .let_else_stmt => |l| {
+                if (nodeMayWriteThroughParam(l.value, name)) return true;
+                for (l.else_block) |s| {
+                    if (nodeMayWriteThroughParam(s, name)) return true;
+                }
+                return false;
+            },
+            .expr_stmt => |e| return nodeMayWriteThroughParam(e, name),
+            .return_stmt => |r| {
+                if (r.value) |v| return nodeMayWriteThroughParam(v, name);
+                return false;
+            },
+            .block_stmt => |b| {
+                for (b.body) |s| {
+                    if (nodeMayWriteThroughParam(s, name)) return true;
+                }
+                return false;
+            },
+            .if_expr => |e| {
+                if (nodeMayWriteThroughParam(e.cond, name)) return true;
+                for (e.then_block) |s| {
+                    if (nodeMayWriteThroughParam(s, name)) return true;
+                }
+                if (e.else_block) |eb| {
+                    for (eb) |s| {
+                        if (nodeMayWriteThroughParam(s, name)) return true;
+                    }
+                }
+                return false;
+            },
+            .while_stmt => |w| {
+                if (nodeMayWriteThroughParam(w.cond, name)) return true;
+                for (w.body) |s| {
+                    if (nodeMayWriteThroughParam(s, name)) return true;
+                }
+                return false;
+            },
+            .for_stmt => |f| {
+                if (nodeMayWriteThroughParam(f.start, name)) return true;
+                if (f.end) |e| {
+                    if (nodeMayWriteThroughParam(e, name)) return true;
+                }
+                for (f.body) |s| {
+                    if (nodeMayWriteThroughParam(s, name)) return true;
+                }
+                return false;
+            },
+            .binary_expr => |b| return nodeMayWriteThroughParam(b.left, name) or nodeMayWriteThroughParam(b.right, name),
+            .field_expr => |f| return nodeMayWriteThroughParam(f.expr, name),
+            .index_expr => |ix| return nodeMayWriteThroughParam(ix.target, name) or nodeMayWriteThroughParam(ix.index, name),
+            .deref_expr => |d| return nodeMayWriteThroughParam(d.expr, name),
+            .cast_expr => |c| return nodeMayWriteThroughParam(c.expr, name),
+            .try_expr => |t| return nodeMayWriteThroughParam(t.expr, name),
+            .struct_literal => |lit| {
+                if (lit.update_expr) |u| {
+                    if (nodeMayWriteThroughParam(u, name)) return true;
+                }
+                for (lit.fields) |fld| {
+                    if (nodeMayWriteThroughParam(fld.value, name)) return true;
+                }
+                return false;
+            },
+            .tuple_literal => |t| {
+                for (t.elements) |e| {
+                    if (nodeMayWriteThroughParam(e, name)) return true;
+                }
+                return false;
+            },
+            .array_literal => |a| {
+                for (a.elements) |e| {
+                    if (nodeMayWriteThroughParam(e, name)) return true;
+                }
+                return false;
+            },
+            .closure_literal => |c| return nodeMayWriteThroughParam(c.body, name),
+            .defer_stmt => |d| return nodeMayWriteThroughParam(d.call, name),
+            else => return true,
+        }
+    }
+
+    fn paramMayBeWritten(func: *const ast.FuncDecl, param_name: []const u8) bool {
+        if (func.is_decl_only) return true;
+        for (func.body) |stmt| {
+            if (nodeMayWriteThroughParam(stmt, param_name)) return true;
+        }
+        return false;
+    }
+
+    /// Pairwise place-overlap validation for one call's arguments.
+    /// Borrowed places come from explicit borrow expressions, from
+    /// plain places passed to borrow parameters (auto-borrow), or from
+    /// mask-flagged macro argument slots. Overlapping borrows of
+    /// prefix-related (but not identical) places are always rejected;
+    /// identical places are rejected unless both corresponding
+    /// parameters are provably read-only in the callee body; a borrowed
+    /// place may not overlap any plain place argument either; and a
+    /// by-value move of a root may not happen while a field of it is
+    /// borrowed by a live local.
+    fn checkCallArgPlaceOverlaps(
+        self: *TypeChecker,
+        params: ?[]const ast.Param,
+        args: []const *ast.Node,
+        scope: *Scope,
+        call_name: []const u8,
+        callee: ?*const ast.FuncDecl,
+        borrowed_mask: u64,
+    ) TypeError!void {
+        const ArgPlace = struct { borrowed: ?FieldPlace = null, plain: ?FieldPlace = null };
+        var places = std.array_list.Managed(ArgPlace).init(self.allocator);
+        defer places.deinit();
+        for (args, 0..) |arg, i| {
+            var ap = ArgPlace{};
+            if (arg.* == .borrow_expr) {
+                ap.borrowed = self.placeOfExpr(arg.borrow_expr.expr);
+            } else if (self.placeOfExpr(arg)) |p| {
+                var is_borrowed = borrowed_mask & (@as(u64, 1) << @as(u6, @intCast(@min(i, 63)))) != 0;
+                if (params) |ps| {
+                    if (i < ps.len and (ps[i].ty.* == .borrow or ps[i].is_borrow)) is_borrowed = true;
+                }
+                if (is_borrowed) {
+                    ap.borrowed = p;
+                } else {
+                    ap.plain = p;
+                }
+            }
+            places.append(ap) catch return TypeError.OutOfMemory;
+        }
+        // Borrowed places against live local borrows.
+        for (places.items) |ap| {
+            if (ap.borrowed) |bp| {
+                if (self.liveFieldBorrowConflict(scope, bp)) |conflict| {
+                    self.setError("BorrowConflict: call to {s} borrows `{s}` while `{s}` is still borrowed by `{s}`", .{ call_name, self.fieldPlaceDesc(bp), self.fieldPlaceDesc(conflict.place), conflict.borrower });
+                    return TypeError.InvalidBorrow;
+                }
+            }
+        }
+        // Borrowed against borrowed / plain within the call.
+        for (places.items, 0..) |a, i| {
+            const ab = a.borrowed orelse continue;
+            for (places.items, 0..) |b, j| {
+                if (i == j) continue;
+                if (b.borrowed) |bb| {
+                    if (j < i) continue;
+                    if (!fieldPlacesOverlap(ab, bb)) continue;
+                    if (fieldPlacesIdentical(ab, bb)) {
+                        var read_only = false;
+                        if (callee != null and params != null and i < params.?.len and j < params.?.len) {
+                            read_only = !paramMayBeWritten(callee.?, params.?[i].name) and !paramMayBeWritten(callee.?, params.?[j].name);
+                        }
+                        if (read_only) continue;
+                    }
+                    self.setError("BorrowConflict: call to {s} borrows overlapping places `{s}` and `{s}` in the same call", .{ call_name, self.fieldPlaceDesc(ab), self.fieldPlaceDesc(bb) });
+                    return TypeError.InvalidBorrow;
+                }
+                if (b.plain) |bp| {
+                    if (fieldPlacesOverlap(ab, bp)) {
+                        self.setError("BorrowConflict: call to {s} borrows `{s}` while also passing overlapping place `{s}` in the same call", .{ call_name, self.fieldPlaceDesc(ab), self.fieldPlaceDesc(bp) });
+                        return TypeError.InvalidBorrow;
+                    }
+                }
+            }
+        }
+        // By-value move of a root while a field of it is borrowed.
+        for (args, places.items) |arg, ap| {
+            if (ap.plain == null or arg.* != .identifier) continue;
+            const sym = scope.lookup(arg.identifier) orelse continue;
+            if (self.typeIsCopy(sym.ty) or isBorrowLikeType(sym.ty)) continue;
+            if (self.rootHasLiveFieldBorrow(scope, arg.identifier)) |conflict| {
+                self.setError("BorrowConflict: call to {s} moves `{s}` while `{s}` is still borrowed by `{s}`", .{ call_name, arg.identifier, self.fieldPlaceDesc(conflict.place), conflict.borrower });
+                return TypeError.InvalidBorrow;
+            }
+        }
     }
 
     fn functionExitBindingEscapes(scope: *Scope, result_expr: *const ast.Node, candidate: []const u8) bool {
@@ -1140,6 +1544,10 @@ pub const TypeChecker = struct {
         auto_borrow_receiver: bool,
     ) TypeError!void {
         if (params.len != args.len) return TypeError.InvalidArgsCount;
+        // View-types stage 1: pairwise field-place overlap validation
+        // for this call's arguments (runs before per-arg checking so
+        // overlapping borrows are reported as borrow conflicts).
+        try self.checkCallArgPlaceOverlaps(params, args, scope, call_name, self.funcs.get(call_name), 0);
         for (params, args, 0..) |param, arg, i| {
             if (param.is_move and arg.* != .move_expr) return TypeError.TypeMismatch;
             if (param.is_borrow) {
@@ -3450,7 +3858,13 @@ pub const TypeChecker = struct {
                 }
                 if (let.value.* == .identifier) {
                     if (scope.lookup(let.value.identifier)) |source| {
-                        if (!self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) try self.consumeBinding(scope, let.value.identifier, source, "implicit let move");
+                        if (!self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) {
+                            if (self.rootHasLiveFieldBorrow(scope, let.value.identifier)) |conflict| {
+                                self.setError("BorrowConflict: cannot move `{s}` into `{s}` while `{s}` is still borrowed by `{s}`", .{ let.value.identifier, let.name, self.fieldPlaceDesc(conflict.place), conflict.borrower });
+                                return TypeError.InvalidBorrow;
+                            }
+                            try self.consumeBinding(scope, let.value.identifier, source, "implicit let move");
+                        }
                     }
                 }
                 if (!isDiscardName(let.name)) {
@@ -3458,6 +3872,9 @@ pub const TypeChecker = struct {
                     if (isBorrowLikeType(declared_ty)) {
                         if (directBorrowSource(let.value)) |source| {
                             scope.lookupLocal(let.name).?.borrow_source = source;
+                        }
+                        if (self.borrowPlaceOfValue(scope, let.value)) |place| {
+                            try self.registerFieldBorrow(scope, place, let.name);
                         }
                     }
                 }
@@ -3548,6 +3965,28 @@ pub const TypeChecker = struct {
                 try self.defineSymbolWithState(scope, v.name, v.ty, false, .uninitialized);
             },
             .assign_stmt => |assign| {
+                // View-types stage 1: rebinding a borrow binding ends its
+                // previous borrow; assigning into a place that overlaps a
+                // live field borrow is rejected (writing through a deref
+                // target is the borrow's own use and stays legal).
+                if (assign.target.* == .identifier) {
+                    // Reassigning a root while any field of it is borrowed
+                    // is rejected; rebinding a borrow binding itself only
+                    // ends that binding's own borrow (its entries are
+                    // rooted at the borrowed place, not at the binding).
+                    if (self.rootHasLiveFieldBorrow(scope, assign.target.identifier)) |conflict| {
+                        self.setError("BorrowConflict: cannot reassign `{s}` while `{s}` is still borrowed by `{s}`", .{ assign.target.identifier, self.fieldPlaceDesc(conflict.place), conflict.borrower });
+                        return TypeError.InvalidBorrow;
+                    }
+                    self.dropFieldBorrowsOf(scope, assign.target.identifier);
+                } else if (assign.target.* != .deref_expr) {
+                    if (self.placeOfExpr(assign.target)) |place| {
+                        if (self.liveFieldBorrowConflict(scope, place)) |conflict| {
+                            self.setError("BorrowConflict: cannot assign to `{s}` while `{s}` is still borrowed by `{s}`", .{ self.fieldPlaceDesc(place), self.fieldPlaceDesc(conflict.place), conflict.borrower });
+                            return TypeError.InvalidBorrow;
+                        }
+                    }
+                }
                 if (assign.target.* == .deref_expr) {
                     const deref_target_ty = try self.checkExpr(assign.target.deref_expr.expr, scope);
                     if (rwLockReadGuardInnerType(deref_target_ty) != null) {
@@ -3601,7 +4040,13 @@ pub const TypeChecker = struct {
                             self.setError("UseBeforeInit: var `{s}` is read before assignment", .{value_name});
                             return TypeError.UseBeforeInit;
                         }
-                        if (!self.typeIsCopy(sym.ty) and !isBorrowLikeType(sym.ty)) try self.consumeBinding(scope, value_name, sym, "assignment move");
+                        if (!self.typeIsCopy(sym.ty) and !isBorrowLikeType(sym.ty)) {
+                            if (self.rootHasLiveFieldBorrow(scope, value_name)) |conflict| {
+                                self.setError("BorrowConflict: cannot move `{s}` while `{s}` is still borrowed by `{s}`", .{ value_name, self.fieldPlaceDesc(conflict.place), conflict.borrower });
+                                return TypeError.InvalidBorrow;
+                            }
+                            try self.consumeBinding(scope, value_name, sym, "assignment move");
+                        }
                     }
                 }
                 if (assign.target.* == .identifier) {
@@ -3614,6 +4059,13 @@ pub const TypeChecker = struct {
                     if (sym.state == .consumed) {
                         sym.state = .active;
                         sym.consumed_by_call = null;
+                    }
+                    // View-types stage 1: rebinding a borrow binding to a
+                    // new borrowed place registers the new borrow.
+                    if (isBorrowLikeType(sym.ty)) {
+                        if (self.borrowPlaceOfValue(scope, assign.value)) |place| {
+                            try self.registerFieldBorrow(scope, place, assign.target.identifier);
+                        }
                     }
                 }
             },
@@ -3975,6 +4427,15 @@ pub const TypeChecker = struct {
                     const sym = scope.lookup(borrow.expr.identifier) orelse return TypeError.UndefinedVariable;
                     if (sym.state == .consumed) return TypeError.UseAfterMove;
                 }
+                // View-types stage 1: a new borrow of a place that
+                // overlaps a live field borrow is rejected here, at the
+                // single point every borrow expression flows through.
+                if (self.placeOfExpr(borrow.expr)) |place| {
+                    if (self.liveFieldBorrowConflict(scope, place)) |conflict| {
+                        self.setError("BorrowConflict: cannot borrow `{s}` while `{s}` is still borrowed by `{s}`; disjoint field borrows are allowed, overlapping field borrows are not", .{ self.fieldPlaceDesc(place), self.fieldPlaceDesc(conflict.place), conflict.borrower });
+                        return TypeError.InvalidBorrow;
+                    }
+                }
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .borrow = inner_ty };
                 return ty;
@@ -3985,6 +4446,14 @@ pub const TypeChecker = struct {
                     const sym = scope.lookup(move.expr.identifier) orelse return TypeError.UndefinedVariable;
                     if (sym.state == .consumed) return TypeError.UseAfterMove;
                     try self.consumeBinding(scope, move.expr.identifier, sym, "explicit move");
+                }
+                // View-types stage 1: moving a place (or its root) while
+                // a field of it is borrowed is rejected.
+                if (self.placeOfExpr(move.expr)) |place| {
+                    if (self.liveFieldBorrowConflict(scope, place)) |conflict| {
+                        self.setError("BorrowConflict: cannot move `{s}` while `{s}` is still borrowed by `{s}`", .{ self.fieldPlaceDesc(place), self.fieldPlaceDesc(conflict.place), conflict.borrower });
+                        return TypeError.InvalidBorrow;
+                    }
                 }
                 return inner_ty;
             },
@@ -5797,6 +6266,12 @@ pub const TypeChecker = struct {
 
                 // 4. Check user-defined macro calls
                 if (self.macros.get(call.func_name)) |mac| {
+                    // View-types stage 1: explicit borrow arguments to a
+                    // local macro get the same pairwise place-overlap
+                    // validation (macro params carry no borrow flags, so
+                    // only borrow-expression arguments are treated as
+                    // borrowed places).
+                    try self.checkCallArgPlaceOverlaps(null, call.args, scope, call.func_name, null, 0);
                     for (call.args) |arg| {
                         _ = try self.checkExpr(arg, scope);
                     }
@@ -5839,6 +6314,12 @@ pub const TypeChecker = struct {
                 }
 
                 if (self.imported_macros.get(call.func_name)) |macro| {
+                    // View-types stage 1: same pairwise place-overlap
+                    // validation for imported macro calls; borrowed slots
+                    // come from the macro's declared masks and write
+                    // capability is unknown, so identical-place overlaps
+                    // are rejected.
+                    try self.checkCallArgPlaceOverlaps(null, call.args, scope, call.func_name, null, macro.borrowed_arg_mask | macro.address_slot_arg_mask);
                     for (call.args) |arg| {
                         _ = try self.checkExpr(arg, scope);
                     }

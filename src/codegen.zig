@@ -10789,7 +10789,18 @@ pub const Codegen = struct {
         const plan = lowering.call;
         const symbol = lowering_rules.staticCallEmitSymbol(plan);
         const func = self.tc.funcs.get(symbol) orelse return CodegenError.CodegenError;
-        if (func.params.len != plan.arg_count or func.params.len != call.args.len) return CodegenError.CodegenError;
+        if (func.is_variadic) {
+            // Variadic x overload (recheck a): a variadic member's
+            // declared params are its fixed prefix plus the VaList slot,
+            // while the call carries the prefix plus untyped trailing
+            // arguments, so arity equality cannot hold. The checker has
+            // already enforced the fixed-arity floor; mirror the
+            // direct-call path below: params serve the indices they
+            // cover, trailing args lower without a parameter.
+            if (plan.arg_count != call.args.len) return CodegenError.CodegenError;
+            const fixed_count = if (func.params.len > 0 and func.params[func.params.len - 1].ty.* == .primitive and func.params[func.params.len - 1].ty.primitive == .va_list) func.params.len - 1 else func.params.len;
+            if (call.args.len < fixed_count) return CodegenError.CodegenError;
+        } else if (func.params.len != plan.arg_count or func.params.len != call.args.len) return CodegenError.CodegenError;
 
         var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
@@ -10799,14 +10810,13 @@ pub const Codegen = struct {
         defer consume_regs.deinit();
 
         for (call.args, 0..) |arg, i| {
-            const param = func.params[i];
             const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
             defer self.popExprLaterNodesTo(sibling_mark);
-            const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
-                .param = param,
+            const lowered_arg = if (i < func.params.len) try self.genPlannedCallArg(arg, hoisted_allocs, .{
+                .param = func.params[i],
                 .arg_index = i,
                 .auto_borrow_receiver = auto_borrow_receiver,
-            });
+            }) else try self.genPlannedCallArg(arg, hoisted_allocs, .{});
             arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
             try self.appendLoweredCallArgCleanups(&release_regs, &consume_regs, lowered_arg);
         }

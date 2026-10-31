@@ -973,6 +973,32 @@ pub const TypeChecker = struct {
     /// parameter types, and capability markers (borrow/move) must all agree.
     /// Return type is deliberately excluded — declarations whose parameter
     /// lists agree collide even if their return types differ.
+    /// The parameters that make up a declaration's call signature:
+    /// a variadic definition's trailing VaList parameter is the
+    /// variadic marker itself, not a fixed parameter (mirrors
+    /// checkCallArgsAgainstFunc).
+    fn signatureParams(fd: *const ast.FuncDecl) []const ast.Param {
+        if (fd.is_variadic and fd.params.len > 0) {
+            const last = fd.params[fd.params.len - 1];
+            if (last.ty.* == .primitive and last.ty.primitive == .va_list) {
+                return fd.params[0 .. fd.params.len - 1];
+            }
+        }
+        return fd.params;
+    }
+
+    /// Class identity for overload grouping: two declarations share
+    /// a class when their signatures agree — fixed parameters plus
+    /// the variadic marker. A variadic prototype (fixed parameters
+    /// only) and its definition (fixed parameters + VaList binding)
+    /// thus class together and pair, while a fixed and a variadic
+    /// declaration with identical fixed parameters stay distinct
+    /// members of one set.
+    fn overloadClassSignaturesEqual(a: *const ast.FuncDecl, b: *const ast.FuncDecl) bool {
+        if (a.is_variadic != b.is_variadic) return false;
+        return paramSignaturesEqual(signatureParams(a), signatureParams(b));
+    }
+
     fn paramSignaturesEqual(a: []const ast.Param, b: []const ast.Param) bool {
         if (a.len != b.len) return false;
         for (a, b) |pa, pb| {
@@ -1640,21 +1666,61 @@ pub const TypeChecker = struct {
             };
         }
 
+        fn isVariadic(self: OverloadCandidate) bool {
+            return switch (self.kind) {
+                .func_decl => self.func.?.is_variadic,
+                .imported => self.imported_sig.?.is_variadic,
+                .extern_contract => self.ext.?.is_variadic,
+            };
+        }
+
+        /// The number of leading parameters a caller must supply. For
+        /// a variadic member the trailing `...` accepts any number of
+        /// additional arguments, so the member's arity is its fixed
+        /// parameter count plus the variadic marker, not an exact
+        /// count. A variadic definition's parameter list ends in the
+        /// VaList parameter, which is not a call argument (mirrors
+        /// checkCallArgsAgainstFunc).
+        fn fixedArity(self: OverloadCandidate) usize {
+            return switch (self.kind) {
+                .func_decl => blk: {
+                    const func = self.func.?;
+                    if (func.is_variadic and func.params.len > 0) {
+                        const last = func.params[func.params.len - 1];
+                        if (last.ty.* == .primitive and last.ty.primitive == .va_list) {
+                            break :blk func.params.len - 1;
+                        }
+                    }
+                    break :blk func.params.len;
+                },
+                .imported => self.imported_sig.?.params.len,
+                .extern_contract => self.ext.?.params.len,
+            };
+        }
+
         fn matches(self: OverloadCandidate, args: []const *ast.Node, arg_tys: []const *ast.Type) bool {
-            if (self.arity() != args.len) return false;
+            // A variadic member matches any call at or above its
+            // fixed arity; only the fixed prefix participates in
+            // per-parameter matching. Trailing arguments are validated
+            // by the winning member's real check, which applies the C
+            // promotion rules (checkVariadicTrailingArg).
+            if (self.isVariadic()) {
+                if (args.len < self.fixedArity()) return false;
+            } else if (self.arity() != args.len) return false;
+            const n = self.fixedArity();
             switch (self.kind) {
                 .func_decl => {
-                    for (self.func.?.params, args, arg_tys) |param, arg, arg_ty| {
+                    for (self.func.?.params[0..n], args[0..n], arg_tys[0..n]) |param, arg, arg_ty| {
                         if (!overloadParamMatches(param, arg, arg_ty)) return false;
                     }
                 },
                 .imported => {
-                    for (self.imported_sig.?.params, args, arg_tys) |param, arg, arg_ty| {
+                    for (self.imported_sig.?.params[0..n], args[0..n], arg_tys[0..n]) |param, arg, arg_ty| {
                         if (!overloadParamMatches(param, arg, arg_ty)) return false;
                     }
                 },
                 .extern_contract => {
-                    for (self.ext.?.params, args, arg_tys) |param, arg, arg_ty| {
+                    for (self.ext.?.params[0..n], args[0..n], arg_tys[0..n]) |param, arg, arg_ty| {
                         if (param.is_move and arg.* != .move_expr) return false;
                         if (!contractParamMatches(param.ty, arg, arg_ty)) return false;
                     }
@@ -1872,7 +1938,7 @@ pub const TypeChecker = struct {
             },
             .imported => {
                 const sig = winner.imported_sig.?;
-                try self.checkCallArgsAgainstSignature(sig.params, call.args, scope, call.func_name, false);
+                try self.checkCallArgsAgainstSignature(sig.params, call.args, scope, call.func_name, false, sig.is_variadic);
                 self.resolved_call_symbols.put(expr, winner.member_key) catch return TypeError.OutOfMemory;
                 if (sig.is_async) return try self.makeFutureType(sig.ret_ty);
                 return sig.ret_ty;
@@ -3961,6 +4027,10 @@ pub const TypeChecker = struct {
     /// Identity for .sai contract parameters: arity plus the ABI type
     /// spelling and capability markers of each parameter.
     fn externParamsEqual(a: contract_parser.ExternalFunction, b: contract_parser.ExternalFunction) bool {
+        // A member's identity is its fixed parameters plus the
+        // variadic marker: `fn pick(ptr)` and `fn pick(ptr, ...)` are
+        // two declarations, not one.
+        if (a.is_variadic != b.is_variadic) return false;
         if (a.params.len != b.params.len) return false;
         for (a.params, b.params) |pa, pb| {
             if (pa.is_borrow != pb.is_borrow or pa.is_move != pb.is_move or pa.is_raw != pb.is_raw) return false;
@@ -3984,6 +4054,13 @@ pub const TypeChecker = struct {
                 if (param.is_move) try tag.append('m');
                 if (param.is_raw) try tag.append('r');
             }
+        }
+        if (f.is_variadic) {
+            // Render the variadic marker exactly as the FuncDecl
+            // member key renders the trailing VaList parameter, so a
+            // contract member and its definition key identically and
+            // candidate collection dedupes them into one member.
+            try tag.appendSlice("_va_list");
         }
         return std.fmt.allocPrint(self.allocator, "{s}__ov_{s}", .{ f.name, tag.items });
     }
@@ -4197,7 +4274,7 @@ pub const TypeChecker = struct {
         for (group) |fd| {
             var matched: ?*Class = null;
             for (classes.items) |*class| {
-                if (paramSignaturesEqual(class.rep.params, fd.params)) {
+                if (overloadClassSignaturesEqual(class.rep, fd)) {
                     matched = class;
                     break;
                 }

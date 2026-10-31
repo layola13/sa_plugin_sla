@@ -9630,7 +9630,12 @@ pub const Codegen = struct {
         const src = try self.genMacroExpr(cast.expr, ctx);
 
         if (!isNumericType(src_ast_ty) or !isNumericType(cast.ty)) {
-            if (src_ty == .ptr and dst_ty == .ptr) {
+            // ZOZI-2: pointer <-> integer address reinterpretation is a
+            // bitcast at register level, like pointer <-> pointer.
+            if ((src_ty == .ptr and isIntegerPrimType(dst_ty)) or
+                (isIntegerPrimType(src_ty) and dst_ty == .ptr) or
+                (src_ty == .ptr and dst_ty == .ptr))
+            {
                 const dst = try self.intern(try self.newTmp());
                 try self.recordReg(dst);
                 var item = self.makeInst(.op);
@@ -12175,7 +12180,12 @@ pub const Codegen = struct {
         const src = try self.genExpr(cast.expr);
 
         if (!isNumericType(src_ast_ty) or !isNumericType(cast.ty)) {
-            if (src_ty == .ptr and dst_ty == .ptr) {
+            // ZOZI-2: pointer <-> integer address reinterpretation is a
+            // bitcast at register level, like pointer <-> pointer.
+            if ((src_ty == .ptr and isIntegerPrimType(dst_ty)) or
+                (isIntegerPrimType(src_ty) and dst_ty == .ptr) or
+                (src_ty == .ptr and dst_ty == .ptr))
+            {
                 const dst = try self.intern(try self.newTmp());
                 try self.recordReg(dst);
                 var item = self.makeInst(.op);

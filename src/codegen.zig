@@ -14330,6 +14330,18 @@ pub const Codegen = struct {
                         try self.emitPrimitiveCopy(copied, inner, src_ty);
                         src_reg = copied;
                     }
+                } else if (cast.expr.* == .identifier and
+                    (src_ty.* == .pointer or src_ty.* == .borrow) and
+                    lowering_rules.isAnyIntegerType(cast.ty))
+                {
+                    // ZOZI-2: same consumption hazard as the primitive
+                    // case above, for pointer locals cast to an integer:
+                    // the local still owes its exit release, so cast a
+                    // ptr_add copy of the address instead of the local
+                    // register itself.
+                    const copied = try self.newTmp();
+                    self.outPrint("    {s} = ptr_add {s}, 0\n", .{ copied, inner }) catch return CodegenError.CodegenError;
+                    src_reg = copied;
                 } else if (cast.expr.* == .cast_expr and src_ty.* == .primitive) {
                     // Chained cast `(x as A) as B`: the inner cast temp is fed
                     // directly into the outer `as`. When B is the same width as the

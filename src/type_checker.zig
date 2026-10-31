@@ -5880,14 +5880,29 @@ pub const TypeChecker = struct {
                 if (isPointerCarrierCastType(src_ty) and isPointerCarrierCastType(cast.ty)) {
                     return cast.ty;
                 }
+                // ZOZI-2: address reinterpretation between a pointer
+                // carrier and an integer. Both hold the same machine
+                // word in an SA register; C FFI surfaces convert between
+                // them constantly (callback slots in C structs, handle
+                // tables). Floats stay excluded: a pointer is not a
+                // float bit pattern, and fabricating one is a different
+                // operation (bitcast of a value, not an address).
+                if (isPointerCarrierCastType(src_ty) and lowering_rules.isAnyIntegerType(cast.ty)) {
+                    return cast.ty;
+                }
+                if (lowering_rules.isAnyIntegerType(src_ty) and isPointerCarrierCastType(cast.ty)) {
+                    return cast.ty;
+                }
                 // Fn values may be cast to a raw pointer or a pointer-sized
                 // integer: the cast materializes the callable machine
                 // address from vtable slot 0 (see the fn-pointer-to-extern
-                // materialization in lowering_rules). The reverse direction
-                // (integer/pointer -> fn) stays rejected: fn values cannot
-                // be fabricated.
-                if (src_ty.* == .fn_ptr and cast.ty.* == .primitive and
-                    (cast.ty.primitive == .raw_ptr or cast.ty.primitive == .u64 or cast.ty.primitive == .usize))
+                // materialization in lowering_rules). Typed pointer targets
+                // are the same materialization (ZOZI-2). The reverse
+                // direction (integer/pointer -> fn) stays rejected: fn
+                // values cannot be fabricated.
+                if (src_ty.* == .fn_ptr and ((cast.ty.* == .primitive and
+                    (cast.ty.primitive == .raw_ptr or cast.ty.primitive == .u64 or cast.ty.primitive == .usize)) or
+                    cast.ty.* == .pointer or cast.ty.* == .borrow))
                 {
                     return cast.ty;
                 }

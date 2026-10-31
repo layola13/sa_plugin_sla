@@ -1329,10 +1329,15 @@ pub const Parser = struct {
         try self.expect(.l_paren);
 
         var params = std.array_list.Managed([]const u8).init(self.allocator);
+        var param_types = std.array_list.Managed(?*ast.Type).init(self.allocator);
         while (self.peek() != .r_paren and self.peek() != .eof) {
             const p_tok = self.tok;
             try self.expect(.identifier);
             try params.append(self.lexeme(p_tok.loc));
+            // J-3: a macro parameter may declare a type (`name: Type`);
+            // undeclared parameters keep the legacy untyped form.
+            const p_ty: ?*ast.Type = if (self.match(.colon)) try self.parseType() else null;
+            try param_types.append(p_ty);
             if (!self.match(.comma)) break;
         }
 
@@ -1348,6 +1353,7 @@ pub const Parser = struct {
             .macro_decl = .{
                 .name = name,
                 .params = try params.toOwnedSlice(),
+                .param_types = try param_types.toOwnedSlice(),
                 .body = body,
             },
         };

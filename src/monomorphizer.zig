@@ -387,6 +387,7 @@ pub const Monomorphizer = struct {
                         .name = m.name,
                         .params = m.params,
                         .body = new_body,
+                        .param_types = m.param_types,
                     },
                 };
                 return res;

@@ -160,6 +160,17 @@ pub const MacroDecl = struct {
     name: []const u8,
     params: []const []const u8,
     body: []const *Node,
+    /// J-3 (typed macro parameters, Jev slasl_macro_ruling j3 =
+    /// typed_macro_params): optional declared type per parameter,
+    /// parallel to `params`. Empty for declarations written without
+    /// parameter types; a null entry leaves that parameter untyped
+    /// (the pre-J-3 `.infer` behaviour).
+    param_types: []const ?*Type = &.{},
+
+    pub fn declaredParamType(self: *const MacroDecl, index: usize) ?*Type {
+        if (index >= self.param_types.len) return null;
+        return self.param_types[index];
+    }
 };
 
 pub const ImportDecl = struct {

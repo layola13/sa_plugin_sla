@@ -4604,6 +4604,20 @@ pub const TypeChecker = struct {
         };
     }
 
+    /// J-4: count a user macro's leading output parameters with the
+    /// exact rule imported SA macros use (plugin_imported_macros:
+    /// a parameter counts while it is still in the leading run and
+    /// its name satisfies isLeadingOutputMacroParam).
+    fn userMacroLeadingOutputCount(mac: *const ast.MacroDecl) usize {
+        const imported_macro_names = @import("plugin_imported_macros.zig");
+        var count: usize = 0;
+        for (mac.params) |param| {
+            if (!imported_macro_names.isLeadingOutputMacroParam(param)) break;
+            count += 1;
+        }
+        return count;
+    }
+
     fn checkMacro(self: *TypeChecker, macro_decl: *ast.MacroDecl) !void {
         const scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
@@ -4613,8 +4627,12 @@ pub const TypeChecker = struct {
         try self.defineSymbol(scope, "return_ty_sentinel", void_ty, true);
 
         const infer_ty = try self.makeInferType();
-        for (macro_decl.params) |param| {
-            try self.defineSymbol(scope, param, infer_ty, false);
+        for (macro_decl.params, 0..) |param, index| {
+            // J-3: a parameter with a declared type is bound at that
+            // type, so the declared type is visible (and enforced)
+            // inside the macro body; untyped parameters keep `.infer`.
+            const param_ty = macro_decl.declaredParamType(index) orelse infer_ty;
+            try self.defineSymbol(scope, param, param_ty, false);
         }
 
         try self.checkBlock(macro_decl.body, scope, void_ty, null, null);
@@ -7622,13 +7640,51 @@ pub const TypeChecker = struct {
                     // only borrow-expression arguments are treated as
                     // borrowed places).
                     try self.checkCallArgPlaceOverlaps(null, call.args, scope, call.func_name, null, 0);
+                    // J-4 (leading_output_convention, Jev
+                    // slasl_macro_ruling j4): a user macro with exactly
+                    // one leading output parameter (the same name rule
+                    // as imported SA macros) may be called with the
+                    // output argument omitted; the call is then an
+                    // expression whose type is the output parameter's
+                    // declared type (J-3). Full-arity calls keep the
+                    // statement form and return void.
+                    var param_offset: usize = 0;
+                    var expr_output_ty: ?*ast.Type = null;
+                    if (call.args.len == mac.params.len) {
+                        // Full statement form.
+                    } else if (call.args.len + 1 == mac.params.len and userMacroLeadingOutputCount(mac) == 1) {
+                        param_offset = 1;
+                        expr_output_ty = mac.declaredParamType(0) orelse {
+                            self.setError("MacroExpressionOutputUntyped: macro `{s}` is used as an expression, so its leading output parameter `{s}` must declare a type (J-3 typed macro parameters)", .{ call.func_name, mac.params[0] });
+                            return TypeError.TypeMismatch;
+                        };
+                    } else {
+                        self.setError("macro {s} expects {} args, got {}", .{ call.func_name, mac.params.len, call.args.len });
+                        return TypeError.InvalidArgsCount;
+                    }
+                    var arg_types = std.array_list.Managed(*ast.Type).init(self.allocator);
+                    defer arg_types.deinit();
                     for (call.args) |arg| {
-                        _ = try self.checkExpr(arg, scope);
+                        try arg_types.append(try self.checkExpr(arg, scope));
+                    }
+                    // J-3 (typed_macro_params): an argument bound to a
+                    // parameter with a declared type must match that
+                    // type, under the same compatibility rule as plain
+                    // function call arguments.
+                    for (call.args, arg_types.items, 0..) |arg, arg_ty, arg_index| {
+                        const param_index = arg_index + param_offset;
+                        if (mac.declaredParamType(param_index)) |declared_ty| {
+                            if (!self.plainCallArgMatches(declared_ty, arg, arg_ty)) {
+                                self.setError("TypeMismatch in call to macro `{s}`: parameter `{s}` is declared {s} but the argument has type {s}", .{ call.func_name, mac.params[param_index], typeDesc(declared_ty), typeDesc(arg_ty) });
+                                return TypeError.TypeMismatch;
+                            }
+                        }
                     }
                     var propagated_args = std.StringHashMap(void).init(self.allocator);
                     defer propagated_args.deinit();
                     const has_macro_try = try self.macroHasTry(mac);
-                    for (mac.params, call.args, 0..) |_, arg, index| {
+                    for (call.args, 0..) |arg, arg_index| {
+                        const index = arg_index + param_offset;
                         if (!try self.macroParamIsTrySource(mac, index)) continue;
                         if (rootIdentifier(arg)) |name| try propagated_args.put(name, {});
                     }
@@ -7646,7 +7702,8 @@ pub const TypeChecker = struct {
                         }
                         try self.macro_call_try_cleanups.put(&expr.call_expr, cleanup);
                     }
-                    for (mac.params, call.args, 0..) |_, arg, index| {
+                    for (call.args, 0..) |arg, arg_index| {
+                        const index = arg_index + param_offset;
                         const consumption = try self.macroParamConsumption(mac, index);
                         if (consumption == .never) continue;
                         if (consumption == .conditional) {
@@ -7658,6 +7715,7 @@ pub const TypeChecker = struct {
                         if (sym.state == .consumed) return TypeError.UseAfterMove;
                         try self.consumeBinding(scope, arg.identifier, sym, "user macro move");
                     }
+                    if (expr_output_ty) |ty| return ty;
                     const ret = try self.allocator.create(ast.Type);
                     ret.* = .{ .primitive = .void_type };
                     return ret;

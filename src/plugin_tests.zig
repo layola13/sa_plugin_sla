@@ -450,6 +450,25 @@ fn expectSlaCheckSyntaxDiagnostic(file: []const u8, expected: []const u8) !void 
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, expected));
 }
 
+fn expectSlaCheckNamedDiagnostic(file: []const u8, expected: []const u8) !void {
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", file };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
+
+    try std.testing.expectEqual(@as(?u8, 1), code);
+    try stderr_fw.writer().flush();
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "Type Check Error"));
+    try stderr_fw.writer().flush();
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, expected));
+}
+
 test "sla check reports redeclared symbol names" {
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration.sla", "symbol `value`");
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_const.sla", "symbol `value`");
@@ -467,6 +486,15 @@ test "sla check reports redeclared symbol names" {
     try expectSlaCheckSyntaxDiagnostic("tests/test_error_bare_overload.sla", "found 'overload'");
 }
 
+test "sla check enforces typed macro parameter declarations (J-3)" {
+    // Argument bound to a typed parameter with a mismatched type:
+    // the diagnostic names the macro and the parameter.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_typed_macro_arg_mismatch.sla", "TypeMismatch in call to macro `double_into`");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_typed_macro_arg_mismatch.sla", "parameter `x`");
+    // Misuse inside the body is caught when the body is checked,
+    // because the declared type (not `.infer`) binds the parameter.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_typed_macro_body_mismatch.sla", "TypeMismatch in assign");
+}
 test "sla check diagnoses repeated by-value call use with the consuming call" {
     // REG-BR-6: on the pre-fix checker this file type-checked cleanly
     // (exit 0) and the pattern only failed later as a raw SA referee

@@ -851,7 +851,10 @@ pub const Codegen = struct {
         self.outPrint("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
         self.outPrint("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
         self.outPrint("    store {s}+Dyn_vtable, &{s} as ptr\n", .{ fat_reg, vt_name }) catch return CodegenError.CodegenError;
-        try self.emitRelease(data_reg);
+        // DEF-R8-FIX: data_reg addresses the concrete value whose
+        // ownership the fat cell takes; retire it as consumed. The box
+        // cell itself is dropped by the release below.
+        try self.emitForgetMovedValue(data_reg);
         try self.emitRelease(box_reg);
         return fat_reg;
     }
@@ -871,11 +874,16 @@ pub const Codegen = struct {
         self.outPrint("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
         self.outPrint("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
         self.outPrint("    store {s}+Dyn_vtable, &{s} as ptr\n", .{ fat_reg, vt_name }) catch return CodegenError.CodegenError;
-        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(data_reg);
+        // DEF-R8-FIX: the fat cell takes ownership of the concrete
+        // value's allocation (Dyn_data stores its pointer); retire the
+        // source as consumed, never released.
+        if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(data_reg);
 
         const rc_reg = try self.newTmp();
         self.outPrint("    EXPAND RC_NEW {s}, {s}\n", .{ rc_reg, fat_reg }) catch return CodegenError.CodegenError;
-        try self.emitRelease(fat_reg);
+        // DEF-R8-FIX: RC_NEW stores the fat pointer into the fresh Rc
+        // cell — the fat allocation is owned by the Rc from here.
+        try self.emitForgetMovedValue(fat_reg);
         return rc_reg;
     }
 
@@ -14687,7 +14695,11 @@ pub const Codegen = struct {
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.outPrint("    EXPAND BOX_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
+                        // DEF-R8-FIX: BOX_NEW stores the value into the
+                        // fresh box cell — ownership moves into the box.
+                        // Releasing the source freed the payload while
+                        // the box owned it; retire it as consumed.
+                        if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(arg_reg);
                         return reg;
                     }
                     if (lowering_rules.isBoxIntoRawCall(call)) {
@@ -14695,7 +14707,12 @@ pub const Codegen = struct {
                         const box_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.outPrint("    EXPAND BOX_INTO_RAW {s}, {s}\n", .{ reg, box_reg }) catch return CodegenError.CodegenError;
-                        try self.emitRelease(box_reg);
+                        // DEF-R8-FIX: into_raw moves ownership out of
+                        // the box register into the raw pointer (the SAB
+                        // backend emits a real move_ for this rule). A
+                        // release here frees the cell the raw pointer
+                        // still addresses.
+                        try self.emitForgetMovedValue(box_reg);
                         return reg;
                     }
                     if (lowering_rules.isBoxFromRawCall(call)) {
@@ -14703,7 +14720,12 @@ pub const Codegen = struct {
                         const raw_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.outPrint("    EXPAND BOX_FROM_RAW {s}, {s}\n", .{ reg, raw_reg }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(raw_reg);
+                        // DEF-R8-FIX: the raw pointer is a non-owning
+                        // view; from_raw transfers the allocation's
+                        // ownership into the new box. Retire the source
+                        // register as consumed, never release it (a
+                        // release could free the cell the box now owns).
+                        if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(raw_reg);
                         return reg;
                     }
                     if (lowering_rules.isRcNewCall(call)) {
@@ -14711,7 +14733,9 @@ pub const Codegen = struct {
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.outPrint("    EXPAND RC_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
+                        // DEF-R8-FIX: as BOX_NEW — the value is stored
+                        // into the fresh Rc cell and owned by it.
+                        if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(arg_reg);
                         return reg;
                     }
                     if (lowering_rules.isArcNewCall(call)) {
@@ -14719,7 +14743,9 @@ pub const Codegen = struct {
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.outPrint("    EXPAND ARC_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
+                        // DEF-R8-FIX: as BOX_NEW — the value is stored
+                        // into the fresh Arc cell and owned by it.
+                        if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(arg_reg);
                         return reg;
                     }
                     if (std.mem.eql(u8, target, "AtomicI32") and std.mem.eql(u8, call.func_name, "new")) {
@@ -15638,7 +15664,13 @@ pub const Codegen = struct {
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND OPTION_UNWRAP_OR {s}, {s}, {s}\n", .{ reg, recv_reg, default_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
-                                if (callArgNeedsRelease(call.args[1])) try self.emitRelease(default_reg);
+                                // DEF-R8-FIX: no post-call disposition for
+                                // the default: passing it to EXPAND already
+                                // retires the register, and the macro owns
+                                // its runtime fate (moved into the result
+                                // on None, dropped in the Some arm). The
+                                // old emitRelease here freed the live
+                                // result on the None path.
                                 return reg;
                             }
                             if (option_closure_plan != null and option_closure_plan.?.isUnwrapOrElse()) {
@@ -15810,7 +15842,12 @@ pub const Codegen = struct {
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND RESULT_UNWRAP_OR {s}, {s}, {s}\n", .{ reg, recv_reg, default_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
-                                if (callArgNeedsRelease(call.args[1])) try self.emitRelease(default_reg);
+                                // DEF-R8-FIX: as OPTION_UNWRAP_OR above —
+                                // no post-call disposition for the default
+                                // (EXPAND retires it; the macro moves it
+                                // into the result on Err and drops it in
+                                // the Ok arm). The old emitRelease freed
+                                // the live result on the Err path.
                                 return reg;
                             }
                         }

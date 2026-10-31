@@ -7,12 +7,12 @@
 associated Vec new sa_std/vec.sa VEC_NEW out deps=sa_vec_new
 associated HashSet new sa_std/hashset.sa SET_NEW out deps=sa_set_new,sa_map_new
 associated BTreeSet new sa_std/btree_set.sa BTREE_SET_NEW out deps=sa_btree_set_new,sa_btree_map_new,sa_mem_set
-associated Box new sa_std/core/box.sa BOX_NEW out,value
+associated Box new sa_std/core/box.sa BOX_NEW out,value consume_value
 associated Box into_raw sa_std/core/box.sa BOX_INTO_RAW out,value consume_value
 associated Box from_raw sa_std/core/box.sa BOX_FROM_RAW out,value
-associated Rc new sa_std/core/rc.sa RC_NEW out,value
+associated Rc new sa_std/core/rc.sa RC_NEW out,value consume_value
 associated Rc clone sa_std/core/rc.sa RC_CLONE_OUT out,value
-associated Arc new sa_std/core/arc.sa ARC_NEW out,value
+associated Arc new sa_std/core/arc.sa ARC_NEW out,value consume_value
 associated Arc clone sa_std/core/arc.sa ARC_CLONE_OUT out,value
 associated RefCell new sa_std/core/refcell.sa REFCELL_U64_NEW out,value
 associated Cell new sa_std/core/cell.sa CELL_NEW_VALUE out,value

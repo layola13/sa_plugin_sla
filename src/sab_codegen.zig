@@ -12634,6 +12634,14 @@ pub const Codegen = struct {
         const fat_reg = try self.intern(try self.newTmp());
         try self.emitDynNew(fat_reg, data_reg, vtable_reg);
         try self.emitRelease(vtable_reg);
+        // DEF-R8-FIX: the fat cell takes ownership of the concrete
+        // value (its data pointer addresses data_reg's allocation), so
+        // a non-Copy source is consumed by the coercion, never released
+        // or deep-freed here. Copy sources keep the plain temp cleanup.
+        if (!self.typeIsCopyValue(source_ty)) {
+            try self.markConsumed(data_reg);
+            return fat_reg;
+        }
         try self.releaseExprResultIfNeeded(source_expr, data_reg);
         return fat_reg;
     }
@@ -12659,7 +12667,12 @@ pub const Codegen = struct {
         const fat_reg = try self.intern(try self.newTmp());
         try self.emitDynNew(fat_reg, data_reg, vtable_reg);
         try self.emitRelease(vtable_reg);
-        try self.releaseNonLocalTemps(&.{ data_reg, box_reg });
+        // DEF-R8-FIX: data_reg is the box's inner pointer — the fat
+        // cell now owns the inner allocation, so the view register is
+        // consumed, not released. The box cell itself is dropped by
+        // the release below (its inner value already transferred).
+        try self.markConsumed(data_reg);
+        try self.releaseNonLocalTemps(&.{box_reg});
         return fat_reg;
     }
 
@@ -12678,7 +12691,11 @@ pub const Codegen = struct {
             .value = fat_reg,
             .elem_size = self.elementSlotSize(expr_ty),
         });
-        try self.releaseNonLocalTemps(&.{fat_reg});
+        // DEF-R8-FIX: RC_NEW stores the fat pointer into the fresh Rc
+        // cell — ownership of the fat allocation moves into the Rc.
+        // Releasing it here freed the fat struct while the Rc owned it
+        // (same mislabel family as Box::new).
+        try self.markConsumed(fat_reg);
         return rc_reg;
     }
 
@@ -17668,7 +17685,24 @@ pub const Codegen = struct {
                                 .value = ctor_value,
                                 .elem_size = self.elementSlotSize(expr_ty),
                             });
-                            if (ctor_value) |reg| if (!self.isLocalReg(reg)) try self.emitRelease(reg);
+                            if (ctor_value) |reg| {
+                                // DEF-R8-FIX: same ownership rule as the
+                                // bare constructor path (DEF-3): the macro
+                                // stores the payload into the fresh enum
+                                // object, so a non-Copy payload is consumed
+                                // by the store, never released. Releasing
+                                // it freed the payload while the enum
+                                // still owned it.
+                                if (self.tc.expr_types.get(call.args[0])) |value_ty| {
+                                    if (!self.typeIsCopyValue(value_ty)) {
+                                        try self.markConsumed(reg);
+                                    } else if (!self.isLocalReg(reg)) {
+                                        try self.emitRelease(reg);
+                                    }
+                                } else if (!self.isLocalReg(reg)) {
+                                    try self.emitRelease(reg);
+                                }
+                            }
                             return ctor_dst;
                         }
                     }
@@ -17688,7 +17722,25 @@ pub const Codegen = struct {
                         .value = value_reg,
                         .elem_size = self.elementSlotSize(expr_ty),
                     });
-                    if (value_reg) |reg| if (!self.isLocalReg(reg)) try self.emitRelease(reg);
+                    if (value_reg) |reg| {
+                        // DEF-R8-FIX: see the constructor-shorthand site
+                        // above — a non-Copy payload is consumed by the
+                        // store into the enum object (DEF-3 rule), never
+                        // released.
+                        if (call.args.len > 0) {
+                            if (self.tc.expr_types.get(call.args[0])) |value_ty| {
+                                if (!self.typeIsCopyValue(value_ty)) {
+                                    try self.markConsumed(reg);
+                                } else if (!self.isLocalReg(reg)) {
+                                    try self.emitRelease(reg);
+                                }
+                            } else if (!self.isLocalReg(reg)) {
+                                try self.emitRelease(reg);
+                            }
+                        } else if (!self.isLocalReg(reg)) {
+                            try self.emitRelease(reg);
+                        }
+                    }
                     return dst;
                 }
             }
@@ -18308,7 +18360,16 @@ pub const Codegen = struct {
             self.symbols.items[default_reg],
         });
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
-        if (!self.isLocalReg(default_reg)) try self.emitRelease(default_reg);
+        // DEF-R8-FIX: the default is consumed by the call on both
+        // branches — the macro moves it into the result on None/Err
+        // and drops it inside its Some/Ok arm (sa_std OPTION_UNWRAP_OR
+        // / RESULT_UNWRAP_OR). A release here freed the default on the
+        // merged path even when it had just become the result (live
+        // use-after-free for owned defaults, e.g. Box). Retire the
+        // register in the codegen's own bookkeeping only: the EXPAND
+        // already retires it in the verifier's model, so no further
+        // instruction may touch it.
+        try self.markConsumed(default_reg);
         return dst;
     }
 

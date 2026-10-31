@@ -1118,7 +1118,14 @@ pub const Codegen = struct {
     }
 
     fn markMovedExprBinding(self: *Codegen, expr: *const ast.Node, reg: []const u8) CodegenError!void {
-        if (lowering_rules.rootIdentifier(expr)) |name| return try self.markConsumedBinding(name);
+        // DEF-9: record the move under the *resolved* register name.
+        // A binding declared by `let` in more than one sibling branch
+        // (repeated_let_bindings) is emitted under an alias tmp, and
+        // emitRelease checks consumed_bindings by resolved name; the
+        // source name never matches, so the return cleanup freed Vec
+        // fields that a struct literal had just moved into the result
+        // (sse_process_line's per-field rebuild branches).
+        if (lowering_rules.rootIdentifier(expr)) |name| return try self.markConsumedBinding(self.resolveBindingName(name));
         if (std.mem.startsWith(u8, reg, "^") or std.mem.startsWith(u8, reg, "&")) {
             return try self.markConsumedBinding(reg[1..]);
         }

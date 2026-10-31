@@ -129,6 +129,16 @@ pub fn collectReachableExpr(
         },
         .unsafe_expr => |unsafe_expr| try collectReachableBlock(tc, reachable, worklist, unsafe_expr.body),
         .await_expr => |await_expr| try collectReachableExpr(tc, reachable, worklist, await_expr.expr),
+        .go_expr => |go_expr| try collectReachableExpr(tc, reachable, worklist, go_expr.call),
+        .select_stmt => |select| {
+            for (select.cases) |case| {
+                try collectReachableExpr(tc, reachable, worklist, case.call);
+                try collectReachableBlock(tc, reachable, worklist, case.body);
+            }
+            if (select.default_body) |body| try collectReachableBlock(tc, reachable, worklist, body);
+            if (select.timeout_expr) |timeout_expr| try collectReachableExpr(tc, reachable, worklist, timeout_expr);
+            if (select.timeout_body) |body| try collectReachableBlock(tc, reachable, worklist, body);
+        },
         .try_expr => |try_expr| try collectReachableExpr(tc, reachable, worklist, try_expr.expr),
         .binary_expr => |bin| {
             if (tc.resolved_call_symbols.get(expr)) |symbol| {
@@ -198,6 +208,16 @@ pub fn collectReachableBlock(
                 try collectReachableExpr(tc, reachable, worklist, while_stmt.cond);
                 try collectReachableBlock(tc, reachable, worklist, while_stmt.body);
             },
+            .defer_stmt => |defer_stmt| try collectReachableExpr(tc, reachable, worklist, defer_stmt.call),
+            .select_stmt => |select| {
+                for (select.cases) |case| {
+                    try collectReachableExpr(tc, reachable, worklist, case.call);
+                    try collectReachableBlock(tc, reachable, worklist, case.body);
+                }
+                if (select.default_body) |body| try collectReachableBlock(tc, reachable, worklist, body);
+                if (select.timeout_expr) |timeout_expr| try collectReachableExpr(tc, reachable, worklist, timeout_expr);
+                if (select.timeout_body) |body| try collectReachableBlock(tc, reachable, worklist, body);
+            },
             else => try collectReachableExpr(tc, reachable, worklist, stmt),
         }
     }
@@ -264,6 +284,16 @@ pub fn collectNeededTraitImplsExpr(
         },
         .unsafe_expr => |unsafe_expr| try collectNeededTraitImplsBlock(allocator, tc, needed, unsafe_expr.body),
         .await_expr => |await_expr| try collectNeededTraitImplsExpr(allocator, tc, needed, await_expr.expr),
+        .go_expr => |go_expr| try collectNeededTraitImplsExpr(allocator, tc, needed, go_expr.call),
+        .select_stmt => |select| {
+            for (select.cases) |case| {
+                try collectNeededTraitImplsExpr(allocator, tc, needed, case.call);
+                try collectNeededTraitImplsBlock(allocator, tc, needed, case.body);
+            }
+            if (select.default_body) |body| try collectNeededTraitImplsBlock(allocator, tc, needed, body);
+            if (select.timeout_expr) |timeout_expr| try collectNeededTraitImplsExpr(allocator, tc, needed, timeout_expr);
+            if (select.timeout_body) |body| try collectNeededTraitImplsBlock(allocator, tc, needed, body);
+        },
         .try_expr => |try_expr| try collectNeededTraitImplsExpr(allocator, tc, needed, try_expr.expr),
         .binary_expr => |bin| {
             try collectNeededTraitImplsExpr(allocator, tc, needed, bin.left);
@@ -326,6 +356,16 @@ pub fn collectNeededTraitImplsBlock(
             .while_stmt => |while_stmt| {
                 try collectNeededTraitImplsExpr(allocator, tc, needed, while_stmt.cond);
                 try collectNeededTraitImplsBlock(allocator, tc, needed, while_stmt.body);
+            },
+            .defer_stmt => |defer_stmt| try collectNeededTraitImplsExpr(allocator, tc, needed, defer_stmt.call),
+            .select_stmt => |select| {
+                for (select.cases) |case| {
+                    try collectNeededTraitImplsExpr(allocator, tc, needed, case.call);
+                    try collectNeededTraitImplsBlock(allocator, tc, needed, case.body);
+                }
+                if (select.default_body) |body| try collectNeededTraitImplsBlock(allocator, tc, needed, body);
+                if (select.timeout_expr) |timeout_expr| try collectNeededTraitImplsExpr(allocator, tc, needed, timeout_expr);
+                if (select.timeout_body) |body| try collectNeededTraitImplsBlock(allocator, tc, needed, body);
             },
             else => {},
         }

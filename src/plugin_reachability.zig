@@ -2579,6 +2579,15 @@ pub fn collectSyntacticReachableExpr(
         .unsafe_expr => |unsafe_expr| try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, unsafe_expr.body),
         .await_expr => |await_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, await_expr.expr),
         .go_expr => |go_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, go_expr.call),
+        .select_stmt => |select| {
+            for (select.cases) |case| {
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.call);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.body);
+            }
+            if (select.default_body) |body| try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, body);
+            if (select.timeout_expr) |timeout_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, timeout_expr);
+            if (select.timeout_body) |body| try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, body);
+        },
         .try_expr => |try_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, try_expr.expr),
         .binary_expr => |bin| {
             try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, bin.left);
@@ -2706,6 +2715,23 @@ pub fn collectSyntacticReachableBlock(
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, while_stmt.cond);
                 if (local_facts) |*facts| clearFactsForMutationsInBlock(facts, while_stmt.body);
                 try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, while_stmt.body);
+            },
+            .defer_stmt => |defer_stmt| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, defer_stmt.call),
+            .select_stmt => |select| {
+                for (select.cases) |case| {
+                    try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.call);
+                    if (local_facts) |*facts| clearFactsForMutationsInBlock(facts, case.body);
+                    try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.body);
+                }
+                if (select.default_body) |body| {
+                    if (local_facts) |*facts| clearFactsForMutationsInBlock(facts, body);
+                    try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, body);
+                }
+                if (select.timeout_expr) |timeout_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, timeout_expr);
+                if (select.timeout_body) |body| {
+                    if (local_facts) |*facts| clearFactsForMutationsInBlock(facts, body);
+                    try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, body);
+                }
             },
             else => try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, stmt),
         }

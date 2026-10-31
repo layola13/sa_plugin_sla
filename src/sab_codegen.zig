@@ -10796,7 +10796,7 @@ pub const Codegen = struct {
                 const target = try self.genExpr(source_expr);
                 const value = try self.genExpr(assign.value);
                 try self.emitStore(target, 0, value, try storagePrimType(inner));
-                if (!self.isLocalReg(value)) try self.emitRelease(value);
+                try self.releaseStoredExprResultIfNeeded(assign.value, value, inner);
                 return;
             }
             const inner_ty = switch (source_ty.*) {
@@ -10812,7 +10812,7 @@ pub const Codegen = struct {
                 self.refcell_borrow_values.contains(target),
             );
             if (target_lifecycle.shouldRelease()) try self.emitRelease(target);
-            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            try self.releaseStoredExprResultIfNeeded(assign.value, value, inner_ty);
             return;
         }
         if (assign.target.* == .field_expr) {
@@ -10826,7 +10826,14 @@ pub const Codegen = struct {
             const target = try self.genFieldAddress(field);
             const value = try self.genExpr(assign.value);
             try self.emitStore(target.reg, 0, value, try primType(field_ty));
-            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            // DEF-DB: route through the stored-value disposal, not a
+            // bare release. For a heap-handle field type the store
+            // placed the value's cell handle into the field, which
+            // owns the cell now; releasing the source register frees
+            // that cell and the field dangles (db pinned sessions:
+            // session_open's `out.session = DbSession{...}` killed
+            // every real session test with signal 11).
+            try self.releaseStoredExprResultIfNeeded(assign.value, value, field_ty);
             if (!self.isLocalReg(target.reg)) try self.emitRelease(target.reg);
             try self.markAssignmentMovedSourceWithType(assign.target, assign.value, field_ty);
             return;
@@ -10855,7 +10862,7 @@ pub const Codegen = struct {
             const target = try self.genIndexAddress(idx);
             const value = try self.genExpr(assign.value);
             try self.emitStore(target.reg, 0, value, try storagePrimType(target_ty.array.elem));
-            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            try self.releaseStoredExprResultIfNeeded(assign.value, value, target_ty.array.elem);
             try self.releaseAddressSource(target);
             try self.markAssignmentMovedSource(assign.target, assign.value);
             return;

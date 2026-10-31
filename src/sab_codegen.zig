@@ -19249,7 +19249,19 @@ pub const Codegen = struct {
                 try self.emitConsumedMarker(value);
                 try self.markConsumed(value);
             }
-            try self.releaseStoredExprResultIfNeeded(elem, value, tuple_ty.elems[idx]);
+            if (self.typeIsCopyValue(tuple_ty.elems[idx])) {
+                try self.releaseStoredExprResultIfNeeded(elem, value, tuple_ty.elems[idx]);
+            } else {
+                // DEF triage (MOVEVEC-1): a non-Copy element stored into
+                // the tuple transfers ownership to the aggregate (mirror
+                // of genArrayLiteral's non-Copy branch and of the SA-text
+                // markMovedExprBinding in genTupleLiteralInto). Releasing
+                // the stored handle — or leaving an owned local Active so
+                // function-exit cleanup frees it — left the tuple element
+                // dangling (corrupted contents / segfault).
+                try self.markStoredValueMovedIfNeeded(elem, tuple_ty.elems[idx]);
+                if (!self.isLocalReg(value)) try self.emitMove(value);
+            }
         }
         return dst;
     }

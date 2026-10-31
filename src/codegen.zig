@@ -12581,6 +12581,17 @@ pub const Codegen = struct {
             const layout = tupleFieldLayout(tuple, i) orelse return CodegenError.CodegenError;
             const val_reg = try self.genExpr(elem, hoisted_allocs);
             self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+            // DEF triage (MOVEVEC-1): a non-Copy element stored into the
+            // tuple transfers ownership to the aggregate — the same rule
+            // releaseOrMarkMovedConstructorPayload applies to enum
+            // constructor payloads (DEF-3). Without this, an element taken
+            // from an owned local binding kept its scope drop, so
+            // `return (o, 1);` emitted VEC_FREE for `o` right after the
+            // store and the caller received a dangling Vec (corrupted
+            // contents, double-free under the loop-reassign idiom).
+            if (!self.typeIsCopyValue(tuple.elems[i])) {
+                try self.markMovedExprBinding(elem, val_reg);
+            }
         }
     }
 

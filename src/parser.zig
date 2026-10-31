@@ -669,6 +669,16 @@ pub const Parser = struct {
             const node = try self.allocator.create(ast.Node);
             node.* = .{ .sublanguage_registration = .{ .kind = kind } };
             return node;
+        } else if (std.mem.eql(u8, name, "check_hook")) {
+            // J-5: `@check_hook <name>;` attaches a named read-only
+            // checker hook. Unknown names are diagnosed by the
+            // checker (UnknownCheckHook), not the parser.
+            const hook_tok = self.tok;
+            try self.expect(.identifier);
+            const hook_name = self.lexeme(hook_tok.loc);
+            const node = try self.allocator.create(ast.Node);
+            node.* = .{ .check_hook_decl = .{ .name = hook_name } };
+            return node;
         } else if (std.mem.eql(u8, name, "no_mangle")) {
             const is_pub = self.match(.keyword_pub);
             const is_extern = self.match(.keyword_extern);

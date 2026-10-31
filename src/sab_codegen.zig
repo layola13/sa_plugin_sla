@@ -634,10 +634,10 @@ pub const Codegen = struct {
                     sabProfileDecl(profile, "overload", concreteTypeName(o.target_ty) orelse "?", decl_start);
                 },
                 .struct_decl, .enum_decl, .trait_decl, .type_alias_decl, .macro_decl, .import_decl, .using_decl, .const_stmt => {},
-                // J-1: sublanguage declarations are checker-level
-                // only; they emit no SAB (shader target emission is
-                // library code, J-7).
-                .sublanguage_decl, .sublanguage_registration => {},
+                // J-1/J-5: sublanguage declarations and check-hook
+                // declarations are checker-level only; they emit no SAB
+                // (shader target emission is library code, J-7).
+                .sublanguage_decl, .sublanguage_registration, .check_hook_decl => {},
                 else => {
                     self.traceUnsupported("top-level decl {s} failed\n", .{@tagName(decl.*)});
                     return Error.UnsupportedSabDirectFeature;

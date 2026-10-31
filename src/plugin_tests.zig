@@ -518,6 +518,18 @@ test "sla check enforces registered sublanguage declarations (J-1)" {
     try expectSlaCheckNamedDiagnostic("tests/test_error_shader_dimension.sla", "ShaderDimensionMismatch");
     try expectSlaCheckNamedDiagnostic("tests/test_error_shader_duplicate.sla", "ShaderDuplicateName");
 }
+
+test "sla check runs independent check hooks (J-5)" {
+    // macro_param_audit fires on an unreferenced parameter...
+    try expectSlaCheckNamedDiagnostic("tests/test_error_check_hook_unused_param.sla", "MacroParamUnused");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_check_hook_unused_param.sla", "parameter `y`");
+    // ...and stays scope-aware: a macro-local `let x` shadows the
+    // parameter, so the parameter is still unreferenced.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_check_hook_shadowed_param.sla", "MacroParamUnused");
+    // Unknown hook names are diagnosed, never silently ignored.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_check_hook_unknown.sla", "UnknownCheckHook");
+}
+
 test "sla check diagnoses repeated by-value call use with the consuming call" {
     // REG-BR-6: on the pre-fix checker this file type-checked cleanly
     // (exit 0) and the pattern only failed later as a raw SA referee

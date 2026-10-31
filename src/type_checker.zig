@@ -5,6 +5,7 @@ const lowering_rules = @import("lowering_rules.zig");
 const control_flow_rules = @import("control_flow_rules.zig");
 const contract_parser = @import("contract_parser.zig");
 const sublanguage_shader = @import("sublanguage_shader.zig");
+const check_hooks = @import("check_hooks.zig");
 
 pub const TypeError = error{
     UndefinedVariable,
@@ -4621,6 +4622,28 @@ pub const TypeChecker = struct {
             if (!self.chan_new_validated.contains(node.*)) {
                 self.setError("Chan::new must be bound directly by a let with a Chan<T> annotation so the payload type is known", .{});
                 return TypeError.TypeMismatch;
+            }
+        }
+
+        // J-5: independent check hooks run last, over the fully
+        // checked program. A hook is read-only by construction: it
+        // receives the checker and the AST and may only produce a
+        // named diagnostic (HookDiagnostic) or nothing.
+        for (program.program.decls) |decl| {
+            if (decl.* == .check_hook_decl) {
+                const hook_name = decl.check_hook_decl.name;
+                const hook = check_hooks.lookup(hook_name) orelse {
+                    self.setError("UnknownCheckHook: no check hook is registered under the name `{s}`", .{hook_name});
+                    return TypeError.CompileError;
+                };
+                var diag = check_hooks.Diagnostic{};
+                hook(self, program, &diag) catch |err| switch (err) {
+                    error.HookDiagnostic => {
+                        self.setError("{s}", .{diag.text});
+                        return TypeError.TypeMismatch;
+                    },
+                    error.OutOfMemory => return TypeError.OutOfMemory,
+                };
             }
         }
     }

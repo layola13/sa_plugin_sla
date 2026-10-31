@@ -495,6 +495,16 @@ test "sla check enforces typed macro parameter declarations (J-3)" {
     // because the declared type (not `.infer`) binds the parameter.
     try expectSlaCheckNamedDiagnostic("tests/test_error_typed_macro_body_mismatch.sla", "TypeMismatch in assign");
 }
+
+test "sla check enforces the leading-output expression form (J-4)" {
+    // Expression use requires the leading output parameter to
+    // declare its type (J-3): untyped output is a named diagnostic.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_macro_expr_output_untyped.sla", "MacroExpressionOutputUntyped");
+    // The leading-output name rule is shared with imported SA
+    // macros: a first parameter that does not satisfy it cannot be
+    // omitted, so the expression form is an arity error.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_macro_expr_output_name.sla", "expects 2 args, got 1");
+}
 test "sla check diagnoses repeated by-value call use with the consuming call" {
     // REG-BR-6: on the pre-fix checker this file type-checked cleanly
     // (exit 0) and the pattern only failed later as a raw SA referee

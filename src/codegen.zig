@@ -643,13 +643,50 @@ pub const Codegen = struct {
         call: *const ast.CallExpr,
         hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
+        return self.genUserMacroCallInlineWithCleanupKey(macro_decl, call, call, hoisted_allocs);
+    }
+
+    /// A pre-evaluated first argument for the inline: the register
+    /// is used as-is instead of running genExpr on the argument
+    /// node (J-4 binds its synthetic output slot this way — the
+    /// slot has no source-level binding genExpr could resolve).
+    const PreboundMacroArg = struct {
+        reg: []const u8,
+        ty: ?*const ast.Type,
+    };
+
+    fn genUserMacroCallInlineWithCleanupKey(
+        self: *Codegen,
+        macro_decl: *const ast.MacroDecl,
+        call: *const ast.CallExpr,
+        cleanup_key: *const ast.CallExpr,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError!void {
+        return self.genUserMacroCallInlinePrebound(macro_decl, call, cleanup_key, null, hoisted_allocs);
+    }
+
+    fn genUserMacroCallInlinePrebound(
+        self: *Codegen,
+        macro_decl: *const ast.MacroDecl,
+        call: *const ast.CallExpr,
+        cleanup_key: *const ast.CallExpr,
+        prebound_first: ?PreboundMacroArg,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError!void {
         if (macro_decl.params.len != call.args.len) return CodegenError.CodegenError;
 
         var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
         var arg_types = std.array_list.Managed(?*const ast.Type).init(self.allocator);
         defer arg_types.deinit();
-        for (call.args) |arg| {
+        for (call.args, 0..) |arg, arg_index| {
+            if (arg_index == 0) {
+                if (prebound_first) |pre| {
+                    try arg_regs.append(pre.reg);
+                    try arg_types.append(pre.ty);
+                    continue;
+                }
+            }
             const arg_ty = self.resolvedTypeForExpr(arg);
             try arg_regs.append(try self.genExpr(arg, hoisted_allocs));
             try arg_types.append(arg_ty);
@@ -712,9 +749,44 @@ pub const Codegen = struct {
         self.active_inline_macro = macro_decl;
         defer self.active_inline_macro = previous_inline_macro;
         const previous_try_cleanup = self.active_macro_try_cleanup;
-        self.active_macro_try_cleanup = if (self.tc.macro_call_try_cleanups.get(call)) |list| list.items else previous_try_cleanup;
+        self.active_macro_try_cleanup = if (self.tc.macro_call_try_cleanups.get(cleanup_key)) |list| list.items else previous_try_cleanup;
         defer self.active_macro_try_cleanup = previous_try_cleanup;
         try self.genUserMacroBlockInline(macro_decl, macro_decl.body, hoisted_allocs);
+    }
+
+    /// J-4 (leading_output_convention): expression form of a user
+    /// macro call — the leading output argument is omitted at the
+    /// call site. A fresh stack slot stands in for it: the ordinary
+    /// statement-form inline runs with a synthetic identifier
+    /// argument bound to the slot, and the slot is loaded back as
+    /// the expression value. Mirrors the SAB backend.
+    fn genUserMacroCallExprInline(
+        self: *Codegen,
+        macro_decl: *const ast.MacroDecl,
+        call: *const ast.CallExpr,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError![]const u8 {
+        const result_ty = macro_decl.declaredParamType(0) orelse return CodegenError.CodegenError;
+        const slot = try self.newTmp();
+        self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
+        self.assigned_value_slots.put(slot, {}) catch return CodegenError.OutOfMemory;
+        self.outPrint("    {s} = stack_alloc {}\n", .{ slot, typeSize(result_ty) }) catch return CodegenError.CodegenError;
+        try self.prepareResultSlotRefCellCompanion(slot, result_ty);
+
+        const slot_node = self.allocator.create(ast.Node) catch return CodegenError.OutOfMemory;
+        slot_node.* = .{ .identifier = slot };
+        var full_args = std.array_list.Managed(*ast.Node).init(self.allocator);
+        defer full_args.deinit();
+        try full_args.append(slot_node);
+        for (call.args) |arg| try full_args.append(@constCast(arg));
+        var full_call = call.*;
+        full_call.args = full_args.items;
+        try self.genUserMacroCallInlinePrebound(macro_decl, &full_call, call, .{ .reg = slot, .ty = result_ty }, hoisted_allocs);
+
+        const result_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ result_reg, slot, typeString(result_ty) }) catch return CodegenError.CodegenError;
+        try self.loadResultSlotTransferredValueState(result_reg, slot, result_ty);
+        return result_reg;
     }
 
     fn mangleMethodName(self: *Codegen, ty_name: []const u8, method_name: []const u8) CodegenError![]const u8 {
@@ -2215,6 +2287,12 @@ pub const Codegen = struct {
             return;
         }
         if (self.tc.macros.get(call.func_name)) |macro_decl| {
+            if (call.args.len + 1 == macro_decl.params.len) {
+                // J-4 expression form used as a statement: expand for
+                // the output write, discard the loaded value.
+                _ = try self.genUserMacroCallExprInline(macro_decl, call, hoisted_allocs);
+                return;
+            }
             try self.genUserMacroCallInline(macro_decl, call, hoisted_allocs);
             return;
         }
@@ -16801,6 +16879,10 @@ pub const Codegen = struct {
                 }
 
                 if (self.tc.macros.get(call.func_name)) |macro_decl| {
+                    if (call.args.len + 1 == macro_decl.params.len) {
+                        // J-4 expression form (leading output omitted).
+                        return try self.genUserMacroCallExprInline(macro_decl, &call, hoisted_allocs);
+                    }
                     try self.genUserMacroCallInline(macro_decl, &call, hoisted_allocs);
                     const sentinel = try self.newTmp();
                     try self.emitIntConst(sentinel, 0);

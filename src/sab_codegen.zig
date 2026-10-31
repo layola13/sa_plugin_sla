@@ -9950,6 +9950,10 @@ pub const Codegen = struct {
                 return dst;
             }
             if (self.tc.macros.get(call.func_name)) |macro_decl| {
+                if (call.args.len + 1 == macro_decl.params.len) {
+                    // J-4 expression form inside a macro body.
+                    return try self.genUserMacroExprCallWithParent(macro_decl, call, ctx);
+                }
                 try self.genUserMacroCallWithParent(macro_decl, call, ctx);
                 const sentinel = try self.intern(try self.newTmp());
                 try self.emitAssignImm(sentinel, 0);
@@ -10480,6 +10484,37 @@ pub const Codegen = struct {
         try self.genUserMacroCallWithParent(macro_decl, call.*, null);
     }
 
+    /// J-4 (leading_output_convention): expression form of a user
+    /// macro call — the leading output argument is omitted at the
+    /// call site. A fresh caller-frame stack slot stands in for it:
+    /// the ordinary statement-form expansion runs with a synthetic
+    /// identifier argument bound to the slot, and the slot is loaded
+    /// back as the expression value. Mirrors the SA-text backend.
+    fn genUserMacroExprCallWithParent(self: *Codegen, macro_decl: *const ast.MacroDecl, call: ast.CallExpr, parent_ctx: ?*MacroExpansionContext) anyerror!u32 {
+        const result_ty = macro_decl.declaredParamType(0) orelse return Error.UnsupportedSabDirectFeature;
+        const slot_name = try std.fmt.allocPrint(self.allocator, "__sla_j4_out_{}", .{self.macro_call_idx});
+        const slot_reg = try self.bindingReg(slot_name);
+        try self.emitStackAlloc(slot_reg, typeSize(result_ty));
+        // pushStackLocal (stack_ty set) is what makes
+        // assignToIdentifier store into the slot; a stack-alloc
+        // typed local without stack_ty would be register-rebound.
+        try self.pushStackLocal(slot_name, slot_reg, result_ty);
+
+        const slot_node = try self.allocator.create(ast.Node);
+        slot_node.* = .{ .identifier = slot_name };
+        var full_args = std.array_list.Managed(*ast.Node).init(self.allocator);
+        defer full_args.deinit();
+        try full_args.append(slot_node);
+        for (call.args) |arg| try full_args.append(@constCast(arg));
+        var full_call = call;
+        full_call.args = full_args.items;
+        try self.genUserMacroCallWithParent(macro_decl, full_call, parent_ctx);
+
+        const result_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(result_reg, slot_reg, 0, try primType(result_ty));
+        return result_reg;
+    }
+
     fn genStmt(self: *Codegen, stmt: *ast.Node) anyerror!void {
         switch (stmt.*) {
             .var_stmt => |v| {
@@ -10502,6 +10537,13 @@ pub const Codegen = struct {
                     _ = try self.genExpr(expr);
                 } else if (expr.* == .call_expr) {
                     if (self.tc.macros.get(expr.call_expr.func_name)) |macro_decl| {
+                        if (expr.call_expr.args.len + 1 == macro_decl.params.len) {
+                            // J-4 expression form used as a statement:
+                            // expand for the output write, discard the value.
+                            const value = try self.genUserMacroExprCallWithParent(macro_decl, expr.call_expr, null);
+                            if (!self.lastIsTerminator() and !self.isLocalReg(value)) try self.emitRelease(value);
+                            return;
+                        }
                         try self.genUserMacroCall(macro_decl, &expr.call_expr);
                         return;
                     }
@@ -15740,6 +15782,10 @@ pub const Codegen = struct {
             if (try self.genBuiltinEnumConstructorCall(call)) |reg| return reg;
             if (self.closure_bindings.get(call.func_name)) |closure| return try self.genClosureCall(closure, call);
             if (self.tc.macros.get(call.func_name)) |macro_decl| {
+                if (call.args.len + 1 == macro_decl.params.len) {
+                    // J-4 expression form (leading output omitted).
+                    return try self.genUserMacroExprCallWithParent(macro_decl, expr.call_expr, null);
+                }
                 try self.genUserMacroCall(macro_decl, &expr.call_expr);
                 const sentinel = try self.intern(try self.newTmp());
                 try self.emitAssignImm(sentinel, 0);

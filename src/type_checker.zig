@@ -714,6 +714,76 @@ pub const TypeChecker = struct {
         return false;
     }
 
+    /// Pure (side-effect-free) type of a place expression, resolved
+    /// from scope bindings and struct declarations only, mirroring the
+    /// field/index/deref typing of checkExprImpl without running it.
+    /// Returns null when the type cannot be established this way;
+    /// callers must treat null as "unknown", never as a concrete type.
+    fn placeExprType(self: *TypeChecker, expr: *const ast.Node, scope: *Scope) ?*ast.Type {
+        switch (expr.*) {
+            .identifier => |name| {
+                const sym = scope.lookup(name) orelse return null;
+                return sym.ty;
+            },
+            .move_expr => |m| return self.placeExprType(m.expr, scope),
+            .field_expr => |f| {
+                const target_ty = self.placeExprType(f.expr, scope) orelse return null;
+                if (std.mem.eql(u8, f.field_name, "len") and isStringLikeType(target_ty)) {
+                    const ty = self.allocator.create(ast.Type) catch return null;
+                    ty.* = .{ .primitive = .u64 };
+                    return ty;
+                }
+                const curr_ty = @constCast(lowering_rules.peelBorrowPointerType(target_ty));
+                switch (curr_ty.*) {
+                    .user_defined => {
+                        const decl = self.structDeclForType(curr_ty) orelse return null;
+                        if (decl.is_opaque) return null;
+                        for (decl.fields) |field| {
+                            if (std.mem.eql(u8, field.name, f.field_name)) return field.ty;
+                        }
+                        return null;
+                    },
+                    .tuple => |tuple| {
+                        const index = std.fmt.parseInt(usize, f.field_name, 10) catch return null;
+                        if (index >= tuple.elems.len) return null;
+                        return tuple.elems[index];
+                    },
+                    else => return null,
+                }
+            },
+            .index_expr => |ix| {
+                const target_ty = self.placeExprType(ix.target, scope) orelse return null;
+                if (target_ty.* == .infer) return null;
+                if (hashMapTypes(target_ty)) |hm| return hm.value;
+                if (btreeMapTypes(target_ty)) |bm| return bm.value;
+                if (vecElementType(target_ty)) |elem_ty| return elem_ty;
+                if (vecDequeElementType(target_ty)) |elem_ty| return elem_ty;
+                if (sliceElementType(target_ty)) |elem_ty| return elem_ty;
+                if (arrayType(target_ty)) |arr| return arr.elem;
+                return null;
+            },
+            .deref_expr => |d| {
+                const inner_ty = self.placeExprType(d.expr, scope) orelse return null;
+                if (inner_ty.* == .infer) return null;
+                return @constCast(lowering_rules.pointerOrBorrowPointee(inner_ty) orelse return null);
+            },
+            else => return null,
+        }
+    }
+
+    /// A plain (by-value) argument whose place has a Copy type is a
+    /// pure read: evaluating it produces an independent value copy, so
+    /// it cannot alias or invalidate a borrow of an overlapping place
+    /// taken by the same call (it is exactly the "bind the reads to
+    /// locals first" form, which is legal). Only non-Copy places are
+    /// true by-value moves. The Copy decision comes from the argument
+    /// expression's own type so signature calls and macro calls
+    /// (params == null) classify identically.
+    fn plainArgIsCopyRead(self: *TypeChecker, arg: *const ast.Node, scope: *Scope) bool {
+        const ty = self.placeExprType(arg, scope) orelse return false;
+        return self.typeIsCopy(ty);
+    }
+
     /// Pairwise place-overlap validation for one call's arguments.
     /// Borrowed places come from explicit borrow expressions, from
     /// plain places passed to borrow parameters (auto-borrow), or from
@@ -721,9 +791,11 @@ pub const TypeChecker = struct {
     /// prefix-related (but not identical) places are always rejected;
     /// identical places are rejected unless both corresponding
     /// parameters are provably read-only in the callee body; a borrowed
-    /// place may not overlap any plain place argument either; and a
-    /// by-value move of a root may not happen while a field of it is
-    /// borrowed by a live local.
+    /// place may not overlap any plain place argument either — except
+    /// that a plain argument which is a by-value read of a Copy-typed
+    /// place is not a move and never conflicts (see plainArgIsCopyRead);
+    /// and a by-value move of a root may not happen while a field of
+    /// it is borrowed by a live local.
     fn checkCallArgPlaceOverlaps(
         self: *TypeChecker,
         params: ?[]const ast.Param,
@@ -747,7 +819,7 @@ pub const TypeChecker = struct {
                 }
                 if (is_borrowed) {
                     ap.borrowed = p;
-                } else {
+                } else if (!self.plainArgIsCopyRead(arg, scope)) {
                     ap.plain = p;
                 }
             }

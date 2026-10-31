@@ -10461,6 +10461,29 @@ pub const Codegen = struct {
         try self.markConsumedBinding(reg);
     }
 
+    /// Retire the source register of a value that was just stored by
+    /// value into a binding's stack slot (the addressable-storage and
+    /// assigned-value-slot let branches). The store transferred the
+    /// value into the slot, so an owned temp must be forgotten
+    /// (move-out), not released: releasing it drops the very value the
+    /// slot now holds. DEF-R8PIN: a heap-materialised struct local
+    /// (slanginx GenBook) was freed at birth this way once the native
+    /// backend's release became a real free (DEF-R8 F1); the slot kept
+    /// a dangling pointer and the first field write dereferenced the
+    /// allocator's freelist-mangled first word. Borrow/view temps and
+    /// RefCell borrow handles keep the historical release retire: they
+    /// own nothing, and that release also retires tracked borrow
+    /// source temps / handle owner temps.
+    fn emitSlotTransferredRetire(self: *Codegen, ty: *const ast.Type, reg: []const u8) CodegenError!void {
+        if (ty.* == .borrow or self.borrow_source_temps.contains(reg) or
+            self.refcell_borrow_handles.contains(reg))
+        {
+            try self.emitRelease(reg);
+        } else {
+            try self.emitForgetMovedValue(reg);
+        }
+    }
+
     fn plannedCallArgReleaseReg(self: *Codegen, lowered_arg: LoweredCallArg) ?[]const u8 {
         const release_after_call = lowered_arg.release_reg != null or lowered_arg.release_after_call;
         const candidate = lowered_arg.release_reg orelse lowered_arg.reg;
@@ -11634,8 +11657,11 @@ pub const Codegen = struct {
                     // view staging). fieldBaseResultNeedsRelease matches
                     // the genCall/store retirement discipline: release on
                     // expr-result-needs-release OR a fresh temp that is
-                    // not the resolved binding itself.
-                    if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitRelease(val_reg);
+                    // not the resolved binding itself. The retire itself
+                    // must honour the transfer: an owned value now lives
+                    // in the cell, so it is forgotten, not dropped
+                    // (emitSlotTransferredRetire, DEF-R8PIN).
+                    if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitSlotTransferredRetire(let_ty, val_reg);
                 } else if (self.bindingNeedsAssignedValueSlot(let.name, let_ty) and !isStackAllocCall(let.value)) {
                     const raw_val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
@@ -11648,7 +11674,7 @@ pub const Codegen = struct {
                     self.outPrint("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
                     if (self.refcell_borrow_handles.contains(val_reg)) {
                         try self.storeResultSlotTransferredValueState(let.name, val_reg, let_ty, callArgNeedsRelease(let.value));
-                    } else if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitRelease(val_reg);
+                    } else if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitSlotTransferredRetire(let_ty, val_reg);
                     if (self.storedIdentifierNeedsRelease(let.value, let_ty)) try self.markConsumedBinding(val_reg);
                 } else if (isStackAllocCall(let.value)) {
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;

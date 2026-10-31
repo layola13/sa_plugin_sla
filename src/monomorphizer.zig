@@ -415,6 +415,24 @@ pub const Monomorphizer = struct {
                 };
                 return res;
             },
+            .sublanguage_decl => |sub| {
+                // J-1: sublanguage declarations carry no SLA generics;
+                // they pass through specialization unchanged.
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .sublanguage_decl = sub };
+                return res;
+            },
+            .sublanguage_registration => |reg| {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .sublanguage_registration = reg };
+                return res;
+            },
+            .check_hook_decl => |hook| {
+                // J-5: hook declarations pass through unchanged.
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .check_hook_decl = hook };
+                return res;
+            },
             .let_stmt => |let| {
                 const new_ty = if (let.ty) |ty| try self.specializeType(ty) else null;
                 const new_val = if (let.ty) |declared_ty|
@@ -1547,6 +1565,9 @@ pub const Monomorphizer = struct {
             .type_alias_decl => unreachable,
             .overload_decl => unreachable,
             .impl_decl => unreachable,
+            .sublanguage_decl => unreachable,
+            .sublanguage_registration => unreachable,
+            .check_hook_decl => unreachable,
             .func_decl => |f| {
                 var spec_params = std.array_list.Managed(ast.Param).init(self.allocator);
                 for (f.params) |p| {

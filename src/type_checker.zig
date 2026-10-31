@@ -4,6 +4,7 @@ const ast = @import("ast.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const control_flow_rules = @import("control_flow_rules.zig");
 const contract_parser = @import("contract_parser.zig");
+const sublanguage_shader = @import("sublanguage_shader.zig");
 
 pub const TypeError = error{
     UndefinedVariable,
@@ -4564,6 +4565,36 @@ pub const TypeChecker = struct {
                     return TypeError.TypeMismatch;
                 }
                 try self.defineSymbol(global_scope, c.name, declared_ty, true);
+            }
+        }
+
+        // J-1: registered sublanguage declarations. Registration
+        // nodes are validated against the plugin's bound kinds;
+        // payload declarations enter the shared top-level name table
+        // under their own name and are checked by their kind's
+        // checker, reporting through the shared error channel.
+        for (program.program.decls) |decl| {
+            if (decl.* == .sublanguage_registration) {
+                const parser_mod = @import("parser.zig");
+                if (!parser_mod.Parser.isBoundSublanguageKind(decl.sublanguage_registration.kind)) {
+                    self.setError("SublanguageNotBound: no sub-parser is registered for declaration kind `{s}`", .{decl.sublanguage_registration.kind});
+                    return TypeError.CompileError;
+                }
+            } else if (decl.* == .sublanguage_decl) {
+                const sub = &decl.sublanguage_decl;
+                try self.ensureTopLevelNameUnused(sub.name, sub.kind);
+                switch (sub.payload) {
+                    .shader => |*shader_decl| {
+                        var diag = sublanguage_shader.Diagnostic{};
+                        sublanguage_shader.checkShaderDecl(self.allocator, shader_decl, &diag) catch |err| switch (err) {
+                            error.CheckFailed => {
+                                self.setError("{s}", .{diag.text});
+                                return TypeError.TypeMismatch;
+                            },
+                            error.OutOfMemory => return TypeError.OutOfMemory,
+                        };
+                    },
+                }
             }
         }
 

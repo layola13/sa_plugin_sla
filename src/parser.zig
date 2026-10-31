@@ -17,6 +17,7 @@ pub const ParserError = error{
     UnexpectedInfixToken,
     InvalidCallTarget,
     UnexpectedTypeToken,
+    SublanguageNotBound,
     OutOfMemory,
     Overflow,
     InvalidCharacter,
@@ -58,6 +59,11 @@ pub const Parser = struct {
     import_type_scan_cache: ImportTypeScanCache,
     import_type_scan_cache_hits: usize,
     options: Options,
+    /// J-1: declaration kinds registered for this file by
+    /// `@sublanguage <kind>;` declarations seen so far. A bare
+    /// identifier-led top-level declaration dispatches to the kind's
+    /// sub-parser only when its kind is in this set.
+    registered_sublanguages: std.StringHashMap(void),
     /// Counter for parser-synthesized temporaries (`?.` desugar). Fresh per
     /// Parser so nested/chained chains never collide with each other.
     synth_counter: usize,
@@ -89,6 +95,7 @@ pub const Parser = struct {
             .import_type_scan_cache = ImportTypeScanCache.init(allocator),
             .import_type_scan_cache_hits = 0,
             .options = options,
+            .registered_sublanguages = std.StringHashMap(void).init(allocator),
             .synth_counter = 0,
             .function_body_spans = std.AutoHashMap(*ast.Node, []const u8).init(allocator),
         };
@@ -147,15 +154,15 @@ pub const Parser = struct {
         return try parser.parseBlock();
     }
 
-    fn advance(self: *Parser) void {
+    pub fn advance(self: *Parser) void {
         self.tok = self.lex.next();
     }
 
-    fn peek(self: *Parser) lexer.Token.Tag {
+    pub fn peek(self: *Parser) lexer.Token.Tag {
         return self.tok.tag;
     }
 
-    fn match(self: *Parser, tag: lexer.Token.Tag) bool {
+    pub fn match(self: *Parser, tag: lexer.Token.Tag) bool {
         if (self.tok.tag == tag) {
             self.advance();
             return true;
@@ -163,7 +170,7 @@ pub const Parser = struct {
         return false;
     }
 
-    fn expect(self: *Parser, tag: lexer.Token.Tag) ParserError!void {
+    pub fn expect(self: *Parser, tag: lexer.Token.Tag) ParserError!void {
         if (self.tok.tag != tag) {
             self.last_expected = @tagName(tag);
             return ParserError.SyntaxError;
@@ -249,6 +256,7 @@ pub const Parser = struct {
             ParserError.InlineMacroNotAllowed => "non-inline macro declaration",
             ParserError.ExternBlockRequiresExtern => "extern block declaration",
             ParserError.SyntaxError => "valid Sla syntax",
+            ParserError.SublanguageNotBound => "a sublanguage kind with a registered sub-parser (this plugin binds: shader)",
             ParserError.InvalidCharacter => "valid character or literal",
             ParserError.Overflow => "literal within supported range",
             ParserError.OutOfMemory => "available parser memory",
@@ -333,8 +341,24 @@ pub const Parser = struct {
         }
     }
 
-    fn lexeme(self: *Parser, loc: lexer.Token.Loc) []const u8 {
+    pub fn lexeme(self: *Parser, loc: lexer.Token.Loc) []const u8 {
         return self.lex.buffer[loc.start..loc.end];
+    }
+
+    /// J-1: the sub-parser registry. A kind name is bound when the
+    /// plugin ships a sub-parser for it; `@sublanguage <kind>;` for an
+    /// unbound kind is SublanguageNotBound, and a registered kind's
+    /// declarations are parsed by its sub-parser into typed
+    /// SublanguageDecl nodes.
+    pub fn isBoundSublanguageKind(kind: []const u8) bool {
+        return std.mem.eql(u8, kind, "shader");
+    }
+
+    fn parseRegisteredSublanguageDecl(self: *Parser, kind: []const u8) ParserError!*ast.Node {
+        if (std.mem.eql(u8, kind, "shader")) {
+            return @import("sublanguage_shader.zig").parseShaderDecl(self);
+        }
+        return ParserError.SublanguageNotBound;
     }
 
     fn stringSliceLessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -561,6 +585,12 @@ pub const Parser = struct {
             if (is_inline) return ParserError.ExpectedDeclaration;
             if (is_async) return ParserError.ExpectedDeclaration;
             return try self.parseAtDecl();
+        } else if (self.peek() == .identifier and self.registered_sublanguages.contains(self.lexeme(self.tok.loc))) {
+            // J-1: a declaration kind registered by `@sublanguage`
+            // earlier in this file; its sub-parser produces the
+            // typed declaration.
+            if (is_pub or is_extern or is_inline or is_async or abi != null) return ParserError.ExpectedDeclaration;
+            return try self.parseRegisteredSublanguageDecl(self.lexeme(self.tok.loc));
         } else {
             return ParserError.ExpectedDeclaration;
         }
@@ -628,6 +658,17 @@ pub const Parser = struct {
             return try self.parseTestDeclAfterAt();
         } else if (std.mem.eql(u8, name, "import")) {
             return try self.parseImportDeclAfterAt();
+        } else if (std.mem.eql(u8, name, "sublanguage")) {
+            // J-1: `@sublanguage <kind>;` registers a declaration
+            // kind for the rest of this file.
+            const kind_tok = self.tok;
+            try self.expect(.identifier);
+            const kind = self.lexeme(kind_tok.loc);
+            if (!isBoundSublanguageKind(kind)) return ParserError.SublanguageNotBound;
+            try self.registered_sublanguages.put(kind, {});
+            const node = try self.allocator.create(ast.Node);
+            node.* = .{ .sublanguage_registration = .{ .kind = kind } };
+            return node;
         } else if (std.mem.eql(u8, name, "no_mangle")) {
             const is_pub = self.match(.keyword_pub);
             const is_extern = self.match(.keyword_extern);

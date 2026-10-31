@@ -505,6 +505,19 @@ test "sla check enforces the leading-output expression form (J-4)" {
     // omitted, so the expression form is an arity error.
     try expectSlaCheckNamedDiagnostic("tests/test_error_macro_expr_output_name.sla", "expects 2 args, got 1");
 }
+
+test "sla check enforces registered sublanguage declarations (J-1)" {
+    // Registration is load-bearing: no `@sublanguage shader;`,
+    // no shader declaration — on this build exactly as on baseline.
+    try expectSlaCheckSyntaxDiagnostic("tests/test_error_shader_unregistered.sla", "ExpectedDeclaration");
+    // Registering a kind with no bound sub-parser is named.
+    try expectSlaCheckSyntaxDiagnostic("tests/test_error_sublanguage_unbound.sla", "SublanguageNotBound");
+    // The shader checker reports through the shared channel with
+    // named diagnostics (DESIGN.md 6.2 subset).
+    try expectSlaCheckNamedDiagnostic("tests/test_error_shader_stage_violation.sla", "ShaderStageViolation");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_shader_dimension.sla", "ShaderDimensionMismatch");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_shader_duplicate.sla", "ShaderDuplicateName");
+}
 test "sla check diagnoses repeated by-value call use with the consuming call" {
     // REG-BR-6: on the pre-fix checker this file type-checked cleanly
     // (exit 0) and the pattern only failed later as a raw SA referee

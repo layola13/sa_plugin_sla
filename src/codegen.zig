@@ -2305,6 +2305,55 @@ pub const Codegen = struct {
         defer arg_release_regs.deinit();
         var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_consume_regs.deinit();
+        // DEF-10: a void extern call in statement position must go
+        // through the same contract-prefix lowering as the expression
+        // path (genExternPayloadCall). The generic path below resolves
+        // only tc.funcs, so an extern such as sa_print_bytes(&msg: ptr)
+        // was emitted without its `&` borrow prefix and the SA checker
+        // rejected the call with CapabilityMismatch (1013).
+        if (self.tc.extern_funcs.get(call.func_name)) |ext| {
+            if (!ext.return_fallible) {
+                var ext_arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
+                defer ext_arg_regs.deinit();
+                var ext_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
+                defer ext_release_regs.deinit();
+                var ext_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
+                defer ext_consume_regs.deinit();
+                for (call.args, 0..) |arg, i| {
+                    const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+                    defer self.popExprLaterNodesTo(sibling_mark);
+                    const planned_param = if (i < ext.params.len) try self.externPtrParamAsAstParam(ext.params[i]) else null;
+                    const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
+                        .param = planned_param,
+                        .arg_index = i,
+                    });
+                    const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
+                        .borrow => try self.abiPrefixedArg('&', lowered_arg.reg),
+                        .move => try self.abiPrefixedArg('^', lowered_arg.reg),
+                        .raw => try self.abiRawPrefixedArg(lowered_arg.reg),
+                        .none => lowered_arg.reg,
+                    } else lowered_arg.reg;
+                    ext_arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+                    try self.appendExternLoweredCallArgCleanups(
+                        &ext_release_regs,
+                        &ext_consume_regs,
+                        lowered_arg,
+                        if (i < ext.params.len) ext.params[i] else null,
+                        arg_reg,
+                    );
+                }
+                const lowered_ext = try self.loweredFuncSymbol(call.func_name);
+                defer self.allocator.free(lowered_ext);
+                self.outPrint("    call @{s}(", .{lowered_ext}) catch return CodegenError.CodegenError;
+                for (ext_arg_regs.items, 0..) |arg_reg, i| {
+                    if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                }
+                self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
+                try self.emitLoweredCallArgCleanups(ext_release_regs.items, ext_consume_regs.items, call.func_name);
+                return;
+            }
+        }
         const resolved_func_name = self.tc.resolveFunctionAlias(call.func_name);
         const maybe_func = self.tc.funcs.get(resolved_func_name);
         for (call.args, 0..) |arg, i| {

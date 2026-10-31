@@ -12249,19 +12249,25 @@ pub const Codegen = struct {
                     const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
                     const expr_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
+                    // DEF-CHAIN: store through the loaded object
+                    // pointer when the base is a raw pointer (its
+                    // register is the pointer value's cell handle).
+                    const through = try self.loadFieldPointerObject(expr_ty, base_reg);
+                    const store_base = through orelse base_reg;
                     const curr_ty = lowering_rules.peelBorrowPointerType(expr_ty);
 
                     if (curr_ty.* == .tuple) {
                         const index = std.fmt.parseInt(usize, field.field_name, 10) catch return CodegenError.CodegenError;
                         const layout = tupleFieldLayout(curr_ty.tuple, index) orelse return CodegenError.CodegenError;
-                        self.outPrint("    store {s}+{}, {s} as {s}\n", .{ base_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}+{}, {s} as {s}\n", .{ store_base, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                     } else {
                         if (curr_ty.* != .user_defined) return CodegenError.CodegenError;
                         const struct_decl = self.tc.structs.get(curr_ty.user_defined.name) orelse return CodegenError.CodegenError;
                         const layout = fieldLayout(struct_decl, field.field_name) orelse return CodegenError.CodegenError;
-                        self.outPrint("    store {s}+{}, {s} as {s}\n", .{ base_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        self.outPrint("    store {s}+{}, {s} as {s}\n", .{ store_base, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                     }
                     if (self.fieldBaseResultNeedsRelease(field.expr, base_reg)) try self.emitRelease(base_reg);
+                    if (through) |obj| try self.emitRelease(obj);
                     try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
                 } else if (assign.target.* == .identifier) {
                     const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
@@ -13383,7 +13389,22 @@ pub const Codegen = struct {
     ) CodegenError!AddressProjection {
         const expr_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
         const layout = try self.fieldAddressLayout(expr_ty, field.field_name);
-        const base = if (field.expr.* == .field_expr) blk: {
+        const base = if (expr_ty.* == .pointer) blk: {
+            // DEF-CHAIN: the base value is a raw pointer — genExpr
+            // yields its cell handle, so load the object pointer
+            // before the field offset applies (see
+            // loadFieldPointerObject). The handle temp is retired
+            // exactly like a deref source temp; the object register
+            // takes the base's place in the projection bookkeeping.
+            const handle = try self.genExpr(field.expr, hoisted_allocs);
+            const obj = try self.newTmp();
+            self.outPrint("    {s} = load {s}+0 as ptr\n", .{ obj, handle }) catch return CodegenError.CodegenError;
+            if (self.borrow_source_temps.get(handle)) |source_temp| {
+                self.borrow_source_temps.put(obj, source_temp) catch return CodegenError.OutOfMemory;
+            }
+            if (self.fieldBaseResultNeedsRelease(field.expr, handle)) try self.emitRelease(handle);
+            break :blk obj;
+        } else if (field.expr.* == .field_expr) blk: {
             const nested = try self.genFieldAddress(&field.expr.field_expr, hoisted_allocs);
             const nested_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
             if (std.mem.eql(u8, typeString(nested_ty), "ptr")) {
@@ -13412,6 +13433,23 @@ pub const Codegen = struct {
             .ptr = ptr,
             .source_temp = if (track_source_temp) base else null,
         };
+    }
+
+    /// DEF-CHAIN: a raw-pointer value's register holds the address of
+    /// the cell that stores the object pointer — the representation
+    /// genExpr's deref arm loads through (`load reg+0 as ptr`). A field
+    /// access whose base expression has raw-pointer type gets that
+    /// same cell handle from genExpr (a field load, an identifier, a
+    /// call result), NOT the object pointer, so the field offset must
+    /// be applied to the loaded object pointer instead. Only a
+    /// deref_expr base already yields the object pointer (its type is
+    /// the pointee, never a pointer). Returns the through-loaded
+    /// object register, or null for non-pointer bases.
+    fn loadFieldPointerObject(self: *Codegen, base_ty: *const ast.Type, generated: []const u8) CodegenError!?[]const u8 {
+        if (base_ty.* != .pointer) return null;
+        const obj = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as ptr\n", .{ obj, generated }) catch return CodegenError.CodegenError;
+        return obj;
     }
 
     fn genVecOwnerReceiver(
@@ -14437,13 +14475,19 @@ pub const Codegen = struct {
 
                 // Look up the struct's type to find the field offset
                 const expr_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
+                // DEF-CHAIN: a raw-pointer base evaluates to its cell
+                // handle, not the object pointer — load through it
+                // before applying any field offset.
+                const through = try self.loadFieldPointerObject(expr_ty, inner);
+                const base = through orelse inner;
                 const curr_ty = lowering_rules.peelBorrowPointerType(expr_ty);
 
                 if (curr_ty.* == .tuple) {
                     const index = std.fmt.parseInt(usize, field.field_name, 10) catch return CodegenError.CodegenError;
                     const layout = tupleFieldLayout(curr_ty.tuple, index) orelse return CodegenError.CodegenError;
-                    self.outPrint("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = load {s}+{} as {s}\n", .{ reg, base, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
                     try self.retireFieldBaseResult(field.expr, inner);
+                    if (through) |obj| try self.emitRelease(obj);
                     return reg;
                 }
 
@@ -14492,13 +14536,15 @@ pub const Codegen = struct {
                 const layout = self.fieldLayoutForType(curr_ty, field.field_name) orelse return CodegenError.CodegenError;
                 for (struct_decl.fields) |decl_field| {
                     if (std.mem.eql(u8, decl_field.name, field.field_name) and manuallyDropInnerType(decl_field.ty) != null) {
-                        self.outPrint("    {s} = ptr_add {s}, {}\n", .{ reg, inner, layout.offset }) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = ptr_add {s}, {}\n", .{ reg, base, layout.offset }) catch return CodegenError.CodegenError;
                         try self.retireFieldBaseResult(field.expr, inner);
+                        if (through) |obj| try self.emitRelease(obj);
                         return reg;
                     }
                 }
-                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+{} as {s}\n", .{ reg, base, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
                 try self.retireFieldBaseResult(field.expr, inner);
+                if (through) |obj| try self.emitRelease(obj);
                 return reg;
             },
             .struct_literal => |lit| {

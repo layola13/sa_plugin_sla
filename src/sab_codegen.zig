@@ -12332,6 +12332,19 @@ pub const Codegen = struct {
             break :blk tupleFieldLayout(expr_ty.tuple, index) orelse return Error.UnsupportedSabDirectFeature;
         } else try self.fieldLayout(expr_ty, field.field_name);
         const base = try self.genExpr(field.expr);
+        // DEF-CHAIN: a raw-pointer base evaluates to the pointer
+        // value's cell handle, not the object pointer — load through
+        // it before the field offset applies (see genField). The
+        // handle temp is retired like a genDeref source temp; the
+        // object register takes its place in the address source.
+        if (expr_ty.* == .pointer) {
+            const obj = try self.intern(try self.newTmp());
+            try self.emitLoad(obj, base, 0, .ptr);
+            if (!self.isLocalReg(base)) try self.emitRelease(base);
+            var obj_source = try self.addressWithOffset(obj, layout.offset);
+            if (layout.offset != 0) obj_source.release_regs = try self.singleReleaseReg(obj);
+            return obj_source;
+        }
         var source = try self.addressWithOffset(base, layout.offset);
         if (layout.offset != 0 and !self.isLocalReg(base)) source.release_regs = try self.singleReleaseReg(base);
         return source;
@@ -19776,6 +19789,22 @@ pub const Codegen = struct {
         const field_ty = self.fieldType(expr_ty, field.field_name) orelse return Error.UnsupportedSabDirectFeature;
 
         const base = try self.genExpr(field.expr);
+        // DEF-CHAIN: a raw-pointer value's register holds the address
+        // of the cell that stores the object pointer (the same
+        // representation genDeref loads through). A field access
+        // whose base expression has raw-pointer type gets that cell
+        // handle from genExpr, NOT the object pointer, so load the
+        // object pointer before any field offset applies. Only a
+        // deref_expr base already yields the object pointer (its
+        // type is the pointee, never a pointer).
+        var eff_base = base;
+        var through: ?u32 = null;
+        if (expr_ty.* == .pointer) {
+            const obj = try self.intern(try self.newTmp());
+            try self.emitLoad(obj, base, 0, .ptr);
+            eff_base = obj;
+            through = obj;
+        }
         // An inline array field read as a value decays to its address,
         // exactly like the ManuallyDrop case below: the array value
         // register elsewhere (array literals, params) is always the
@@ -19783,9 +19812,10 @@ pub const Codegen = struct {
         // load would hand back only the first word's bits (DEF-1).
         if (field_ty.* == .array) {
             const addr = try self.intern(try self.newTmp());
-            try self.emitPtrAdd(addr, base, .{ .imm_u64 = @intCast(layout.offset) });
+            try self.emitPtrAdd(addr, eff_base, .{ .imm_u64 = @intCast(layout.offset) });
             try self.markLoadedFieldViewIfNeeded(addr, field_ty);
             if (!self.isLocalReg(base)) try self.emitRelease(base);
+            if (through) |obj| try self.emitRelease(obj);
             return addr;
         }
         // Mirror SA-text: a ManuallyDrop-typed field decays to its address
@@ -19793,14 +19823,16 @@ pub const Codegen = struct {
         // value would misread the inline payload as a pointer.
         if (lowering_rules.manuallyDropInnerType(field_ty) != null) {
             const addr = try self.intern(try self.newTmp());
-            try self.emitPtrAdd(addr, base, .{ .imm_u64 = @intCast(layout.offset) });
+            try self.emitPtrAdd(addr, eff_base, .{ .imm_u64 = @intCast(layout.offset) });
             if (!self.isLocalReg(base)) try self.emitRelease(base);
+            if (through) |obj| try self.emitRelease(obj);
             return addr;
         }
         const dst = try self.intern(try self.newTmp());
-        try self.emitLoad(dst, base, layout.offset, layout.ty);
+        try self.emitLoad(dst, eff_base, layout.offset, layout.ty);
         try self.markLoadedFieldViewIfNeeded(dst, field_ty);
         if (!self.isLocalReg(base)) try self.emitRelease(base);
+        if (through) |obj| try self.emitRelease(obj);
         return dst;
     }
 

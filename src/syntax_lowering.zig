@@ -769,16 +769,37 @@ pub const Lowerer = struct {
             return self.fail("internal: channel payload size was not validated by the checker", .{});
     }
 
-    /// Word payloads: primitives and decl-less handle types
-    /// (String, Vec, Chan, Box, ...). Their register holds the
-    /// value word itself, so a borrow of the binding in the SAB
-    /// codegen yields the value, not the address of its home —
-    /// sends must stage the word through a plain u64 binding and
-    /// copy from there, and receives load the word from the slot.
+    /// Word payloads: primitives, raw pointers, and decl-less
+    /// handle types (String, Vec, Chan, Box, ...). Their
+    /// register holds the value word itself, so a borrow of the
+    /// binding in the SAB codegen yields the value, not the
+    /// address of its home — sends must stage the word through
+    /// a plain u64 binding and copy from there, and receives
+    /// load the word from the slot.
     /// Aggregate payloads (structs, tuples, enums, arrays) are
     /// address-resident and transfer by address instead.
+    /// DEF-ACL: `.pointer` was missing here, so a `Chan<*T>`
+    /// receive bound the case/destructure variable to the slot
+    /// ADDRESS (the address-resident cast) instead of loading
+    /// the pointer word out of the slot — the binding aliased
+    /// the 16-byte staging slot, which the select lowering
+    /// releases at every loop iteration, so any pointer payload
+    /// carried out of a select-in-loop dangled (slaredis
+    /// goroutine model SIGSEGV on the first request).
     fn payloadIsWord(self: *Lowerer, payload_ty: *ast.Type) bool {
-        return payload_ty.* == .primitive or (payload_ty.* == .user_defined and self.tc.structs.get(payload_ty.user_defined.name) == null and self.tc.enums.get(payload_ty.user_defined.name) == null);
+        return payload_ty.* == .primitive or payload_ty.* == .pointer or (payload_ty.* == .user_defined and self.tc.structs.get(payload_ty.user_defined.name) == null and self.tc.enums.get(payload_ty.user_defined.name) == null);
+    }
+
+    /// Send staging form: word payloads stage through the view
+    /// (move semantics), EXCEPT raw pointers. A pointer send is
+    /// a borrow-copy of the word into the slot (sa_mem_copy from
+    /// the value's home): the view field store would
+    /// move-consume the sender's binding, but senders
+    /// legitimately keep using a pointer after sending it
+    /// (slaredis g_aof_append sends `op`, then waits on it).
+    /// Receives still load pointer words via payloadIsWord.
+    fn payloadSendViaView(self: *Lowerer, payload_ty: *ast.Type) bool {
+        return self.payloadIsWord(payload_ty) and payload_ty.* != .pointer;
     }
 
     /// A-form send staging for word payloads (Jev ruling
@@ -868,7 +889,7 @@ pub const Lowerer = struct {
                 const slot_name = try self.freshName("__slot_");
                 try out.append(try self.slotArrayNode(slot_name, 16));
                 const slot_ty = try self.tyArrayOf(try self.tyPrim(.u8), 16);
-                if (self.payloadIsWord(info.payload_ty)) {
+                if (self.payloadSendViaView(info.payload_ty)) {
                     // A form (see storeSlotValueViaView): view
                     // borrow of the slot, payload moved into the
                     // view field, borrow retired with mem::forget.
@@ -1218,7 +1239,7 @@ pub const Lowerer = struct {
         for (sel.cases, 0..) |case, i| {
             if (send_binds.items[i]) |sv_name| {
                 const info = self.tc.chan_calls.get(case.call) orelse return self.fail("internal: select case was not recorded by the checker", .{});
-                if (self.payloadIsWord(info.payload_ty)) {
+                if (self.payloadSendViaView(info.payload_ty)) {
                     // A form, mirroring emitChanCall's send:
                     // view the arm's slot, move the staged
                     // payload into the view field, forget the

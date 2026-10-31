@@ -1219,12 +1219,24 @@ pub const Codegen = struct {
     /// drop does not fire: `let s = format!(...); return Ok(s);`
     /// previously emitted STRING_BUF_FREE for s right after
     /// RESULT_NEW_OK, leaving the caller a dangling payload
-    /// (segfault / corrupted string on both backends). Copy payloads
-    /// keep the plain temporary-release behavior.
+    /// (segfault / corrupted string on both backends). DEF-ACL: the
+    /// same transfer rule covers Copy AGGREGATE payloads (POD struct /
+    /// enum / tuple / array) -- they are heap cells too, and the macro
+    /// stores the cell handle without copying the payload words, so a
+    /// plain release frees the cell the enum points at (`return
+    /// Some(IpPrefix { ... })` corrupted / segfaulted callers). Only
+    /// the payload TEMP transfers: a plain identifier argument keeps
+    /// its binding live, exactly as the plain release behaved (it
+    /// never fired for identifiers). Scalar Copy payloads keep the
+    /// plain temporary-release behavior.
     fn releaseOrMarkMovedConstructorPayload(self: *Codegen, arg: *const ast.Node, value_reg: []const u8) CodegenError!void {
         if (self.tc.expr_types.get(arg)) |value_ty| {
             if (!self.typeIsCopyValue(value_ty)) {
                 try self.markMovedExprBinding(arg, value_reg);
+                return;
+            }
+            if (lowering_rules.isHeapHandleType(value_ty)) {
+                if (arg.* != .identifier) try self.markConsumedBinding(value_reg);
                 return;
             }
         }
@@ -12826,7 +12838,16 @@ pub const Codegen = struct {
         for (lit.elements, 0..) |elem, i| {
             const val_reg = try self.genExpr(elem, hoisted_allocs);
             self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, val_reg, elem_ty_str }) catch return CodegenError.CodegenError;
-            if (callArgNeedsRelease(elem)) try self.emitRelease(val_reg);
+            // DEF-ACL: an aggregate (heap-handle) element's cell is
+            // retained by the array through the stored handle, so the
+            // element temp transfers into the array instead of being
+            // released (a release freed the cell the array points
+            // at). Identifier elements keep their binding, as before.
+            if (lowering_rules.isHeapHandleType(eff_ty) and elem.* != .identifier) {
+                try self.markConsumedBinding(val_reg);
+            } else if (callArgNeedsRelease(elem)) {
+                try self.emitRelease(val_reg);
+            }
         }
     }
 
@@ -12871,7 +12892,14 @@ pub const Codegen = struct {
             for (0..arr.len) |i| {
                 const slot_reg = try self.genExpr(lit.value, hoisted_allocs);
                 self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, slot_reg, elem_ty_str }) catch return CodegenError.CodegenError;
-                if (callArgNeedsRelease(lit.value)) try self.emitRelease(slot_reg);
+                // DEF-ACL: composite elements are heap handles retained
+                // by the array (see genArrayLiteralInto); transfer the
+                // per-slot temp instead of releasing it.
+                if (lowering_rules.isHeapHandleType(arr.elem) and lit.value.* != .identifier) {
+                    try self.markConsumedBinding(slot_reg);
+                } else if (callArgNeedsRelease(lit.value)) {
+                    try self.emitRelease(slot_reg);
+                }
             }
         }
     }

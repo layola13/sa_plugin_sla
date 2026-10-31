@@ -1313,6 +1313,20 @@ pub fn moveExprConsumesSource(inner_ty: ?*const ast.Type, value_is_copy: bool) b
     return true;
 }
 
+/// Y-SHARE: types whose values are materialised as heap-cell handles --
+/// the register holds a pointer to the value's words rather than the
+/// value itself: named struct/enum types, tuples and fixed arrays.
+/// Scalar primitives, pointers, borrows and fn pointers are carried
+/// inline. Both backends use this to decide whether storing a value
+/// into an aggregate (enum constructor payload slot, tuple element,
+/// ...) transfers ownership of a heap cell or merely copies a scalar.
+pub fn isHeapHandleType(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .user_defined, .tuple, .array => true,
+        else => false,
+    };
+}
+
 /// Y-SHARE: unified identifier-use scan over expressions, statements and
 /// blocks (nested if/match/switch/loop/closure/unsafe fully covered).
 /// SA-text (`fnPtrInlineCandidateExpr`) and SAB share this fact so a use

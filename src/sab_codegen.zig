@@ -3701,6 +3701,60 @@ pub const Codegen = struct {
     fn releaseStoredExprResultIfNeeded(self: *Codegen, expr: *const ast.Node, reg: u32, stored_ty: *const ast.Type) !void {
         if (expr.* == .identifier and self.stackLocal(expr.identifier) != null) {
             if (!self.isLocalReg(reg)) {
+                if (lowering_rules.isHeapHandleType(stored_ty)) {
+                    try self.emitConsumedMarker(reg);
+                    try self.markConsumed(reg);
+                    return;
+                }
+                if (typeIsPointerScalarValue(stored_ty)) try self.markNonOwningReg(reg);
+                try self.emitRelease(reg);
+            }
+            return;
+        }
+        if (!lowering_rules.exprResultNeedsRelease(expr)) return;
+        if (!self.isLocalReg(reg)) {
+            // DEF-ACL: when the stored value's type is a heap-handle
+            // aggregate (POD struct / enum / tuple / array), the store
+            // placed the value's cell HANDLE into the aggregate, which
+            // now owns the cell. Releasing the source register frees
+            // that cell (since sci F1 a .release on a malloc'd pointer
+            // register really frees), leaving the aggregate's
+            // field/element dangling (corrupted reads, SIGSEGV on
+            // nested handles). Transfer ownership instead, with the
+            // same marker idiom as struct-literal move transfers.
+            if (lowering_rules.isHeapHandleType(stored_ty)) {
+                try self.emitConsumedMarker(reg);
+                try self.markConsumed(reg);
+                return;
+            }
+            if (typeIsPointerScalarValue(stored_ty)) try self.markNonOwningReg(reg);
+            try self.emitRelease(reg);
+        }
+    }
+
+    /// DEF-ACL: disposal for a genCopyValue copy whose handle was just
+    /// stored into an aggregate field. The copy is a fresh heap cell
+    /// created for the field, and the field owns it now -- releasing
+    /// it frees the field's cell (dangling field reads). Heap-handle
+    /// copies transfer (marker idiom); scalar copies keep the plain
+    /// release (their register holds the value itself).
+    fn releaseCopiedFieldValue(self: *Codegen, copied: u32, field_ty: *const ast.Type) !void {
+        if (lowering_rules.isHeapHandleType(field_ty)) {
+            try self.emitConsumedMarker(copied);
+            try self.markConsumed(copied);
+            return;
+        }
+        try self.emitRelease(copied);
+    }
+
+    /// DEF-ACL exception to releaseStoredExprResultIfNeeded: the
+    /// fixed-array FIELD branch of genStructLiteral copies the array's
+    /// elements into the struct's inline field region -- the source
+    /// array cell itself is NOT retained by the struct, so it keeps
+    /// the plain release semantics (a verbatim copy of the pre-DEF-ACL
+    /// helper body).
+    fn releaseCopiedArrayFieldSource(self: *Codegen, expr: *const ast.Node, reg: u32, stored_ty: *const ast.Type) !void {        if (expr.* == .identifier and self.stackLocal(expr.identifier) != null) {
+            if (!self.isLocalReg(reg)) {
                 if (typeIsPointerScalarValue(stored_ty)) try self.markNonOwningReg(reg);
                 try self.emitRelease(reg);
             }
@@ -9731,7 +9785,7 @@ pub const Codegen = struct {
                     const source_reg = try self.genMacroExpr(value, ctx);
                     const copied = try self.genCopyValue(source_reg, plan.field_ty);
                     try self.emitStore(dst, layout.offset, copied, prim);
-                    try self.emitRelease(copied);
+                    try self.releaseCopiedFieldValue(copied, plan.field_ty);
                 } else if (transfer.isDirect() or transfer.isMove()) {
                     const direct_const_string = lowering_rules.structLiteralDirectFieldUsesConstStringSymbol(value, plan.field_ty);
                     const value_reg = if (direct_const_string)
@@ -9762,7 +9816,7 @@ pub const Codegen = struct {
                 } else if (transfer.isDeepCopy()) {
                     const copied = try self.genCopyValue(loaded, plan.field_ty);
                     try self.emitStore(dst, layout.offset, copied, prim);
-                    try self.emitRelease(copied);
+                    try self.releaseCopiedFieldValue(copied, plan.field_ty);
                     if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
                 } else if (transfer.isMove()) {
                     try self.emitStore(dst, layout.offset, loaded, prim);
@@ -14341,6 +14395,30 @@ pub const Codegen = struct {
                     try self.markConsumed(value_reg);
                     return dst;
                 }
+                // DEF-ACL: a Copy AGGREGATE payload (POD struct / enum /
+                // tuple / array) is also materialised as a heap cell,
+                // and the macro stores that cell's handle -- the payload
+                // words are NOT copied into the enum object. Releasing
+                // the source register therefore frees the very cell the
+                // enum points at (since the sci F1 change a .release on
+                // a malloc'd pointer register really frees), and the
+                // caller reads allocator freelist words or segfaults on
+                // nested handles (`return Some(IpPrefix { ... })` in
+                // sa_std ip_prefix_parse; slanginx acl / slaredis /
+                // db session SIGSEGVs). Transfer ownership into the
+                // enum instead: emitConsumedMarker + markConsumed
+                // retire the register visibly without freeing the cell
+                // (the same transfer idiom genStructLiteral uses for
+                // moved field values). Scalar Copy payloads keep
+                // the plain release below (their register holds the
+                // value itself, not a cell handle).
+                if (lowering_rules.isHeapHandleType(value_ty)) {
+                    if (!self.isLocalReg(value_reg)) {
+                        try self.emitConsumedMarker(value_reg);
+                        try self.markConsumed(value_reg);
+                    }
+                    return dst;
+                }
             }
             if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
         } else {
@@ -18723,7 +18801,7 @@ pub const Codegen = struct {
                 defer self.popExprLaterNodesTo(later_mark);
                 const value_reg = try self.genExpr(value);
                 try self.storeArrayValueIntoStructField(dst, layout.offset, plan.field_ty.array, value_reg);
-                try self.releaseStoredExprResultIfNeeded(value, value_reg, plan.field_ty);
+                try self.releaseCopiedArrayFieldSource(value, value_reg, plan.field_ty);
                 continue;
             }
             const prim = storagePrimType(layout.ty) catch |err| {
@@ -18757,7 +18835,7 @@ pub const Codegen = struct {
                         return err;
                     };
                     try self.emitStore(dst, layout.offset, copied, prim);
-                    try self.emitRelease(copied);
+                    try self.releaseCopiedFieldValue(copied, plan.field_ty);
                 } else if (transfer.isDirect() or transfer.isMove()) {
                     const direct_const_string = lowering_rules.structLiteralDirectFieldUsesConstStringSymbol(value, plan.field_ty);
                     const value_reg = if (direct_const_string)
@@ -18821,7 +18899,7 @@ pub const Codegen = struct {
                 } else if (transfer.isDeepCopy()) {
                     const copied = try self.genCopyValue(loaded, plan.field_ty);
                     try self.emitStore(dst, layout.offset, copied, prim);
-                    try self.emitRelease(copied);
+                    try self.releaseCopiedFieldValue(copied, plan.field_ty);
                     if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
                 } else if (transfer.isMove()) {
                     try self.emitStore(dst, layout.offset, loaded, prim);

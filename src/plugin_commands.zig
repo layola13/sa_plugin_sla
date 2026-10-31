@@ -63,6 +63,16 @@ fn buildExeCompileOptions() plugin_compile_options.SlaCompileOptions {
     };
 }
 
+fn buildWasmCompileOptions() plugin_compile_options.SlaCompileOptions {
+    // wasm has no stack switching: goroutine programs are compiled
+    // through the cooperative CPS/state-machine lowering and the
+    // cooperative runtime (sa_task_coop.zig). Other targets keep
+    // the native lowering untouched.
+    var options = buildExeCompileOptions();
+    options.goroutine_coop = true;
+    return options;
+}
+
 fn writeSiblingSabFromBytes(
     allocator: std.mem.Allocator,
     file: []const u8,
@@ -382,7 +392,8 @@ pub fn runSlaCommandImpl(
         const extra_args = args[options.passthrough_start..];
 
         const sab_out = try managedSabPath(allocator, file);
-        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, buildExeCompileOptions())) orelse return 1;
+        const compile_options = if (std.mem.eql(u8, cmd, "build-wasm")) buildWasmCompileOptions() else buildExeCompileOptions();
+        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, compile_options)) orelse return 1;
         if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
         if (options.emit_sab_file) {
             if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;

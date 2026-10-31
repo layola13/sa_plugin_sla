@@ -3,6 +3,10 @@ const sio = @import("sio");
 
 pub const SlaCompileOptions = struct {
     test_filter: ?[]const u8 = null,
+    /// Cooperative CPS/state-machine goroutine lowering (build-wasm
+    /// only). Off everywhere else, so native/test/check outputs are
+    /// byte-identical to the standard pipeline.
+    goroutine_coop: bool = false,
     prune_for_test_codegen: bool = false,
     prune_for_entry_function: ?[]const u8 = null,
     load_reachable_imported_bodies_from_registry: bool = false,

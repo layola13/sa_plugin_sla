@@ -4,6 +4,7 @@ const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
 const syntax_lowering = @import("syntax_lowering.zig");
+const coop_lowering = @import("coop_lowering.zig");
 const defer_desugar = @import("defer_desugar.zig");
 const type_checker_mod = @import("type_checker.zig");
 const codegen_mod = @import("codegen.zig");
@@ -793,6 +794,26 @@ fn runSlaFrontend(
         };
     }
     slaProfileStage(stderr, profile, "syntax lowering", stage_start);
+
+    // Cooperative goroutine lowering (build-wasm only): rewrite the
+    // spawn closure into heap-frame state machines driven by the
+    // cooperative runtime. Runs on the same lowered tree, so both
+    // codegens consume it unchanged; off for every other command.
+    if (options.goroutine_coop) {
+        stage_start = sio.nanoTimestamp();
+        var coop = coop_lowering.CoopTransformer.init(allocator, tc);
+        coop.transformProgram(specialized_prog) catch |err| {
+            try stderr.print("Coop Lowering Error: {s} ({})\n", .{ coop.err_msg orelse "unknown", err });
+            return null;
+        };
+        for (coop.synthesizedDecls()) |synth_decl| {
+            specialized_primary_decls.put(synth_decl, {}) catch |err| {
+                try stderr.print("Coop Lowering Error: failed to keep synthesized decl ({})\n", .{err});
+                return null;
+            };
+        }
+        slaProfileStage(stderr, profile, "coop lowering", stage_start);
+    }
 
     // Filter specialized_prog to only include primary declarations
     stage_start = sio.nanoTimestamp();

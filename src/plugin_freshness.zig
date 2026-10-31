@@ -49,7 +49,6 @@ const max_manifest_bytes: usize = 64 * 1024 * 1024;
 const max_dep_bytes: usize = 256 * 1024 * 1024;
 const max_artifact_bytes: usize = 1024 * 1024 * 1024;
 
-
 /// Host broker context for the current dispatch (set by plugin.zig's
 /// ABI entry when the host loads this plugin; null for the standalone
 /// sla binary, where the local gate below is the authority). When a
@@ -187,6 +186,7 @@ fn optionsDigest(kind: FreshnessKind, options: SlaCompileOptions, output_file: ?
     hasher.update("\x00");
     hasher.update(&.{@intFromBool(options.prune_for_test_codegen)});
     hasher.update(&.{@intFromBool(options.load_reachable_imported_bodies_from_registry)});
+    hasher.update(&.{@intFromBool(options.goroutine_coop)});
     if (options.prune_for_entry_function) |entry| {
         hasher.update("entry:");
         hasher.update(entry);

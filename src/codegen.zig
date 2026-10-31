@@ -14082,7 +14082,14 @@ pub const Codegen = struct {
                     // `stackLocal` bindings, so both backends must agree here.
                     const expr_ty = self.resolvedTypeForExpr(expr) orelse self.localBindingTypeForName(name);
                     if (expr_ty) |resolved_ty| {
-                        if (resolved_ty.* == .primitive) {
+                        // ZOZI-5: pointer/borrow bindings materialized to
+                        // a stack slot by planBorrowedBindingStorage hold
+                        // an address VALUE in the slot; a value read must
+                        // load it exactly like the primitive case,
+                        // otherwise the raw slot address leaks into the
+                        // value stream (and extern out-param writes to
+                        // the slot are never observed).
+                        if (resolved_ty.* == .primitive or resolved_ty.* == .pointer or resolved_ty.* == .borrow) {
                             const reg = try self.newTmp();
                             self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, name, typeString(resolved_ty) }) catch return CodegenError.CodegenError;
                             return reg;

@@ -737,7 +737,20 @@ pub fn importedMacroDirectCallConsumesValueArg(macro_name: []const u8, call_arg_
 }
 
 pub fn planBorrowedBindingStorage(binding_is_borrowed: bool, ty: *const ast.Type) BorrowedBindingStoragePlan {
-    return .{ .materialize_stack_slot = binding_is_borrowed and ty.* == .primitive };
+    // Value-register scalar bindings need a stack home when their
+    // address is taken, so `&local` yields the address OF the local.
+    // That is primitives, and (ZOZI-5) also pointer / borrow / fn_ptr
+    // bindings: their registers hold an address VALUE, and without a
+    // home the borrow lowering degenerates to a copy of that value —
+    // an extern out-param (`**T`) then writes through the pointee
+    // address itself (or null) instead of the local's cell.
+    // Aggregate bindings (struct/tuple/array/user types) already live
+    // at an address, so they need no slot.
+    const value_register_scalar = switch (ty.*) {
+        .primitive, .pointer, .borrow, .fn_ptr => true,
+        else => false,
+    };
+    return .{ .materialize_stack_slot = binding_is_borrowed and value_register_scalar };
 }
 
 pub const LoopControlPlan = struct {
@@ -7158,8 +7171,11 @@ test "shared borrowed binding storage plan keeps primitive address-taken binding
 
     try std.testing.expect(planBorrowedBindingStorage(true, &i64_ty).materialize_stack_slot);
     try std.testing.expect(!planBorrowedBindingStorage(false, &i64_ty).materialize_stack_slot);
-    try std.testing.expect(!planBorrowedBindingStorage(true, &ptr_i64_ty).materialize_stack_slot);
-    try std.testing.expect(!planBorrowedBindingStorage(true, &borrow_i64_ty).materialize_stack_slot);
+    // ZOZI-5: pointer/borrow bindings are value-register scalars too;
+    // a borrowed one needs a stack home so &local is its address.
+    try std.testing.expect(planBorrowedBindingStorage(true, &ptr_i64_ty).materialize_stack_slot);
+    try std.testing.expect(planBorrowedBindingStorage(true, &borrow_i64_ty).materialize_stack_slot);
+    try std.testing.expect(!planBorrowedBindingStorage(false, &ptr_i64_ty).materialize_stack_slot);
     try std.testing.expect(!planBorrowedBindingStorage(true, &user_ty).materialize_stack_slot);
 }
 

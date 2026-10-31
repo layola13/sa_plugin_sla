@@ -13470,6 +13470,14 @@ pub const Codegen = struct {
             }, &.{ false, false, true });
             if (elem_transfers_ownership) {
                 if (!self.isLocalReg(arg_reg)) try self.emitMove(arg_reg);
+            } else if (lowering_rules.isHeapHandleType(elem_ty)) {
+                // DEF-ZRANGE: same rule as genVecPushCall -- the literal's
+                // VEC_PUSH stores the heap-handle element's handle word,
+                // so the element temp is consumed, never released.
+                if (!self.isLocalReg(arg_reg)) {
+                    try self.emitConsumedMarker(arg_reg);
+                    try self.markConsumed(arg_reg);
+                }
             } else {
                 try self.releaseExprResultIfNeeded(arg, arg_reg);
             }
@@ -14092,9 +14100,18 @@ pub const Codegen = struct {
         }));
 
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
-        const copy_like = self.typeIsCopyValue(elem_ty) or self.typeIsShallowCopyCallArgValue(elem_ty, 0);
-        if (lowering_rules.vecElementPushTransfersOwnership(elem_ty, copy_like)) {
-            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        // DEF-ZRANGE: sa_vec_push stores the element's handle word itself
+        // (no clone), so for heap-handle element types the push CONSUMES
+        // the value's cell -- the Vec owns it from here on. Releasing the
+        // source register after the store frees the very cell the new
+        // element slot points at (latent while sci's native release was
+        // a no-op; live since sci 75007ee3 made release really free).
+        // Mirrors the DEF-ACL store rule via isHeapHandleType.
+        if (lowering_rules.isHeapHandleType(elem_ty)) {
+            if (!self.isLocalReg(value_reg)) {
+                try self.emitConsumedMarker(value_reg);
+                try self.markConsumed(value_reg);
+            }
         } else if (!self.isLocalReg(value_reg)) {
             try self.emitRelease(value_reg);
         }
@@ -18040,6 +18057,15 @@ pub const Codegen = struct {
         const index_reg = try self.genExpr(idx.index);
         const dst = try self.intern(try self.newTmp());
         try self.recordReg(dst);
+        // DEF-ZRANGE: indexing a Vec of heap-handle elements loads the
+        // element's own cell handle out of the buffer slot -- a borrowed
+        // view, not an owned value. Mark the result non-owning so any
+        // later cleanup of this register (e.g. the base release at the
+        // end of a field projection, genField) degrades to a forget
+        // instead of freeing the element the Vec still owns.
+        if (lowering_rules.vecElementType(target_ty)) |elem_ty| {
+            if (lowering_rules.isHeapHandleType(elem_ty)) try self.non_owning_regs.put(dst, {});
+        }
         try self.emitStdSurfaceRule(rule, .{
             .out = dst,
             .receiver = target_reg,

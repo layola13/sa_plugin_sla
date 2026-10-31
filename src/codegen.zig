@@ -11437,6 +11437,37 @@ pub const Codegen = struct {
         return exprResultNeedsRelease(expr);
     }
 
+    /// DEF-ZRANGE: a field projection whose base is a Vec index read of a
+    /// heap-handle element type consumes the raw element handle loaded
+    /// from the Vec's buffer slot (genLoadSlotValue returns it un-copied
+    /// for non-slot-copy element types). That handle is borrowed -- the
+    /// Vec owns the element cell -- so retiring the base register must
+    /// forget it, never release it: a real release frees the element
+    /// while the Vec still points at it (live since sci 75007ee3 made
+    /// release really free). Slot-copy element types return an owned
+    /// copy from the slot load, which keeps the plain release.
+    fn fieldBaseIsBorrowedVecHandle(self: *Codegen, base_expr: *const ast.Node) bool {
+        if (base_expr.* != .index_expr) return false;
+        const idx = base_expr.index_expr;
+        const target_ty = self.resolvedTypeForExpr(idx.target) orelse return false;
+        const elem_ty = vecElementType(target_ty) orelse return false;
+        if (!lowering_rules.isHeapHandleType(elem_ty)) return false;
+        if (self.slotCopyStructType(elem_ty)) |copy_ty| {
+            if (self.typeIsCopyStruct(copy_ty)) return false;
+            if (self.typeIsSmallPlainSlotStruct(copy_ty)) return false;
+        }
+        return true;
+    }
+
+    fn retireFieldBaseResult(self: *Codegen, base_expr: *const ast.Node, inner: []const u8) CodegenError!void {
+        if (!self.fieldBaseResultNeedsRelease(base_expr, inner)) return;
+        if (self.fieldBaseIsBorrowedVecHandle(base_expr)) {
+            try self.emitForgetMovedValue(inner);
+        } else {
+            try self.emitRelease(inner);
+        }
+    }
+
     fn fieldBaseResultNeedsRelease(self: *Codegen, expr: *const ast.Node, generated_reg: []const u8) bool {
         const generated_is_resolved_binding = expr.* == .identifier and
             std.mem.eql(u8, generated_reg, self.resolveBindingName(expr.identifier));
@@ -14412,7 +14443,7 @@ pub const Codegen = struct {
                     const index = std.fmt.parseInt(usize, field.field_name, 10) catch return CodegenError.CodegenError;
                     const layout = tupleFieldLayout(curr_ty.tuple, index) orelse return CodegenError.CodegenError;
                     self.outPrint("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                    if (self.fieldBaseResultNeedsRelease(field.expr, inner)) try self.emitRelease(inner);
+                    try self.retireFieldBaseResult(field.expr, inner);
                     return reg;
                 }
 
@@ -14462,12 +14493,12 @@ pub const Codegen = struct {
                 for (struct_decl.fields) |decl_field| {
                     if (std.mem.eql(u8, decl_field.name, field.field_name) and manuallyDropInnerType(decl_field.ty) != null) {
                         self.outPrint("    {s} = ptr_add {s}, {}\n", .{ reg, inner, layout.offset }) catch return CodegenError.CodegenError;
-                        if (self.fieldBaseResultNeedsRelease(field.expr, inner)) try self.emitRelease(inner);
+                        try self.retireFieldBaseResult(field.expr, inner);
                         return reg;
                     }
                 }
                 self.outPrint("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                if (self.fieldBaseResultNeedsRelease(field.expr, inner)) try self.emitRelease(inner);
+                try self.retireFieldBaseResult(field.expr, inner);
                 return reg;
             },
             .struct_literal => |lit| {
@@ -15135,7 +15166,12 @@ pub const Codegen = struct {
                     for (call.args) |arg| {
                         const arg_reg = try self.genExpr(arg, hoisted_allocs);
                         self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ reg, arg_reg, elem_size }) catch return CodegenError.CodegenError;
-                        if (elem_transfers_ownership) {
+                        // DEF-ZRANGE: same rule as the push method -- a
+                        // heap-handle element temp is consumed by the
+                        // store into the Vec, never released.
+                        if (elem_transfers_ownership or
+                            (lowering_rules.isHeapHandleType(elem_ty) and arg.* != .identifier))
+                        {
                             try self.emitForgetMovedValue(arg_reg);
                         } else if (self.callArgResultTempNeedsRelease(arg, arg_reg)) try self.emitRelease(arg_reg);
                     }
@@ -15261,7 +15297,15 @@ pub const Codegen = struct {
                     // them) must remain usable after push so patterns like
                     // `registry.infos.push(info); return (registry, info);` match the
                     // typechecker and direct SAB backends.
-                    if (self.vecElementPushConsumesSource(elem_ty)) {
+                    // DEF-ZRANGE: VEC_PUSH stores the element's handle word
+                    // itself (no clone), so a heap-handle element TEMP is
+                    // consumed by the push -- releasing it frees the cell
+                    // the new slot points at (live since sci 75007ee3 made
+                    // release really free). Identifier args keep their
+                    // binding, mirroring the DEF-ACL store rule.
+                    if (self.vecElementPushConsumesSource(elem_ty) or
+                        (lowering_rules.isHeapHandleType(elem_ty) and call.args[1].* != .identifier))
+                    {
                         try self.emitForgetMovedValue(arg_reg);
                     } else if (self.callArgResultTempNeedsRelease(call.args[1], arg_reg)) try self.emitRelease(arg_reg);
                     if (exprResultNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);

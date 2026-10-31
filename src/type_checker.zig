@@ -5786,6 +5786,19 @@ pub const TypeChecker = struct {
                         return try self.makeOrderingType();
                     },
                     .eq, .ne, .lt, .le, .gt, .ge => {
+                        // Pointer-like operands compare by identity, never by
+                        // pointee value. structDeclForType unwraps pointers, so
+                        // without this fast path `*S == *S` (and the FFI staple
+                        // `handle == ptr::null::<S>()`) is misrouted into the
+                        // struct-value comparison below and rejected, because
+                        // typeIsEq of a pointer type is always false. Only
+                        // eq/ne are identity comparisons; relational ops keep
+                        // the existing dispatch.
+                        if ((bin.op == .eq or bin.op == .ne) and (l_ty.* == .pointer or l_ty.* == .borrow) and (r_ty.* == .pointer or r_ty.* == .borrow)) {
+                            if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
+                            ty.* = .{ .primitive = .boolean };
+                            return ty;
+                        }
                         if (self.structDeclForType(l_ty)) |left_struct| {
                             if (self.structDeclForType(r_ty)) |right_struct| {
                                 if (!self.typesEqual(l_ty, r_ty) or left_struct != right_struct) return TypeError.TypeMismatch;

@@ -4195,6 +4195,12 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         if (!(bin.op == .eq or bin.op == .ne)) return null;
+        // ZOZI-1: pointer/borrow operands compare by identity. Their
+        // registers hold addresses, so the field-wise loads below would
+        // dereference the pointee (and segfault on a null operand).
+        // Decline so the generic path compares the address registers.
+        if (left_ty.* == .pointer or left_ty.* == .borrow or
+            right_ty.* == .pointer or right_ty.* == .borrow) return null;
         const left_struct = self.structDeclForType(left_ty) orelse return null;
         const right_struct = self.structDeclForType(right_ty) orelse return null;
         if (left_struct != right_struct or left_struct.is_opaque or left_struct.is_union) return null;

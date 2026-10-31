@@ -11319,6 +11319,13 @@ pub const Codegen = struct {
         if (left_struct == null and right_struct == null) return null;
 
         const struct_decl = left_struct orelse right_struct.?;
+        // ZOZI-1: eq/ne are not claimed here — they belong to
+        // genStructComparison / the primitive path. Throwing
+        // UnsupportedSabDirectFeature for them (via the opaque guard
+        // below) made even `*Opaque == *Opaque` unreachable in the
+        // direct encoder. Non-matrix arithmetic (div/rem/bitops on
+        // structs) keeps the loud rejection below.
+        if (bin.op == .eq or bin.op == .ne) return null;
         if (struct_decl.is_opaque or struct_decl.is_union) return Error.UnsupportedSabDirectFeature;
 
         const op_kind: inst.OpKind = switch (bin.op) {
@@ -11581,6 +11588,11 @@ pub const Codegen = struct {
 
         const left_ty = self.tc.expr_types.get(bin.left) orelse return null;
         const right_ty = self.tc.expr_types.get(bin.right) orelse return null;
+        // ZOZI-1: pointer/borrow operands compare by identity; decline so
+        // the primitive path compares the address registers (mirrors the
+        // guard in SA-text genStructEqualityExpr).
+        if (left_ty.* == .pointer or left_ty.* == .borrow or
+            right_ty.* == .pointer or right_ty.* == .borrow) return null;
         const left_struct = self.structDeclForType(left_ty) orelse return null;
         const right_struct = self.structDeclForType(right_ty) orelse return null;
         if (left_struct != right_struct or left_struct.is_opaque or left_struct.is_union) return null;

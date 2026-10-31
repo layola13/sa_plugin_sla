@@ -4804,7 +4804,21 @@ pub const TypeChecker = struct {
                     }
                     return closure.ret;
                 }
-                const recv_node_ty = if (call.args.len > 0 and call.args[0].* != .move_expr) try self.checkExpr(call.args[0], scope) else null;
+                // DEF triage (nested-call UseAfterMove): the receiver probe
+                // below exists only to detect chan method calls, and
+                // checkChanMethodCall returns null for every other name —
+                // but the probe itself fully checks args[0], so for a
+                // nested call argument (`outer(inner(v))`) the inner
+                // call's by-value arguments were consumed by the probe and
+                // the real argument check then reported a spurious
+                // UseAfterMove. Probe only for the chan method names.
+                const chan_method_probe = std.mem.eql(u8, call.func_name, "send") or
+                    std.mem.eql(u8, call.func_name, "recv") or
+                    std.mem.eql(u8, call.func_name, "close") or
+                    std.mem.eql(u8, call.func_name, "destroy") or
+                    std.mem.eql(u8, call.func_name, "len") or
+                    std.mem.eql(u8, call.func_name, "cap");
+                const recv_node_ty = if (chan_method_probe and call.args.len > 0 and call.args[0].* != .move_expr) try self.checkExpr(call.args[0], scope) else null;
 
                 if (recv_node_ty) |recv_ty| {
                     if (chanPayloadTypeOf(recv_ty)) |payload_ty| {

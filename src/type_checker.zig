@@ -170,6 +170,12 @@ pub const TypeChecker = struct {
         module_path: ?[]const u8 = null,
     };
 
+    // DEF deep-drop batch: how an assignment's old value must be dropped
+    // before the new value is stored (decided from checker flow state and
+    // the place-taint pass below). Absent = no drop (old value moved out
+    // or not owned).
+    pub const AssignDropMode = enum { shallow, deep };
+
     allocator: std.mem.Allocator,
     structs: std.StringHashMap(*ast.StructDecl),
     type_aliases: std.StringHashMap(*ast.TypeAliasDecl),
@@ -190,11 +196,8 @@ pub const TypeChecker = struct {
     // Maps a branch end to the variables to release for Phi resolution
     phi_cleanups: std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)),
 
-    // DEF deep-drop batch: how an assignment's old value must be dropped
-    // before the new value is stored (decided from checker flow state and
-    // the place-taint pass below). Absent = no drop (old value moved out
-    // or not owned).
-    pub const AssignDropMode = enum { shallow, deep };
+    // DEF deep-drop batch (fields for the AssignDropMode decl above):
+    // assign_drop_old maps an assignment node to its old-value drop mode.
     assign_drop_old: std.AutoHashMap(*const ast.Node, AssignDropMode),
     // DEF deep-drop batch: snapshot of tainted place keys at each cleanup
     // node (keys of `cleanups`/`phi_cleanups`), plus a whole-program union

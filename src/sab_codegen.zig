@@ -374,6 +374,11 @@ pub const Codegen = struct {
     current_reg_ids: std.array_list.Managed(u32),
     current_reg_seen: std.AutoHashMap(u32, void),
     released_regs: std.AutoHashMap(u32, void),
+    // DEF deep-drop: AST node whose drop taint snapshot governs the
+    // cleanup/assign emission currently in progress (set by
+    // releaseCleanupForStmt / emitBranchCleanupForNode / genStmt's
+    // assign dispatch). Null means "fall back to the union snapshot".
+    current_drop_node: ?*const ast.Node = null,
     // Register ids that have already had a `stack_alloc` emitted in the current
     // function body. Sibling-scope `let`s of the same name intern to one
     // function-global register id (register identity here is name-keyed), so a
@@ -3177,6 +3182,153 @@ pub const Codegen = struct {
         try self.released_regs.put(reg, {});
     }
 
+    // ---- DEF deep drop (DESIGN.md §4.2/§4.4) ----
+    // Plan-driven value drop, consumed at existing release decision
+    // points only. `value_reg` holds an owned value of type `ty` whose
+    // static drop plan is `plan`; `key` is the place key used for the
+    // checker's taint snapshots (consulted via current_drop_node). When
+    // `may_alias` is true the value was loaded out of a place (struct
+    // field / vec element / overwritten slot) and may still be aliased
+    // by a live binding: a taint-covered whole value is left for its
+    // alias to drop. Binding registers (may_alias=false) own their
+    // buffer exclusively by checker construction. `free_container`
+    // false is for inline stack storage: elements/fields are dropped,
+    // the storage itself dies with the scope.
+
+    fn emitDeepValueDrop(self: *Codegen, value_reg: u32, ty: *const ast.Type, plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node, may_alias: bool, free_container: bool) anyerror!void {
+        switch (plan.*) {
+            .none => try self.emitRelease(value_reg),
+            .buffer => {
+                if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitMove(value_reg);
+                    return;
+                }
+                if (free_container) {
+                    try self.emitOwnedBufferFree(value_reg);
+                } else {
+                    try self.emitRelease(value_reg);
+                }
+            },
+            .deep_vec => |elem_plan| {
+                if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitMove(value_reg);
+                    return;
+                }
+                if (!self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitVecElementDrops(value_reg, ty, elem_plan, key, taint_node);
+                }
+                if (free_container) {
+                    try self.emitOwnedBufferFree(value_reg);
+                } else {
+                    try self.emitRelease(value_reg);
+                }
+            },
+            .deep_struct => |fields| {
+                try self.emitStructFieldDrops(value_reg, ty, fields, key, taint_node);
+                try self.emitRelease(value_reg);
+            },
+        }
+    }
+
+    fn emitVecElementDrops(self: *Codegen, vec_reg: u32, vec_ty: *const ast.Type, elem_plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node) anyerror!void {
+        const elem_ty = lowering_rules.vecElementType(vec_ty) orelse return;
+        // Vec layout is fixed by sa_std (alloc/layout.sal): ptr@0, len@8.
+        const ptr_off: usize = if (self.fieldLayout(vec_ty, "ptr")) |fl| fl.offset else |_| 0;
+        const len_off: usize = if (self.fieldLayout(vec_ty, "len")) |fl| fl.offset else |_| 8;
+        const buf_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(buf_reg, vec_reg, ptr_off, .ptr);
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(len_reg, vec_reg, len_off, .u64);
+        const idx_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(idx_slot, 8);
+        const zero_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero_reg, 0);
+        try self.emitStore(idx_slot, 0, zero_reg, .u64);
+        try self.emitRelease(zero_reg);
+        const head_label = try self.newLabel("L_DD_HEAD");
+        const body_label = try self.newLabel("L_DD_BODY");
+        const done_label = try self.newLabel("L_DD_DONE");
+        try self.emitJmp(head_label);
+        try self.emitLabel(head_label);
+        const i_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(i_reg, idx_slot, 0, .u64);
+        const cond_reg = try self.intern(try self.newTmp());
+        try self.emitOp(cond_reg, .ult, .{ .reg = i_reg }, .{ .reg = len_reg });
+        try self.emitBranch(cond_reg, body_label, done_label);
+        try self.emitLabel(body_label);
+        const off_reg = try self.intern(try self.newTmp());
+        try self.emitOp(off_reg, .mul, .{ .reg = i_reg }, .{ .imm_i64 = @intCast(lowering_rules.vecElementSlotSize(elem_ty)) });
+        const elem_addr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_addr, buf_reg, .{ .reg = off_reg });
+        try self.emitRelease(off_reg);
+        if (elem_plan.* == .deep_struct) {
+            // Struct elements live inline in the buffer: drop their
+            // fields in place; the storage itself dies with the buffer.
+            try self.emitStructFieldDrops(elem_addr, elem_ty, elem_plan.deep_struct, key, taint_node);
+        } else {
+            const elem_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(elem_reg, elem_addr, 0, .ptr);
+            try self.emitDeepValueDrop(elem_reg, elem_ty, elem_plan, key, taint_node, false, true);
+        }
+        try self.emitRelease(elem_addr);
+        const next_reg = try self.intern(try self.newTmp());
+        try self.emitOp(next_reg, .add, .{ .reg = i_reg }, .{ .imm_i64 = 1 });
+        try self.emitStore(idx_slot, 0, next_reg, .u64);
+        try self.emitRelease(next_reg);
+        try self.emitBranchRelease(i_reg);
+        try self.emitBranchRelease(cond_reg);
+        try self.emitJmp(head_label);
+        try self.emitLabel(done_label);
+        try self.emitRelease(buf_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(idx_slot);
+    }
+
+    fn emitStructFieldDrops(self: *Codegen, struct_reg: u32, struct_ty: *const ast.Type, fields: []const lowering_rules.FieldDropPlan, key: []const u8, taint_node: ?*const ast.Node) anyerror!void {
+        const decl = self.structDeclForType(struct_ty) orelse return;
+        for (fields) |field| {
+            if (field.plan.* == .none) continue;
+            const layout = self.fieldLayout(struct_ty, field.name) catch continue;
+            var field_ty: ?*const ast.Type = null;
+            for (decl.fields) |decl_field| {
+                if (std.mem.eql(u8, decl_field.name, field.name)) {
+                    field_ty = decl_field.ty;
+                    break;
+                }
+            }
+            const fty = field_ty orelse continue;
+            const child_key = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ key, field.name });
+            const val_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(val_reg, struct_reg, layout.offset, layout.ty);
+            try self.emitDeepValueDrop(val_reg, fty, field.plan, child_key, taint_node, true, true);
+        }
+    }
+
+    /// Plan-aware drop of a local's current value at an existing release
+    /// decision point. Returns true when a deep plan handled the drop;
+    /// false leaves the caller on its existing (shallow) path.
+    fn emitPlannedLocalDrop(self: *Codegen, local: Local) !bool {
+        const ty = local.ty orelse return false;
+        const plan = self.tc.planValueDrop(ty) catch return false;
+        switch (plan.*) {
+            .deep_vec, .deep_struct => {},
+            else => return false,
+        }
+        if (local.stack_ty != null) {
+            const value = try self.intern(try self.newTmp());
+            try self.emitLoad(value, local.reg, 0, .ptr);
+            try self.emitDeepValueDrop(value, ty, plan, local.name, self.current_drop_node, false, true);
+            try self.emitRelease(local.reg);
+            return true;
+        }
+        if (local.is_stack_alloc) {
+            try self.emitDeepValueDrop(local.reg, ty, plan, local.name, self.current_drop_node, false, false);
+            return true;
+        }
+        try self.emitDeepValueDrop(local.reg, ty, plan, local.name, self.current_drop_node, false, true);
+        return true;
+    }
+
     fn emitBalanceReleaseLocal(self: *Codegen, local: Local) !void {
         if (self.released_regs.contains(local.reg)) return;
         // Follow-up line (family 1): branch-merge compensation for an
@@ -3201,6 +3353,7 @@ pub const Codegen = struct {
                 return;
             }
             if (action.consumes()) {
+                if (try self.emitPlannedLocalDrop(local)) return;
                 if (deep_balance) {
                     try self.emitOwnedBufferFree(local.reg);
                     return;
@@ -3210,6 +3363,7 @@ pub const Codegen = struct {
             }
             return;
         }
+        if (try self.emitPlannedLocalDrop(local)) return;
         if (local.ty) |ty| {
             const abi_ty = primType(ty) catch return;
             if (abi_ty == .ptr) {
@@ -3267,6 +3421,7 @@ pub const Codegen = struct {
                 return;
             }
             if (action.consumes()) {
+                if (try self.emitPlannedLocalDrop(local)) return;
                 if (ownedBufferDropType(local.ty)) {
                     try self.emitOwnedBufferFree(local.reg);
                     return;
@@ -3275,6 +3430,7 @@ pub const Codegen = struct {
                 return;
             }
         }
+        if (try self.emitPlannedLocalDrop(local)) return;
         if (local.stack_ty != null) {
             try self.releaseStackLocalValue(local);
             return;
@@ -3340,6 +3496,9 @@ pub const Codegen = struct {
 
     fn releaseCleanupForStmt(self: *Codegen, stmt: *const ast.Node) !void {
         if (self.tc.cleanups.get(stmt)) |list| {
+            const prev_drop_node = self.current_drop_node;
+            self.current_drop_node = stmt;
+            defer self.current_drop_node = prev_drop_node;
             for (list.items) |name| try self.releaseCleanupName(name);
         }
     }
@@ -9187,9 +9346,24 @@ pub const Codegen = struct {
         return out;
     }
 
-    fn assignToIdentifier(self: *Codegen, name: []const u8, value: u32) anyerror!void {
+    fn assignToIdentifier(self: *Codegen, name: []const u8, value: u32, assign_node: ?*const ast.Node) anyerror!void {
         if (self.stackLocal(name)) |slot| {
             const ty = slot.stack_ty orelse return Error.UnsupportedSabDirectFeature;
+            // DEF deep drop: an annotated reassignment first drops the
+            // value currently in the slot (stack slots previously just
+            // overwrote it and leaked). Unannotated stores keep the
+            // existing behaviour exactly.
+            if (assign_node) |node| {
+                if (self.tc.assignDropMode(node) != null) {
+                    if (self.tc.planValueDrop(ty)) |plan| {
+                        if (plan.* != .none) {
+                            const old = try self.intern(try self.newTmp());
+                            try self.emitLoad(old, slot.reg, 0, try storagePrimType(ty));
+                            try self.emitDeepValueDrop(old, ty, plan, name, node, false, true);
+                        }
+                    } else |_| {}
+                }
+            }
             try self.emitStore(slot.reg, 0, value, try storagePrimType(ty));
             if (!self.isLocalReg(value)) {
                 if (typeIsPointerScalarValue(ty)) try self.markNonOwningReg(value);
@@ -9202,11 +9376,25 @@ pub const Codegen = struct {
         if (dst != value and !self.released_regs.contains(dst)) {
             // Reassignment drops the previous value: for owned String/Vec
             // targets that drop must free the old buffer, not just the
-            // struct allocation a bare `release` covers.
-            if (ownedBufferDropType(self.localType(name))) {
-                try self.emitOwnedBufferFree(dst);
-            } else {
-                try self.emitRelease(dst);
+            // struct allocation a bare `release` covers. A checker
+            // deep annotation upgrades the drop to the full plan.
+            var handled = false;
+            if (assign_node) |node| {
+                if (self.tc.assignDropMode(node) == .deep) {
+                    if (self.localType(name)) |ty| {
+                        if (self.tc.planValueDrop(ty)) |plan| {
+                            try self.emitDeepValueDrop(dst, ty, plan, name, node, false, true);
+                            handled = true;
+                        } else |_| {}
+                    }
+                }
+            }
+            if (!handled) {
+                if (ownedBufferDropType(self.localType(name))) {
+                    try self.emitOwnedBufferFree(dst);
+                } else {
+                    try self.emitRelease(dst);
+                }
             }
         }
         try self.emitAssignReg(dst, value);
@@ -10252,7 +10440,7 @@ pub const Codegen = struct {
                 try self.genMatchWithExpected(assign.value, &assign.value.match_expr, self.localType(name))
             else
                 try self.genMacroExpr(assign.value, ctx);
-            try self.assignToIdentifier(name, value);
+            try self.assignToIdentifier(name, value, null);
             return;
         }
         return Error.UnsupportedSabDirectFeature;
@@ -10589,7 +10777,7 @@ pub const Codegen = struct {
             .let_stmt => |let| try self.genLet(let),
             .let_else_stmt => |let| try self.genLetElse(let),
             .let_destructure_stmt => |let| try self.genLetDestructure(let),
-            .assign_stmt => |assign| try self.genAssign(assign),
+            .assign_stmt => |assign| try self.genAssign(assign, stmt),
             .expr_stmt => |expr| {
                 // SA-text parity (codegen.zig genStmt): if/switch/match as
                 // statements discard the produced register without release.
@@ -10786,7 +10974,50 @@ pub const Codegen = struct {
         if (!self.isLocalReg(value)) try self.emitRelease(value);
     }
 
-    fn genAssign(self: *Codegen, assign: ast.AssignStmt) anyerror!void {
+    /// Mirror of the checker's place-key construction (fieldPlaceDesc):
+    /// root name, then `.field` per field segment, `.*` per deref,
+    /// `.<int>` / `[_]` per index segment. Empty string for shapes the
+    /// checker never annotates.
+    fn dropPlaceKey(self: *Codegen, expr: *const ast.Node) ![]const u8 {
+        switch (expr.*) {
+            .identifier => |name| return name,
+            .field_expr => |f| {
+                const base = try self.dropPlaceKey(f.expr);
+                if (base.len == 0) return "";
+                return try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ base, f.field_name });
+            },
+            .deref_expr => |d| {
+                const base = try self.dropPlaceKey(d.expr);
+                if (base.len == 0) return "";
+                return try std.fmt.allocPrint(self.allocator, "{s}.*", .{base});
+            },
+            .index_expr => |ix| {
+                const base = try self.dropPlaceKey(ix.target);
+                if (base.len == 0) return "";
+                if (ix.index.* == .literal and ix.index.literal == .int_val) {
+                    return try std.fmt.allocPrint(self.allocator, "{s}.{}", .{ base, ix.index.literal.int_val });
+                }
+                return try std.fmt.allocPrint(self.allocator, "{s}[_]", .{base});
+            },
+            else => return "",
+        }
+    }
+
+    /// DEF deep drop: drop the value currently stored at an assignment
+    /// target's address, when the checker annotated this assignment.
+    /// Runs after the RHS has been evaluated, before the store.
+    fn emitOverwrittenPlaceDrop(self: *Codegen, assign_node: *const ast.Node, target: *const ast.Node, addr_reg: u32, value_ty: *const ast.Type) !void {
+        if (self.tc.assignDropMode(assign_node) == null) return;
+        const plan = self.tc.planValueDrop(value_ty) catch return;
+        if (plan.* == .none) return;
+        const key = try self.dropPlaceKey(target);
+        if (key.len == 0) return;
+        const old = try self.intern(try self.newTmp());
+        try self.emitLoad(old, addr_reg, 0, try primType(value_ty));
+        try self.emitDeepValueDrop(old, value_ty, plan, key, assign_node, true, true);
+    }
+
+    fn genAssign(self: *Codegen, assign: ast.AssignStmt, node: *const ast.Node) anyerror!void {
         if (assign.target.* == .deref_expr) {
             const source_expr = assign.target.deref_expr.expr;
             const source_ty = self.tc.expr_types.get(source_expr) orelse return Error.MissingType;
@@ -10807,6 +11038,7 @@ pub const Codegen = struct {
             };
             const target = try self.genExpr(source_expr);
             const value = try self.genExpr(assign.value);
+            try self.emitOverwrittenPlaceDrop(node, assign.target, target, inner_ty);
             try self.emitStore(target, 0, value, try storagePrimType(inner_ty));
             const target_lifecycle = lowering_rules.planDerefAssignmentTargetLifecycle(
                 source_expr.* != .identifier,
@@ -10826,6 +11058,7 @@ pub const Codegen = struct {
             } else self.fieldType(expr_ty, field.field_name) orelse return Error.UnsupportedSabDirectFeature;
             const target = try self.genFieldAddress(field);
             const value = try self.genExpr(assign.value);
+            try self.emitOverwrittenPlaceDrop(node, assign.target, target.reg, field_ty);
             try self.emitStore(target.reg, 0, value, try primType(field_ty));
             // DEF-DB: route through the stored-value disposal, not a
             // bare release. For a heap-handle field type the store
@@ -10862,6 +11095,7 @@ pub const Codegen = struct {
             }
             const target = try self.genIndexAddress(idx);
             const value = try self.genExpr(assign.value);
+            try self.emitOverwrittenPlaceDrop(node, assign.target, target.reg, target_ty.array.elem);
             try self.emitStore(target.reg, 0, value, try storagePrimType(target_ty.array.elem));
             try self.releaseStoredExprResultIfNeeded(assign.value, value, target_ty.array.elem);
             try self.releaseAddressSource(target);
@@ -10875,7 +11109,7 @@ pub const Codegen = struct {
         // DEF-5 clone_on_extract: `u = b.field` through a borrow assigns
         // a deep clone so both phi arms hold owned values.
         const value = (try self.cloneBorrowedHandleFieldValue(assign.value, raw_value)) orelse raw_value;
-        try self.assignToIdentifier(name, value);
+        try self.assignToIdentifier(name, value, node);
         const target_ty = self.localType(name) orelse (try self.exprTypeOrFallback(assign.target)) orelse return Error.MissingType;
         if (assign.value.* == .identifier) {
             if (lowering_rules.assignmentMovesIdentifier(assign.target, assign.value, target_ty, self.typeIsCopyValue(target_ty))) |moved_name| {

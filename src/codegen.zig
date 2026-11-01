@@ -189,6 +189,10 @@ pub const Codegen = struct {
     macro_arg_exprs: std.StringHashMap(*const ast.Node),
     macro_arg_types: std.StringHashMap(*const ast.Type),
     local_binding_types: std.StringHashMap(*const ast.Type),
+    // DEF deep-drop: AST node whose drop taint snapshot governs the
+    // release emission currently in progress (set by the branch-scoped
+    // and function-tail cleanup emitters). Null = union snapshot.
+    current_drop_node: ?*const ast.Node = null,
     closure_bindings: std.StringHashMap(*const ast.ClosureLiteral),
     closure_param_regs: std.StringHashMap([]const u8),
     stack_alloc_bindings: std.StringHashMap(void),
@@ -1156,6 +1160,7 @@ pub const Codegen = struct {
             return;
         }
         if (self.vec_buf_bindings.contains(resolved_name)) {
+            try self.emitDeepBindingElementsText(resolved_name);
             self.outPrint("    EXPAND VEC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
@@ -1180,6 +1185,26 @@ pub const Codegen = struct {
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
         }
+        // DEF deep drop: a deep-planned binding that reaches the plain
+        // release fallthrough (a struct with owned fields, or a Vec
+        // binding outside the vec_buf map) drops its elements/fields
+        // before the cell release below.
+        if (self.local_binding_types.get(resolved_name)) |binding_ty| {
+            if (self.tc.planValueDrop(binding_ty)) |plan| {
+                switch (plan.*) {
+                    .deep_struct => |fields| try self.emitStructFieldDropsText(resolved_name, binding_ty, fields, resolved_name, self.current_drop_node),
+                    .deep_vec => |elem_plan| {
+                        if (!self.tc.dropTaintCoversAt(self.current_drop_node, resolved_name)) {
+                            try self.emitVecElementDropsText(resolved_name, binding_ty, elem_plan, resolved_name, self.current_drop_node);
+                        }
+                        self.outPrint("    EXPAND VEC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+                        self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
+                        return;
+                    },
+                    else => {},
+                }
+            } else |_| {}
+        }
         self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
         self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
         _ = self.future_state_vtables.remove(resolved_name);
@@ -1191,6 +1216,161 @@ pub const Codegen = struct {
                 self.consumed_bindings.put(future_obj, {}) catch return CodegenError.OutOfMemory;
             }
         }
+    }
+
+    // ---- DEF deep drop (DESIGN.md §4.2/§4.4), SA-text mirror of the
+    // SAB emitters in sab_codegen.zig. Same plans, same taint rules;
+    // the shallow container free is EXPAND VEC_FREE (String's
+    // STRING_BUF_FREE expands to the same macro).
+
+    fn emitDeepValueDropText(self: *Codegen, value_reg: []const u8, ty: *const ast.Type, plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node, may_alias: bool, free_container: bool) CodegenError!void {
+        switch (plan.*) {
+            .none => try self.emitRelease(value_reg),
+            .buffer => {
+                if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitRelease(value_reg);
+                    return;
+                }
+                if (free_container) {
+                    self.outPrint("    EXPAND VEC_FREE {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                    self.consumed_bindings.put(value_reg, {}) catch return CodegenError.OutOfMemory;
+                } else {
+                    try self.emitRelease(value_reg);
+                }
+            },
+            .deep_vec => |elem_plan| {
+                if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitRelease(value_reg);
+                    return;
+                }
+                if (!self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitVecElementDropsText(value_reg, ty, elem_plan, key, taint_node);
+                }
+                if (free_container) {
+                    self.outPrint("    EXPAND VEC_FREE {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                    self.consumed_bindings.put(value_reg, {}) catch return CodegenError.OutOfMemory;
+                } else {
+                    try self.emitRelease(value_reg);
+                }
+            },
+            .deep_struct => |fields| {
+                try self.emitStructFieldDropsText(value_reg, ty, fields, key, taint_node);
+                try self.emitRelease(value_reg);
+            },
+        }
+    }
+
+    fn emitVecElementDropsText(self: *Codegen, vec_reg: []const u8, vec_ty: *const ast.Type, elem_plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node) CodegenError!void {
+        const elem_ty = lowering_rules.vecElementType(vec_ty) orelse return;
+        const buf_reg = try self.newTmp();
+        const len_reg = try self.newTmp();
+        const i_reg = try self.newTmp();
+        const cond_reg = try self.newTmp();
+        const head_label = try self.newLabel("L_DD_HEAD");
+        const body_label = try self.newLabel("L_DD_BODY");
+        const done_label = try self.newLabel("L_DD_DONE");
+        self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ buf_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = 0\n", .{i_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ult {s}, {s}\n", .{ cond_reg, i_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ cond_reg, body_label, done_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
+        const off_reg = try self.newTmp();
+        const addr_reg = try self.newTmp();
+        self.outPrint("    {s} = mul {s}, {}\n", .{ off_reg, i_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ addr_reg, buf_reg, off_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{off_reg}) catch return CodegenError.CodegenError;
+        if (elem_plan.* == .deep_struct) {
+            try self.emitStructFieldDropsText(addr_reg, elem_ty, elem_plan.deep_struct, key, taint_node);
+        } else {
+            const elem_reg = try self.newTmp();
+            self.outPrint("    {s} = load {s}+0 as ptr\n", .{ elem_reg, addr_reg }) catch return CodegenError.CodegenError;
+            try self.emitDeepValueDropText(elem_reg, elem_ty, elem_plan, key, taint_node, false, true);
+        }
+        self.outPrint("    !{s}\n", .{addr_reg}) catch return CodegenError.CodegenError;
+        const one_reg = try self.newTmp();
+        const next_reg = try self.newTmp();
+        self.outPrint("    {s} = 1\n", .{one_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = add {s}, {s}\n", .{ next_reg, i_reg, one_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{one_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{i_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = {s}\n", .{ i_reg, next_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{i_reg}) catch return CodegenError.CodegenError;
+        try self.emitRelease(buf_reg);
+        try self.emitRelease(len_reg);
+    }
+
+    fn emitStructFieldDropsText(self: *Codegen, struct_reg: []const u8, struct_ty: *const ast.Type, fields: []const lowering_rules.FieldDropPlan, key: []const u8, taint_node: ?*const ast.Node) CodegenError!void {
+        const decl = self.structDeclForType(struct_ty) orelse return;
+        for (fields) |field| {
+            if (field.plan.* == .none) continue;
+            const layout = fieldLayout(decl, field.name) orelse continue;
+            const field_ty = self.fieldTypeForType(struct_ty, field.name) orelse continue;
+            const child_key = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ key, field.name }) catch return CodegenError.OutOfMemory;
+            const val_reg = try self.newTmp();
+            self.outPrint("    {s} = load {s}+{} as ptr\n", .{ val_reg, struct_reg, layout.offset }) catch return CodegenError.CodegenError;
+            try self.emitDeepValueDropText(val_reg, field_ty, field.plan, child_key, taint_node, true, true);
+        }
+    }
+
+    /// Element drops for a deep-planned Vec binding, emitted by
+    /// emitRelease immediately before its shallow EXPAND VEC_FREE.
+    fn emitDeepBindingElementsText(self: *Codegen, resolved_name: []const u8) CodegenError!void {
+        const ty = self.local_binding_types.get(resolved_name) orelse return;
+        const plan = self.tc.planValueDrop(ty) catch return;
+        if (plan.* != .deep_vec) return;
+        if (self.tc.dropTaintCoversAt(self.current_drop_node, resolved_name)) return;
+        try self.emitVecElementDropsText(resolved_name, ty, plan.deep_vec, resolved_name, self.current_drop_node);
+    }
+
+    /// Mirror of the checker's place-key construction (fieldPlaceDesc).
+    fn dropPlaceKeyText(self: *Codegen, expr: *const ast.Node) CodegenError![]const u8 {
+        switch (expr.*) {
+            .identifier => |name| return name,
+            .field_expr => |f| {
+                const base = try self.dropPlaceKeyText(f.expr);
+                if (base.len == 0) return "";
+                return std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ base, f.field_name }) catch return CodegenError.OutOfMemory;
+            },
+            .deref_expr => |d| {
+                const base = try self.dropPlaceKeyText(d.expr);
+                if (base.len == 0) return "";
+                return std.fmt.allocPrint(self.allocator, "{s}.*", .{base}) catch return CodegenError.OutOfMemory;
+            },
+            .index_expr => |ix| {
+                const base = try self.dropPlaceKeyText(ix.target);
+                if (base.len == 0) return "";
+                if (ix.index.* == .literal and ix.index.literal == .int_val) {
+                    return std.fmt.allocPrint(self.allocator, "{s}.{}", .{ base, ix.index.literal.int_val }) catch return CodegenError.OutOfMemory;
+                }
+                return std.fmt.allocPrint(self.allocator, "{s}[_]", .{base}) catch return CodegenError.OutOfMemory;
+            },
+            else => return "",
+        }
+    }
+
+    /// Drop the value currently stored at an assignment target's
+    /// address (+offset), when the checker annotated this assignment.
+    /// Runs after the RHS has been evaluated, before the store.
+    fn emitOverwrittenPlaceDropText(self: *Codegen, assign_node: *const ast.Node, target: *const ast.Node, addr_reg: []const u8, offset: usize, value_ty: *const ast.Type) CodegenError!void {
+        const key = try self.dropPlaceKeyText(target);
+        try self.emitOverwrittenValueDropText(assign_node, key, addr_reg, offset, value_ty);
+    }
+
+    fn emitOverwrittenValueDropText(self: *Codegen, assign_node: *const ast.Node, key: []const u8, addr_reg: []const u8, offset: usize, value_ty: *const ast.Type) CodegenError!void {
+        if (self.tc.assignDropMode(assign_node) == null) return;
+        const plan = self.tc.planValueDrop(value_ty) catch return;
+        if (plan.* == .none) return;
+        if (key.len == 0) return;
+        const old_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+{} as ptr\n", .{ old_reg, addr_reg, offset }) catch return CodegenError.CodegenError;
+        try self.emitDeepValueDropText(old_reg, value_ty, plan, key, assign_node, true, true);
     }
 
     fn markConsumedBinding(self: *Codegen, name: []const u8) CodegenError!void {
@@ -1799,7 +1979,12 @@ pub const Codegen = struct {
 
     fn emitBranchScopedCleanupForNode(self: *Codegen, node: *const ast.Node) CodegenError!void {
         if (self.active_macro_try_cleanup) |names| return try self.emitBranchScopedCleanupList(names);
-        if (self.tc.cleanups.get(node)) |list| try self.emitBranchScopedCleanupList(list.items);
+        if (self.tc.cleanups.get(node)) |list| {
+            const prev_drop_node = self.current_drop_node;
+            self.current_drop_node = node;
+            defer self.current_drop_node = prev_drop_node;
+            try self.emitBranchScopedCleanupList(list.items);
+        }
     }
 
     fn emitAwaitPendingCleanups(self: *Codegen, await_expr: *const ast.Node) CodegenError!void {
@@ -1808,6 +1993,9 @@ pub const Codegen = struct {
 
     fn emitFunctionTailCleanups(self: *Codegen, stmt: *const ast.Node, tail_expr: *const ast.Node) CodegenError!void {
         if (self.tc.cleanups.get(stmt)) |list| {
+            const prev_drop_node = self.current_drop_node;
+            self.current_drop_node = stmt;
+            defer self.current_drop_node = prev_drop_node;
             for (list.items) |name| {
                 if ((try self.planFunctionResultCleanup(name, tail_expr)).releasesValue()) try self.emitRelease(name);
             }
@@ -12159,7 +12347,7 @@ pub const Codegen = struct {
             },
             .assign_stmt => |assign| {
                 if (assign.target.* == .index_expr) {
-                    try self.genIndexAssign(&assign.target.index_expr, assign.value, hoisted_allocs);
+                    try self.genIndexAssign(&assign.target.index_expr, assign.value, hoisted_allocs, stmt);
                 } else if (assign.target.* == .deref_expr) {
                     const target_ty = self.tc.expr_types.get(assign.target.deref_expr.expr) orelse return CodegenError.CodegenError;
                     const inner_ty = mutexGuardInnerType(target_ty) orelse rwLockWriteGuardInnerType(target_ty) orelse switch (target_ty.*) {
@@ -12169,6 +12357,7 @@ pub const Codegen = struct {
                     };
                     const target_reg = try self.genExpr(assign.target.deref_expr.expr, hoisted_allocs);
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
+                    try self.emitOverwrittenPlaceDropText(stmt, assign.target, target_reg, 0, inner_ty);
                     self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_reg, val_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
                     const target_lifecycle = lowering_rules.planDerefAssignmentTargetLifecycle(
                         assign.target.deref_expr.expr.* != .identifier,
@@ -12209,6 +12398,7 @@ pub const Codegen = struct {
                             self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
                             self.outPrint("    {s} = load {s}+0 as ptr\n", .{ owner_reg, slot_reg }) catch return CodegenError.CodegenError;
                             const val_reg = try self.genExpr(assign.value, hoisted_allocs);
+                            try self.emitOverwrittenPlaceDropText(stmt, assign.target, owner_reg, layout.offset, target_ty);
                             self.outPrint("    store {s}+{}, {s} as {s}\n", .{ owner_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                             try self.emitForgetMovedValue(owner_reg);
                             try self.emitRelease(slot_reg);
@@ -12237,6 +12427,7 @@ pub const Codegen = struct {
                                 const elem_reg = try self.newTmp();
                                 self.outPrint("    {s} = load {s}+0 as ptr\n", .{ elem_reg, addr.ptr }) catch return CodegenError.CodegenError;
                                 const val_reg = try self.genExpr(assign.value, hoisted_allocs);
+                                try self.emitOverwrittenPlaceDropText(stmt, assign.target, elem_reg, layout.offset, target_ty);
                                 self.outPrint("    store {s}+{}, {s} as {s}\n", .{ elem_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                                 try self.emitForgetMovedValue(elem_reg);
                                 try self.finishIndexAddress(addr);
@@ -12259,11 +12450,13 @@ pub const Codegen = struct {
                     if (curr_ty.* == .tuple) {
                         const index = std.fmt.parseInt(usize, field.field_name, 10) catch return CodegenError.CodegenError;
                         const layout = tupleFieldLayout(curr_ty.tuple, index) orelse return CodegenError.CodegenError;
+                        try self.emitOverwrittenPlaceDropText(stmt, assign.target, store_base, layout.offset, target_ty);
                         self.outPrint("    store {s}+{}, {s} as {s}\n", .{ store_base, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                     } else {
                         if (curr_ty.* != .user_defined) return CodegenError.CodegenError;
                         const struct_decl = self.tc.structs.get(curr_ty.user_defined.name) orelse return CodegenError.CodegenError;
                         const layout = fieldLayout(struct_decl, field.field_name) orelse return CodegenError.CodegenError;
+                        try self.emitOverwrittenPlaceDropText(stmt, assign.target, store_base, layout.offset, target_ty);
                         self.outPrint("    store {s}+{}, {s} as {s}\n", .{ store_base, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                     }
                     if (self.fieldBaseResultNeedsRelease(field.expr, base_reg)) try self.emitRelease(base_reg);
@@ -12307,6 +12500,7 @@ pub const Codegen = struct {
                         _ = self.consumed_bindings.remove(target_name);
                     } else if (self.assigned_value_slots.contains(target_name)) {
                         _ = try self.releaseResultSlotRefCellHandle(target_name, false);
+                        try self.emitOverwrittenPlaceDropText(stmt, assign.target, target_name, 0, target_ty);
                         self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         if (self.refcell_borrow_handles.contains(stored_val_reg)) {
                             try self.storeResultSlotTransferredValueState(target_name, stored_val_reg, target_ty, callArgNeedsRelease(assign.value));
@@ -12332,6 +12526,7 @@ pub const Codegen = struct {
                         // object's first word instead of rebinding.
                         // Those fall through to the release-and-rebind
                         // branch below.
+                        try self.emitOverwrittenPlaceDropText(stmt, assign.target, target_name, 0, target_ty);
                         self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                     } else {
@@ -13480,6 +13675,7 @@ pub const Codegen = struct {
         idx: *const ast.IndexExpr,
         value: *ast.Node,
         hoisted_allocs: *const std.array_list.Managed([]const u8),
+        assign_node: *const ast.Node,
     ) CodegenError!void {
         const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
         if (vecElementType(target_ty)) |elem_ty| {
@@ -13504,6 +13700,14 @@ pub const Codegen = struct {
             self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
             self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
             self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
+            {
+                const base_key = try self.dropPlaceKeyText(idx.target);
+                const elem_key = if (base_key.len == 0) "" else if (idx.index.* == .literal and idx.index.literal == .int_val)
+                    std.fmt.allocPrint(self.allocator, "{s}.{}", .{ base_key, idx.index.literal.int_val }) catch return CodegenError.OutOfMemory
+                else
+                    std.fmt.allocPrint(self.allocator, "{s}[_]", .{base_key}) catch return CodegenError.OutOfMemory;
+                try self.emitOverwrittenValueDropText(assign_node, elem_key, ptr_reg, 0, elem_ty);
+            }
             self.outPrint("    store {s}+0, {s} as u64\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(ptr_reg);
             try self.emitRelease(offset_reg);
@@ -13517,6 +13721,14 @@ pub const Codegen = struct {
         }
         const addr = try self.genIndexAddress(idx, hoisted_allocs);
         const val_reg = try self.genExpr(value, hoisted_allocs);
+        {
+            const base_key = try self.dropPlaceKeyText(idx.target);
+            const elem_key = if (base_key.len == 0) "" else if (idx.index.* == .literal and idx.index.literal == .int_val)
+                std.fmt.allocPrint(self.allocator, "{s}.{}", .{ base_key, idx.index.literal.int_val }) catch return CodegenError.OutOfMemory
+            else
+                std.fmt.allocPrint(self.allocator, "{s}[_]", .{base_key}) catch return CodegenError.OutOfMemory;
+            try self.emitOverwrittenValueDropText(assign_node, elem_key, addr.ptr, 0, addr.elem_ty);
+        }
         self.outPrint("    store {s}+0, {s} as {s}\n", .{ addr.ptr, val_reg, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
         try self.finishIndexAddress(addr);
         try self.finishStoredValueAfterSlotStore(value, addr.elem_ty, val_reg);

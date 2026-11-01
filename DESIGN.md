@@ -164,3 +164,62 @@ consumed/released 登记（released_regs / consumed_bindings）防重复发射�
 4. 改插件后重编重装 + 同轮 md5 双确认（built==installed）；sci 改
    sa_std 面时先 `zig build sa-std-static` + nm 核对（本批预期不新
    extern——sa_mem_free 已存在，不触发此条，终报注明）。
+
+## 7. 落地附记（2026-11-02 完工，本机 rig；本地提交、未推送）
+
+- **§1/§2 分层修正（实证推翻）**：probe_a 的 ≈8.24 MB/轮保留不在
+  「原生构建不发 free + bump 不复用」层——本地隔离定位到
+  `sa_std/alloc/vec.sa` 的 `@sa_vec_push` 扩容路径（与
+  `@sa_vec_shrink_to` L_ZERO）漏 free 旧缓冲（sci `8b934a3` 修复，
+  interposer 实验同时证明 alloc/@sa_mem_free 配对本身健全）。
+  §1 的 box2 平台读数自此作废，以本机复测为准。
+- **§3 增补（设计外三件，均为 C 路线实证所迫）**：① `@sa_mem_free`
+  extern 绑定此前缺失（落 trapping stub，C 路线任何 free 不可跑）；
+  ② v1 的 first-fit+切分会把唯一 1 MiB 块逐轮切碎致 bump OOM，
+  改 best-fit + sa_free 相邻合并；③ 真 sa_free 使 emit_c 无条件
+  `.release → sa_free` 的翻译开始误放活缓冲，加来源门
+  （provCUpdate，镜像 interp 语义与 emit_js 既有门控）。emit_js 的
+  `__sa_free` 经查为带 slab 回收的真 free + 同款来源门，无同病；
+  interp 的 `.release` 按寄存器值标志（borrow/interior/const/
+  stack）判免，语义基准在 sci `interp.zig`。
+- **§4 落地形态**：检查器 `planValueDrop`（备忘录化、递归截断浅层）+
+  `assign_drop_old` 标注 + §4.5 place-taint 通过（字段位串键、快照在
+  cleanup/phi_cleanup 与标注赋值点）；双 codegen 同形发射（文本路
+  `codegen.zig`、SAB 路 `sab_codegen.zig`）：Vec 元素栈槽索引循环、
+  结构体字段就地 drop、重赋值旧值 drop（标识符/deref/字段/数组
+  索引四路；SAB 路 Vec 索引赋值未并入）。污染查询含
+  `dropTaintCoversAt`（精确/下位覆盖，祖先污染刻意不计）。
+- **验收数字（原生路线，修复前→修复后峰值 RSS）**：probe_b120
+  992,256 → 16,472 kB，b300 16,572 kB exit 0；probe_c120
+  1,001,832 → 39,060 kB，c300 39,124 kB exit 0；probe_a300
+  30,692 kB exit 0（vec 修复后平台）。C 路线：probe_d300 exit 0、
+  probe_a300 exit 0（38,092 kB），B/C 缩放版 S/E 完整（harness 覆写
+  SA_GAS_LIMIT=4e10、SA_MEM_BYTES=256 MiB）。
+- **语料**：tests/ 三件（vec_nested / struct_field_reassign /
+  vec_reassign）双后端全过——定位为腐化守卫（泄漏在功能尺度不可
+  见，基线同样通过，如实登记）；泄漏门 = plugin_tests 发射断言
+  （`sla deep drop emits element and field drops in sa codegen`，
+  数 EXPAND VEC_FREE：嵌套 ≥2、字段重赋值 ≥2），在独立基线树
+  （721e248）上单独失败、修复后通过，满足修复前失败纪律。
+  注：`Box::new` 形态的字段重赋值不走深 drop（0 处），已证形态为
+  probe_c 的 `Box::into_raw`——Box<T> 绑定字段 place 的旧值释放
+  登记为未覆盖面。
+- **套件对照**：sla batched 360/0 全绿；plugin zig 套件 335/338，
+  失败集 {3 个 import-scan} 与基线树（334/337）逐一相同、为既存；
+  sci 套件裁决见 sci 仓 STATUS.md（失败全部既存/环境类）。
+  进程内 SAB test-input 路对本批形态有既存直降缺口
+  （UnsupportedSabDirectFeature，落在方法调用表达式语句、嵌套索引
+  cast 等无关构造上，与 import-scan 失败同族）——SAB 验证由 CLI
+  路线 `sa sla test --test-backend sab` 承担且全过。
+- **缓存教训（本批实证）**：宿主 `.sa_cache` 按源码哈希供旧产物、
+  不随插件版本失效——探针/测试构建前必须清 `.sla-cache` 与
+  `.sa_cache` 并设 SLA_NO_FRESHNESS_CACHE=1，否则会测到旧二进制
+  （本批曾因此误读一次 989,040 kB 平台值，已作废重测）。
+- **未覆盖面（如实登记）**：SAB 分支清理路（emitBranchCleanupForNode
+  只发裸 release，连普通 Vec 缓冲亦然——既存浅层缺口）、文本路
+  stack_alloc 绑定深字段、bindingStorageAddress 赋值路、SAB 路
+  Vec 索引赋值旧值释放、Box<T> 绑定字段重赋值、match 提取绑定
+  drop、Rc/Arc payload、§8.3 按值聚合参数清理（§5 原登记项不
+  变）；sa_std 其余 grow 路径审计（vec.sa 之外）为后续登记项；
+  emit_c 的 `sa_install_sigpipe_ignore` 独立链接缺定义为既存
+  缺口（c-matrix 基线同败），另行登记 DEF。

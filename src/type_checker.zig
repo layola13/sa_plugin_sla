@@ -678,6 +678,20 @@ pub const TypeChecker = struct {
         return false;
     }
 
+    /// Codegen drop decisions: is `key` itself tainted, or is any
+    /// place under it? (Ancestor taint is ignored on purpose: a place
+    /// whose parent was read out is decided at the parent's own drop
+    /// site, field by field.)
+    pub fn dropTaintCoversAt(self: *TypeChecker, node: ?*const ast.Node, key: []const u8) bool {
+        const set = if (node) |n| self.dropTaintSetAt(n) else &self.tainted_places_union;
+        var iter = set.keyIterator();
+        while (iter.next()) |entry| {
+            if (std.mem.eql(u8, entry.*, key)) return true;
+            if (taintKeyHasPrefix(entry.*, key)) return true;
+        }
+        return false;
+    }
+
     fn taintKeyHasPrefix(key: []const u8, prefix: []const u8) bool {
         if (key.len <= prefix.len) return false;
         if (!std.mem.startsWith(u8, key, prefix)) return false;

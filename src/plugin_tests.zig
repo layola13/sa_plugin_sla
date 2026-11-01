@@ -10278,3 +10278,110 @@ test "sla check rejects overlapping field borrows (view types stage 1)" {
     try expectSlaCheckBorrowConflictDiagnostic("tests/test_error_view_direct_write_borrowed_field.sla", "`s.b`");
     try expectSlaCheckBorrowConflictDiagnostic("tests/test_error_view_direct_write_borrowed_field_offset0.sla", "`s.a`");
 }
+
+test "sla deep drop emits element and field drops in sa codegen" {
+    // DEF deep-drop regression (DESIGN.md §4): the leak half of the
+    // deep-drop contract is an emission property, invisible to
+    // functional tests at corpus scale, so it is locked here by
+    // counting buffer-free sites in the text codegen output.
+    //   nested Vec<Vec<u8>>: the scope-exit drop must free the inner
+    //     buffers (element loop) in addition to the outer container:
+    //     >= 2 free sites post-fix, exactly 1 pre-fix.
+    //   struct field reassign: every overwritten field value must
+    //     be dropped at its assignment (the holder sits behind a raw
+    //     pointer, so there is no tail drop by design): one free
+    //     site per reassign, >= 2 post-fix, 0 pre-fix.
+    // SAB-backend verification of the same shapes lives in the
+    // corpus cases (tests/test_unit_deep_drop_*.sla) executed via
+    // `sa sla test --test-backend sab`: the in-process SAB
+    // test-input path (compileSlaSabTestInput) currently rejects
+    // these shapes with error.UnsupportedSabDirectFeature on
+    // unrelated constructs (method-call expression statements,
+    // casts of nested index expressions) -- a pre-existing
+    // direct-lowering coverage gap, independent of deep drop.
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    const nested_source =
+        \\@import "sa_std/vec.sa"
+        \\
+        \\fn filled_vec(n: u64, seed: u8) -> Vec<u8> {
+        \\    let v: Vec<u8> = Vec::new();
+        \\    let i: u64 = 0;
+        \\    while i < n {
+        \\        v.push(seed + (i % 7) as u8);
+        \\        i = i + 1;
+        \\    }
+        \\    return v;
+        \\}
+        \\
+        \\fn build_round() -> u64 {
+        \\    let outer: Vec<Vec<u8>> = Vec::new();
+        \\    outer.push(filled_vec(8, 1));
+        \\    outer.push(filled_vec(8, 2));
+        \\    return outer[1][3] as u64;
+        \\}
+        \\
+        \\@test "nested vec drop shape"() {
+        \\    if build_round() != 5 { panic(4401); };
+        \\}
+    ;
+    const field_source =
+        \\@import "sa_std/vec.sa"
+        \\
+        \\struct Holder {
+        \\    buf: Vec<u8>,
+        \\    tag: u64,
+        \\}
+        \\
+        \\fn filled_vec(n: u64, seed: u8) -> Vec<u8> {
+        \\    let v: Vec<u8> = Vec::new();
+        \\    let i: u64 = 0;
+        \\    while i < n {
+        \\        v.push(seed + (i % 5) as u8);
+        \\        i = i + 1;
+        \\    }
+        \\    return v;
+        \\}
+        \\
+        \\@test "struct field reassign drop shape"() {
+        \\    let h = Box::into_raw(Box::new(Holder { buf: filled_vec(8, 1), tag: 7 }));
+        \\    (*h).buf = filled_vec(8, 2);
+        \\    (*h).buf = filled_vec(8, 3);
+        \\    if (*h).buf[3] != 6 { panic(4402); };
+        \\}
+    ;
+
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const cases = [_]struct { file: []const u8, source: []const u8 }{
+        .{ .file = "nested.sla", .source = nested_source },
+        .{ .file = "field.sla", .source = field_source },
+    };
+    for (cases) |case| {
+        try tdir.writeFile(.{ .sub_path = case.file, .data = case.source });
+
+        var sa_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
+        defer sa_stderr.deinit();
+        var sa_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sa_stderr));
+        const sa_compiled = try compileSlaSaTestInput(allocator, case.file, sa_stderr_fw.writer(), &.{}, false);
+        if (sa_compiled) |compiled| {
+            defer if (compiled.delete_after) sio.cwd().deleteFile(compiled.path) catch {};
+            const sa_code = try sio.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
+            try std.testing.expect(std.mem.count(u8, sa_code, "EXPAND VEC_FREE") >= 2);
+        } else {
+            try sa_stderr_fw.writer().flush();
+            std.debug.print("{s}", .{sa_stderr.items});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+

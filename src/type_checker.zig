@@ -176,6 +176,11 @@ pub const TypeChecker = struct {
     // or not owned).
     pub const AssignDropMode = enum { shallow, deep };
 
+    // DEF deep-drop batch: shared immutable plans for the two trivial
+    // cases (addresses are stable for the whole compile).
+    const drop_plan_none_singleton: lowering_rules.DropPlan = .none;
+    const drop_plan_buffer_singleton: lowering_rules.DropPlan = .buffer;
+
     allocator: std.mem.Allocator,
     structs: std.StringHashMap(*ast.StructDecl),
     type_aliases: std.StringHashMap(*ast.TypeAliasDecl),
@@ -208,6 +213,11 @@ pub const TypeChecker = struct {
     // shallows a drop, never enables one.
     drop_taint_snapshots: std.AutoHashMap(*const ast.Node, std.StringHashMap(void)),
     tainted_places_union: std.StringHashMap(void),
+    // DEF deep-drop batch: memoized drop plans per type node, plus the
+    // in-progress set used to cut off recursive types (a struct that
+    // reaches itself through a Vec gets a shallow plan at the cycle).
+    drop_plan_cache: std.AutoHashMap(*const ast.Type, *const lowering_rules.DropPlan),
+    drop_plan_active: std.AutoHashMap(*const ast.Type, void),
 
     // Tracks internal Sla functions for validation
     funcs: std.StringHashMap(*ast.FuncDecl),
@@ -305,6 +315,8 @@ pub const TypeChecker = struct {
             .assign_drop_old = std.AutoHashMap(*const ast.Node, AssignDropMode).init(allocator),
             .drop_taint_snapshots = std.AutoHashMap(*const ast.Node, std.StringHashMap(void)).init(allocator),
             .tainted_places_union = std.StringHashMap(void).init(allocator),
+            .drop_plan_cache = std.AutoHashMap(*const ast.Type, *const lowering_rules.DropPlan).init(allocator),
+            .drop_plan_active = std.AutoHashMap(*const ast.Type, void).init(allocator),
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .function_aliases = std.StringHashMap([]const u8).init(allocator),
             .function_alias_metadata = std.StringHashMap(FunctionAliasMetadata).init(allocator),
@@ -516,6 +528,504 @@ pub const TypeChecker = struct {
             }
         }
         return buf.items;
+    }
+
+    // ---- DEF deep-drop batch: drop plans ----
+    // Single shared implementation consumed by both codegens (the plan
+    // type lives in lowering_rules). Only Vec/String and plain user
+    // structs get non-trivial plans; dedicated container types keep
+    // their own free machinery, enums keep today's behaviour (payload
+    // drop at match extraction is a separate registered shape), and a
+    // recursive type is cut to a shallow plan at the cycle point so the
+    // plan stays a finite tree (elements below the cycle keep today's
+    // leak, never a double free).
+
+    fn dropPlanExcludedType(name: []const u8) bool {
+        const excluded = [_][]const u8{
+            "HashMap",   "BTreeMap", "HashSet", "BTreeSet", "VecDeque",
+            "Rc",        "Arc",      "Weak",    "Box",      "RefCell",
+            "Chan",      "Mutex",    "RwLock",  "OnceLock", "StringBuf",
+        };
+        for (excluded) |candidate| {
+            if (std.mem.eql(u8, name, candidate)) return true;
+        }
+        return false;
+    }
+
+    fn internDropPlan(self: *TypeChecker, plan: lowering_rules.DropPlan) TypeError!*const lowering_rules.DropPlan {
+        const ptr = self.allocator.create(lowering_rules.DropPlan) catch return TypeError.OutOfMemory;
+        ptr.* = plan;
+        return ptr;
+    }
+
+    pub fn planValueDrop(self: *TypeChecker, ty: *const ast.Type) TypeError!*const lowering_rules.DropPlan {
+        if (self.drop_plan_cache.get(ty)) |cached| return cached;
+        if (self.drop_plan_active.contains(ty)) {
+            // Recursive type: cut here. The shallow plan is cached for
+            // the *referring* type by its own frame, not for `ty`.
+            return &drop_plan_none_singleton;
+        }
+        try self.drop_plan_active.put(ty, {});
+        defer _ = self.drop_plan_active.remove(ty);
+        const plan = try self.computeDropPlan(ty);
+        try self.drop_plan_cache.put(ty, plan);
+        return plan;
+    }
+
+    fn computeDropPlan(self: *TypeChecker, ty: *const ast.Type) TypeError!*const lowering_rules.DropPlan {
+        switch (ty.*) {
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, "String")) return &drop_plan_buffer_singleton;
+                if (std.mem.eql(u8, ud.name, "Vec")) {
+                    if (ud.generics.len != 1) return &drop_plan_buffer_singleton;
+                    const elem_plan = try self.planValueDrop(ud.generics[0]);
+                    return switch (elem_plan.kind()) {
+                        .none => &drop_plan_buffer_singleton,
+                        else => try self.internDropPlan(.{ .deep_vec = elem_plan }),
+                    };
+                }
+                if (dropPlanExcludedType(ud.name)) return &drop_plan_none_singleton;
+                const decl = self.structs.get(ud.name) orelse return &drop_plan_none_singleton;
+                if (decl.is_opaque or decl.is_union) return &drop_plan_none_singleton;
+                var fields = std.array_list.Managed(lowering_rules.FieldDropPlan).init(self.allocator);
+                defer fields.deinit();
+                for (decl.fields) |field| {
+                    const field_ty = try self.dropPlanSubstitute(field.ty, decl.generics, ud.generics);
+                    const field_plan = try self.planValueDrop(field_ty);
+                    if (field_plan.kind() != .none) {
+                        fields.append(.{ .name = field.name, .plan = field_plan }) catch return TypeError.OutOfMemory;
+                    }
+                }
+                if (fields.items.len == 0) return &drop_plan_none_singleton;
+                const owned = fields.toOwnedSlice() catch return TypeError.OutOfMemory;
+                return try self.internDropPlan(.{ .deep_struct = owned });
+            },
+            else => return &drop_plan_none_singleton,
+        }
+    }
+
+    /// Substitute a generic struct decl's type parameters with the
+    /// instantiation's arguments. Returns `ty` unchanged when nothing
+    /// matches; allocates only along changed paths.
+    fn dropPlanSubstitute(self: *TypeChecker, ty: *const ast.Type, params: []const []const u8, args: []const *ast.Type) TypeError!*ast.Type {
+        if (params.len == 0 or params.len != args.len) return @constCast(ty);
+        switch (ty.*) {
+            .user_defined => |ud| {
+                if (ud.generics.len == 0) {
+                    for (params, args) |param, arg| {
+                        if (std.mem.eql(u8, ud.name, param)) return @constCast(arg);
+                    }
+                    return @constCast(ty);
+                }
+                var changed = false;
+                const new_generics = self.allocator.alloc(*ast.Type, ud.generics.len) catch return TypeError.OutOfMemory;
+                for (ud.generics, 0..) |g, i| {
+                    new_generics[i] = try self.dropPlanSubstitute(g, params, args);
+                    if (new_generics[i] != g) changed = true;
+                }
+                if (!changed) return @constCast(ty);
+                const out = self.allocator.create(ast.Type) catch return TypeError.OutOfMemory;
+                out.* = .{ .user_defined = .{ .name = ud.name, .generics = new_generics } };
+                return out;
+            },
+            .pointer => |inner| {
+                const sub = try self.dropPlanSubstitute(inner, params, args);
+                if (sub == inner) return @constCast(ty);
+                const out = self.allocator.create(ast.Type) catch return TypeError.OutOfMemory;
+                out.* = .{ .pointer = sub };
+                return out;
+            },
+            .borrow => |inner| {
+                const sub = try self.dropPlanSubstitute(inner, params, args);
+                if (sub == inner) return @constCast(ty);
+                const out = self.allocator.create(ast.Type) catch return TypeError.OutOfMemory;
+                out.* = .{ .borrow = sub };
+                return out;
+            },
+            else => return @constCast(ty),
+        }
+    }
+
+    // ---- DEF deep-drop batch: codegen query helpers ----
+
+    pub fn assignDropMode(self: *TypeChecker, node: *const ast.Node) ?AssignDropMode {
+        return self.assign_drop_old.get(node);
+    }
+
+    /// Taint set recorded for a drop site; falls back to the
+    /// whole-program union when the site has no snapshot (the union
+    /// only ever over-suppresses).
+    pub fn dropTaintSetAt(self: *TypeChecker, node: *const ast.Node) *const std.StringHashMap(void) {
+        if (self.drop_taint_snapshots.getPtr(node)) |set| return set;
+        return &self.tainted_places_union;
+    }
+
+    /// Does the taint set recorded at `node` cover `key` (the place
+    /// itself, a place under it, or a place above it)?
+    pub fn dropTaintAffects(self: *TypeChecker, node: *const ast.Node, key: []const u8) bool {
+        const set = self.dropTaintSetAt(node);
+        var iter = set.keyIterator();
+        while (iter.next()) |entry| {
+            if (taintKeysOverlap(entry.*, key)) return true;
+        }
+        return false;
+    }
+
+    fn taintKeysOverlap(a: []const u8, b: []const u8) bool {
+        if (std.mem.eql(u8, a, b)) return true;
+        if (taintKeyHasPrefix(a, b)) return true;
+        if (taintKeyHasPrefix(b, a)) return true;
+        return false;
+    }
+
+    fn taintKeyHasPrefix(key: []const u8, prefix: []const u8) bool {
+        if (key.len <= prefix.len) return false;
+        if (!std.mem.startsWith(u8, key, prefix)) return false;
+        const next = key[prefix.len];
+        return next == '.' or next == '[';
+    }
+
+    // ---- DEF deep-drop batch: place-taint pass ----
+    // Runs once per function/test body after checking. A place key
+    // (fieldPlaceDesc form) enters the taint set when the place's owned
+    // value is read out by value in a consuming position without the
+    // checker consuming the place itself (field/index read-outs, the
+    // P1-P5 aliasing shapes). Taint only ever suppresses or shallows
+    // the new drops; snapshots are taken at every cleanup/phi node and
+    // at annotated assignment nodes so codegen decides per site.
+
+    fn taintKeyOfPlace(self: *TypeChecker, expr: *const ast.Node) ?[]const u8 {
+        const place = self.placeOfExpr(expr) orelse return null;
+        return self.fieldPlaceDesc(place);
+    }
+
+    fn snapshotDropTaint(self: *TypeChecker, node: *const ast.Node, taint: *const std.StringHashMap(void)) TypeError!void {
+        if (self.drop_taint_snapshots.contains(node)) return;
+        var copy = std.StringHashMap(void).init(self.allocator);
+        var iter = taint.keyIterator();
+        while (iter.next()) |entry| {
+            copy.put(entry.*, {}) catch return TypeError.OutOfMemory;
+        }
+        self.drop_taint_snapshots.put(node, copy) catch return TypeError.OutOfMemory;
+    }
+
+    fn addDropTaint(self: *TypeChecker, taint: *std.StringHashMap(void), key: []const u8) TypeError!void {
+        taint.put(key, {}) catch return TypeError.OutOfMemory;
+        self.tainted_places_union.put(key, {}) catch return TypeError.OutOfMemory;
+    }
+
+    fn clearDropTaint(taint: *std.StringHashMap(void), key: []const u8) void {
+        var doomed = std.array_list.Managed([]const u8).init(taint.allocator);
+        defer doomed.deinit();
+        var iter = taint.keyIterator();
+        while (iter.next()) |entry| {
+            if (std.mem.eql(u8, entry.*, key) or taintKeyHasPrefix(entry.*, key)) {
+                doomed.append(entry.*) catch {};
+            }
+        }
+        for (doomed.items) |entry| {
+            _ = taint.remove(entry);
+        }
+    }
+
+    fn dupeDropTaint(self: *TypeChecker, taint: *const std.StringHashMap(void)) TypeError!std.StringHashMap(void) {
+        var copy = std.StringHashMap(void).init(self.allocator);
+        var iter = taint.keyIterator();
+        while (iter.next()) |entry| {
+            copy.put(entry.*, {}) catch return TypeError.OutOfMemory;
+        }
+        return copy;
+    }
+
+    fn unionDropTaint(dst: *std.StringHashMap(void), src: *const std.StringHashMap(void)) TypeError!void {
+        var iter = src.keyIterator();
+        while (iter.next()) |entry| {
+            dst.put(entry.*, {}) catch return TypeError.OutOfMemory;
+        }
+    }
+
+    fn computeDropTaint(self: *TypeChecker, body: []const *ast.Node) TypeError!void {
+        var taint = std.StringHashMap(void).init(self.allocator);
+        defer taint.deinit();
+        try self.walkTaintStmts(body, &taint);
+    }
+
+    fn walkTaintStmts(self: *TypeChecker, body: []const *ast.Node, taint: *std.StringHashMap(void)) TypeError!void {
+        for (body) |stmt| {
+            try self.walkTaintStmt(stmt, taint);
+        }
+    }
+
+    fn walkTaintStmt(self: *TypeChecker, node: *const ast.Node, taint: *std.StringHashMap(void)) TypeError!void {
+        switch (node.*) {
+            .let_stmt => |let| try self.walkTaintExpr(let.value, true, taint),
+            .let_else_stmt => |let_else| {
+                try self.walkTaintExpr(let_else.value, true, taint);
+                try self.walkTaintStmts(let_else.else_block, taint);
+            },
+            .let_destructure_stmt => |dest| try self.walkTaintExpr(dest.value, true, taint),
+            .const_stmt => |cst| try self.walkTaintExpr(cst.value, true, taint),
+            .var_stmt => {},
+            .assign_stmt => |assign| try self.walkTaintAssign(node, assign, taint),
+            .block_stmt => |block| try self.walkTaintStmts(block.body, taint),
+            .expr_stmt => |expr| try self.walkTaintExpr(expr, false, taint),
+            .return_stmt => |ret| {
+                if (ret.value) |value| try self.walkTaintExpr(value, true, taint);
+            },
+            .for_stmt => |f| {
+                try self.walkTaintExpr(f.start, true, taint);
+                if (f.end) |end| try self.walkTaintExpr(end, true, taint);
+                var body_taint = try self.dupeDropTaint(taint);
+                defer body_taint.deinit();
+                try self.walkTaintStmts(f.body, &body_taint);
+                try unionDropTaint(taint, &body_taint);
+            },
+            .while_stmt => |w| {
+                try self.walkTaintExpr(w.cond, true, taint);
+                var body_taint = try self.dupeDropTaint(taint);
+                defer body_taint.deinit();
+                try self.walkTaintStmts(w.body, &body_taint);
+                try unionDropTaint(taint, &body_taint);
+            },
+            .defer_stmt => |defer_stmt| try self.walkTaintExpr(defer_stmt.call, false, taint),
+            .select_stmt => |sel| {
+                for (sel.cases) |case| {
+                    try self.walkTaintExpr(case.call, false, taint);
+                    try self.walkTaintStmts(case.body, taint);
+                }
+                if (sel.default_body) |body| try self.walkTaintStmts(body, taint);
+                if (sel.timeout_expr) |expr| try self.walkTaintExpr(expr, true, taint);
+                if (sel.timeout_body) |body| try self.walkTaintStmts(body, taint);
+            },
+            .release_stmt => |rel| {
+                // An explicit release retires the binding: its taint
+                // dies with it (later same-name bindings start clean).
+                clearDropTaint(taint, rel.var_name);
+            },
+            .break_stmt, .continue_stmt => {},
+            else => {},
+        }
+        // Snapshot AFTER the statement's own effects: codegen emits a
+        // node's cleanups once the node has executed. Assignment nodes
+        // snapshot themselves mid-flight (before the taint clear) and
+        // are not overwritten thanks to the contains check inside.
+        if (self.cleanups.contains(node) or self.phi_cleanups.contains(node)) {
+            try self.snapshotDropTaint(node, taint);
+        }
+    }
+
+    fn walkTaintAssign(self: *TypeChecker, node: *const ast.Node, assign: ast.AssignStmt, taint: *std.StringHashMap(void)) TypeError!void {
+        // Index sub-expressions of the target are value positions; the
+        // target place spine itself is neither read nor consumed.
+        try self.walkTaintTargetIndexes(assign.target, taint);
+        try self.walkTaintExpr(assign.value, true, taint);
+
+        const place_key = self.taintKeyOfPlace(assign.target);
+        const target_ty = self.expr_types.get(assign.target);
+        if (assign.target.* != .identifier) {
+            // Field/index/deref targets: the checker guarantees the
+            // root was initialized (UseBeforeInit), so an owned old
+            // value exists whenever the plan is non-trivial. A
+            // self-place RHS keeps its value (no annotation).
+            if (target_ty) |ty| {
+                const plan = try self.planValueDrop(ty);
+                const same_place = if (self.taintKeyOfPlace(assign.value)) |rhs_key|
+                    (place_key != null and std.mem.eql(u8, rhs_key, place_key.?))
+                else
+                    false;
+                if (!same_place) {
+                    switch (plan.kind()) {
+                        .none => {},
+                        .buffer => try self.assign_drop_old.put(node, .shallow),
+                        .deep_vec, .deep_struct => try self.assign_drop_old.put(node, .deep),
+                    }
+                }
+            }
+        }
+        // Downgrade by the taint state at the store (post-RHS): a
+        // tainted leaf buffer's old value is owned by the escaped
+        // alias, a tainted deep vec keeps only its shallow free; a
+        // struct stays .deep and codegen decides per field from the
+        // snapshot taken here.
+        if (self.assign_drop_old.get(node)) |mode| {
+            if (place_key) |key| {
+                if (target_ty) |ty| {
+                    const plan = try self.planValueDrop(ty);
+                    var iter = taint.keyIterator();
+                    var affected = false;
+                    while (iter.next()) |entry| {
+                        if (taintKeysOverlap(entry.*, key)) {
+                            affected = true;
+                            break;
+                        }
+                    }
+                    if (affected) {
+                        switch (plan.kind()) {
+                            .buffer => {
+                                _ = self.assign_drop_old.remove(node);
+                            },
+                            .deep_vec => {
+                                if (mode == .deep) try self.assign_drop_old.put(node, .shallow);
+                            },
+                            else => {},
+                        }
+                    }
+                }
+            }
+            try self.snapshotDropTaint(node, taint);
+        }
+        // The stored value is exclusively owned by the place now.
+        if (place_key) |key| clearDropTaint(taint, key);
+    }
+
+    fn walkTaintTargetIndexes(self: *TypeChecker, target: *const ast.Node, taint: *std.StringHashMap(void)) TypeError!void {
+        switch (target.*) {
+            .field_expr => |f| try self.walkTaintTargetIndexes(f.expr, taint),
+            .index_expr => |ix| {
+                try self.walkTaintTargetIndexes(ix.target, taint);
+                try self.walkTaintExpr(ix.index, true, taint);
+            },
+            .deref_expr => |d| try self.walkTaintExpr(d.expr, false, taint),
+            .slice_expr => |s| {
+                try self.walkTaintTargetIndexes(s.target, taint);
+                try self.walkTaintExpr(s.start, true, taint);
+                try self.walkTaintExpr(s.end, true, taint);
+            },
+            else => {},
+        }
+    }
+
+    fn maybeTaintPlace(self: *TypeChecker, expr: *const ast.Node, taint: *std.StringHashMap(void)) TypeError!void {
+        const ty = self.expr_types.get(expr) orelse return;
+        if (isBorrowLikeType(ty)) return;
+        const plan = try self.planValueDrop(ty);
+        if (plan.kind() == .none) return;
+        if (self.taintKeyOfPlace(expr)) |key| {
+            try self.addDropTaint(taint, key);
+        }
+    }
+
+    fn walkTaintExpr(self: *TypeChecker, node: *const ast.Node, consuming: bool, taint: *std.StringHashMap(void)) TypeError!void {
+        if (self.cleanups.contains(node) or self.phi_cleanups.contains(node)) {
+            try self.snapshotDropTaint(node, taint);
+        }
+        switch (node.*) {
+            .identifier, .field_expr, .index_expr, .deref_expr, .slice_expr => {
+                if (consuming) try self.maybeTaintPlace(node, taint);
+                // Walk the spine's value sub-expressions (indexes,
+                // deref base) without tainting the spine itself.
+                switch (node.*) {
+                    .field_expr => |f| try self.walkTaintExpr(f.expr, false, taint),
+                    .index_expr => |ix| {
+                        try self.walkTaintExpr(ix.target, false, taint);
+                        try self.walkTaintExpr(ix.index, true, taint);
+                    },
+                    .deref_expr => |d| try self.walkTaintExpr(d.expr, false, taint),
+                    .slice_expr => |s| {
+                        try self.walkTaintExpr(s.target, false, taint);
+                        try self.walkTaintExpr(s.start, true, taint);
+                        try self.walkTaintExpr(s.end, true, taint);
+                    },
+                    else => {},
+                }
+            },
+            .move_expr => |m| try self.walkTaintExpr(m.expr, true, taint),
+            .borrow_expr => |b| try self.walkTaintExpr(b.expr, false, taint),
+            .call_expr => |call| try self.walkTaintCall(call, taint),
+            .binary_expr => |bin| {
+                try self.walkTaintExpr(bin.left, true, taint);
+                try self.walkTaintExpr(bin.right, true, taint);
+            },
+            .struct_literal => |lit| {
+                for (lit.fields) |field| {
+                    try self.walkTaintExpr(field.value, true, taint);
+                }
+                if (lit.update_expr) |update| try self.walkTaintExpr(update, true, taint);
+            },
+            .enum_literal => |lit| {
+                for (lit.fields) |field| {
+                    try self.walkTaintExpr(field.value, true, taint);
+                }
+            },
+            .tuple_literal => |lit| {
+                for (lit.elements) |elem| try self.walkTaintExpr(elem, true, taint);
+            },
+            .array_literal => |lit| {
+                for (lit.elements) |elem| try self.walkTaintExpr(elem, true, taint);
+            },
+            .repeat_array_literal => |lit| try self.walkTaintExpr(lit.value, true, taint),
+            .if_expr => |if_expr| {
+                try self.walkTaintExpr(if_expr.cond, true, taint);
+                if (if_expr.let_chain) |chain| {
+                    for (chain) |cond| try self.walkTaintExpr(cond.value, true, taint);
+                }
+                var then_taint = try self.dupeDropTaint(taint);
+                defer then_taint.deinit();
+                try self.walkTaintStmts(if_expr.then_block, &then_taint);
+                try unionDropTaint(taint, &then_taint);
+                if (if_expr.else_block) |else_block| {
+                    var else_taint = try self.dupeDropTaint(taint);
+                    defer else_taint.deinit();
+                    try self.walkTaintStmts(else_block, &else_taint);
+                    try unionDropTaint(taint, &else_taint);
+                }
+            },
+            .match_expr => |match_expr| {
+                try self.walkTaintExpr(match_expr.val, true, taint);
+                for (match_expr.cases) |case| {
+                    if (case.guard) |guard| try self.walkTaintExpr(guard, true, taint);
+                    var case_taint = try self.dupeDropTaint(taint);
+                    defer case_taint.deinit();
+                    try self.walkTaintStmts(case.body, &case_taint);
+                    try unionDropTaint(taint, &case_taint);
+                }
+            },
+            .switch_expr => |switch_expr| {
+                try self.walkTaintExpr(switch_expr.val, true, taint);
+                for (switch_expr.cases) |case| {
+                    try self.walkTaintStmts(case.body, taint);
+                }
+            },
+            .closure_literal => |closure| {
+                // Captures alias outer places from creation on, and the
+                // body may run later: union the body's taint back.
+                var body_taint = try self.dupeDropTaint(taint);
+                defer body_taint.deinit();
+                try self.walkTaintStmt(closure.body, &body_taint);
+                try unionDropTaint(taint, &body_taint);
+            },
+            .try_expr => |try_expr| try self.walkTaintExpr(try_expr.expr, true, taint),
+            .await_expr => |await_expr| try self.walkTaintExpr(await_expr.expr, true, taint),
+            .cast_expr => |cast| try self.walkTaintExpr(cast.expr, true, taint),
+            .go_expr => |go_expr| try self.walkTaintExpr(go_expr.call, false, taint),
+            .unsafe_expr => |unsafe_expr| try self.walkTaintStmts(unsafe_expr.body, taint),
+            else => {},
+        }
+    }
+
+    fn walkTaintCall(self: *TypeChecker, call: ast.CallExpr, taint: *std.StringHashMap(void)) TypeError!void {
+        if (call.callee) |callee| {
+            try self.walkTaintExpr(callee, false, taint);
+            for (call.args) |arg| try self.walkTaintExpr(arg, true, taint);
+            return;
+        }
+        // Associated calls (Type::func) and calls to functions the
+        // checker knows by name consume every argument by value.
+        // Anything else with arguments is a method call: args[0] is the
+        // receiver, a borrow position for the std containers and for
+        // &self methods (a by-value self method would be under-tainted;
+        // accepted residual, taint is defence-in-depth on top of the
+        // checker's own move tracking).
+        const known_callee = call.associated_target != null or
+            self.funcs.contains(call.func_name) or
+            self.extern_funcs.contains(call.func_name) or
+            self.imported_function_signatures.contains(call.func_name) or
+            self.macros.contains(call.func_name) or
+            self.imported_macros.contains(call.func_name);
+        for (call.args, 0..) |arg, i| {
+            const consuming = known_callee or i != 0;
+            try self.walkTaintExpr(arg, consuming, taint);
+        }
     }
 
     fn fieldBorrowIsLive(self: *TypeChecker, scope: *Scope, entry: FieldBorrow) bool {
@@ -1458,6 +1968,8 @@ pub const TypeChecker = struct {
         }
         self.drop_taint_snapshots.deinit();
         self.tainted_places_union.deinit();
+        self.drop_plan_cache.deinit();
+        self.drop_plan_active.deinit();
     }
 
     fn isInternalSymbol(name: []const u8) bool {
@@ -4962,6 +5474,9 @@ pub const TypeChecker = struct {
 
         try self.checkBlock(test_decl.body, scope, ret_ty, null, null);
 
+        // DEF deep-drop batch: place-taint pass over the checked body.
+        try self.computeDropTaint(test_decl.body);
+
         var iter = scope.symbols.valueIterator();
         while (iter.next()) |sym| {
             if (sym.state == .active and !isInternalSymbol(sym.name)) {
@@ -5000,6 +5515,9 @@ pub const TypeChecker = struct {
         }
 
         try self.checkBlock(func.body, scope, func.ret_ty, null, null);
+
+        // DEF deep-drop batch: place-taint pass over the checked body.
+        try self.computeDropTaint(func.body);
 
         if (!isPrimitiveType(func.ret_ty, .void_type) and func.body.len > 0) {
             const last = func.body[func.body.len - 1];
@@ -5463,6 +5981,25 @@ pub const TypeChecker = struct {
                 }
                 if (assign.target.* == .identifier) {
                     const sym = scope.lookup(assign.target.identifier) orelse return TypeError.UndefinedVariable;
+                    // DEF deep-drop batch: an initialized owned old value
+                    // must be dropped before the store. A `.consumed`
+                    // binding has no old value (the REG-BR-6 reactivation
+                    // below revives the binding for the NEW value); an
+                    // `.uninitialized` one was never written. A
+                    // self-assignment (`x = x`) keeps its value. The
+                    // taint pass may still downgrade or remove this.
+                    if (sym.state == .active) {
+                        const self_assign = assign.value.* == .identifier and
+                            std.mem.eql(u8, assign.value.identifier, assign.target.identifier);
+                        if (!self_assign) {
+                            const plan = try self.planValueDrop(sym.ty);
+                            switch (plan.kind()) {
+                                .none => {},
+                                .buffer => try self.assign_drop_old.put(stmt, .shallow),
+                                .deep_vec, .deep_struct => try self.assign_drop_old.put(stmt, .deep),
+                            }
+                        }
+                    }
                     if (sym.state == .uninitialized) sym.state = .active;
                     // REG-BR-6: a whole-variable assignment redefines the
                     // binding, so a value consumed earlier (including by the

@@ -10011,3 +10011,26 @@ test "planParamCleanup releases by-value copy scalar params" {
     };
     try std.testing.expectEqual(ParamCleanupAction.skip, planParamCleanup(raw_cap));
 }
+
+// ---- DEF deep-drop batch: shared value-drop plan ----
+// Computed once by the type checker (planValueDrop) and consumed by both
+// codegens. `none` keeps today's shallow behaviour (register release or
+// the container's own free macro); `buffer` is a plain Vec/String whose
+// elements own nothing (today's VEC_FREE / @sa_vec_free suffices);
+// `deep_vec`/`deep_struct` need element/field drops before the shallow
+// free of the container itself.
+pub const DropPlan = union(enum) {
+    none,
+    buffer,
+    deep_vec: *const DropPlan,
+    deep_struct: []const FieldDropPlan,
+
+    pub fn kind(self: *const DropPlan) std.meta.Tag(DropPlan) {
+        return std.meta.activeTag(self.*);
+    }
+};
+
+pub const FieldDropPlan = struct {
+    name: []const u8,
+    plan: *const DropPlan,
+};

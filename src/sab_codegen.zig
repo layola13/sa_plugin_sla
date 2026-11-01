@@ -6223,6 +6223,7 @@ pub const Codegen = struct {
             .external => .extern_decl,
             .exported => .export_decl,
             .test_func => .test_decl,
+            .gpu => .gpu_decl,
         };
         var item = inst.makeInstruction(kind, 0, @intCast(expanded_line), null, "");
         item.operands[0] = .{ .symbol = id };
@@ -20680,6 +20681,76 @@ test "filtered decoded std deps emit exported helper bodies in original order" {
     // The exported helper's body add instruction survives at its cloned offset.
     try std.testing.expectEqual(inst.InstKind.export_decl, cg.instructions.items[3].kind);
     try std.testing.expectEqual(inst.InstKind.op, cg.instructions.items[4].kind);
+}
+
+test "filtered decoded std deps preserve gpu helper kind and body" {
+    // Regression (DEF gpu-arm): a decoded SAB module may carry a function
+    // whose sig kind is .gpu (produced by the SA text pipeline for @gpu
+    // declarations). The filtered std-dep closure must preserve that kind
+    // and its .gpu_decl body instruction, and declInstForSig must map the
+    // kind to .gpu_decl (mirroring the host flattener) instead of failing
+    // to compile against a FunctionKind that includes .gpu.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    const function_sigs = try allocator.alloc(sig.FunctionSig, 3);
+    function_sigs[0] = try sig.parseFunctionSig(allocator, "@entry() -> void:", 0, 0);
+    function_sigs[1] = try sig.parseFunctionSig(allocator, "@gpu_helper() -> void:", 1, 3);
+    function_sigs[1].kind = .gpu;
+    function_sigs[2] = try sig.parseFunctionSig(allocator, "@normal_helper() -> void:", 2, 6);
+
+    const instructions = try allocator.alloc(inst.Instruction, 9);
+    // entry() { call @normal_helper() }
+    instructions[0] = inst.makeInstruction(.func_decl, 1, 1, null, "");
+    instructions[1] = inst.makeInstruction(.call, 2, 2, null, "");
+    instructions[1].operands[0] = .{ .text = "@normal_helper()" };
+    instructions[2] = inst.makeInstruction(.return_, 3, 3, null, "");
+    // gpu_helper() { op; ret } — declared before normal_helper in the module
+    instructions[3] = inst.makeInstruction(.gpu_decl, 4, 4, null, "");
+    instructions[4] = inst.makeInstruction(.op, 5, 5, null, "");
+    instructions[5] = inst.makeInstruction(.return_, 6, 6, null, "");
+    // normal_helper() { call @gpu_helper() }
+    instructions[6] = inst.makeInstruction(.func_decl, 7, 7, null, "");
+    instructions[7] = inst.makeInstruction(.call, 8, 8, null, "");
+    instructions[7].operands[0] = .{ .text = "@gpu_helper()" };
+    instructions[8] = inst.makeInstruction(.return_, 9, 9, null, "");
+
+    const module = sab.Module{
+        .symbols = &.{},
+        .function_sigs = function_sigs,
+        .const_decls = &.{},
+        .instructions = instructions,
+        .owned_text = &.{},
+    };
+
+    // Genuine SAB round-trip: encode the module and decode it back, and
+    // require the gpu helper's kind to survive the kind byte intact.
+    const sab_bytes = try sab.encodeProgram(allocator, &.{}, module.function_sigs, module.instructions);
+    const decoded = try sab.decodeModule(allocator, sab_bytes);
+    try std.testing.expectEqual(sig.FunctionKind.gpu, decoded.function_sigs[1].kind);
+
+    try cg.appendDecodedModuleFiltered(decoded, &.{"entry"});
+
+    // All three are reachable: entry -> normal_helper -> gpu_helper.
+    try std.testing.expectEqual(@as(usize, 3), cg.function_sigs.items.len);
+    try std.testing.expectEqualStrings("entry", cg.function_sigs.items[0].name);
+    try std.testing.expectEqualStrings("gpu_helper", cg.function_sigs.items[1].name);
+    try std.testing.expectEqualStrings("normal_helper", cg.function_sigs.items[2].name);
+    // The gpu helper keeps its kind, and its full body was cloned (not a
+    // decl-only stub): the module has 9 body instructions, so the filtered
+    // clone must reproduce all of them, .gpu_decl included.
+    try std.testing.expectEqual(sig.FunctionKind.gpu, cg.function_sigs.items[1].kind);
+    try std.testing.expectEqual(@as(usize, 9), cg.instructions.items.len);
+    try std.testing.expectEqual(inst.InstKind.gpu_decl, cg.instructions.items[3].kind);
+    // The declaration instruction emitted for a .gpu sig is .gpu_decl.
+    const gpu_decl_inst = try cg.declInstForSig(cg.function_sigs.items[1], 0);
+    try std.testing.expectEqual(inst.InstKind.gpu_decl, gpu_decl_inst.kind);
 }
 
 test "filtered decoded std deps uniquify helper-local labels and regs" {

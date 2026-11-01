@@ -190,6 +190,22 @@ pub const TypeChecker = struct {
     // Maps a branch end to the variables to release for Phi resolution
     phi_cleanups: std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)),
 
+    // DEF deep-drop batch: how an assignment's old value must be dropped
+    // before the new value is stored (decided from checker flow state and
+    // the place-taint pass below). Absent = no drop (old value moved out
+    // or not owned).
+    pub const AssignDropMode = enum { shallow, deep };
+    assign_drop_old: std.AutoHashMap(*const ast.Node, AssignDropMode),
+    // DEF deep-drop batch: snapshot of tainted place keys at each cleanup
+    // node (keys of `cleanups`/`phi_cleanups`), plus a whole-program union
+    // used when a drop site has no snapshot. A place (binding name or
+    // `root.field.sub` path) is tainted when its owned value was read out
+    // by value at least once, so the escaped alias owns a piece of it and
+    // a deep drop would double-free. Taint only ever suppresses or
+    // shallows a drop, never enables one.
+    drop_taint_snapshots: std.AutoHashMap(*const ast.Node, std.StringHashMap(void)),
+    tainted_places_union: std.StringHashMap(void),
+
     // Tracks internal Sla functions for validation
     funcs: std.StringHashMap(*ast.FuncDecl),
     function_aliases: std.StringHashMap([]const u8),
@@ -283,6 +299,9 @@ pub const TypeChecker = struct {
             .await_cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
             .macro_call_try_cleanups = std.AutoHashMap(*const ast.CallExpr, std.array_list.Managed([]const u8)).init(allocator),
             .phi_cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
+            .assign_drop_old = std.AutoHashMap(*const ast.Node, AssignDropMode).init(allocator),
+            .drop_taint_snapshots = std.AutoHashMap(*const ast.Node, std.StringHashMap(void)).init(allocator),
+            .tainted_places_union = std.StringHashMap(void).init(allocator),
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .function_aliases = std.StringHashMap([]const u8).init(allocator),
             .function_alias_metadata = std.StringHashMap(FunctionAliasMetadata).init(allocator),
@@ -1428,6 +1447,14 @@ pub const TypeChecker = struct {
             list.deinit();
         }
         self.phi_cleanups.deinit();
+
+        self.assign_drop_old.deinit();
+        var snap_iter = self.drop_taint_snapshots.valueIterator();
+        while (snap_iter.next()) |set| {
+            set.deinit();
+        }
+        self.drop_taint_snapshots.deinit();
+        self.tainted_places_union.deinit();
     }
 
     fn isInternalSymbol(name: []const u8) bool {

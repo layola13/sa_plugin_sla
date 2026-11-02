@@ -3109,7 +3109,16 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
         std.mem.eql(u8, macro_name, "SLA_FS_OPEN_READ") or
         std.mem.eql(u8, macro_name, "SLA_FS_READ_TO_STRING") or
         std.mem.eql(u8, macro_name, "SLA_FS_READ_FILE") or
-        std.mem.eql(u8, macro_name, "SLA_FS_METADATA"))
+        std.mem.eql(u8, macro_name, "SLA_FS_METADATA") or
+        // CLASSB-DEF3: ptr.sa read macros whose expansions load a u64
+        // (the plain/unaligned/volatile spellings the _READ_U64 suffix
+        // rule does not reach). PTR_READ_U64 itself stays in the
+        // raw_pointer group below, as previously registered.
+        std.mem.eql(u8, macro_name, "PTR_READ") or
+        std.mem.eql(u8, macro_name, "PTR_READ_UNALIGNED") or
+        std.mem.eql(u8, macro_name, "PTR_READ_VOLATILE") or
+        std.mem.eql(u8, macro_name, "PTR_READ_UNALIGNED_U64") or
+        std.mem.eql(u8, macro_name, "PTR_READ_VOLATILE_U64"))
     {
         return .u64;
     }
@@ -3152,6 +3161,16 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
         return .boolean;
     }
     if (std.mem.eql(u8, macro_name, "SLA_BYTE_AT") or
+        // CLASSB-DEF3: PTR_BYTE_AT's expansion loads the byte as u8;
+        // it matched no rule, so an unannotated
+        // `let c = PTR_BYTE_AT(p, n);` left the call typeless and
+        // codegen failed with a detail-free CodegenError (the
+        // annotated form worked, as did assignment into a typed
+        // binding). The unaligned/volatile U8 spellings have the
+        // same gap.
+        std.mem.eql(u8, macro_name, "PTR_BYTE_AT") or
+        std.mem.eql(u8, macro_name, "PTR_READ_UNALIGNED_U8") or
+        std.mem.eql(u8, macro_name, "PTR_READ_VOLATILE_U8") or
         std.mem.eql(u8, macro_name, "JSON_AS_BOOL") or
         std.mem.eql(u8, macro_name, "SLA_JSON_AS_BOOL") or
         std.mem.eql(u8, macro_name, "SLA_FS_EXISTS") or
@@ -3164,7 +3183,9 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
     }
     if (std.mem.endsWith(u8, macro_name, "_KIND")) return .u32;
     if (std.mem.endsWith(u8, macro_name, "_READ_U64")) return .u64;
-    if (std.mem.endsWith(u8, macro_name, "_READ_I32")) return .i32;
+    if (std.mem.endsWith(u8, macro_name, "_READ_I32") or
+        // CLASSB-DEF3: volatile i32 spelling (see PTR_BYTE_AT above).
+        std.mem.eql(u8, macro_name, "PTR_READ_VOLATILE_I32")) return .i32;
     if (std.mem.eql(u8, macro_name, "JSON_AS_I64") or
         std.mem.eql(u8, macro_name, "SLA_JSON_AS_I64") or
         std.mem.endsWith(u8, macro_name, "_GET_I64"))
@@ -5464,6 +5485,30 @@ pub fn structAbiSize(decl: *const ast.StructDecl) usize {
     return @max(offset, 1);
 }
 
+/// CLASSB segment 3 (Jev form B): a struct type is an inline-POD Vec
+/// element when it is a non-opaque, non-union, non-generic struct
+/// whose fields are all primitives and whose record image is
+/// exactly one 8-byte slot word. Such elements are stored in
+/// Vec/GrowVec buffers as their packed record image (the word at
+/// record offset 0) instead of as record pointers, under the same
+/// frozen 24-byte handle. Every other struct keeps the
+/// record-pointer model. The exact-8 bound keeps every word
+/// load/store on an element record in-bounds by construction;
+/// smaller POD structs stay on the record model in this batch.
+/// planValueDrop for such a struct is .none (no field has a drop
+/// plan), so the deep-drop walker never runs for these elements and
+/// the packed word is never mistaken for a record pointer at drop
+/// time.
+pub fn structDeclIsInlinePod(decl: *const ast.StructDecl) bool {
+    if (decl.is_opaque or decl.is_union) return false;
+    if (decl.generics.len != 0) return false;
+    if (decl.fields.len == 0) return false;
+    for (decl.fields) |field| {
+        if (field.ty.* != .primitive) return false;
+    }
+    return structAbiSize(decl) == 8;
+}
+
 pub fn structFieldLayout(decl: *const ast.StructDecl, name: []const u8) ?AbiFieldLayout {
     if (decl.is_union) {
         for (decl.fields) |field| {
@@ -7201,6 +7246,14 @@ test "shared imported macro expression result kinds cover compiler helper macros
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.raw_pointer, importedMacroExpressionResultKind("PIN_MUT_GET_MUT").?);
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.raw_pointer, importedMacroExpressionResultKind("FUTURE_READY_POLL_STATE").?);
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.boolean, importedMacroExpressionResultKind("POLL_IS_READY").?);
+    // CLASSB-DEF3: ptr.sa read family (types from the expansions' loads).
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u8, importedMacroExpressionResultKind("PTR_BYTE_AT").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u8, importedMacroExpressionResultKind("PTR_READ_UNALIGNED_U8").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u8, importedMacroExpressionResultKind("PTR_READ_VOLATILE_U8").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.i32, importedMacroExpressionResultKind("PTR_READ_VOLATILE_I32").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u64, importedMacroExpressionResultKind("PTR_READ").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u64, importedMacroExpressionResultKind("PTR_READ_UNALIGNED_U64").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u64, importedMacroExpressionResultKind("PTR_READ_VOLATILE_U64").?);
     try std.testing.expect(importedMacroExpressionResultKind("SLA_UNKNOWN_HELPER") == null);
 }
 

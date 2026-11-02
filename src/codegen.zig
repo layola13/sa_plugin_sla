@@ -3272,6 +3272,92 @@ pub const Codegen = struct {
         return lowering_rules.abiTypeString(ty);
     }
 
+    /// CLASSB segment 3: is this Vec/GrowVec element type stored
+    /// inline (packed record image in the slot word) rather than as
+    /// a record pointer? See lowering_rules.structDeclIsInlinePod.
+    fn inlinePodElement(self: *Codegen, elem_ty: *const ast.Type) bool {
+        if (elem_ty.* != .user_defined) return false;
+        const decl = self.tc.structs.get(elem_ty.user_defined.name) orelse return false;
+        return lowering_rules.structDeclIsInlinePod(decl);
+    }
+
+    /// Is this expression an index read of an inline-POD Vec/GrowVec
+    /// element?
+    fn indexExprIsInlinePodElement(self: *Codegen, node: *const ast.Node) bool {
+        if (node.* != .index_expr) return false;
+        const target_ty = self.resolvedTypeForExpr(node.index_expr.target) orelse return false;
+        const elem_ty = lowering_rules.vecLikeElementType(target_ty) orelse return false;
+        return self.inlinePodElement(elem_ty);
+    }
+
+    /// Materialize a heap record for an inline-POD element from its
+    /// packed slot word (the record image is the word itself).
+    fn materializeInlinePodRecord(self: *Codegen, word_reg: []const u8, elem_ty: *const ast.Type) CodegenError![]const u8 {
+        const decl = self.tc.structs.get(elem_ty.user_defined.name) orelse return CodegenError.CodegenError;
+        const rec = try self.newTmp();
+        self.outPrint("    {s} = alloc {}\n", .{ rec, structSize(decl) }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u64\n", .{ rec, word_reg }) catch return CodegenError.CodegenError;
+        return rec;
+    }
+
+    /// Load the packed record image (one word) out of a record that
+    /// holds an inline-POD element value.
+    fn inlinePodWordOfValue(self: *Codegen, value_reg: []const u8) CodegenError![]const u8 {
+        const word = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as u64\n", .{ word, value_reg }) catch return CodegenError.CodegenError;
+        return word;
+    }
+
+    /// CLASSB segment 3 (Jev form B): push a struct literal into a
+    /// Vec of inline-POD elements by constructing it directly in the
+    /// destination slot. Phase 1 evaluates every field expression
+    /// before the container is touched (a field expression may read
+    /// the vec itself); phase 2 reserves one slot geometrically,
+    /// writes the fields to the raw slot pointer, and stores the
+    /// bumped length LAST. No temp record is allocated.
+    fn genVecPushPodLiteralDps(
+        self: *Codegen,
+        recv_reg: []const u8,
+        elem_ty: *const ast.Type,
+        literal_node: *const ast.Node,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError!void {
+        const lit = literal_node.struct_literal;
+        const decl = self.tc.structs.get(elem_ty.user_defined.name) orelse return CodegenError.CodegenError;
+        var field_regs = std.array_list.Managed([]const u8).init(self.allocator);
+        defer field_regs.deinit();
+        for (lit.fields) |field| {
+            field_regs.append(try self.genExpr(field.value, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+        }
+        const len_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, recv_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND VEC_RESERVE_GROW {s}, 1, {}\n", .{ recv_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+        const buf_reg = try self.newTmp();
+        const off_reg = try self.newTmp();
+        const slot_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ buf_reg, recv_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = mul {s}, {}\n", .{ off_reg, len_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, buf_reg, off_reg }) catch return CodegenError.CodegenError;
+        for (lit.fields, field_regs.items) |field, freg| {
+            const layout = try self.fieldAddressLayout(elem_ty, field.name);
+            const decl_field = for (decl.fields) |df| {
+                if (std.mem.eql(u8, df.name, field.name)) break df;
+            } else return CodegenError.CodegenError;
+            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ slot_reg, layout.offset, freg, typeString(decl_field.ty) }) catch return CodegenError.CodegenError;
+        }
+        const new_len_reg = try self.newTmp();
+        self.outPrint("    {s} = add {s}, 1\n", .{ new_len_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+Vec_len, {s} as u64\n", .{ recv_reg, new_len_reg }) catch return CodegenError.CodegenError;
+        try self.emitRelease(new_len_reg);
+        try self.emitRelease(slot_reg);
+        try self.emitRelease(off_reg);
+        try self.emitRelease(buf_reg);
+        try self.emitRelease(len_reg);
+        for (lit.fields, field_regs.items) |field, freg| {
+            if (self.fieldBaseResultNeedsRelease(field.value, freg)) try self.emitRelease(freg);
+        }
+    }
+
     fn ptrReadVolatileMacroName(ty: *const ast.Type) ?[]const u8 {
         return lowering_rules.ptrReadVolatileMacroName(ty);
     }
@@ -4346,6 +4432,35 @@ pub const Codegen = struct {
     fn vecElementPushConsumesSource(self: *Codegen, elem_ty: *const ast.Type) bool {
         const copy_like = self.typeIsCopyValue(elem_ty) or self.typeIsShallowCopyCallArgValue(elem_ty, 0);
         return lowering_rules.vecElementPushTransfersOwnership(elem_ty, copy_like);
+    }
+
+    /// CLASSB-DEF1: materialize the copy a copy-mode push owes a
+    /// live-binding element argument. The checker treats push as a copy
+    /// consumer for copy-like element types (the binding stays usable
+    /// and owning after the push), and the general call path honors
+    /// that contract by materializing a shallow copy for preserved
+    /// args (isShallowCopyPreservedValue). The special-cased push arms
+    /// skipped the materialization, so VEC_PUSH stored the binding's
+    /// own record pointer and the binding's scope drop freed the very
+    /// record the new slot aliases (every slot ended up pointing at
+    /// one recycled chunk). Returns the fresh copy register to push
+    /// (the store consumes it), or null when no copy is owed or the
+    /// copy machinery does not apply, keeping the baseline treatment.
+    fn pushArgCopyMaterialization(self: *Codegen, arg: *const ast.Node, arg_reg: []const u8, elem_ty: *const ast.Type) CodegenError!?[]const u8 {
+        if (arg.* != .identifier) return null;
+        if (self.vecElementPushConsumesSource(elem_ty)) return null;
+        if (!lowering_rules.isHeapHandleType(elem_ty)) return null;
+        const decl = self.structDeclForType(elem_ty) orelse return null;
+        if (decl.is_opaque or decl.is_union) return null;
+        if (self.typeHasCopyDerive(elem_ty)) {
+            const copied = try self.newTmp();
+            try self.genCopyValueInto(copied, arg_reg, elem_ty);
+            return copied;
+        }
+        if (self.typeIsShallowCopyCallArgValue(elem_ty, 0)) {
+            return try self.genShallowCopyCallArgValue(arg_reg, elem_ty);
+        }
+        return null;
     }
 
     fn typeIsSmallPlainSlotStruct(self: *Codegen, ty: *const ast.Type) bool {
@@ -11924,6 +12039,9 @@ pub const Codegen = struct {
         const idx = base_expr.index_expr;
         const target_ty = self.resolvedTypeForExpr(idx.target) orelse return false;
         const elem_ty = lowering_rules.vecLikeElementType(target_ty) orelse return false;
+        // CLASSB segment 3: inline-POD index reads return an owned
+        // materialized record, not the borrowed slot handle.
+        if (self.inlinePodElement(elem_ty)) return false;
         if (!lowering_rules.isHeapHandleType(elem_ty)) return false;
         if (self.slotCopyStructType(elem_ty)) |copy_ty| {
             if (self.typeIsCopyStruct(copy_ty)) return false;
@@ -11989,6 +12107,17 @@ pub const Codegen = struct {
     }
 
     fn genLoadSlotValue(self: *Codegen, ptr_reg: []const u8, ty: *const ast.Type) CodegenError![]const u8 {
+        // CLASSB segment 3: an inline-POD element's slot holds the
+        // packed record image, not a record pointer. Materialize a
+        // fresh owned record from the word; downstream consumers see
+        // an ordinary record pointer.
+        if (self.inlinePodElement(ty)) {
+            const word = try self.newTmp();
+            self.outPrint("    {s} = load {s}+0 as u64\n", .{ word, ptr_reg }) catch return CodegenError.CodegenError;
+            const rec = try self.materializeInlinePodRecord(word, ty);
+            try self.emitForgetMovedValue(word);
+            return rec;
+        }
         const loaded = try self.newTmp();
         self.outPrint("    {s} = load {s}+0 as {s}\n", .{ loaded, ptr_reg, typeString(ty) }) catch return CodegenError.CodegenError;
         if (self.slotCopyStructType(ty)) |copy_ty| {
@@ -12683,11 +12812,21 @@ pub const Codegen = struct {
                             self.outPrint("    {s} = load {s}+{s} as ptr\n", .{ data_reg, vec_reg, ptr_def }) catch return CodegenError.CodegenError;
                             self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
                             self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
-                            self.outPrint("    {s} = load {s}+0 as ptr\n", .{ owner_reg, slot_reg }) catch return CodegenError.CodegenError;
+                            // CLASSB segment 3: an inline-POD element
+                            // lives in its slot (packed image with the
+                            // record layout), so the field store
+                            // addresses the slot directly; other
+                            // elements are reached through the record
+                            // pointer stored in the slot.
+                            const pod_inline = self.inlinePodElement(elem_ty);
+                            if (!pod_inline) {
+                                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ owner_reg, slot_reg }) catch return CodegenError.CodegenError;
+                            }
+                            const owner_addr = if (pod_inline) slot_reg else owner_reg;
                             const val_reg = try self.genExpr(assign.value, hoisted_allocs);
-                            try self.emitOverwrittenPlaceDropText(stmt, assign.target, owner_reg, layout.offset, target_ty);
-                            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ owner_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
-                            try self.emitForgetMovedValue(owner_reg);
+                            try self.emitOverwrittenPlaceDropText(stmt, assign.target, owner_addr, layout.offset, target_ty);
+                            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ owner_addr, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                            if (!pod_inline) try self.emitForgetMovedValue(owner_reg);
                             try self.emitRelease(slot_reg);
                             try self.emitRelease(offset_reg);
                             try self.emitRelease(data_reg);
@@ -13801,6 +13940,38 @@ pub const Codegen = struct {
     ) CodegenError!IndexAddress {
         const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
 
+        if (lowering_rules.vecLikeElementType(target_ty)) |elem_ty| {
+            // CLASSB-DEF2: the address of a Vec/GrowVec element is its
+            // slot in the container buffer (buffer pointer at handle+0,
+            // frozen layout; slot stride = vecElementSlotSize, the same
+            // stride VEC_PUSH stores with). This is the SA-text mirror
+            // of the SAB std-surface index_address rules
+            // (VEC_GET_MUT_PTR_U64 / GROWVEC_GET_MUT_PTR_U64). Before
+            // this branch existed, borrows of Vec elements fell to the
+            // value-temp path: the borrow pointed at a clone temp's
+            // cell that was released at the end of the statement, so a
+            // stored borrow systematically read the NEXT element (the
+            // freed chunk was reused by the next iteration's record).
+            const vec_reg = try self.genExpr(idx.target, hoisted_allocs);
+            const base_reg = try self.newTmp();
+            self.outPrint("    {s} = load {s}+0 as ptr\n", .{ base_reg, vec_reg }) catch return CodegenError.CodegenError;
+            const index_reg = try self.genExpr(idx.index, hoisted_allocs);
+            const offset_reg = try self.newTmp();
+            self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+            const ptr_reg = try self.newTmp();
+            self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
+            try self.emitRelease(offset_reg);
+            try self.emitRelease(base_reg);
+            if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+            return .{
+                .ptr = ptr_reg,
+                .elem_ty = elem_ty,
+                .base_tmp = null,
+                .base_reg = vec_reg,
+                .release_base_reg = exprResultNeedsRelease(idx.target) or isTemporaryRegisterName(vec_reg),
+            };
+        }
+
         if (sliceElementType(target_ty)) |elem_ty| {
             const slice_reg = try self.genExpr(idx.target, hoisted_allocs);
             const base_reg = try self.newTmp();
@@ -13915,6 +14086,16 @@ pub const Codegen = struct {
             }
             try self.rememberAddressProjectionSource(nested);
             break :blk nested.ptr;
+        } else if (field.expr.* == .index_expr and self.indexExprIsInlinePodElement(field.expr)) blk: {
+            // CLASSB segment 3: a field projection on an inline-POD
+            // vec element addresses the element's slot itself (the
+            // packed image has the record layout). Going through
+            // genExpr would materialize a copy and a store through
+            // this projection would be lost.
+            const addr = try self.genIndexAddress(&field.expr.index_expr, hoisted_allocs);
+            if (addr.base_tmp) |t| try self.emitRelease(t);
+            if (addr.release_base_reg) try self.emitRelease(addr.base_reg);
+            break :blk addr.ptr;
         } else try self.genExpr(field.expr, hoisted_allocs);
         const ptr = try self.newTmp();
         self.outPrint("    {s} = ptr_add {s}, {}\n", .{ ptr, base, layout.offset }) catch return CodegenError.CodegenError;
@@ -14012,6 +14193,30 @@ pub const Codegen = struct {
                     std.fmt.allocPrint(self.allocator, "{s}[_]", .{base_key}) catch return CodegenError.OutOfMemory;
                 try self.emitOverwrittenValueDropText(assign_node, elem_key, ptr_reg, 0, elem_ty);
             }
+            // CLASSB segment 3: an inline-POD element slot stores the
+            // packed image, so the assigned value's word is stored,
+            // not its record pointer. The source record was copied
+            // out, so a consumed identifier's record is released
+            // (the generic finish would forget it, adopting a record
+            // nothing points at anymore).
+            if (self.inlinePodElement(elem_ty)) {
+                const word = try self.inlinePodWordOfValue(val_reg);
+                self.outPrint("    store {s}+0, {s} as u64\n", .{ ptr_reg, word }) catch return CodegenError.CodegenError;
+                try self.emitForgetMovedValue(word);
+                try self.emitRelease(ptr_reg);
+                try self.emitRelease(offset_reg);
+                try self.emitRelease(data_reg);
+                try self.emitRelease(len_reg);
+                if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+                if (value.* == .identifier and self.storedIdentifierNeedsRelease(value, elem_ty)) {
+                    try self.emitRelease(val_reg);
+                } else {
+                    try self.finishStoredValueAfterSlotStore(value, elem_ty, val_reg);
+                }
+                if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
+                if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
+                return;
+            }
             self.outPrint("    store {s}+0, {s} as u64\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(ptr_reg);
             try self.emitRelease(offset_reg);
@@ -14033,7 +14238,15 @@ pub const Codegen = struct {
                 std.fmt.allocPrint(self.allocator, "{s}[_]", .{base_key}) catch return CodegenError.OutOfMemory;
             try self.emitOverwrittenValueDropText(assign_node, elem_key, addr.ptr, 0, addr.elem_ty);
         }
-        self.outPrint("    store {s}+0, {s} as {s}\n", .{ addr.ptr, val_reg, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
+        // CLASSB segment 3: slice/array slots of inline-POD elements
+        // hold the packed image, not a record pointer.
+        if (self.inlinePodElement(addr.elem_ty)) {
+            const word = try self.inlinePodWordOfValue(val_reg);
+            self.outPrint("    store {s}+0, {s} as u64\n", .{ addr.ptr, word }) catch return CodegenError.CodegenError;
+            try self.emitForgetMovedValue(word);
+        } else {
+            self.outPrint("    store {s}+0, {s} as {s}\n", .{ addr.ptr, val_reg, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
+        }
         try self.finishIndexAddress(addr);
         try self.finishStoredValueAfterSlotStore(value, addr.elem_ty, val_reg);
     }
@@ -14765,6 +14978,43 @@ pub const Codegen = struct {
                     }
                     if (lowering_rules.smartPointerDerefType(field_ty) != null) {
                         return try self.genExpr(borrow.expr, hoisted_allocs);
+                    }
+                }
+                // CLASSB-DEF2: a borrow of a Vec/GrowVec element is the
+                // element's buffer slot address (see the vecLike branch
+                // in genIndexAddress). planAddressOf keeps these at
+                // .value_temp for its other consumers (macro materialized
+                // slots), so route the borrow here directly instead of
+                // through the plan.
+                if (borrow.expr.* == .index_expr) {
+                    if (index_target_ty) |target_ty| {
+                        if (lowering_rules.vecLikeElementType(target_ty) != null) {
+                            const address = try self.genIndexAddress(&borrow.expr.index_expr, hoisted_allocs);
+                            try self.rememberIndexAddressSource(address);
+                            // The SA-text consumption model for a borrow
+                            // of a pointer-backed value is the record
+                            // pointer itself (field reads and derefs use
+                            // it directly, never loading through a cell),
+                            // so a record element's borrow is the handle
+                            // word stored in the slot. Primitive elements
+                            // live in the slot, so their borrow stays the
+                            // slot address. CLASSB segment 3: inline-POD
+                            // elements also live in the slot (their
+                            // packed image has the record layout), so
+                            // their borrow is the slot address too --
+                            // loading through would read field bytes as
+                            // a pointer.
+                            if (lowering_rules.isHeapHandleType(address.elem_ty) and !self.inlinePodElement(address.elem_ty)) {
+                                const rec = try self.newTmp();
+                                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ rec, address.ptr }) catch return CodegenError.CodegenError;
+                                if (self.borrow_source_temps.get(address.ptr)) |source_temp| {
+                                    self.borrow_source_temps.put(rec, source_temp) catch return CodegenError.OutOfMemory;
+                                }
+                                try self.emitRelease(address.ptr);
+                                return rec;
+                            }
+                            return address.ptr;
+                        }
                     }
                 }
                 const address_plan = lowering_rules.planAddressOf(borrow.expr, .{
@@ -15747,12 +15997,27 @@ pub const Codegen = struct {
                     const elem_size = self.vecElementSlotSize(elem_ty);
                     const elem_transfers_ownership = self.vecElementPushConsumesSource(elem_ty);
                     for (call.args) |arg| {
-                        const arg_reg = try self.genExpr(arg, hoisted_allocs);
+                        const raw_arg_reg = try self.genExpr(arg, hoisted_allocs);
+                        // CLASSB segment 3: inline-POD elements push
+                        // their packed word (see the push method arm).
+                        if (self.inlinePodElement(elem_ty)) {
+                            const word = try self.inlinePodWordOfValue(raw_arg_reg);
+                            self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ reg, word, elem_size }) catch return CodegenError.CodegenError;
+                            try self.emitForgetMovedValue(word);
+                            if (self.callArgResultTempNeedsRelease(arg, raw_arg_reg)) try self.emitRelease(raw_arg_reg);
+                            continue;
+                        }
+                        // CLASSB-DEF1: same copy materialization as the
+                        // push method for live-binding elements.
+                        const arg_copy = try self.pushArgCopyMaterialization(arg, raw_arg_reg, elem_ty);
+                        const arg_reg = arg_copy orelse raw_arg_reg;
                         self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ reg, arg_reg, elem_size }) catch return CodegenError.CodegenError;
                         // DEF-ZRANGE: same rule as the push method -- a
                         // heap-handle element temp is consumed by the
                         // store into the Vec, never released.
-                        if (elem_transfers_ownership or
+                        if (arg_copy != null) {
+                            try self.emitForgetMovedValue(arg_reg);
+                        } else if (elem_transfers_ownership or
                             (lowering_rules.isHeapHandleType(elem_ty) and arg.* != .identifier))
                         {
                             try self.emitForgetMovedValue(arg_reg);
@@ -15883,7 +16148,41 @@ pub const Codegen = struct {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
                     const elem_ty = lowering_rules.vecLikeElementType(recv_ty) orelse return CodegenError.CodegenError;
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                    const arg_reg = try self.genExpr(call.args[1], hoisted_allocs);
+                    // CLASSB segment 3: inline-POD elements are stored
+                    // as their packed record image. A struct-literal
+                    // argument is constructed directly into the slot
+                    // (Jev form B two-phase ceremony: fields evaluated
+                    // first, capacity reserved second, fields written
+                    // to the raw slot pointer, len bumped last) with
+                    // no temp record at all; any other argument pushes
+                    // the packed word loaded out of its record.
+                    if (self.inlinePodElement(elem_ty)) {
+                        if (call.args[1].* == .struct_literal and call.args[1].struct_literal.update_expr == null and lowering_rules.growVecElementType(recv_ty) == null) {
+                            try self.genVecPushPodLiteralDps(recv_reg, elem_ty, call.args[1], hoisted_allocs);
+                        } else {
+                            const raw_arg_reg = try self.genExpr(call.args[1], hoisted_allocs);
+                            const word = try self.inlinePodWordOfValue(raw_arg_reg);
+                            if (lowering_rules.growVecElementType(recv_ty) != null) {
+                                self.outPrint("    EXPAND GROWVEC_PUSH {s}, {s}, {}\n", .{ recv_reg, word, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                            } else {
+                                self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, word, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                            }
+                            try self.emitForgetMovedValue(word);
+                            // The word is a byte copy: identifier args
+                            // keep their record (push is a copy consumer
+                            // for POD elements); a fresh temp's record
+                            // is released -- its image was copied out.
+                            if (self.callArgResultTempNeedsRelease(call.args[1], raw_arg_reg)) try self.emitRelease(raw_arg_reg);
+                        }
+                        if (exprResultNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
+                        return "return_ty_sentinel";
+                    }
+                    const raw_arg_reg = try self.genExpr(call.args[1], hoisted_allocs);
+                    // CLASSB-DEF1: a copy-mode push of a live binding's
+                    // record must store a materialized copy, not the
+                    // binding's own record (see pushArgCopyMaterialization).
+                    const arg_copy = try self.pushArgCopyMaterialization(call.args[1], raw_arg_reg, elem_ty);
+                    const arg_reg = arg_copy orelse raw_arg_reg;
                     if (lowering_rules.growVecElementType(recv_ty) != null) {
                         self.outPrint("    EXPAND GROWVEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
                     } else {
@@ -15899,7 +16198,9 @@ pub const Codegen = struct {
                     // the new slot points at (live since sci 75007ee3 made
                     // release really free). Identifier args keep their
                     // binding, mirroring the DEF-ACL store rule.
-                    if (self.vecElementPushConsumesSource(elem_ty) or
+                    if (arg_copy != null) {
+                        try self.emitForgetMovedValue(arg_reg);
+                    } else if (self.vecElementPushConsumesSource(elem_ty) or
                         (lowering_rules.isHeapHandleType(elem_ty) and call.args[1].* != .identifier))
                     {
                         try self.emitForgetMovedValue(arg_reg);
@@ -15909,7 +16210,7 @@ pub const Codegen = struct {
                 }
                 if (lowering_rules.isPopCall(call) and call.args.len == 1) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
-                    _ = vecElementType(recv_ty) orelse return CodegenError.CodegenError;
+                    const pop_elem_ty = vecElementType(recv_ty) orelse return CodegenError.CodegenError;
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const ok_reg = try self.newTmp();
                     const value_reg = try self.newTmp();
@@ -15925,7 +16226,19 @@ pub const Codegen = struct {
                     self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, some_label, none_label }) catch return CodegenError.CodegenError;
                     self.outPrint("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
                     self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                    self.outPrint("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ option_reg, value_reg }) catch return CodegenError.CodegenError;
+                    // CLASSB segment 3: the popped word of an inline-POD
+                    // element is its packed image; materialize the
+                    // record the Option carries.
+                    if (self.inlinePodElement(pop_elem_ty)) {
+                        const rec = try self.materializeInlinePodRecord(value_reg, pop_elem_ty);
+                        self.outPrint("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ option_reg, rec }) catch return CodegenError.CodegenError;
+                        // The Option takes ownership of the record:
+                        // forget it, never release it (a release here
+                        // frees the payload the Option now points at).
+                        try self.emitForgetMovedValue(rec);
+                    } else {
+                        self.outPrint("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ option_reg, value_reg }) catch return CodegenError.CodegenError;
+                    }
                     self.outPrint("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
                     self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
                     self.outPrint("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
@@ -15953,6 +16266,13 @@ pub const Codegen = struct {
                     self.outPrint("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
                     self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[1])) try self.emitRelease(index_reg);
+                    // CLASSB segment 3: the removed word of an
+                    // inline-POD element is its packed image.
+                    if (self.inlinePodElement(elem_ty)) {
+                        const rec = try self.materializeInlinePodRecord(raw_reg, elem_ty);
+                        try self.emitForgetMovedValue(raw_reg);
+                        return rec;
+                    }
                     if (std.mem.eql(u8, typeString(elem_ty), "u64")) return raw_reg;
                     const reg = try self.newTmp();
                     self.outPrint("    {s} = {s} as {s}\n", .{ reg, raw_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;

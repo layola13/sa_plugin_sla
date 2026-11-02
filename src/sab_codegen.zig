@@ -1917,6 +1917,44 @@ pub const Codegen = struct {
         return 8;
     }
 
+    /// CLASSB segment 3: inline-POD Vec/GrowVec element predicate,
+    /// shared with the SA-text backend (see
+    /// lowering_rules.structDeclIsInlinePod). SAB stores these
+    /// elements as their packed record image, exactly like text.
+    fn inlinePodElement(self: *Codegen, elem_ty: *const ast.Type) bool {
+        if (elem_ty.* != .user_defined) return false;
+        const decl = self.tc.structs.get(elem_ty.user_defined.name) orelse return false;
+        return lowering_rules.structDeclIsInlinePod(decl);
+    }
+
+    /// Materialize a heap record for an inline-POD element from its
+    /// packed slot word.
+    fn materializeInlinePodRecord(self: *Codegen, word_reg: u32, elem_ty: *const ast.Type) anyerror!u32 {
+        const decl = self.tc.structs.get(elem_ty.user_defined.name) orelse return Error.UnsupportedSabDirectFeature;
+        const rec = try self.intern(try self.newTmp());
+        try self.emitAlloc(rec, structSize(decl));
+        try self.emitStore(rec, 0, word_reg, .u64);
+        return rec;
+    }
+
+    /// Is this expression an index read of an inline-POD Vec/GrowVec
+    /// element?
+    fn indexExprIsInlinePodElement(self: *Codegen, node: *const ast.Node) bool {
+        if (node.* != .index_expr) return false;
+        const target_ty = self.tc.expr_types.get(node.index_expr.target) orelse return false;
+        const elem_ty = lowering_rules.vecLikeElementType(target_ty) orelse return false;
+        return self.inlinePodElement(elem_ty);
+    }
+
+    /// Load the packed record image (one word) out of a record that
+    /// holds an inline-POD element value.
+    fn inlinePodWordOfValue(self: *Codegen, value_reg: u32) anyerror!u32 {
+        const word = try self.intern(try self.newTmp());
+        try self.recordReg(word);
+        try self.emitLoad(word, value_reg, 0, .u64);
+        return word;
+    }
+
     fn elementLoadType(self: *Codegen, ty: *const ast.Type) !sig.PrimType {
         _ = self;
         const elem_ty = firstGenericArg(ty) orelse return Error.UnsupportedSabDirectFeature;
@@ -11219,6 +11257,15 @@ pub const Codegen = struct {
             const idx = assign.target.index_expr;
             const target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType;
             if (target_ty.* != .array) {
+                // CLASSB segment 3: inline-POD index assignment stores
+                // the packed word into the slot (the std-surface rule
+                // would store the record pointer).
+                if (lowering_rules.vecLikeElementType(target_ty)) |elem_ty| {
+                    if (self.inlinePodElement(elem_ty)) {
+                        try self.genVecPodIndexAssign(idx, target_ty, elem_ty, assign, node);
+                        return;
+                    }
+                }
                 const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
                 const rule = self.findStdSurfaceRule(.index_assign, target_type_name, null) orelse return Error.UnsupportedSabDirectFeature;
                 const target_reg = try self.genExpr(idx.target);
@@ -12711,13 +12758,33 @@ pub const Codegen = struct {
             const index = std.fmt.parseUnsigned(usize, field.field_name, 10) catch return Error.UnsupportedSabDirectFeature;
             break :blk tupleFieldLayout(expr_ty.tuple, index) orelse return Error.UnsupportedSabDirectFeature;
         } else try self.fieldLayout(expr_ty, field.field_name);
+        // CLASSB segment 3: a field projection on an inline-POD vec
+        // element addresses the element's slot itself (the packed
+        // image has the record layout). Going through genExpr would
+        // materialize a copy and a store through this projection
+        // would be lost.
+        if (field.expr.* == .index_expr and self.indexExprIsInlinePodElement(field.expr)) {
+            const addr = try self.genIndexAddress(field.expr.index_expr);
+            var source = try self.addressWithOffset(addr.reg, layout.offset);
+            var regs = std.array_list.Managed(u32).init(self.allocator);
+            defer regs.deinit();
+            try regs.appendSlice(addr.release_regs);
+            if (layout.offset != 0) try regs.append(addr.reg);
+            source.release_regs = try self.ownedReleaseRegs(regs.items);
+            return source;
+        }
         const base = try self.genExpr(field.expr);
         // DEF-CHAIN: a raw-pointer base evaluates to the pointer
         // value's cell handle, not the object pointer — load through
         // it before the field offset applies (see genField). The
         // handle temp is retired like a genDeref source temp; the
         // object register takes its place in the address source.
-        if (expr_ty.* == .pointer) {
+        // CLASSB-DEF2: borrow-typed bases of pointer-backed pointees
+        // hold the same cell handle (see genField), so field-address
+        // computation loads through them identically.
+        if (expr_ty.* == .pointer or
+            (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow)))
+        {
             const obj = try self.intern(try self.newTmp());
             try self.emitLoad(obj, base, 0, .ptr);
             if (!self.isLocalReg(base)) try self.emitRelease(base);
@@ -13856,12 +13923,35 @@ pub const Codegen = struct {
         const elem_transfers_ownership = lowering_rules.vecElementPushTransfersOwnership(elem_ty, copy_like);
         for (call.args) |arg| {
             const arg_reg = try self.genExpr(@constCast(arg));
+            // CLASSB segment 3: inline-POD elements push their packed
+            // word, mirroring genVecPushCall.
+            if (self.inlinePodElement(elem_ty)) {
+                const word_reg = try self.inlinePodWordOfValue(arg_reg);
+                try self.emitStdMacroFragmentWithLiteralArgs("sa_std/vec.sa", "VEC_PUSH", &.{
+                    self.symbols.items[vec_reg],
+                    self.symbols.items[word_reg],
+                    elem_size_text,
+                }, &.{ false, false, true });
+                try self.emitRelease(word_reg);
+                if (!self.isLocalReg(arg_reg)) try self.emitRelease(arg_reg);
+                continue;
+            }
+            // CLASSB-DEF1: store a materialized copy for live-binding
+            // elements in copy mode, mirroring genVecPushCall.
+            const copy_reg = if (!elem_transfers_ownership)
+                try self.pushArgCopyMaterialization(arg_reg, elem_ty)
+            else
+                null;
+            const stored_reg = copy_reg orelse arg_reg;
             try self.emitStdMacroFragmentWithLiteralArgs("sa_std/vec.sa", "VEC_PUSH", &.{
                 self.symbols.items[vec_reg],
-                self.symbols.items[arg_reg],
+                self.symbols.items[stored_reg],
                 elem_size_text,
             }, &.{ false, false, true });
-            if (elem_transfers_ownership) {
+            if (copy_reg) |cr| {
+                try self.emitConsumedMarker(cr);
+                try self.markConsumed(cr);
+            } else if (elem_transfers_ownership) {
                 if (!self.isLocalReg(arg_reg)) try self.emitMove(arg_reg);
             } else if (lowering_rules.isHeapHandleType(elem_ty)) {
                 // DEF-ZRANGE: same rule as genVecPushCall -- the literal's
@@ -14461,7 +14551,7 @@ pub const Codegen = struct {
     fn genVecPopCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (!lowering_rules.isBarePopUnaryCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
-        _ = lowering_rules.vecElementType(receiver_ty) orelse return null;
+        const pop_elem_ty = lowering_rules.vecElementType(receiver_ty) orelse return null;
         try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_try_pop"});
 
         const receiver_reg = try self.genExpr(@constCast(call.args[0]));
@@ -14489,10 +14579,23 @@ pub const Codegen = struct {
 
         try self.emitLabel(some_label);
         try self.emitBranchRelease(ok_reg);
-        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
-            self.symbols.items[option_reg],
-            self.symbols.items[value_reg],
-        });
+        // CLASSB segment 3: the popped word of an inline-POD element
+        // is its packed image; materialize the record the Option
+        // carries and mark it consumed by the wrap.
+        if (self.inlinePodElement(pop_elem_ty)) {
+            const rec = try self.materializeInlinePodRecord(value_reg, pop_elem_ty);
+            try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+                self.symbols.items[option_reg],
+                self.symbols.items[rec],
+            });
+            try self.emitConsumedMarker(rec);
+            try self.markConsumed(rec);
+        } else {
+            try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+                self.symbols.items[option_reg],
+                self.symbols.items[value_reg],
+            });
+        }
         try self.emitRelease(value_reg);
         try self.emitJmp(end_label);
         var then_released = try self.released_regs.clone();
@@ -14519,6 +14622,23 @@ pub const Codegen = struct {
         return option_reg;
     }
 
+    /// CLASSB-DEF1 (SAB mirror of codegen.zig's
+    /// pushArgCopyMaterialization): a copy-mode push whose value
+    /// register is a live local binding must store a materialized
+    /// shallow copy, not the binding's own record -- otherwise the
+    /// slot aliases the binding and the binding's scope release frees
+    /// the record the Vec holds.
+    fn pushArgCopyMaterialization(self: *Codegen, value_reg: u32, elem_ty: *const ast.Type) anyerror!?u32 {
+        if (!self.isLocalReg(value_reg)) return null;
+        if (!lowering_rules.isHeapHandleType(elem_ty)) return null;
+        const copy_like = self.typeIsCopyValue(elem_ty) or self.typeIsShallowCopyCallArgValue(elem_ty, 0);
+        if (lowering_rules.vecElementPushTransfersOwnership(elem_ty, copy_like)) return null;
+        if (!self.typeIsShallowCopyCallArgValue(elem_ty, 0)) return null;
+        const decl = self.structDeclForType(elem_ty) orelse return null;
+        if (decl.is_opaque or decl.is_union) return null;
+        return try self.genShallowCopyCallArgValue(value_reg, elem_ty);
+    }
+
     fn genVecPushCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (!lowering_rules.isBarePushBinaryCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
@@ -14528,12 +14648,36 @@ pub const Codegen = struct {
         try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_push", "sa_mem_copy" });
         const receiver_reg = try self.genExpr(@constCast(call.args[0]));
         const value_reg = try self.genExpr(@constCast(call.args[1]));
+        // CLASSB segment 3: inline-POD elements push their packed
+        // record image, not the record pointer. The word is a byte
+        // copy, so identifier sources keep their record; a fresh
+        // temp's record is released (its image was copied out).
+        if (self.inlinePodElement(elem_ty)) {
+            const word_reg = try self.inlinePodWordOfValue(value_reg);
+            try self.emitCallBody(receiver_reg, try std.fmt.allocPrint(self.allocator, "@sa_vec_push(^{s}, {s}, 8)", .{
+                self.symbols.items[receiver_reg],
+                self.symbols.items[word_reg],
+            }));
+            if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+            try self.emitRelease(word_reg);
+            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+            const sentinel = try self.intern(try self.newTmp());
+            try self.recordReg(sentinel);
+            try self.emitAssignImm(sentinel, 0);
+            return sentinel;
+        }
+        const copy_reg = try self.pushArgCopyMaterialization(value_reg, elem_ty);
+        const stored_reg = copy_reg orelse value_reg;
         try self.emitCallBody(receiver_reg, try std.fmt.allocPrint(self.allocator, "@sa_vec_push(^{s}, {s}, 8)", .{
             self.symbols.items[receiver_reg],
-            self.symbols.items[value_reg],
+            self.symbols.items[stored_reg],
         }));
 
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        if (copy_reg) |cr| {
+            try self.emitConsumedMarker(cr);
+            try self.markConsumed(cr);
+        } else
         // DEF-ZRANGE: sa_vec_push stores the element's handle word itself
         // (no clone), so for heap-handle element types the push CONSUMES
         // the value's cell -- the Vec owns it from here on. Releasing the
@@ -14565,12 +14709,34 @@ pub const Codegen = struct {
         try self.ensureStdDeps("sa_std/growvec.sa", &.{ "sa_growvec_push", "sa_mem_copy" });
         const receiver_reg = try self.genExpr(@constCast(call.args[0]));
         const value_reg = try self.genExpr(@constCast(call.args[1]));
+        // CLASSB segment 3: GrowVec mirror of the Vec push arm.
+        if (self.inlinePodElement(elem_ty)) {
+            const word_reg = try self.inlinePodWordOfValue(value_reg);
+            try self.emitCallBody(receiver_reg, try std.fmt.allocPrint(self.allocator, "@sa_growvec_push(^{s}, {s}, 8)", .{
+                self.symbols.items[receiver_reg],
+                self.symbols.items[word_reg],
+            }));
+            if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+            try self.emitRelease(word_reg);
+            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+            const sentinel = try self.intern(try self.newTmp());
+            try self.recordReg(sentinel);
+            try self.emitAssignImm(sentinel, 0);
+            return sentinel;
+        }
+        const copy_reg = try self.pushArgCopyMaterialization(value_reg, elem_ty);
+        const stored_reg = copy_reg orelse value_reg;
         try self.emitCallBody(receiver_reg, try std.fmt.allocPrint(self.allocator, "@sa_growvec_push(^{s}, {s}, 8)", .{
             self.symbols.items[receiver_reg],
-            self.symbols.items[value_reg],
+            self.symbols.items[stored_reg],
         }));
 
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        // CLASSB-DEF1: a materialized copy is consumed by the store.
+        if (copy_reg) |cr| {
+            try self.emitConsumedMarker(cr);
+            try self.markConsumed(cr);
+        } else
         // DEF-ZRANGE mirror of genVecPushCall: the push stores the
         // element's handle word itself, so heap-handle element temps
         // are consumed by the push, never released.
@@ -14600,7 +14766,10 @@ pub const Codegen = struct {
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         const elem_ty = lowering_rules.vecElementType(receiver_ty) orelse return null;
         if (lowering_rules.vecElementSlotSize(elem_ty) != 8) return null;
-        const elem_prim = primType(elem_ty) catch return null;
+        // CLASSB segment 3: inline-POD elements remove as their
+        // packed word (u64) and materialize at the end.
+        const pod_inline = self.inlinePodElement(elem_ty);
+        const elem_prim = if (pod_inline) sig.PrimType.u64 else (primType(elem_ty) catch return null);
 
         try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_try_remove"});
         const receiver_reg = try self.genExpr(@constCast(call.args[0]));
@@ -14631,6 +14800,11 @@ pub const Codegen = struct {
         try self.emitLabel(hit_label);
         try self.emitBranchRelease(ok_reg);
         if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+        if (pod_inline) {
+            const rec = try self.materializeInlinePodRecord(raw_reg, elem_ty);
+            if (!self.isLocalReg(raw_reg)) try self.emitRelease(raw_reg);
+            return rec;
+        }
         if (elem_prim == .u64) return raw_reg;
         const dst = try self.intern(try self.newTmp());
         try self.recordReg(dst);
@@ -18548,6 +18722,15 @@ pub const Codegen = struct {
             return dst;
         }
 
+        // CLASSB segment 3: inline-POD elements are read by loading
+        // the packed word out of the slot and materializing a record
+        // (the std-surface rule would load the word as a pointer).
+        if (lowering_rules.vecLikeElementType(target_ty)) |elem_ty| {
+            if (self.inlinePodElement(elem_ty)) {
+                return try self.genVecPodIndexRead(idx, target_ty, elem_ty);
+            }
+        }
+
         const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
         const rule = self.findStdSurfaceRule(.index, target_type_name, null) orelse return Error.UnsupportedSabDirectFeature;
         const target_reg = try self.genExpr(idx.target);
@@ -19070,6 +19253,119 @@ pub const Codegen = struct {
         });
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
         return dst;
+    }
+
+    /// CLASSB segment 3: index assignment of an inline-POD
+    /// Vec/GrowVec element. Mirrors the SA-text genIndexAssign
+    /// (bounds check with panic 87, slot store of the packed word).
+    /// A temp source record is released after its image is copied
+    /// out; an identifier source follows the usual assignment move
+    /// bookkeeping (its record is retired by the consumed marking,
+    /// mirroring how the surface rule adopts sources on this
+    /// backend).
+    fn genVecPodIndexAssign(self: *Codegen, idx: ast.IndexExpr, target_ty: *const ast.Type, elem_ty: *const ast.Type, assign: ast.AssignStmt, node: *const ast.Node) anyerror!void {
+        _ = elem_ty;
+        const is_grow = lowering_rules.growVecElementType(target_ty) != null;
+        const len_off = if (is_grow) lowering_rules.GrowVecAbi.len_offset else lowering_rules.VecAbi.len_offset;
+        const ptr_off = if (is_grow) lowering_rules.GrowVecAbi.ptr_offset else lowering_rules.VecAbi.ptr_offset;
+        const target_source = try self.genVecOwnerReceiver(idx.target);
+        const target_reg = target_source.reg;
+        const index_reg = try self.genExpr(idx.index);
+        const value_reg = try self.genExpr(assign.value);
+        const len_reg = try self.intern(try self.newTmp());
+        const in_bounds = try self.intern(try self.newTmp());
+        try self.recordReg(len_reg);
+        try self.recordReg(in_bounds);
+        try self.emitLoad(len_reg, target_reg, len_off, .u64);
+        try self.emitOp(in_bounds, .ult, .{ .reg = index_reg }, .{ .reg = len_reg });
+        try self.emitRelease(len_reg);
+
+        const hit_label = try self.newLabel("L_VEC_POD_ASSIGN_HIT");
+        const miss_label = try self.newLabel("L_VEC_POD_ASSIGN_MISS");
+        try self.emitBranch(in_bounds, hit_label, miss_label);
+
+        try self.emitLabel(miss_label);
+        try self.emitBranchRelease(in_bounds);
+        if (!self.isLocalReg(index_reg)) try self.emitBranchRelease(index_reg);
+        if (!self.isLocalReg(value_reg)) try self.emitBranchRelease(value_reg);
+        try self.releaseAddressSource(target_source);
+        try self.emitPanicCode(87);
+
+        try self.emitLabel(hit_label);
+        try self.emitBranchRelease(in_bounds);
+        const data_ptr = try self.intern(try self.newTmp());
+        const offset = try self.intern(try self.newTmp());
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.recordReg(data_ptr);
+        try self.recordReg(offset);
+        try self.recordReg(elem_ptr);
+        try self.emitLoad(data_ptr, target_reg, ptr_off, .ptr);
+        try self.emitOp(offset, .mul, .{ .reg = index_reg }, .{ .imm_i64 = 8 });
+        try self.emitPtrAdd(elem_ptr, data_ptr, .{ .reg = offset });
+        try self.emitRelease(data_ptr);
+        const word = try self.inlinePodWordOfValue(value_reg);
+        try self.emitStore(elem_ptr, 0, word, .u64);
+        try self.emitRelease(word);
+        try self.emitRelease(elem_ptr);
+        try self.emitRelease(offset);
+        if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        try self.releaseAddressSource(target_source);
+        try self.markAssignmentMovedSource(assign.target, assign.value);
+        try self.emitReplaceSourceNull(node);
+    }
+
+    /// CLASSB segment 3: index read of an inline-POD Vec/GrowVec
+    /// element. Mirrors the SA-text genVecIndexRead (bounds check
+    /// with panic 32, slot address = buffer + index * 8) and
+    /// materializes an owned record from the packed word.
+    fn genVecPodIndexRead(self: *Codegen, idx: ast.IndexExpr, target_ty: *const ast.Type, elem_ty: *const ast.Type) anyerror!u32 {
+        const is_grow = lowering_rules.growVecElementType(target_ty) != null;
+        const len_off = if (is_grow) lowering_rules.GrowVecAbi.len_offset else lowering_rules.VecAbi.len_offset;
+        const ptr_off = if (is_grow) lowering_rules.GrowVecAbi.ptr_offset else lowering_rules.VecAbi.ptr_offset;
+        const target_source = try self.genVecOwnerReceiver(idx.target);
+        const target_reg = target_source.reg;
+        const index_reg = try self.genExpr(idx.index);
+        const len_reg = try self.intern(try self.newTmp());
+        const in_bounds = try self.intern(try self.newTmp());
+        try self.recordReg(len_reg);
+        try self.recordReg(in_bounds);
+        try self.emitLoad(len_reg, target_reg, len_off, .u64);
+        try self.emitOp(in_bounds, .ult, .{ .reg = index_reg }, .{ .reg = len_reg });
+        try self.emitRelease(len_reg);
+
+        const hit_label = try self.newLabel("L_VEC_POD_INDEX_HIT");
+        const miss_label = try self.newLabel("L_VEC_POD_INDEX_MISS");
+        try self.emitBranch(in_bounds, hit_label, miss_label);
+
+        try self.emitLabel(miss_label);
+        try self.emitBranchRelease(in_bounds);
+        if (!self.isLocalReg(index_reg)) try self.emitBranchRelease(index_reg);
+        try self.releaseAddressSource(target_source);
+        try self.emitPanicCode(32);
+
+        try self.emitLabel(hit_label);
+        try self.emitBranchRelease(in_bounds);
+        const data_ptr = try self.intern(try self.newTmp());
+        const offset = try self.intern(try self.newTmp());
+        const elem_ptr = try self.intern(try self.newTmp());
+        const word = try self.intern(try self.newTmp());
+        try self.recordReg(data_ptr);
+        try self.recordReg(offset);
+        try self.recordReg(elem_ptr);
+        try self.recordReg(word);
+        try self.emitLoad(data_ptr, target_reg, ptr_off, .ptr);
+        try self.emitOp(offset, .mul, .{ .reg = index_reg }, .{ .imm_i64 = 8 });
+        try self.emitPtrAdd(elem_ptr, data_ptr, .{ .reg = offset });
+        try self.emitRelease(data_ptr);
+        try self.emitLoad(word, elem_ptr, 0, .u64);
+        try self.emitRelease(elem_ptr);
+        try self.emitRelease(offset);
+        const rec = try self.materializeInlinePodRecord(word, elem_ty);
+        try self.emitRelease(word);
+        if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+        try self.releaseAddressSource(target_source);
+        return rec;
     }
 
     fn genVecDirectIndex(self: *Codegen, idx: ast.IndexExpr, target_ty: *const ast.Type) anyerror!?u32 {
@@ -20281,9 +20577,20 @@ pub const Codegen = struct {
         // object pointer before any field offset applies. Only a
         // deref_expr base already yields the object pointer (its
         // type is the pointee, never a pointer).
+        // CLASSB-DEF2: a borrow of a pointer-backed value follows the
+        // same cell convention (genBorrow produces the address of the
+        // cell holding the value's record pointer -- a local's stack
+        // slot, a Vec/GrowVec element slot, a field cell), so a field
+        // read through the borrow must load the record pointer first,
+        // exactly like the raw-pointer case. Without this, `b.key`
+        // for `b = &v[64]` loaded the record pointer's own bits as
+        // the field value. Mirrors the SA-text backend's field read,
+        // which loads through borrow-typed bases the same way.
         var eff_base = base;
         var through: ?u32 = null;
-        if (expr_ty.* == .pointer) {
+        if (expr_ty.* == .pointer or
+            (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow)))
+        {
             const obj = try self.intern(try self.newTmp());
             try self.emitLoad(obj, base, 0, .ptr);
             eff_base = obj;

@@ -11026,6 +11026,56 @@ pub const Codegen = struct {
         try self.emitDeepValueDrop(old, value_ty, plan, key, assign_node, true, true);
     }
 
+    /// DEF deep-drop crash-A (replace semantics): after an annotated
+    /// assignment's store, write an empty handle into the source
+    /// place so the transferred value has exactly one owner (the
+    /// target). The address is recomputed from the place expression
+    /// with the same helpers the store paths use; the value read in
+    /// this same statement already bounds-checked any index, and
+    /// element stores never relocate the source container, so the
+    /// recomputation needs no second check. A runtime-equal index
+    /// (`v[i] = v[j]` with i == j) reads as a move-out under this
+    /// rule, exactly as the checker's same-place exclusion documents
+    /// for the static case.
+    fn emitReplaceSourceNull(self: *Codegen, assign_node: *const ast.Node) !void {
+        const src = self.tc.assignReplaceSrc(assign_node) orelse return;
+        const src_ty = self.tc.expr_types.get(src) orelse return Error.MissingType;
+        const empty = try self.intern(try self.newTmp());
+        try self.recordReg(empty);
+        if (lowering_rules.isStringType(src_ty)) {
+            try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_NEW", &.{self.symbols.items[empty]});
+        } else {
+            try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_new"});
+            try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_NEW", &.{self.symbols.items[empty]});
+        }
+        switch (src.*) {
+            .field_expr => |field| {
+                const addr = try self.genFieldAddress(field);
+                try self.emitStore(addr.reg, 0, empty, .ptr);
+                try self.releaseAddressSource(addr);
+            },
+            .index_expr => |idx| {
+                const addr = try self.genIndexAddress(idx);
+                try self.emitStore(addr.reg, 0, empty, .ptr);
+                try self.releaseAddressSource(addr);
+            },
+            .deref_expr => |d| {
+                const addr = try self.genExpr(d.expr);
+                try self.emitStore(addr, 0, empty, .ptr);
+                if (!self.isLocalReg(addr)) try self.emitRelease(addr);
+            },
+            else => return Error.UnsupportedSabDirectFeature,
+        }
+        // The empty handle's cell belongs to the source place now:
+        // transfer the temp with the stored-value marker idiom.
+        if (lowering_rules.isHeapHandleType(src_ty)) {
+            try self.emitConsumedMarker(empty);
+            try self.markConsumed(empty);
+        } else {
+            try self.emitRelease(empty);
+        }
+    }
+
     fn genAssign(self: *Codegen, assign: ast.AssignStmt, node: *const ast.Node) anyerror!void {
         if (assign.target.* == .deref_expr) {
             const source_expr = assign.target.deref_expr.expr;
@@ -11038,6 +11088,7 @@ pub const Codegen = struct {
                 const value = try self.genExpr(assign.value);
                 try self.emitStore(target, 0, value, try storagePrimType(inner));
                 try self.releaseStoredExprResultIfNeeded(assign.value, value, inner);
+                try self.emitReplaceSourceNull(node);
                 return;
             }
             const inner_ty = switch (source_ty.*) {
@@ -11055,6 +11106,7 @@ pub const Codegen = struct {
             );
             if (target_lifecycle.shouldRelease()) try self.emitRelease(target);
             try self.releaseStoredExprResultIfNeeded(assign.value, value, inner_ty);
+            try self.emitReplaceSourceNull(node);
             return;
         }
         if (assign.target.* == .field_expr) {
@@ -11079,6 +11131,7 @@ pub const Codegen = struct {
             try self.releaseStoredExprResultIfNeeded(assign.value, value, field_ty);
             if (!self.isLocalReg(target.reg)) try self.emitRelease(target.reg);
             try self.markAssignmentMovedSourceWithType(assign.target, assign.value, field_ty);
+            try self.emitReplaceSourceNull(node);
             return;
         }
 
@@ -11100,6 +11153,7 @@ pub const Codegen = struct {
                 });
                 try self.releaseNonLocalTemps(&.{ target_reg, index_reg, value });
                 try self.markAssignmentMovedSource(assign.target, assign.value);
+                try self.emitReplaceSourceNull(node);
                 return;
             }
             const target = try self.genIndexAddress(idx);
@@ -11109,6 +11163,7 @@ pub const Codegen = struct {
             try self.releaseStoredExprResultIfNeeded(assign.value, value, target_ty.array.elem);
             try self.releaseAddressSource(target);
             try self.markAssignmentMovedSource(assign.target, assign.value);
+            try self.emitReplaceSourceNull(node);
             return;
         }
 
@@ -11125,6 +11180,7 @@ pub const Codegen = struct {
                 if (self.localReg(moved_name)) |source_reg| try self.markConsumed(source_reg);
             }
         }
+        try self.emitReplaceSourceNull(node);
     }
 
     fn switchCaseIsDefault(case: ast.Case) bool {

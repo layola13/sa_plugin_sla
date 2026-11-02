@@ -204,6 +204,15 @@ pub const TypeChecker = struct {
     // DEF deep-drop batch (fields for the AssignDropMode decl above):
     // assign_drop_old maps an assignment node to its old-value drop mode.
     assign_drop_old: std.AutoHashMap(*const ast.Node, AssignDropMode),
+    // DEF deep-drop crash-A (replace semantics, Jev A1): maps an
+    // assignment node whose RHS is a deep handle place read with an
+    // owned root to the (move-unwrapped) source place expression.
+    // Codegen stores the new value into the target, then writes an
+    // empty handle into the source place (mem::replace), so the
+    // transferred buffers keep exactly one owner. Without this, the
+    // bare header store aliased the source and both places' resets
+    // deep-dropped the same buffers (slaredis goroutine crash A).
+    assign_replace_src: std.AutoHashMap(*const ast.Node, *const ast.Node),
     // DEF deep-drop batch: snapshot of tainted place keys at each cleanup
     // node (keys of `cleanups`/`phi_cleanups`), plus a whole-program union
     // used when a drop site has no snapshot. A place (binding name or
@@ -313,6 +322,7 @@ pub const TypeChecker = struct {
             .macro_call_try_cleanups = std.AutoHashMap(*const ast.CallExpr, std.array_list.Managed([]const u8)).init(allocator),
             .phi_cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
             .assign_drop_old = std.AutoHashMap(*const ast.Node, AssignDropMode).init(allocator),
+            .assign_replace_src = std.AutoHashMap(*const ast.Node, *const ast.Node).init(allocator),
             .drop_taint_snapshots = std.AutoHashMap(*const ast.Node, std.StringHashMap(void)).init(allocator),
             .tainted_places_union = std.StringHashMap(void).init(allocator),
             .drop_plan_cache = std.AutoHashMap(*const ast.Type, *const lowering_rules.DropPlan).init(allocator),
@@ -652,6 +662,14 @@ pub const TypeChecker = struct {
         return self.assign_drop_old.get(node);
     }
 
+    /// DEF deep-drop crash-A: the source place expression an
+    /// assignment must null after its store (replace semantics), or
+    /// null when the assignment is not a place-to-place transfer of
+    /// a deep handle value.
+    pub fn assignReplaceSrc(self: *TypeChecker, node: *const ast.Node) ?*const ast.Node {
+        return self.assign_replace_src.get(node);
+    }
+
     /// Taint set recorded for a drop site; falls back to the
     /// whole-program union when the site has no snapshot (the union
     /// only ever over-suppresses).
@@ -828,6 +846,72 @@ pub const TypeChecker = struct {
         }
     }
 
+    /// DEF deep-drop crash-A: is the root of this place spine owned
+    /// (so the place can be written back to)? The spine bottoms out
+    /// at an identifier whose type is not borrow-like; raw-pointer
+    /// deref steps count as owned (the pointer is an owned value
+    /// held in an owned place, and assignment through it is a
+    /// transfer -- the crash-A shape). A borrow expression or a
+    /// borrow-typed binding at the bottom, or a non-place bottom
+    /// (call result), is not owned.
+    fn placeSpineRootOwned(self: *TypeChecker, expr: *const ast.Node) bool {
+        var cur = expr;
+        while (true) {
+            switch (cur.*) {
+                .field_expr => |f| cur = f.expr,
+                .index_expr => |ix| cur = ix.target,
+                .deref_expr => |d| cur = d.expr,
+                .slice_expr => |s| cur = s.target,
+                .move_expr => |m| cur = m.expr,
+                .borrow_expr => return false,
+                .identifier => {
+                    const ty = self.expr_types.get(cur) orelse return false;
+                    return !isBorrowLikeType(ty);
+                },
+                else => return false,
+            }
+        }
+    }
+
+    /// DEF deep-drop crash-A (replace semantics, Jev A1): decide
+    /// whether an assignment's RHS is a transferable place read --
+    /// a field/index/deref place (move wrappers stripped) holding a
+    /// deep HANDLE value (.buffer/.deep_vec: a canonical empty
+    /// handle exists to leave behind) whose root is owned and which
+    /// is not the target place itself. Returns the source place
+    /// expression to annotate, or null. Identifier RHS is the
+    /// checker's move; borrow roots keep clone-on-extract (which
+    /// only ever fires at binding points, never here); .deep_struct
+    /// places have no empty value to leave behind and stay out of
+    /// this batch (registered separately, Jev DS2).
+    fn replaceSourceForAssign(self: *TypeChecker, value: *const ast.Node, target: *const ast.Node, target_key: ?[]const u8) TypeError!?*const ast.Node {
+        // AUDIT section 4.2: the target must be a non-identifier
+        // place. Identifier targets keep the existing move/clone
+        // treatment and never earn a replace -- annotating one
+        // would also retire the source's taint below and change
+        // how codegen reads that RHS (a clone-on-extract read of
+        // `z = (*src).items` degrades to an aliasing load).
+        if (target.* == .identifier) return null;
+        var rhs = value;
+        while (rhs.* == .move_expr) rhs = rhs.move_expr.expr;
+        switch (rhs.*) {
+            .field_expr, .index_expr, .deref_expr => {},
+            else => return null,
+        }
+        const rhs_ty = self.expr_types.get(rhs) orelse return null;
+        const plan = try self.planValueDrop(rhs_ty);
+        switch (plan.kind()) {
+            .buffer, .deep_vec => {},
+            else => return null,
+        }
+        if (!self.placeSpineRootOwned(rhs)) return null;
+        const src_key = self.taintKeyOfPlace(rhs) orelse return null;
+        if (target_key) |target_key_val| {
+            if (std.mem.eql(u8, src_key, target_key_val)) return null;
+        }
+        return rhs;
+    }
+
     fn walkTaintAssign(self: *TypeChecker, node: *const ast.Node, assign: ast.AssignStmt, taint: *std.StringHashMap(void)) TypeError!void {
         // Index sub-expressions of the target are value positions; the
         // target place spine itself is neither read nor consumed.
@@ -887,6 +971,16 @@ pub const TypeChecker = struct {
                 }
             }
             try self.snapshotDropTaint(node, taint);
+        }
+        // DEF deep-drop crash-A (replace semantics): a qualifying
+        // place-read RHS moves OUT of its source place -- annotate
+        // the source for the post-store nulling and retire its
+        // taint (the place holds an empty handle from here on; the
+        // snapshot above predates this on purpose, it describes the
+        // target's old-value drop at this node).
+        if (try self.replaceSourceForAssign(assign.value, assign.target, place_key)) |src| {
+            try self.assign_replace_src.put(node, src);
+            if (self.taintKeyOfPlace(src)) |src_key| clearDropTaint(taint, src_key);
         }
         // The stored value is exclusively owned by the place now.
         if (place_key) |key| clearDropTaint(taint, key);
@@ -1976,6 +2070,7 @@ pub const TypeChecker = struct {
         self.phi_cleanups.deinit();
 
         self.assign_drop_old.deinit();
+        self.assign_replace_src.deinit();
         var snap_iter = self.drop_taint_snapshots.valueIterator();
         while (snap_iter.next()) |set| {
             set.deinit();

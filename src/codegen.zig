@@ -1378,6 +1378,72 @@ pub const Codegen = struct {
         try self.emitDeepValueDropText(old_reg, value_ty, plan, key, assign_node, true, true);
     }
 
+    /// DEF deep-drop crash-A (replace semantics): after an annotated
+    /// assignment's store, write an empty handle into the source
+    /// place so the transferred value has exactly one owner (the
+    /// target). The address is recomputed from the place expression
+    /// with the same helpers the store paths use; the value read in
+    /// this same statement already bounds-checked any index, and
+    /// element stores never relocate the source container, so the
+    /// recomputation needs no second check. A runtime-equal index
+    /// (`v[i] = v[j]` with i == j) reads as a move-out under this
+    /// rule, exactly as the checker's same-place exclusion documents
+    /// for the static case.
+    fn emitReplaceSourceNullText(self: *Codegen, assign_node: *const ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
+        const src = self.tc.assignReplaceSrc(assign_node) orelse return;
+        const src_ty = self.tc.expr_types.get(src) orelse return CodegenError.CodegenError;
+        const empty_reg = try self.newTmp();
+        if (lowering_rules.isStringType(src_ty)) {
+            self.outPrint("    EXPAND STRING_BUF_NEW {s}\n", .{empty_reg}) catch return CodegenError.CodegenError;
+        } else {
+            self.outPrint("    EXPAND VEC_NEW {s}\n", .{empty_reg}) catch return CodegenError.CodegenError;
+        }
+        switch (src.*) {
+            .field_expr => |field| {
+                const projection = try self.genFieldAddress(&field, hoisted_allocs);
+                try self.rememberAddressProjectionSource(projection);
+                self.outPrint("    store {s}+0, {s} as ptr\n", .{ projection.ptr, empty_reg }) catch return CodegenError.CodegenError;
+                try self.emitRelease(projection.ptr);
+            },
+            .index_expr => |idx| {
+                const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
+                if (vecElementType(target_ty)) |elem_ty| {
+                    const vec_receiver = try self.genVecOwnerReceiver(idx.target, hoisted_allocs);
+                    const vec_reg = vec_receiver.reg;
+                    const index_reg = try self.genExpr(idx.index, hoisted_allocs);
+                    const data_reg = try self.newTmp();
+                    const offset_reg = try self.newTmp();
+                    const slot_reg = try self.newTmp();
+                    self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as u64\n", .{ slot_reg, empty_reg }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(slot_reg);
+                    try self.emitRelease(offset_reg);
+                    try self.emitRelease(data_reg);
+                    if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+                    if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
+                    if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
+                } else {
+                    const addr = try self.genIndexAddress(&idx, hoisted_allocs);
+                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ addr.ptr, empty_reg, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
+                    try self.finishIndexAddress(addr);
+                }
+            },
+            .deref_expr => |d| {
+                const addr_reg = try self.genExpr(d.expr, hoisted_allocs);
+                self.outPrint("    store {s}+0, {s} as ptr\n", .{ addr_reg, empty_reg }) catch return CodegenError.CodegenError;
+                const target_lifecycle = lowering_rules.planDerefAssignmentTargetLifecycle(
+                    d.expr.* != .identifier,
+                    self.refcell_borrow_handles.contains(addr_reg),
+                );
+                if (target_lifecycle.shouldRelease()) try self.emitRelease(addr_reg);
+            },
+            else => return CodegenError.CodegenError,
+        }
+        try self.emitForgetMovedValue(empty_reg);
+    }
+
     fn markConsumedBinding(self: *Codegen, name: []const u8) CodegenError!void {
         self.consumed_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
     }
@@ -12414,6 +12480,7 @@ pub const Codegen = struct {
                             if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
                             if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
                             try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
+                            try self.emitReplaceSourceNullText(stmt, hoisted_allocs);
                             return;
                         }
                         // Array (non-Vec) of struct elements: genExpr on the
@@ -12437,6 +12504,7 @@ pub const Codegen = struct {
                                 try self.emitForgetMovedValue(elem_reg);
                                 try self.finishIndexAddress(addr);
                                 try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
+                                try self.emitReplaceSourceNullText(stmt, hoisted_allocs);
                                 return;
                             }
                         }
@@ -12559,6 +12627,11 @@ pub const Codegen = struct {
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
                     self.outPrint("    {s} = {s}\n", .{ target_reg, val_reg }) catch return CodegenError.CodegenError;
                 }
+                // DEF deep-drop crash-A: every non-returning assign
+                // path above (index via genIndexAssign, deref, generic
+                // field, identifier, fallback) converges here for the
+                // post-store source nulling.
+                try self.emitReplaceSourceNullText(stmt, hoisted_allocs);
             },
             .return_stmt => |ret| {
                 var val_reg: ?[]const u8 = null;

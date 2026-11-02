@@ -10385,3 +10385,122 @@ test "sla deep drop emits element and field drops in sa codegen" {
     }
 }
 
+test "sla replace nulls source place after transfer in sa codegen" {
+    // DEF deep-drop crash-A (replace semantics, Jev A1): the
+    // move-out half of the transfer contract is an emission
+    // property -- after storing the transferred handle into the
+    // target place, codegen must write a fresh empty handle into
+    // the SOURCE place so the value has exactly one owner.
+    //   transfer shape: `(*dst).items = (*src).items;` contains no
+    //     Vec::new() call, so of the 3 "EXPAND VEC_NEW" in the output
+    //     (2 Holder literals in the test + the nulling write) the
+    //     nulling is the one beyond the literals: >= 3 post-fix,
+    //     exactly 2 pre-fix.
+    //   clone counter-example: `z = (*src).items;` (identifier
+    //     target, raw-pointer root) stays clone-on-extract: a
+    //     "EXPAND VEC_CLONE" must be present and the "EXPAND
+    //     VEC_NEW" count stays at the 2 constructor sites (Holder
+    //     literal + z's initializer) -- replace must not null a
+    //     clone's source.
+    //   reset counter-example: `(*c).items = Vec::new();` keeps its
+    //     2 "EXPAND VEC_NEW" (Holder literal + the constructor) -- a
+    //     fresh value is not a place read and earns no nulling write.
+    // SAB-backend verification of the same shapes lives in the
+    // corpus cases (tests/test_unit_deep_drop_replace_*.sla)
+    // executed via `sa sla test --test-backend sab`.
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    const transfer_source =
+        \\@import "sa_std/vec.sa"
+        \\
+        \\struct Holder {
+        \\    items: Vec<Vec<u8>>,
+        \\    tag: u64,
+        \\}
+        \\
+        \\fn transfer(dst: *Holder, src: *Holder) {
+        \\    (*dst).items = (*src).items;
+        \\}
+        \\
+        \\@test "transfer shape"() {
+        \\    let a = Box::into_raw(Box::new(Holder { items: Vec::new(), tag: 1 }));
+        \\    let b = Box::into_raw(Box::new(Holder { items: Vec::new(), tag: 2 }));
+        \\    transfer(a, b);
+        \\    if len((*b).items) != 0 { panic(4504); };
+        \\}
+    ;
+    const clone_source =
+        \\@import "sa_std/vec.sa"
+        \\
+        \\struct Holder {
+        \\    items: Vec<Vec<u8>>,
+        \\    tag: u64,
+        \\}
+        \\
+        \\fn via_assign(src: *Holder) -> u64 {
+        \\    let z: Vec<Vec<u8>> = Vec::new();
+        \\    z = (*src).items;
+        \\    return len(z) as u64;
+        \\}
+        \\
+        \\@test "clone shape"() {
+        \\    let b = Box::into_raw(Box::new(Holder { items: Vec::new(), tag: 2 }));
+        \\    if via_assign(b) != 0 { panic(4801); };
+        \\}
+    ;
+    const reset_source =
+        \\@import "sa_std/vec.sa"
+        \\
+        \\struct Holder {
+        \\    items: Vec<Vec<u8>>,
+        \\    tag: u64,
+        \\}
+        \\
+        \\fn reset(c: *Holder) {
+        \\    (*c).items = Vec::new();
+        \\}
+        \\
+        \\@test "reset shape"() {
+        \\    let b = Box::into_raw(Box::new(Holder { items: Vec::new(), tag: 2 }));
+        \\    reset(b);
+        \\    if len((*b).items) != 0 { panic(4811); };
+        \\}
+    ;
+
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const cases = [_]struct { file: []const u8, source: []const u8, min_vec_new: usize, max_vec_new: usize, min_vec_clone: usize }{
+        .{ .file = "transfer.sla", .source = transfer_source, .min_vec_new = 3, .max_vec_new = std.math.maxInt(usize), .min_vec_clone = 0 },
+        .{ .file = "clone.sla", .source = clone_source, .min_vec_new = 2, .max_vec_new = 2, .min_vec_clone = 1 },
+        .{ .file = "reset.sla", .source = reset_source, .min_vec_new = 2, .max_vec_new = 2, .min_vec_clone = 0 },
+    };
+    for (cases) |case| {
+        try tdir.writeFile(.{ .sub_path = case.file, .data = case.source });
+
+        var sa_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
+        defer sa_stderr.deinit();
+        var sa_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sa_stderr));
+        const sa_compiled = try compileSlaSaTestInput(allocator, case.file, sa_stderr_fw.writer(), &.{}, false);
+        if (sa_compiled) |compiled| {
+            defer if (compiled.delete_after) sio.cwd().deleteFile(compiled.path) catch {};
+            const sa_code = try sio.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
+            try std.testing.expect(std.mem.count(u8, sa_code, "EXPAND VEC_NEW") >= case.min_vec_new);
+            try std.testing.expect(std.mem.count(u8, sa_code, "EXPAND VEC_NEW") <= case.max_vec_new);
+            try std.testing.expect(std.mem.count(u8, sa_code, "EXPAND VEC_CLONE") >= case.min_vec_clone);
+        } else {
+            try sa_stderr_fw.writer().flush();
+            std.debug.print("{s}", .{sa_stderr.items});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+

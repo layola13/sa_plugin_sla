@@ -687,6 +687,27 @@ pub const Parser = struct {
             const is_async = self.match(.keyword_async);
             if (self.peek() != .keyword_fn) return ParserError.ExpectedDeclaration;
             return try self.parseFuncDecl(is_pub, is_inline, is_async, is_extern, abi, true, false);
+        } else if (std.mem.eql(u8, name, "arena")) {
+            // F2-A arena batch (U1 = C ruling: block form plus the
+            // `@arena fn` attribute sugar). Equivalent expansion,
+            // fixed as specification in C1: `@arena fn f(params) -> T
+            // { body }` means exactly `fn f(params) -> T { arena {
+            // body } }` — the whole body forms one arena domain,
+            // parameters stay ordinary-domain. The expansion is
+            // applied semantically by the checker (FuncDecl.is_arena
+            // spans an arena frame over the body check) rather than
+            // by AST rewriting, so bodies that are lazily re-parsed
+            // from captured source spans keep the sugar's semantics.
+            const is_pub = self.match(.keyword_pub);
+            const is_extern = self.match(.keyword_extern);
+            const abi = if (is_extern) try self.parseOptionalExternAbi() else null;
+            const is_inline = self.match(.keyword_inline);
+            const is_async = self.match(.keyword_async);
+            if (is_extern) return ParserError.ExpectedDeclaration;
+            if (self.peek() != .keyword_fn) return ParserError.ExpectedDeclaration;
+            const decl = try self.parseFuncDecl(is_pub, is_inline, is_async, is_extern, abi, false, false);
+            decl.func_decl.is_arena = true;
+            return decl;
         } else if (std.mem.eql(u8, name, "derive")) {
             return try self.parseDeriveDeclAfterAt();
         }
@@ -1817,8 +1838,31 @@ pub const Parser = struct {
         return try stmts.toOwnedSlice();
     }
 
+    /// F2-A arena batch: `arena` is a contextual keyword — it opens an
+    /// arena statement block only when it is the statement's first
+    /// token and is immediately followed by `{`. Any other use (a
+    /// variable named `arena`, a call, a field access) keeps parsing
+    /// as an ordinary expression statement.
+    fn atArenaBlockStart(self: *Parser) bool {
+        if (self.peek() != .identifier) return false;
+        if (!std.mem.eql(u8, self.lexeme(self.tok.loc), "arena")) return false;
+        const saved_lex = self.lex;
+        const saved_tok = self.tok;
+        self.advance();
+        const is_block = self.peek() == .l_brace;
+        self.lex = saved_lex;
+        self.tok = saved_tok;
+        return is_block;
+    }
+
     fn parseStmt(self: *Parser) ParserError!*ast.Node {
-        if (self.peek() == .keyword_using) {
+        if (self.atArenaBlockStart()) {
+            self.advance(); // consume `arena`
+            const body = try self.parseBlock();
+            const node = try self.allocator.create(ast.Node);
+            node.* = .{ .arena_stmt = .{ .body = body } };
+            return node;
+        } else if (self.peek() == .keyword_using) {
             return try self.parseUsingDecl();
         } else if (self.peek() == .keyword_let) {
             return try self.parseLetStmt();

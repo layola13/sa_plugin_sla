@@ -27,6 +27,7 @@ pub const Node = union(enum) {
     var_stmt: VarStmt,
     assign_stmt: AssignStmt,
     block_stmt: BlockStmt,
+    arena_stmt: ArenaStmt,
     expr_stmt: *Node,
     return_stmt: ReturnStmt,
     for_stmt: ForStmt,
@@ -145,6 +146,14 @@ pub const FuncDecl = struct {
     body: []const *Node,
     is_inline: bool,
     is_async: bool = false,
+    /// F2-A arena batch (U1 = C ruling): `@arena fn` attribute sugar.
+    /// Equivalent expansion, fixed as specification in C1: the whole
+    /// function body is checked as if wrapped in a single `arena {}`
+    /// block (parameters stay ordinary-domain; every owned local
+    /// declared in the body is an arena root candidate). Implemented
+    /// at the checker level (an arena frame spans the body check), so
+    /// lazily re-parsed body spans keep the semantics.
+    is_arena: bool = false,
     operator: ?BinaryOp = null,
     /// Extern variadic batch: the parameter list ends with a trailing
     /// `...` marker. Only legal on extern declarations and on exported
@@ -442,6 +451,18 @@ pub const AssignStmt = struct {
 };
 
 pub const BlockStmt = struct {
+    body: []const *Node,
+};
+
+/// F2-A arena batch (C1, checker-only): `arena { ... }` statement
+/// block. Owned bindings declared inside the block whose types are
+/// statically arena-safe form an ownership domain; the checker labels
+/// their places with the domain and rejects cross-domain deep-value
+/// flow. Emission (bump allocation + watermark rewind at block exit,
+/// skipping the roots' drop plans) lands in the C2 batch; in C1 the
+/// codegens reject this node loudly rather than emitting ordinary
+/// drops for it.
+pub const ArenaStmt = struct {
     body: []const *Node,
 };
 

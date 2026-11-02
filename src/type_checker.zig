@@ -52,6 +52,13 @@ pub const Symbol = struct {
     // the first consuming call, and the explicit-copy fix) instead of leaking
     // the SA referee's UseAfterMove 1009.
     consumed_by_call: ?[]const u8 = null,
+    // F2-A arena batch (C1): ownership-domain label of this binding.
+    // 0 is the ordinary heap domain; a nonzero id names the arena block
+    // (or @arena function body) the binding was declared in. The label
+    // is a static property of the binding's declaration site and rides
+    // on every place rooted at the binding (design section 3: the
+    // label lives at place-key level, beside the drop taint).
+    arena_domain: u32 = 0,
 };
 
 pub const InjectedScopeBinding = struct {
@@ -228,6 +235,22 @@ pub const TypeChecker = struct {
     drop_plan_cache: std.AutoHashMap(*const ast.Type, *const lowering_rules.DropPlan),
     drop_plan_active: std.AutoHashMap(*const ast.Type, void),
 
+    // F2-A arena batch (C1): memoized ArenaSafe verdicts per type node
+    // (same lifetime discipline as drop_plan_cache), the stack of
+    // arena frames for the body currently being checked, the domain
+    // id allocator, the closure-boundary generation (bindings defined
+    // while a closure body is being checked belong to that body's own
+    // domains, never to an enclosing arena frame), per-assign-node
+    // domain pairs recorded for the replace conjunction wiring, and
+    // the go-call context flag that switches the move-arg diagnostic
+    // to its goroutine category.
+    arena_safe_cache: std.AutoHashMap(*const ast.Type, *const ArenaSafeVerdict),
+    arena_frames: std.array_list.Managed(ArenaFrame),
+    arena_next_domain: u32 = 1,
+    arena_generation: u32 = 0,
+    arena_assign_domains: std.AutoHashMap(*const ast.Node, ArenaAssignDomains),
+    arena_in_go_call: bool = false,
+
     // Tracks internal Sla functions for validation
     funcs: std.StringHashMap(*ast.FuncDecl),
     function_aliases: std.StringHashMap([]const u8),
@@ -327,6 +350,9 @@ pub const TypeChecker = struct {
             .tainted_places_union = std.StringHashMap(void).init(allocator),
             .drop_plan_cache = std.AutoHashMap(*const ast.Type, *const lowering_rules.DropPlan).init(allocator),
             .drop_plan_active = std.AutoHashMap(*const ast.Type, void).init(allocator),
+            .arena_safe_cache = std.AutoHashMap(*const ast.Type, *const ArenaSafeVerdict).init(allocator),
+            .arena_frames = std.array_list.Managed(ArenaFrame).init(allocator),
+            .arena_assign_domains = std.AutoHashMap(*const ast.Node, ArenaAssignDomains).init(allocator),
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .function_aliases = std.StringHashMap([]const u8).init(allocator),
             .function_alias_metadata = std.StringHashMap(FunctionAliasMetadata).init(allocator),
@@ -387,6 +413,20 @@ pub const TypeChecker = struct {
             TypeError.OutOfMemory => return TypeError.OutOfMemory,
             else => return err,
         };
+        // F2-A arena batch (C1): a binding defined while an arena
+        // frame is current belongs to that frame's ownership domain;
+        // owned bindings additionally pass root admission. This is
+        // the single funnel for let/const/var/pattern/parameter
+        // definitions, so domains follow lexical scope exactly.
+        if (!isDiscardName(name)) {
+            const domain = self.currentArenaDomain();
+            if (domain != 0) {
+                if (scope.lookupLocal(name)) |sym| {
+                    sym.arena_domain = domain;
+                }
+                try self.checkArenaRootAdmission(name, ty);
+            }
+        }
     }
 
     fn consumeBinding(self: *TypeChecker, scope: *Scope, name: []const u8, sym: *Symbol, operation: []const u8) TypeError!void {
@@ -411,6 +451,8 @@ pub const TypeChecker = struct {
             self.setError("UseBeforeInit: var `{s}` is read before assignment", .{arg.identifier});
             return TypeError.UseBeforeInit;
         }
+        // F2-A C1: escape route 3 also covers extern move parameters.
+        try self.checkArenaMoveArg(arg, sym.ty, scope, "extern move argument", null);
         try self.consumeBinding(scope, arg.identifier, sym, "extern move argument");
     }
 
@@ -550,16 +592,798 @@ pub const TypeChecker = struct {
     // plan stays a finite tree (elements below the cycle keep today's
     // leak, never a double free).
 
+    /// F2-A arena batch (C1): one live arena domain on the frame
+    /// stack. `generation` is the closure-boundary generation the
+    /// frame was pushed in; a frame only labels bindings while the
+    /// checker is in that same generation (see currentArenaDomain).
+    pub const ArenaFrame = struct {
+        domain: u32,
+        generation: u32,
+    };
+
+    /// F2-A arena batch (C1): the ownership domains of one assignment
+    /// node's target place and source place, recorded during the main
+    /// check pass (when scopes are available) for the post-check
+    /// replace pass. `src` is null when the assigned value is not a
+    /// place (fresh construction in the target's domain).
+    pub const ArenaAssignDomains = struct {
+        src: ?u32,
+        dst: u32,
+    };
+
+    // ---- F2-A arena batch (C1): shared resource-type registry ----
+    // ONE registry, maintained at this single point, read two ways:
+    // the drop-plan side reads `drop_excluded` (a type in the set has
+    // its own release machinery, so planValueDrop yields .none for
+    // it), and the ArenaSafe criterion reads the class of every entry
+    // as a forbidden node (the same machinery means its
+    // sub-allocations are not arena-supplied, so bulk reclamation
+    // would skip a release that is not the arena's to skip). Before
+    // this batch the checker had no resource-type registry at all:
+    // the drop exclusion list below was the closest thing, and `File`
+    // was a per-site special case (constructed in makeFileType and
+    // matched by name at File.open call sites). Those call sites keep
+    // their behaviour; the *name knowledge* now lives here.
+    //
+    // Census provenance (2026-11-02; sources checked line by line):
+    // - The 15 `drop_excluded` names are the pre-existing
+    //   dropPlanExcludedType set, unchanged: containers HashMap,
+    //   BTreeMap, HashSet, BTreeSet, VecDeque, StringBuf (own
+    //   allocation machinery; sa_std collections + StringBuf surface),
+    //   sync Mutex, RwLock, OnceLock (sa_std mutex.sa / rwlock.sa /
+    //   once.sa), Chan (goroutine syntax batch), Rc, Arc, Weak,
+    //   RefCell (shared-ownership surface), Box (independent heap
+    //   allocation by definition).
+    // - The fd/handle family is NOT drop-excluded (their drop plans
+    //   already come out .none via the unknown-declaration path; the
+    //   drop side must not start treating a user struct that happens
+    //   to reuse one of these names as machinery-owned). Names from
+    //   the sa_std contracts: File (fs.sai: "File handles are opaque
+    //   owned ptr values and must be closed explicitly"; the checker
+    //   itself constructs the `File` type), TcpStream, TcpListener,
+    //   UdpSocket, NetAddr (net.sai: "TcpStream, TcpListener,
+    //   UdpSocket, and NetAddr values are opaque u64 handles").
+    //   Other sa_std handle surfaces (TLS/DTLS contexts and sessions,
+    //   WebSocket, QUIC, DB connections, process and tree-sitter
+    //   handles) are unnamed u64 words at the SLA level, so there is
+    //   no named type for the criterion to meet; if one is ever
+    //   named, it joins this table in the same edit that names it.
+    // - `Slice` is the checker's own non-owning view type
+    //   (makeSliceType): not drop-excluded, but a borrow view inside
+    //   an arena root's type closure would pin memory the arena does
+    //   not own, so the criterion forbids it there.
+    //
+    // Precondition recorded for the future (design section 2.2): SLA
+    // currently has no user-defined destructors — drop is entirely
+    // compiler-generated from DropPlan — so skipping a drop can only
+    // leak the resource classes named here or in the structural rules
+    // of arenaSafeVerdict. If a user destructor surface is ever
+    // introduced, ArenaSafe must gain a "no custom destructor" clause
+    // in the same batch.
+    pub const ArenaTypeClass = enum {
+        external_resource,
+        sync_primitive,
+        channel_endpoint,
+        ref_counted,
+        independent_heap,
+        self_managed,
+        borrow_view,
+        raw_pointer,
+        borrow_ref,
+        opaque_decl,
+        union_decl,
+        unverifiable,
+        future_handle,
+
+        pub fn label(self: ArenaTypeClass) []const u8 {
+            return switch (self) {
+                .external_resource => "external resource (file descriptor)",
+                .sync_primitive => "synchronization primitive",
+                .channel_endpoint => "channel endpoint",
+                .ref_counted => "reference-counted shared ownership",
+                .independent_heap => "independent heap allocation",
+                .self_managed => "self-managed container (own allocation machinery)",
+                .borrow_view => "non-owning borrow view",
+                .raw_pointer => "untracked raw pointer",
+                .borrow_ref => "borrowed reference",
+                .opaque_decl => "opaque declaration (fields not visible)",
+                .union_decl => "union declaration",
+                .unverifiable => "unverifiable type (no declaration visible to the checker)",
+                .future_handle => "executor future handle",
+            };
+        }
+    };
+
+    const ArenaRegistryEntry = struct {
+        name: []const u8,
+        class: ArenaTypeClass,
+        drop_excluded: bool,
+    };
+
+    const arena_type_registry = [_]ArenaRegistryEntry{
+        // fd / OS-handle family (registry-only; see census note).
+        .{ .name = "File", .class = .external_resource, .drop_excluded = false },
+        .{ .name = "TcpStream", .class = .external_resource, .drop_excluded = false },
+        .{ .name = "TcpListener", .class = .external_resource, .drop_excluded = false },
+        .{ .name = "UdpSocket", .class = .external_resource, .drop_excluded = false },
+        .{ .name = "NetAddr", .class = .external_resource, .drop_excluded = false },
+        // Non-owning view type constructed by the checker itself.
+        .{ .name = "Slice", .class = .borrow_view, .drop_excluded = false },
+        // Self-managed containers: v1 all banned from arena
+        // (Jev U2 = A); admission may be widened per class once
+        // their allocation surface is parameterised.
+        .{ .name = "HashMap", .class = .self_managed, .drop_excluded = true },
+        .{ .name = "BTreeMap", .class = .self_managed, .drop_excluded = true },
+        .{ .name = "HashSet", .class = .self_managed, .drop_excluded = true },
+        .{ .name = "BTreeSet", .class = .self_managed, .drop_excluded = true },
+        .{ .name = "VecDeque", .class = .self_managed, .drop_excluded = true },
+        .{ .name = "StringBuf", .class = .self_managed, .drop_excluded = true },
+        // Synchronization primitives.
+        .{ .name = "Mutex", .class = .sync_primitive, .drop_excluded = true },
+        .{ .name = "RwLock", .class = .sync_primitive, .drop_excluded = true },
+        .{ .name = "OnceLock", .class = .sync_primitive, .drop_excluded = true },
+        // Channel endpoints: closing one is a goroutine protocol
+        // signal, never a skippable release.
+        .{ .name = "Chan", .class = .channel_endpoint, .drop_excluded = true },
+        // Reference-counted shared ownership: the count cell is an
+        // independent allocation shared with non-arena holders.
+        .{ .name = "Rc", .class = .ref_counted, .drop_excluded = true },
+        .{ .name = "Arc", .class = .ref_counted, .drop_excluded = true },
+        .{ .name = "Weak", .class = .ref_counted, .drop_excluded = true },
+        .{ .name = "RefCell", .class = .ref_counted, .drop_excluded = true },
+        // A Box IS an independent heap allocation.
+        .{ .name = "Box", .class = .independent_heap, .drop_excluded = true },
+    };
+
+    pub fn arenaRegistryClass(name: []const u8) ?ArenaTypeClass {
+        for (arena_type_registry) |entry| {
+            if (std.mem.eql(u8, name, entry.name)) return entry.class;
+        }
+        return null;
+    }
+
     fn dropPlanExcludedType(name: []const u8) bool {
-        const excluded = [_][]const u8{
-            "HashMap",   "BTreeMap", "HashSet", "BTreeSet", "VecDeque",
-            "Rc",        "Arc",      "Weak",    "Box",      "RefCell",
-            "Chan",      "Mutex",    "RwLock",  "OnceLock", "StringBuf",
-        };
-        for (excluded) |candidate| {
-            if (std.mem.eql(u8, name, candidate)) return true;
+        for (arena_type_registry) |entry| {
+            if (entry.drop_excluded and std.mem.eql(u8, name, entry.name)) return true;
         }
         return false;
+    }
+
+    // ---- F2-A arena batch (C1): ArenaSafe criterion ----
+    // The mirror image of the drop plan over the same type structure
+    // (design section 2.3): the plan is constructive ("what must a
+    // teardown do"), the criterion is refutational ("what would bulk
+    // reclamation leak"). The closure walk uses the same descent
+    // edges and the same generic substitution (dropPlanSubstitute) as
+    // computeDropPlan, plus the enum-payload edges the plan side
+    // handles elsewhere. Unlike the plan it must NOT cut recursive
+    // types at the cycle point (design section 2.4): cutting would
+    // default the unexplored ring to "safe", which is exactly the
+    // wrong bias for a leak check. Instead the closure is expanded as
+    // a graph (greatest fixpoint): a recursive type is safe iff no
+    // forbidden node is reachable from it at any depth.
+    pub const ArenaViolation = struct {
+        /// Dotted reachability path from the root type, in the form
+        /// `Root.field.Vec element.variant` (root type name first).
+        path: []const u8,
+        /// Display name of the forbidden type at the end of the path.
+        bad_type: []const u8,
+        class: ArenaTypeClass,
+    };
+
+    pub const ArenaSafeVerdict = union(enum) {
+        safe,
+        violation: ArenaViolation,
+    };
+
+    const arena_safe_singleton: ArenaSafeVerdict = .safe;
+
+    /// Memoized ArenaSafe verdict for a root type. The verdict
+    /// depends only on the type graph reachable from `ty` (struct and
+    /// enum tables are fixed for the duration of a program check), so
+    /// it is cached by type node pointer, like drop plans.
+    pub fn arenaSafe(self: *TypeChecker, ty: *const ast.Type) TypeError!*const ArenaSafeVerdict {
+        if (self.arena_safe_cache.get(ty)) |cached| return cached;
+        const verdict = try self.computeArenaSafe(ty);
+        const slot = self.allocator.create(ArenaSafeVerdict) catch return TypeError.OutOfMemory;
+        slot.* = verdict;
+        try self.arena_safe_cache.put(ty, slot);
+        return slot;
+    }
+
+    const ArenaExpandEdge = struct {
+        parent: ?*const ast.Type,
+        label: []const u8,
+    };
+
+    fn computeArenaSafe(self: *TypeChecker, root: *const ast.Type) TypeError!ArenaSafeVerdict {
+        var edges = std.AutoHashMap(*const ast.Type, ArenaExpandEdge).init(self.allocator);
+        defer edges.deinit();
+        var queue = std.array_list.Managed(*const ast.Type).init(self.allocator);
+        defer queue.deinit();
+        try edges.put(root, .{ .parent = null, .label = "" });
+        try queue.append(root);
+        var head: usize = 0;
+        while (head < queue.items.len) : (head += 1) {
+            const node = queue.items[head];
+            if (try self.arenaExpandNode(node, &edges, &queue)) |bad_class| {
+                return .{ .violation = .{
+                    .path = try self.arenaViolationPath(root, node, &edges),
+                    .bad_type = self.arenaTypeDisplay(node),
+                    .class = bad_class,
+                } };
+            }
+        }
+        return .safe;
+    }
+
+    /// One closure-expansion step. Returns the forbidden class when
+    /// `node` itself is a forbidden node; otherwise appends the
+    /// node's not-yet-seen children to the queue and returns null.
+    fn arenaExpandNode(
+        self: *TypeChecker,
+        node: *const ast.Type,
+        edges: *std.AutoHashMap(*const ast.Type, ArenaExpandEdge),
+        queue: *std.array_list.Managed(*const ast.Type),
+    ) TypeError!?ArenaTypeClass {
+        switch (node.*) {
+            .primitive => |prim| {
+                if (prim == .raw_ptr) return .raw_pointer;
+                return null;
+            },
+            .pointer => return .raw_pointer,
+            .borrow => return .borrow_ref,
+            .future => return .future_handle,
+            .array => |arr| {
+                try self.arenaPushChild(edges, queue, node, arr.elem, "[]");
+                return null;
+            },
+            .tuple => |tup| {
+                for (tup.elems) |elem| {
+                    try self.arenaPushChild(edges, queue, node, elem, "tuple element");
+                }
+                return null;
+            },
+            // Function values own nothing in their type alone; what a
+            // closure captures is policed at the literal site (escape
+            // route 4), not by the type closure.
+            .closure, .fn_ptr, .infer => return null,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, "String")) return null;
+                if (std.mem.eql(u8, ud.name, "Vec")) {
+                    if (ud.generics.len == 1) {
+                        try self.arenaPushChild(edges, queue, node, ud.generics[0], "Vec element");
+                    }
+                    return null;
+                }
+                if (arenaRegistryClass(ud.name)) |class| return class;
+                if (self.structs.get(ud.name)) |decl| {
+                    if (decl.is_opaque) return .opaque_decl;
+                    if (decl.is_union) return .union_decl;
+                    for (decl.fields) |field| {
+                        const field_ty = try self.dropPlanSubstitute(field.ty, decl.generics, ud.generics);
+                        try self.arenaPushChild(edges, queue, node, field_ty, field.name);
+                    }
+                    return null;
+                }
+                if (self.enums.get(ud.name)) |decl| {
+                    for (decl.variants) |variant| {
+                        for (variant.fields) |field| {
+                            const field_ty = try self.dropPlanSubstitute(field.ty, decl.generics, ud.generics);
+                            try self.arenaPushChild(edges, queue, node, field_ty, variant.name);
+                        }
+                    }
+                    return null;
+                }
+                return .unverifiable;
+            },
+        }
+    }
+
+    fn arenaPushChild(
+        self: *TypeChecker,
+        edges: *std.AutoHashMap(*const ast.Type, ArenaExpandEdge),
+        queue: *std.array_list.Managed(*const ast.Type),
+        parent: *const ast.Type,
+        child: *const ast.Type,
+        label: []const u8,
+    ) TypeError!void {
+        _ = self;
+        if (edges.contains(child)) return;
+        edges.put(child, .{ .parent = parent, .label = label }) catch return TypeError.OutOfMemory;
+        queue.append(child) catch return TypeError.OutOfMemory;
+    }
+
+    fn arenaViolationPath(
+        self: *TypeChecker,
+        root: *const ast.Type,
+        bad: *const ast.Type,
+        edges: *const std.AutoHashMap(*const ast.Type, ArenaExpandEdge),
+    ) TypeError![]const u8 {
+        var labels = std.array_list.Managed([]const u8).init(self.allocator);
+        defer labels.deinit();
+        var cur: ?*const ast.Type = bad;
+        while (cur) |node| {
+            const edge = edges.get(node) orelse break;
+            if (edge.parent == null) break;
+            labels.append(edge.label) catch return TypeError.OutOfMemory;
+            cur = edge.parent;
+        }
+        var buf = std.array_list.Managed(u8).init(self.allocator);
+        buf.appendSlice(self.arenaTypeDisplay(root)) catch return TypeError.OutOfMemory;
+        var i = labels.items.len;
+        while (i > 0) {
+            i -= 1;
+            buf.append('.') catch return TypeError.OutOfMemory;
+            buf.appendSlice(labels.items[i]) catch return TypeError.OutOfMemory;
+        }
+        return buf.toOwnedSlice() catch return TypeError.OutOfMemory;
+    }
+
+    fn arenaTypeDisplay(self: *TypeChecker, ty: *const ast.Type) []const u8 {
+        _ = self;
+        return switch (ty.*) {
+            .user_defined => |ud| ud.name,
+            .pointer => "*",
+            .borrow => "&",
+            .future => "Future",
+            .array => "[...]",
+            .tuple => "(...)",
+            .closure => "closure",
+            .fn_ptr => "fn ptr",
+            .infer => "?",
+            .primitive => |prim| @tagName(prim),
+        };
+    }
+
+    // ---- F2-A arena batch (C1): domains, admission, escape ----
+    // An ownership domain is one arena block (or one @arena function
+    // body); domain 0 is the ordinary heap domain every pre-arena
+    // program lives in. Bindings defined while an arena frame is on
+    // the stack are labelled with the frame's domain on their Symbol;
+    // places inherit the label from their root binding. All rules
+    // below are inert when no arena frame is active, which is what
+    // keeps the feature opt-in with zero disturbance to existing
+    // programs.
+
+    fn pushArenaFrame(self: *TypeChecker) TypeError!void {
+        const domain = self.arena_next_domain;
+        self.arena_next_domain += 1;
+        self.arena_frames.append(.{ .domain = domain, .generation = self.arena_generation }) catch return TypeError.OutOfMemory;
+    }
+
+    fn popArenaFrame(self: *TypeChecker) void {
+        _ = self.arena_frames.pop();
+    }
+
+    fn currentArenaDomain(self: *TypeChecker) u32 {
+        if (self.arena_frames.items.len == 0) return 0;
+        const top = self.arena_frames.items[self.arena_frames.items.len - 1];
+        return if (top.generation == self.arena_generation) top.domain else 0;
+    }
+
+    fn anyArenaFrameActive(self: *TypeChecker) bool {
+        return self.arena_frames.items.len > 0;
+    }
+
+    /// Root admission (design section 1.1/2): every owned binding
+    /// declared inside an arena block must be arena-safe. Non-owning
+    /// bindings (borrows, raw pointers, Slice views) and function
+    /// values are not roots; their hazards are policed by the borrow
+    /// rules and escape route 4 respectively, not here.
+    fn checkArenaRootAdmission(self: *TypeChecker, name: []const u8, ty: *ast.Type) TypeError!void {
+        if (isBorrowLikeType(ty)) return;
+        if (ty.* == .pointer) return;
+        if (ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "Slice")) return;
+        if (ty.* == .closure or ty.* == .fn_ptr) return;
+        // Macro-generated temporaries are not user roots; their
+        // shapes are the macro's own contract.
+        if (isInternalSymbol(name)) return;
+        const verdict = try self.arenaSafe(ty);
+        switch (verdict.*) {
+            .safe => {},
+            .violation => |v| {
+                self.setError("ArenaUnsafe: arena root `{s}: {s}` is not arena-safe: path {s} reaches {s} ({s}); arena scope exit reclaims memory in bulk and skips drop, so that release would be skipped - move the value out of the arena block, or export the arena data with clone()", .{ name, typeDesc(ty), v.path, v.bad_type, v.class.label() });
+                return TypeError.CompileError;
+            },
+        }
+    }
+
+    /// Ownership domain of a place expression, via its root binding.
+    fn arenaPlaceDomainOf(self: *TypeChecker, expr: *const ast.Node, scope: *Scope) ?u32 {
+        const place = self.placeOfExpr(expr) orelse return null;
+        const sym = scope.lookup(place.root) orelse return null;
+        return sym.arena_domain;
+    }
+
+    fn arenaPlaceTypeOf(self: *TypeChecker, expr: *const ast.Node, scope: *Scope) ?*ast.Type {
+        if (self.expr_types.get(expr)) |ty| return ty;
+        if (expr.* == .identifier) {
+            if (scope.lookup(expr.identifier)) |sym| return sym.ty;
+        }
+        return null;
+    }
+
+    const ArenaFlowHit = struct {
+        place_desc: []const u8,
+        domain: u32,
+        ty: *ast.Type,
+    };
+
+    /// First arena-domain place occurring in an owned-value position
+    /// of `expr`, where the place's value type has a non-trivial drop
+    /// plan (scalars and plan-.none pure data flow freely, per the
+    /// design). Owned positions are: the place itself, move wrappers,
+    /// literal fields/elements, cast/try/await operands, and the tail
+    /// values of if/match/switch/block branches. Call arguments are
+    /// NOT scanned (route 3 polices them at the call site) and
+    /// neither are condition/scrutinee reads. With include_borrows, a
+    /// borrow of an arena place also counts (return/store positions:
+    /// the borrow would dangle once the block reclaims its memory).
+    fn arenaFlowScan(self: *TypeChecker, expr: *const ast.Node, scope: *Scope, include_borrows: bool, include_ordinary: bool) TypeError!?ArenaFlowHit {
+        switch (expr.*) {
+            .identifier, .field_expr, .index_expr, .deref_expr, .slice_expr => {
+                const domain = self.arenaPlaceDomainOf(expr, scope) orelse return null;
+                if (domain == 0 and !include_ordinary) return null;
+                const ty = self.arenaPlaceTypeOf(expr, scope) orelse return null;
+                const plan = try self.planValueDrop(ty);
+                if (plan.kind() == .none) return null;
+                return .{
+                    .place_desc = self.taintKeyOfPlace(expr) orelse "?",
+                    .domain = domain,
+                    .ty = ty,
+                };
+            },
+            .move_expr => |m| return self.arenaFlowScan(m.expr, scope, include_borrows, include_ordinary),
+            .borrow_expr => |b| {
+                if (!include_borrows) return null;
+                const domain = self.arenaPlaceDomainOf(b.expr, scope) orelse return null;
+                if (domain == 0 and !include_ordinary) return null;
+                const ty = self.arenaPlaceTypeOf(b.expr, scope) orelse return null;
+                return .{
+                    .place_desc = self.taintKeyOfPlace(b.expr) orelse "?",
+                    .domain = domain,
+                    .ty = ty,
+                };
+            },
+            .struct_literal => |lit| {
+                for (lit.fields) |field| {
+                    if (try self.arenaFlowScan(field.value, scope, include_borrows, include_ordinary)) |hit| return hit;
+                }
+                if (lit.update_expr) |update| {
+                    if (try self.arenaFlowScan(update, scope, include_borrows, include_ordinary)) |hit| return hit;
+                }
+                return null;
+            },
+            .enum_literal => |lit| {
+                for (lit.fields) |field| {
+                    if (try self.arenaFlowScan(field.value, scope, include_borrows, include_ordinary)) |hit| return hit;
+                }
+                return null;
+            },
+            .tuple_literal => |lit| {
+                for (lit.elements) |elem| {
+                    if (try self.arenaFlowScan(elem, scope, include_borrows, include_ordinary)) |hit| return hit;
+                }
+                return null;
+            },
+            .array_literal => |lit| {
+                for (lit.elements) |elem| {
+                    if (try self.arenaFlowScan(elem, scope, include_borrows, include_ordinary)) |hit| return hit;
+                }
+                return null;
+            },
+            .repeat_array_literal => |lit| return self.arenaFlowScan(lit.value, scope, include_borrows, include_ordinary),
+            .cast_expr => |c| return self.arenaFlowScan(c.expr, scope, include_borrows, include_ordinary),
+            .try_expr => |t| return self.arenaFlowScan(t.expr, scope, include_borrows, include_ordinary),
+            .await_expr => |a| return self.arenaFlowScan(a.expr, scope, include_borrows, include_ordinary),
+            .if_expr => |ife| {
+                if (try self.arenaFlowScanBlockTail(ife.then_block, scope, include_borrows, include_ordinary)) |hit| return hit;
+                if (ife.else_block) |else_block| {
+                    if (try self.arenaFlowScanBlockTail(else_block, scope, include_borrows, include_ordinary)) |hit| return hit;
+                }
+                return null;
+            },
+            .match_expr => |mat| {
+                for (mat.cases) |case| {
+                    if (try self.arenaFlowScanBlockTail(case.body, scope, include_borrows, include_ordinary)) |hit| return hit;
+                }
+                return null;
+            },
+            .unsafe_expr => |ue| {
+                if (try self.arenaFlowScanBlockTail(ue.body, scope, include_borrows, include_ordinary)) |hit| return hit;
+                return null;
+            },
+            .switch_expr => |swe| {
+                for (swe.cases) |case| {
+                    if (try self.arenaFlowScanBlockTail(case.body, scope, include_borrows, include_ordinary)) |hit| return hit;
+                }
+                return null;
+            },
+            .block_stmt => |blk| return self.arenaFlowScanBlockTail(blk.body, scope, include_borrows, include_ordinary),
+            .arena_stmt => |a| return self.arenaFlowScanBlockTail(a.body, scope, include_borrows, include_ordinary),
+            else => return null,
+        }
+    }
+
+    fn arenaFlowScanBlockTail(self: *TypeChecker, body: []const *ast.Node, scope: *Scope, include_borrows: bool, include_ordinary: bool) TypeError!?ArenaFlowHit {
+        if (body.len == 0) return null;
+        const last = body[body.len - 1];
+        return switch (last.*) {
+            .expr_stmt => |e| self.arenaFlowScan(e, scope, include_borrows, include_ordinary),
+            .block_stmt => |blk| self.arenaFlowScanBlockTail(blk.body, scope, include_borrows, include_ordinary),
+            .arena_stmt => |a| self.arenaFlowScanBlockTail(a.body, scope, include_borrows, include_ordinary),
+            else => null,
+        };
+    }
+
+    /// Design section 3, R2/R3/R6: a deep value may not flow between
+    /// ownership domains. `dst` is the domain of the place or binding
+    /// the value flows into (0 = ordinary). Same-domain flow and
+    /// fresh construction (no arena place in the value) are fine.
+    fn checkArenaStoreFlow(self: *TypeChecker, value: *const ast.Node, scope: *Scope, dst: u32) TypeError!void {
+        if (!self.anyArenaFrameActive()) return;
+        const hit = (try self.arenaFlowScan(value, scope, false, true)) orelse return;
+        if (hit.domain == dst) return;
+        if (dst == 0) {
+            self.setError("ArenaEscape: value `{s}` is owned by arena domain #{} and cannot be stored into the ordinary domain; the arena block exit reclaims that memory in bulk - store a clone() instead", .{ hit.place_desc, hit.domain });
+            return TypeError.CompileError;
+        }
+        if (hit.domain == 0) {
+            self.setError("ArenaDomain: cannot move ordinary-domain value `{s}` into arena domain #{}: its sub-allocations live outside the arena and the block exit would never release them - construct it inside the block, or clone it in", .{ hit.place_desc, dst });
+            return TypeError.CompileError;
+        }
+        self.setError("ArenaDomain: cannot move value `{s}` from arena domain #{} into arena domain #{}: nested arena blocks are independent ownership domains - clone across the boundary", .{ hit.place_desc, hit.domain, dst });
+        return TypeError.CompileError;
+    }
+
+    /// Escape route 1 (return): nothing arena-owned may leave through
+    /// a return, including .buffer roots (Jev U3 = A: clone-only) and
+    /// borrows of arena places (they would dangle at block exit).
+    fn checkArenaReturnFlow(self: *TypeChecker, value: *const ast.Node, scope: *Scope) TypeError!void {
+        if (!self.anyArenaFrameActive()) return;
+        const hit = (try self.arenaFlowScan(value, scope, true, false)) orelse return;
+        self.setError("ArenaEscape: return would move arena-owned value `{s}` (arena domain #{}) out of its arena block; the block exit reclaims that memory in bulk - return a clone() instead", .{ hit.place_desc, hit.domain });
+        return TypeError.CompileError;
+    }
+
+    /// Escape route 3 (by-value call argument): an arena-owned deep
+    /// value may only be passed by borrow; a by-value pass moves it
+    /// into the callee, whose scope exit would drop arena memory.
+    /// Inside a go-spawn call the same fact is reported in the
+    /// goroutine category (design section 4: separate diagnostic
+    /// category for the goroutine boundary).
+    fn checkArenaMoveArg(self: *TypeChecker, arg: *const ast.Node, arg_ty: *ast.Type, scope: *Scope, call_name: []const u8, receiver_domain: ?u32) TypeError!void {
+        if (!self.anyArenaFrameActive()) return;
+        if (arg.* == .borrow_expr) return;
+        const plan = try self.planValueDrop(arg_ty);
+        if (plan.kind() == .none) return;
+        const hit = (try self.arenaFlowScan(arg, scope, false, false)) orelse return;
+        // Intra-domain transfer: a method call on an arena-owned
+        // receiver (e.g. `v.push(elem)` with both in the same arena)
+        // keeps the value inside its domain — the container is
+        // itself an arena root. Only transfers OUT of the domain
+        // (free functions, ordinary receivers, spawned calls) escape.
+        if (receiver_domain) |rd| {
+            if (rd != 0 and rd == hit.domain) return;
+        }
+        if (self.arena_in_go_call) {
+            self.setError("ArenaGoroutine: arena-owned value `{s}` (arena domain #{}) cannot be passed to spawned function `{s}`: arena values must not cross a goroutine boundary - clone the value out of the arena first", .{ hit.place_desc, hit.domain, call_name });
+            return TypeError.CompileError;
+        }
+        self.setError("ArenaEscape: arena-owned value `{s}` (arena domain #{}) may only be passed by borrow; passing it by value to `{s}` would move it out of its arena domain", .{ hit.place_desc, hit.domain, call_name });
+        return TypeError.CompileError;
+    }
+
+    /// Escape routes 5/6 shared fact (channel send): an arena-owned
+    /// deep value may not be sent on a channel — the receiver runs in
+    /// another goroutine and the sender's block exit reclaims the
+    /// memory (design section 4).
+    fn checkArenaChanSend(self: *TypeChecker, value: *const ast.Node, value_ty: *ast.Type, scope: *Scope) TypeError!void {
+        if (!self.anyArenaFrameActive()) return;
+        const plan = try self.planValueDrop(value_ty);
+        if (plan.kind() == .none) return;
+        const hit = (try self.arenaFlowScan(value, scope, false, false)) orelse return;
+        self.setError("ArenaGoroutine: arena-owned value `{s}` (arena domain #{}) cannot be sent on a channel: arena values must not cross a goroutine boundary - clone the value out of the arena first", .{ hit.place_desc, hit.domain });
+        return TypeError.CompileError;
+    }
+
+    /// Escape route 4 (closure capture): a closure referencing an
+    /// arena root may escape the block, so the root's memory could
+    /// outlive its domain. The literal body is scanned for uses of
+    /// each visible arena root's name; the literal's own parameters
+    /// shadow outer names. (A same-named binding declared inside the
+    /// body also shadows, so for those rare shapes the scan is
+    /// conservative in the safe direction.)
+    fn checkArenaClosureCapture(self: *TypeChecker, lit: ast.ClosureLiteral, scope: *Scope) TypeError!void {
+        if (!self.anyArenaFrameActive()) return;
+        var curr: ?*Scope = scope;
+        while (curr) |frame| : (curr = frame.parent) {
+            var iter = frame.symbols.iterator();
+            while (iter.next()) |entry| {
+                if (entry.value_ptr.arena_domain == 0) continue;
+                const name = entry.key_ptr.*;
+                var shadowed = false;
+                for (lit.params) |p| {
+                    if (std.mem.eql(u8, p.name, name)) {
+                        shadowed = true;
+                        break;
+                    }
+                }
+                if (shadowed) continue;
+                if (self.arenaNodeUsesRoot(lit.body, name)) {
+                    self.setError("ArenaEscape: closure captures arena-owned binding `{s}`; a closure may escape its arena block, so arena values must not be captured - pass the data in as a parameter, or clone it", .{name});
+                    return TypeError.CompileError;
+                }
+            }
+        }
+    }
+
+    fn arenaNodeUsesRoot(self: *TypeChecker, node: *const ast.Node, name: []const u8) bool {
+        switch (node.*) {
+            .identifier => |ident| return std.mem.eql(u8, ident, name),
+            .field_expr => |f| return self.arenaNodeUsesRoot(f.expr, name),
+            .index_expr => |ix| return self.arenaNodeUsesRoot(ix.target, name) or self.arenaNodeUsesRoot(ix.index, name),
+            .slice_expr => |s| return self.arenaNodeUsesRoot(s.target, name) or self.arenaNodeUsesRoot(s.start, name) or self.arenaNodeUsesRoot(s.end, name),
+            .deref_expr => |d| return self.arenaNodeUsesRoot(d.expr, name),
+            .borrow_expr => |b| return self.arenaNodeUsesRoot(b.expr, name),
+            .move_expr => |m| return self.arenaNodeUsesRoot(m.expr, name),
+            .cast_expr => |c| return self.arenaNodeUsesRoot(c.expr, name),
+            .try_expr => |t| return self.arenaNodeUsesRoot(t.expr, name),
+            .await_expr => |a| return self.arenaNodeUsesRoot(a.expr, name),
+            .go_expr => |g| return self.arenaNodeUsesRoot(g.call, name),
+            .binary_expr => |bin| return self.arenaNodeUsesRoot(bin.left, name) or self.arenaNodeUsesRoot(bin.right, name),
+            .call_expr => |call| {
+                if (call.callee) |callee| {
+                    if (self.arenaNodeUsesRoot(callee, name)) return true;
+                }
+                for (call.args) |arg| {
+                    if (self.arenaNodeUsesRoot(arg, name)) return true;
+                }
+                return false;
+            },
+            .closure_literal => |lit| {
+                for (lit.params) |p| {
+                    if (std.mem.eql(u8, p.name, name)) return false;
+                }
+                return self.arenaNodeUsesRoot(lit.body, name);
+            },
+            .struct_literal => |lit| {
+                for (lit.fields) |field| {
+                    if (self.arenaNodeUsesRoot(field.value, name)) return true;
+                }
+                if (lit.update_expr) |update| return self.arenaNodeUsesRoot(update, name);
+                return false;
+            },
+            .enum_literal => |lit| {
+                for (lit.fields) |field| {
+                    if (self.arenaNodeUsesRoot(field.value, name)) return true;
+                }
+                return false;
+            },
+            .tuple_literal => |lit| {
+                for (lit.elements) |elem| {
+                    if (self.arenaNodeUsesRoot(elem, name)) return true;
+                }
+                return false;
+            },
+            .array_literal => |lit| {
+                for (lit.elements) |elem| {
+                    if (self.arenaNodeUsesRoot(elem, name)) return true;
+                }
+                return false;
+            },
+            .repeat_array_literal => |lit| return self.arenaNodeUsesRoot(lit.value, name),
+            .if_expr => |ife| {
+                if (self.arenaNodeUsesRoot(ife.cond, name)) return true;
+                if (ife.let_chain) |chain| {
+                    for (chain) |cond| {
+                        if (self.arenaNodeUsesRoot(cond.value, name)) return true;
+                    }
+                }
+                if (self.arenaBlockUsesRoot(ife.then_block, name)) return true;
+                if (ife.else_block) |else_block| return self.arenaBlockUsesRoot(else_block, name);
+                return false;
+            },
+            .match_expr => |mat| {
+                if (self.arenaNodeUsesRoot(mat.val, name)) return true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| {
+                        if (self.arenaNodeUsesRoot(guard, name)) return true;
+                    }
+                    if (self.arenaBlockUsesRoot(case.body, name)) return true;
+                }
+                return false;
+            },
+            .switch_expr => |swe| {
+                if (self.arenaNodeUsesRoot(swe.val, name)) return true;
+                for (swe.cases) |case| {
+                    if (self.arenaBlockUsesRoot(case.body, name)) return true;
+                }
+                return false;
+            },
+            .unsafe_expr => |ue| return self.arenaBlockUsesRoot(ue.body, name),
+            .inline_asm_expr => |asm_expr| {
+                for (asm_expr.operands) |operand| {
+                    if (std.mem.eql(u8, operand.var_name, name)) return true;
+                }
+                return false;
+            },
+            .let_stmt => |let| return self.arenaNodeUsesRoot(let.value, name),
+            .let_else_stmt => |let| return self.arenaNodeUsesRoot(let.value, name) or self.arenaBlockUsesRoot(let.else_block, name),
+            .let_destructure_stmt => |let| return self.arenaNodeUsesRoot(let.value, name),
+            .const_stmt => |c| return self.arenaNodeUsesRoot(c.value, name),
+            .assign_stmt => |assign| return self.arenaNodeUsesRoot(assign.target, name) or self.arenaNodeUsesRoot(assign.value, name),
+            .block_stmt => |blk| return self.arenaBlockUsesRoot(blk.body, name),
+            .arena_stmt => |a| return self.arenaBlockUsesRoot(a.body, name),
+            .expr_stmt => |e| return self.arenaNodeUsesRoot(e, name),
+            .return_stmt => |ret| {
+                if (ret.value) |value| return self.arenaNodeUsesRoot(value, name);
+                return false;
+            },
+            .for_stmt => |f| {
+                if (self.arenaNodeUsesRoot(f.start, name)) return true;
+                if (f.end) |end| {
+                    if (self.arenaNodeUsesRoot(end, name)) return true;
+                }
+                return self.arenaBlockUsesRoot(f.body, name);
+            },
+            .while_stmt => |w| return self.arenaNodeUsesRoot(w.cond, name) or self.arenaBlockUsesRoot(w.body, name),
+            .defer_stmt => |d| return self.arenaNodeUsesRoot(d.call, name),
+            .select_stmt => |sel| {
+                for (sel.cases) |case| {
+                    if (self.arenaNodeUsesRoot(case.call, name)) return true;
+                    if (self.arenaBlockUsesRoot(case.body, name)) return true;
+                }
+                if (sel.default_body) |body| {
+                    if (self.arenaBlockUsesRoot(body, name)) return true;
+                }
+                if (sel.timeout_expr) |te| {
+                    if (self.arenaNodeUsesRoot(te, name)) return true;
+                }
+                if (sel.timeout_body) |body| return self.arenaBlockUsesRoot(body, name);
+                return false;
+            },
+            .release_stmt => |rel| return std.mem.eql(u8, rel.var_name, name),
+            else => return false,
+        }
+    }
+
+    fn arenaBlockUsesRoot(self: *TypeChecker, body: []const *ast.Node, name: []const u8) bool {
+        for (body) |stmt| {
+            if (self.arenaNodeUsesRoot(stmt, name)) return true;
+        }
+        return false;
+    }
+
+    /// F2-A C1, design section 3 R1 wiring predicate. The handle-
+    /// domain replace criterion (crash-A batch, not yet on this
+    /// master) resolves a candidate source place per assignment node;
+    /// this batch records the source/target domain pair of every
+    /// assignment checked while an arena frame is active, and this
+    /// predicate is the conjunction the replace criterion must add:
+    /// `domain(source) == domain(target)`. The design's second
+    /// disjunct (`or plan == .none`) needs no code here: replace only
+    /// ever annotates buffer/deep_vec targets, so a .none-typed value
+    /// never reaches the conjunction. Wiring point once that batch
+    /// lands: in replaceSourceForAssign, after the candidate source
+    /// is resolved and before the assign_replace_src annotation is
+    /// recorded, require `self.arenaReplaceConjunction(node)`.
+    /// Until then the same rule is enforced directly in the main
+    /// check pass (checkArenaAssignFlow below), so cross-domain
+    /// assignments are rejected on this master already.
+    pub fn arenaReplaceConjunction(self: *TypeChecker, node: *const ast.Node) bool {
+        const pair = self.arena_assign_domains.get(node) orelse return true;
+        const src = pair.src orelse return true;
+        return src == pair.dst;
+    }
+
+    fn checkArenaAssignFlow(self: *TypeChecker, node: *const ast.Node, target: *const ast.Node, value: *const ast.Node, scope: *Scope) TypeError!void {
+        if (!self.anyArenaFrameActive()) return;
+        const dst = self.arenaPlaceDomainOf(target, scope) orelse self.currentArenaDomain();
+        const src = self.arenaPlaceDomainOf(value, scope);
+        self.arena_assign_domains.put(node, .{ .src = src, .dst = dst }) catch return TypeError.OutOfMemory;
+        try self.checkArenaStoreFlow(value, scope, dst);
     }
 
     fn internDropPlan(self: *TypeChecker, plan: lowering_rules.DropPlan) TypeError!*const lowering_rules.DropPlan {
@@ -791,6 +1615,7 @@ pub const TypeChecker = struct {
     fn walkTaintStmt(self: *TypeChecker, node: *const ast.Node, taint: *std.StringHashMap(void)) TypeError!void {
         switch (node.*) {
             .let_stmt => |let| try self.walkTaintExpr(let.value, true, taint),
+            .arena_stmt => |a| try self.walkTaintStmts(a.body, taint),
             .let_else_stmt => |let_else| {
                 try self.walkTaintExpr(let_else.value, true, taint);
                 try self.walkTaintStmts(let_else.else_block, taint);
@@ -2079,6 +2904,9 @@ pub const TypeChecker = struct {
         self.tainted_places_union.deinit();
         self.drop_plan_cache.deinit();
         self.drop_plan_active.deinit();
+        self.arena_safe_cache.deinit();
+        self.arena_frames.deinit();
+        self.arena_assign_domains.deinit();
     }
 
     fn isInternalSymbol(name: []const u8) bool {
@@ -2805,8 +3633,14 @@ pub const TypeChecker = struct {
             return TypeError.UndefinedVariable;
         }
         // Ordinary call checking: argument types and ownership
-        // consumption at the spawn point.
-        _ = try self.checkExpr(call_node, scope);
+        // consumption at the spawn point. F2-A C1: while this runs,
+        // the move-arg escape route reports in the goroutine
+        // category (arena values must not cross the spawn boundary).
+        const prev_in_go_call = self.arena_in_go_call;
+        self.arena_in_go_call = true;
+        const call_check = self.checkExpr(call_node, scope);
+        self.arena_in_go_call = prev_in_go_call;
+        _ = try call_check;
         if (is_async) {
             self.setError("go: async function `{s}` cannot be spawned (goroutines run synchronous functions); drive it with a block_on wrapper in a synchronous function", .{call.func_name});
             return TypeError.TypeMismatch;
@@ -2964,6 +3798,9 @@ pub const TypeChecker = struct {
                     return TypeError.TypeMismatch;
                 }
                 const param = ast.Param{ .name = "value", .ty = payload_ty, .is_borrow = false, .is_move = false };
+                // F2-A C1: escape route 5 — no arena-owned value may
+                // be sent on a channel (goroutine boundary).
+                try self.checkArenaChanSend(call.args[1], arg_ty, scope);
                 try self.consumeCallArgIfMoved(scope, param, call.args[1], arg_ty, "send");
                 try self.chan_calls.put(expr, .{ .kind = .send, .payload_ty = payload_ty });
                 return try self.makeVoidType();
@@ -3060,6 +3897,8 @@ pub const TypeChecker = struct {
                         return TypeError.TypeMismatch;
                     }
                     const param = ast.Param{ .name = "value", .ty = payload_ty, .is_borrow = false, .is_move = false };
+                    // F2-A C1: escape route 5, select form.
+                    try self.checkArenaChanSend(call.args[1], arg_ty, scope);
                     try self.consumeCallArgIfMoved(scope, param, call.args[1], arg_ty, "select send");
                     try self.chan_calls.put(case.call, .{ .kind = .send, .payload_ty = payload_ty });
                 },
@@ -3251,6 +4090,12 @@ pub const TypeChecker = struct {
             // moves the binding at the SA level. Record that consumption
             // here so a second use is diagnosed by the checker (naming the
             // variable and this call) instead of reaching the SA referee.
+            // F2-A C1: escape route 3 runs first — an arena-owned value
+            // may not be moved into any callee at all. Method calls on
+            // a same-domain arena receiver are exempt (intra-domain
+            // transfer, e.g. pushing an arena String into an arena Vec).
+            const arena_receiver_domain: ?u32 = if (auto_borrow_receiver and args.len > 0) self.arenaPlaceDomainOf(args[0], scope) else null;
+            try self.checkArenaMoveArg(arg, arg_ty, scope, call_name, arena_receiver_domain);
             try self.consumeCallArgIfMoved(scope, param, arg, arg_ty, call_name);
         }
         if (is_variadic) {
@@ -3682,6 +4527,11 @@ pub const TypeChecker = struct {
         const lit = &expr.closure_literal;
         if (lit.params.len != contextual_params.len) return TypeError.InvalidArgsCount;
 
+        // F2-A C1: escape route 4 — the literal must not capture an
+        // arena root (checked against the enclosing scope, before the
+        // closure's own scope exists).
+        try self.checkArenaClosureCapture(expr.closure_literal, scope);
+
         const closure_scope = try Scope.init(self.allocator, scope);
         try self.scope_pool.append(closure_scope);
 
@@ -3701,6 +4551,12 @@ pub const TypeChecker = struct {
         const previous_fn_is_variadic_def = self.current_fn_is_variadic_def;
         self.current_fn_is_variadic_def = false;
         defer self.current_fn_is_variadic_def = previous_fn_is_variadic_def;
+        // F2-A C1: arena domains also reset across the closure
+        // boundary — bindings defined in the closure body belong to
+        // the body's own generation, never to an enclosing frame.
+        const previous_arena_generation = self.arena_generation;
+        self.arena_generation += 1;
+        defer self.arena_generation = previous_arena_generation;
         const ret_ty = try self.checkExpr(lit.body, closure_scope);
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .closure = .{ .params = try param_types.toOwnedSlice(), .ret = ret_ty } };
@@ -4550,6 +5406,7 @@ pub const TypeChecker = struct {
             .for_stmt => |f| exprUsesIdentifierValue(f.start, name) or (if (f.end) |end_expr| exprUsesIdentifierValue(end_expr, name) else false) or blockUsesIdentifierValue(f.body, name),
             .while_stmt => |w| exprUsesIdentifierValue(w.cond, name) or blockUsesIdentifierValue(w.body, name),
             .block_stmt => |blk| blockUsesIdentifierValue(blk.body, name),
+            .arena_stmt => |a| blockUsesIdentifierValue(a.body, name),
             else => false,
         };
     }
@@ -5623,7 +6480,22 @@ pub const TypeChecker = struct {
             try self.defineSymbol(scope, p.name, local_ty, false);
         }
 
+        // F2-A arena batch (C1): `@arena fn` — the whole body is one
+        // arena domain (the attribute sugar's equivalent expansion;
+        // parameters were defined above, before the frame opens, so
+        // they stay ordinary-domain). A tail expression is a return
+        // for escape purposes and is scanned before the frame closes.
+        if (func.is_arena) try self.pushArenaFrame();
+        defer if (func.is_arena) self.popArenaFrame();
+
         try self.checkBlock(func.body, scope, func.ret_ty, null, null);
+
+        if (func.is_arena and !isPrimitiveType(func.ret_ty, .void_type) and func.body.len > 0) {
+            const last = func.body[func.body.len - 1];
+            if (last.* == .expr_stmt and !stmtTerminates(last)) {
+                try self.checkArenaReturnFlow(last.expr_stmt, scope);
+            }
+        }
 
         // DEF deep-drop batch: place-taint pass over the checked body.
         try self.computeDropTaint(func.body);
@@ -5874,6 +6746,9 @@ pub const TypeChecker = struct {
                     return TypeError.TypeMismatch;
                 }
                 const declared_ty = let.ty orelse val_ty;
+                // F2-A C1: the value flowing into the new binding must
+                // belong to the binding's ownership domain (R2/R3/R6).
+                try self.checkArenaStoreFlow(let.value, scope, self.currentArenaDomain());
                 if (let.ty != null and val_ty.* == .array and declared_ty.* == .array) {
                     self.expr_types.put(let.value, declared_ty) catch return TypeError.OutOfMemory;
                 }
@@ -5981,6 +6856,8 @@ pub const TypeChecker = struct {
             .const_stmt => |c| {
                 const val_ty = try self.checkExpr(c.value, scope);
                 const declared_ty = c.ty orelse val_ty;
+                // F2-A C1: same domain flow rule as let (R2/R3/R6).
+                try self.checkArenaStoreFlow(c.value, scope, self.currentArenaDomain());
                 if (c.ty != null and val_ty.* == .array and declared_ty.* == .array) {
                     self.expr_types.put(c.value, declared_ty) catch return TypeError.OutOfMemory;
                 }
@@ -6060,6 +6937,10 @@ pub const TypeChecker = struct {
                     }
                     return TypeError.TypeMismatch;
                 }
+                // F2-A C1: cross-domain deep-value flow (R2/R3/R6)
+                // and the domain-pair record for the replace
+                // conjunction (see arenaReplaceConjunction).
+                try self.checkArenaAssignFlow(stmt, assign.target, assign.value, scope);
                 // let bindings can be reassigned and indexed; const bindings cannot.
                 if (rootIdentifier(assign.target)) |root_name| {
                     const sym = scope.lookup(root_name) orelse return TypeError.UndefinedVariable;
@@ -6134,6 +7015,8 @@ pub const TypeChecker = struct {
                         self.setError("TypeMismatch in return: expected {s}, actual {s}", .{ typeDesc(ret_ty), typeDesc(val_ty) });
                         return TypeError.TypeMismatch;
                     }
+                    // F2-A C1: escape route 1 (return).
+                    try self.checkArenaReturnFlow(val, scope);
                 } else {
                     if (!isPrimitiveType(ret_ty, .void_type)) {
                         self.setError("TypeMismatch in return void: expected tag={s}", .{@tagName(ret_ty.*)});
@@ -6277,6 +7160,18 @@ pub const TypeChecker = struct {
                 const inner_scope = try Scope.init(self.allocator, scope);
                 try self.scope_pool.append(inner_scope);
                 try self.checkBlock(blk.body, inner_scope, ret_ty, stmt, current_loop_scope);
+            },
+            .arena_stmt => |a| {
+                // F2-A arena batch (C1): an arena block is a fresh
+                // ownership domain for the duration of its body check.
+                // Bindings defined inside are labelled with the domain
+                // (defineSymbolWithState) and pass root admission;
+                // escape analysis runs at the flow sites.
+                try self.pushArenaFrame();
+                defer self.popArenaFrame();
+                const inner_scope = try Scope.init(self.allocator, scope);
+                try self.scope_pool.append(inner_scope);
+                try self.checkBlock(a.body, inner_scope, ret_ty, stmt, current_loop_scope);
             },
             else => return TypeError.CompileError,
         }
@@ -6861,6 +7756,8 @@ pub const TypeChecker = struct {
                 return ty;
             },
             .closure_literal => |lit| {
+                // F2-A C1: escape route 4 (standalone literal path).
+                try self.checkArenaClosureCapture(lit, scope);
                 for (lit.params) |p| {
                     if (p.ty.* == .infer) {
                         self.setError("closure parameter types must be inferred from context; standalone inference is not available", .{});
@@ -6881,6 +7778,11 @@ pub const TypeChecker = struct {
                 const previous_fn_is_async = self.current_fn_is_async;
                 self.current_fn_is_async = false;
                 defer self.current_fn_is_async = previous_fn_is_async;
+                // F2-A C1: arena generations reset here too (see
+                // checkClosureLiteralWithContext).
+                const previous_arena_generation = self.arena_generation;
+                self.arena_generation += 1;
+                defer self.arena_generation = previous_arena_generation;
                 const ret_ty = try self.checkExpr(lit.body, closure_scope);
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .closure = .{ .params = try param_types.toOwnedSlice(), .ret = ret_ty } };
@@ -8195,6 +9097,11 @@ pub const TypeChecker = struct {
                     const elem_ty = vecElementType(recv_ty) orelse return TypeError.TypeMismatch;
                     const arg_ty = try self.checkExpr(call.args[1], scope);
                     if (!self.typesEqual(elem_ty, arg_ty)) return TypeError.TypeMismatch;
+                    // F2-A C1: escape route 3, container fast path -
+                    // pushing an arena-owned element into a receiver
+                    // outside its domain moves it out of the arena;
+                    // a same-domain receiver keeps it inside.
+                    try self.checkArenaMoveArg(call.args[1], arg_ty, scope, "push", self.arenaPlaceDomainOf(call.args[0], scope));
                     if (elem_ty.* == .infer) {
                         if (rootIdentifier(call.args[0])) |recv_name| {
                             if (scope.lookup(recv_name)) |sym| {

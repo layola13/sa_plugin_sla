@@ -496,6 +496,23 @@ test "sla check enforces typed macro parameter declarations (J-3)" {
     try expectSlaCheckNamedDiagnostic("tests/test_error_typed_macro_body_mismatch.sla", "TypeMismatch in assign");
 }
 
+fn expectSlaCheckOk(file: []const u8) !void {
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", file };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
+
+    try stderr_fw.writer().flush();
+    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
+    try std.testing.expectEqual(@as(?u8, 0), code);
+}
+
 test "sla check enforces the leading-output expression form (J-4)" {
     // Expression use requires the leading output parameter to
     // declare its type (J-3): untyped output is a named diagnostic.
@@ -504,6 +521,81 @@ test "sla check enforces the leading-output expression form (J-4)" {
     // macros: a first parameter that does not satisfy it cannot be
     // omitted, so the expression form is an arity error.
     try expectSlaCheckNamedDiagnostic("tests/test_error_macro_expr_output_name.sla", "expects 2 args, got 1");
+}
+
+test "sla check enforces F2-A arena domains (C1)" {
+    // Root admission: the section 2.2 forbidden registry, one
+    // corpus file per row. The diagnostic quadruple names the
+    // root type, the field path, the forbidden type, and its
+    // class; assertions pin the category plus the forbidden name.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_file_field.sla", "ArenaUnsafe");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_file_field.sla", "File");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_file_field.sla", "external resource");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_tcp_field.sla", "TcpStream");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_mutex.sla", "Mutex");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_mutex.sla", "synchronization primitive");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_rwlock.sla", "RwLock");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_oncelock.sla", "OnceLock");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_chan.sla", "Chan");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_chan.sla", "channel endpoint");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_rc.sla", "Rc");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_rc.sla", "reference-counted");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_arc.sla", "Arc");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_weak.sla", "Weak");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_refcell.sla", "RefCell");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_box.sla", "Box");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_box.sla", "independent heap allocation");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_vec_box.sla", "Box");
+    // Self-managed containers (Jev U2 = A: all banned in v1).
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_hashmap.sla", "HashMap");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_hashmap.sla", "self-managed container");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_btreemap.sla", "BTreeMap");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_hashset.sla", "HashSet");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_btreeset.sla", "BTreeSet");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_vecdeque.sla", "VecDeque");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_stringbuf.sla", "StringBuf");
+    // Unverifiable shapes: raw pointer / borrow fields, opaque
+    // and union declarations, undeclared field types.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_raw_ptr_field.sla", "raw pointer");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_borrow_field.sla", "borrow");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_opaque.sla", "opaque");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_union.sla", "union");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_unverifiable.sla", "ArenaUnsafe");
+    // Closure edges: enum payloads, recursion (2.4 greatest
+    // fixpoint - the cycle must not be cut), generic substitution.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_enum_file.sla", "File");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_recursive_file.sla", "File");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_pair_file.sla", "File");
+    // Escape analysis: the six routes of design sections 3/4.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_return_root.sla", "ArenaEscape");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_return_root.sla", "return would move arena-owned value");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_return_literal.sla", "ArenaEscape");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_store_out.sla", "ArenaEscape");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_store_out.sla", "ordinary domain");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_move_in.sla", "ArenaDomain");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_move_in.sla", "ordinary-domain value");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_nested_cross.sla", "ArenaDomain");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_nested_cross.sla", "independent ownership domains");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_move_arg.sla", "ArenaEscape");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_move_arg.sla", "may only be passed by borrow");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_closure_capture.sla", "ArenaEscape");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_closure_capture.sla", "closure captures arena-owned binding");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_chan_send.sla", "ArenaGoroutine");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_chan_send.sla", "cannot be sent on a channel");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_go_spawn.sla", "ArenaGoroutine");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_go_spawn.sla", "spawned function");
+    // Jev U3 = A: .buffer roots are clone-only out of the domain.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_buffer_move_out.sla", "ArenaEscape");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_arena_buffer_move_out.sla", "clone()");
+    // Positives: safe shapes must check clean.
+    try expectSlaCheckOk("tests/test_arena_ok_design_cmd.sla");
+    try expectSlaCheckOk("tests/test_arena_ok_recursive_tree.sla");
+    try expectSlaCheckOk("tests/test_arena_ok_nested_borrow.sla");
+    try expectSlaCheckOk("tests/test_arena_ok_clone_out.sla");
+    try expectSlaCheckOk("tests/test_arena_ok_borrow_pass.sla");
+    try expectSlaCheckOk("tests/test_arena_ok_arena_fn.sla");
+    try expectSlaCheckOk("tests/test_arena_ok_safe_enum.sla");
+    try expectSlaCheckOk("tests/test_arena_ok_generic_pair.sla");
 }
 
 test "sla check enforces registered sublanguage declarations (J-1)" {

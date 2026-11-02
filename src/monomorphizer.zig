@@ -501,6 +501,12 @@ pub const Monomorphizer = struct {
                 res.* = .{ .block_stmt = .{ .body = new_body } };
                 return res;
             },
+            .arena_stmt => |blk| {
+                const new_body = try self.specializeBlock(blk.body);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .arena_stmt = .{ .body = new_body } };
+                return res;
+            },
             .expr_stmt => |expr| {
                 const new_expr = try self.specializeNode(expr);
                 const res = try self.allocator.create(ast.Node);
@@ -1663,6 +1669,12 @@ pub const Monomorphizer = struct {
                 const spec_body = try self.substituteBlock(blk.body, params, args);
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .block_stmt = .{ .body = spec_body } };
+                return res;
+            },
+            .arena_stmt => |blk| {
+                const spec_body = try self.substituteBlock(blk.body, params, args);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .arena_stmt = .{ .body = spec_body } };
                 return res;
             },
             .expr_stmt => |expr| {

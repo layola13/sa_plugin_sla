@@ -12988,6 +12988,14 @@ pub const Codegen = struct {
             .block_stmt => |blk| {
                 try self.genScopedBlock(blk.body, hoisted_allocs);
             },
+            .arena_stmt => {
+                // F2-A C1: arena blocks are checker-only in this
+                // batch; emission (bump allocation, watermark rewind
+                // at exit, roots' drop plans skipped) lands in C2.
+                // Refuse loudly rather than silently emitting the
+                // block with ordinary drop semantics.
+                return CodegenError.CodegenError;
+            },
             else => {},
         }
 

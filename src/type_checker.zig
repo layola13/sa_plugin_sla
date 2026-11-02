@@ -1357,21 +1357,23 @@ pub const TypeChecker = struct {
     }
 
     /// F2-A C1, design section 3 R1 wiring predicate. The handle-
-    /// domain replace criterion (crash-A batch, not yet on this
-    /// master) resolves a candidate source place per assignment node;
-    /// this batch records the source/target domain pair of every
-    /// assignment checked while an arena frame is active, and this
-    /// predicate is the conjunction the replace criterion must add:
+    /// domain replace criterion (crash-A batch) resolves a candidate
+    /// source place per assignment node; this batch records the
+    /// source/target domain pair of every assignment checked while
+    /// an arena frame is active, and this predicate is the
+    /// conjunction the replace criterion adds:
     /// `domain(source) == domain(target)`. The design's second
     /// disjunct (`or plan == .none`) needs no code here: replace only
     /// ever annotates buffer/deep_vec targets, so a .none-typed value
-    /// never reaches the conjunction. Wiring point once that batch
-    /// lands: in replaceSourceForAssign, after the candidate source
-    /// is resolved and before the assign_replace_src annotation is
-    /// recorded, require `self.arenaReplaceConjunction(node)`.
-    /// Until then the same rule is enforced directly in the main
-    /// check pass (checkArenaAssignFlow below), so cross-domain
-    /// assignments are rejected on this master already.
+    /// never reaches the conjunction. Wired in walkTaintAssign:
+    /// after the candidate source is resolved and before the
+    /// assign_replace_src annotation is recorded, the annotation is
+    /// gated on this predicate. (The domain pairs are complete by
+    /// then: checkBlock records them in the main check pass before
+    /// computeDropTaint walks the body.) The same rule is also
+    /// enforced directly in the main check pass
+    /// (checkArenaAssignFlow below), which rejects cross-domain
+    /// assignments outright.
     pub fn arenaReplaceConjunction(self: *TypeChecker, node: *const ast.Node) bool {
         const pair = self.arena_assign_domains.get(node) orelse return true;
         const src = pair.src orelse return true;
@@ -1804,8 +1806,19 @@ pub const TypeChecker = struct {
         // snapshot above predates this on purpose, it describes the
         // target's old-value drop at this node).
         if (try self.replaceSourceForAssign(assign.value, assign.target, place_key)) |src| {
-            try self.assign_replace_src.put(node, src);
-            if (self.taintKeyOfPlace(src)) |src_key| clearDropTaint(taint, src_key);
+            // F2-A C1 x crash-A R1 conjunction: the replace
+            // annotation (and the source taint retirement that comes
+            // with it) only applies when source and target live in
+            // the same ownership domain; with no recorded pair (no
+            // arena frame active for this assignment) the predicate
+            // is trivially true. Cross-domain deep assignments are
+            // rejected outright by checkArenaAssignFlow in the main
+            // check pass; this gate keeps the nulling annotation
+            // consistent with that ruling.
+            if (self.arenaReplaceConjunction(node)) {
+                try self.assign_replace_src.put(node, src);
+                if (self.taintKeyOfPlace(src)) |src_key| clearDropTaint(taint, src_key);
+            }
         }
         // The stored value is exclusively owned by the place now.
         if (place_key) |key| clearDropTaint(taint, key);

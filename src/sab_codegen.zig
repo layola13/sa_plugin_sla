@@ -3232,9 +3232,15 @@ pub const Codegen = struct {
 
     fn emitVecElementDrops(self: *Codegen, vec_reg: u32, vec_ty: *const ast.Type, elem_plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node) anyerror!void {
         const elem_ty = lowering_rules.vecElementType(vec_ty) orelse return;
-        // Vec layout is fixed by sa_std (alloc/layout.sal): ptr@0, len@8.
-        const ptr_off: usize = if (self.fieldLayout(vec_ty, "ptr")) |fl| fl.offset else |_| 0;
-        const len_off: usize = if (self.fieldLayout(vec_ty, "len")) |fl| fl.offset else |_| 8;
+        // Vec is a decl-less handle type with a fixed sa_std ABI
+        // (alloc/vec.sal: ptr@+0, cap@+8, len@+16). Take the offsets
+        // from VecAbi directly. fieldLayout() requires a struct decl
+        // and always errors for Vec; the previous `else |_| 8`
+        // fallback silently substituted cap's offset for len's, so
+        // this walker iterated [0, cap) and dropped uninitialised
+        // slots as boxed elements whenever cap > len (SIGSEGV).
+        const ptr_off: usize = lowering_rules.VecAbi.ptr_offset;
+        const len_off: usize = lowering_rules.VecAbi.len_offset;
         const buf_reg = try self.intern(try self.newTmp());
         try self.emitLoad(buf_reg, vec_reg, ptr_off, .ptr);
         const len_reg = try self.intern(try self.newTmp());

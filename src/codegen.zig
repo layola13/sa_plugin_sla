@@ -3245,6 +3245,14 @@ pub const Codegen = struct {
         base_tmp: ?[]const u8,
         base_reg: []const u8,
         release_base_reg: bool,
+        // DEF-SLAREDIS-BUILD-MAIN: the loaded buffer-pointer temp a
+        // vecLike/slice slot address was ptr_add'ed from. The ptr_add
+        // result is capability-linked to this base: releasing it before
+        // a load/store through ptr poisons the access (verifier
+        // UseAfterMove, trap 1009). It must stay live until the caller
+        // is done with ptr; finishIndexAddress (or the call site, for
+        // paths that do not call it) releases it after ptr.
+        slot_base_reg: ?[]const u8 = null,
     };
 
     const VecReceiver = struct {
@@ -11676,6 +11684,7 @@ pub const Codegen = struct {
                 const loaded = try self.newTmp();
                 self.outPrint("    {s} = load {s}+0 as {s}\n", .{ loaded, address.ptr, typeString(arg_ty) }) catch return CodegenError.CodegenError;
                 try self.emitRelease(address.ptr);
+                try self.releaseIndexSlotBase(address);
                 break :blk loaded;
             },
             .deref_borrow_or_pointer, .deref_pointer_aggregate => blk: {
@@ -14021,7 +14030,15 @@ pub const Codegen = struct {
             const ptr_reg = try self.newTmp();
             self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(offset_reg);
-            try self.emitRelease(base_reg);
+            // DEF-SLAREDIS-BUILD-MAIN: base_reg is NOT released here.
+            // The slot address stays capability-linked to it, and
+            // callers load through the slot (e.g. a borrow of a
+            // heap-handle element loads the handle word) after this
+            // returns; releasing the base first made the verifier
+            // reject the load as UseAfterMove (slaredis
+            // resp_write_command stopped building). The base travels
+            // in slot_base_reg and is released after ptr (see
+            // finishIndexAddress).
             if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
             return .{
                 .ptr = ptr_reg,
@@ -14029,6 +14046,7 @@ pub const Codegen = struct {
                 .base_tmp = null,
                 .base_reg = vec_reg,
                 .release_base_reg = exprResultNeedsRelease(idx.target) or isTemporaryRegisterName(vec_reg),
+                .slot_base_reg = base_reg,
             };
         }
 
@@ -14042,7 +14060,8 @@ pub const Codegen = struct {
             const ptr_reg = try self.newTmp();
             self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(offset_reg);
-            try self.emitRelease(base_reg);
+            // DEF-SLAREDIS-BUILD-MAIN: same deferred base release as
+            // the vecLike branch above (slot_base_reg).
             if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
             return .{
                 .ptr = ptr_reg,
@@ -14050,6 +14069,7 @@ pub const Codegen = struct {
                 .base_tmp = null,
                 .base_reg = slice_reg,
                 .release_base_reg = exprResultNeedsRelease(idx.target) or isTemporaryRegisterName(slice_reg),
+                .slot_base_reg = base_reg,
             };
         }
 
@@ -14106,8 +14126,16 @@ pub const Codegen = struct {
 
     fn finishIndexAddress(self: *Codegen, address: IndexAddress) CodegenError!void {
         try self.emitRelease(address.ptr);
+        if (address.slot_base_reg) |slot_base| try self.emitRelease(slot_base);
         if (address.base_tmp) |base_tmp| try self.emitRelease(base_tmp);
         if (address.release_base_reg) try self.emitRelease(address.base_reg);
+    }
+
+    /// DEF-SLAREDIS-BUILD-MAIN: call sites that use an IndexAddress
+    /// without going through finishIndexAddress release the deferred
+    /// slot base explicitly once they are done with address.ptr.
+    fn releaseIndexSlotBase(self: *Codegen, address: IndexAddress) CodegenError!void {
+        if (address.slot_base_reg) |slot_base| try self.emitRelease(slot_base);
     }
 
     fn genFieldAddress(
@@ -14154,6 +14182,7 @@ pub const Codegen = struct {
             // this projection would be lost.
             const addr = try self.genIndexAddress(&field.expr.index_expr, hoisted_allocs);
             if (addr.base_tmp) |t| try self.emitRelease(t);
+            try self.releaseIndexSlotBase(addr);
             if (addr.release_base_reg) try self.emitRelease(addr.base_reg);
             break :blk addr.ptr;
         } else try self.genExpr(field.expr, hoisted_allocs);
@@ -15071,8 +15100,10 @@ pub const Codegen = struct {
                                     self.borrow_source_temps.put(rec, source_temp) catch return CodegenError.OutOfMemory;
                                 }
                                 try self.emitRelease(address.ptr);
+                                try self.releaseIndexSlotBase(address);
                                 return rec;
                             }
+                            try self.releaseIndexSlotBase(address);
                             return address.ptr;
                         }
                     }
@@ -15139,6 +15170,7 @@ pub const Codegen = struct {
                     .index => {
                         const address = try self.genIndexAddress(&borrow.expr.index_expr, hoisted_allocs);
                         try self.rememberIndexAddressSource(address);
+                        try self.releaseIndexSlotBase(address);
                         return address.ptr;
                     },
                     .deref_smart_pointer => {

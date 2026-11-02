@@ -213,6 +213,7 @@ pub const Codegen = struct {
     string_buf_bindings: std.StringHashMap(void),
     inferred_string_slice_locals: std.StringHashMap(void),
     vec_buf_bindings: std.StringHashMap(void),
+    growvec_buf_bindings: std.StringHashMap(void),
     hashmap_bindings: std.StringHashMap(void),
     btree_map_bindings: std.StringHashMap(void),
     hashset_bindings: std.StringHashMap(void),
@@ -312,6 +313,7 @@ pub const Codegen = struct {
             .string_buf_bindings = std.StringHashMap(void).init(allocator),
             .inferred_string_slice_locals = std.StringHashMap(void).init(allocator),
             .vec_buf_bindings = std.StringHashMap(void).init(allocator),
+            .growvec_buf_bindings = std.StringHashMap(void).init(allocator),
             .hashmap_bindings = std.StringHashMap(void).init(allocator),
             .btree_map_bindings = std.StringHashMap(void).init(allocator),
             .hashset_bindings = std.StringHashMap(void).init(allocator),
@@ -1165,6 +1167,12 @@ pub const Codegen = struct {
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
         }
+        if (self.growvec_buf_bindings.contains(resolved_name)) {
+            try self.emitDeepBindingElementsText(resolved_name);
+            self.outPrint("    EXPAND GROWVEC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
+            return;
+        }
         if (self.hashmap_bindings.contains(resolved_name)) {
             self.outPrint("    EXPAND MAP_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
@@ -1198,6 +1206,14 @@ pub const Codegen = struct {
                             try self.emitVecElementDropsText(resolved_name, binding_ty, elem_plan, resolved_name, self.current_drop_node);
                         }
                         self.outPrint("    EXPAND VEC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+                        self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
+                        return;
+                    },
+                    .deep_growvec => |elem_plan| {
+                        if (!self.tc.dropTaintCoversAt(self.current_drop_node, resolved_name)) {
+                            try self.emitGrowVecElementDropsText(resolved_name, binding_ty, elem_plan, resolved_name, self.current_drop_node);
+                        }
+                        self.outPrint("    EXPAND GROWVEC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
                         self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
                         return;
                     },
@@ -1253,6 +1269,33 @@ pub const Codegen = struct {
                     try self.emitRelease(value_reg);
                 }
             },
+            .buffer_growvec => {
+                if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitRelease(value_reg);
+                    return;
+                }
+                if (free_container) {
+                    self.outPrint("    EXPAND GROWVEC_FREE {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                    self.consumed_bindings.put(value_reg, {}) catch return CodegenError.OutOfMemory;
+                } else {
+                    try self.emitRelease(value_reg);
+                }
+            },
+            .deep_growvec => |elem_plan| {
+                if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitRelease(value_reg);
+                    return;
+                }
+                if (!self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitGrowVecElementDropsText(value_reg, ty, elem_plan, key, taint_node);
+                }
+                if (free_container) {
+                    self.outPrint("    EXPAND GROWVEC_FREE {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                    self.consumed_bindings.put(value_reg, {}) catch return CodegenError.OutOfMemory;
+                } else {
+                    try self.emitRelease(value_reg);
+                }
+            },
             .deep_struct => |fields| {
                 try self.emitStructFieldDropsText(value_reg, ty, fields, key, taint_node);
                 try self.emitRelease(value_reg);
@@ -1261,7 +1304,15 @@ pub const Codegen = struct {
     }
 
     fn emitVecElementDropsText(self: *Codegen, vec_reg: []const u8, vec_ty: *const ast.Type, elem_plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node) CodegenError!void {
-        const elem_ty = lowering_rules.vecElementType(vec_ty) orelse return;
+        return self.emitContainerElementDropsText(vec_reg, vec_ty, elem_plan, key, taint_node, "Vec_ptr", "Vec_len");
+    }
+
+    fn emitGrowVecElementDropsText(self: *Codegen, vec_reg: []const u8, vec_ty: *const ast.Type, elem_plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node) CodegenError!void {
+        return self.emitContainerElementDropsText(vec_reg, vec_ty, elem_plan, key, taint_node, "GrowVec_ptr", "GrowVec_len");
+    }
+
+    fn emitContainerElementDropsText(self: *Codegen, vec_reg: []const u8, vec_ty: *const ast.Type, elem_plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node, ptr_def: []const u8, len_def: []const u8) CodegenError!void {
+        const elem_ty = lowering_rules.vecLikeElementType(vec_ty) orelse return;
         const buf_reg = try self.newTmp();
         const len_reg = try self.newTmp();
         const i_reg = try self.newTmp();
@@ -1269,8 +1320,8 @@ pub const Codegen = struct {
         const head_label = try self.newLabel("L_DD_HEAD");
         const body_label = try self.newLabel("L_DD_BODY");
         const done_label = try self.newLabel("L_DD_DONE");
-        self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ buf_reg, vec_reg }) catch return CodegenError.CodegenError;
-        self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+{s} as ptr\n", .{ buf_reg, vec_reg, ptr_def }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+{s} as u64\n", .{ len_reg, vec_reg, len_def }) catch return CodegenError.CodegenError;
         self.outPrint("    {s} = 0\n", .{i_reg}) catch return CodegenError.CodegenError;
         self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
         self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
@@ -1329,9 +1380,12 @@ pub const Codegen = struct {
     fn emitDeepBindingElementsText(self: *Codegen, resolved_name: []const u8) CodegenError!void {
         const ty = self.local_binding_types.get(resolved_name) orelse return;
         const plan = self.tc.planValueDrop(ty) catch return;
-        if (plan.* != .deep_vec) return;
         if (self.tc.dropTaintCoversAt(self.current_drop_node, resolved_name)) return;
-        try self.emitVecElementDropsText(resolved_name, ty, plan.deep_vec, resolved_name, self.current_drop_node);
+        switch (plan.*) {
+            .deep_vec => try self.emitVecElementDropsText(resolved_name, ty, plan.deep_vec, resolved_name, self.current_drop_node),
+            .deep_growvec => try self.emitGrowVecElementDropsText(resolved_name, ty, plan.deep_growvec, resolved_name, self.current_drop_node),
+            else => {},
+        }
     }
 
     /// Mirror of the checker's place-key construction (fieldPlaceDesc).
@@ -2249,6 +2303,9 @@ pub const Codegen = struct {
     fn markOwnedCollectionBinding(self: *Codegen, name: []const u8, ty: *const ast.Type) CodegenError!void {
         if (isOwnedVecType(ty)) {
             self.vec_buf_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+        }
+        if (isOwnedGrowVecType(ty)) {
+            self.growvec_buf_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
         }
         if (hashMapTypes(ty) != null) {
             self.hashmap_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
@@ -3835,6 +3892,10 @@ pub const Codegen = struct {
         return ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "Vec");
     }
 
+    fn isOwnedGrowVecType(ty: *const ast.Type) bool {
+        return ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "GrowVec");
+    }
+
     fn escapedStringByteLen(value: []const u8) usize {
         var len: usize = 0;
         var i: usize = 0;
@@ -4186,6 +4247,7 @@ pub const Codegen = struct {
                 if (arrayType(@constCast(target_ty))) |arr| break :blk arr.elem;
                 if (sliceElementType(target_ty)) |elem| break :blk elem;
                 if (vecElementType(target_ty)) |elem| break :blk elem;
+                if (lowering_rules.growVecElementType(target_ty)) |elem| break :blk elem;
                 if (vecDequeElementType(target_ty)) |elem| break :blk elem;
                 break :blk null;
             },
@@ -5794,6 +5856,129 @@ pub const Codegen = struct {
         }
         return false;
     }
+
+    fn exprNeedsGrowVecMacros(self: *Codegen, expr: *const ast.Node) bool {
+        if (lowering_rules.planDynCoercion(self.tc, expr)) |plan| {
+            if (plan.isBoxToDyn()) return true;
+        }
+        if (self.tc.expr_types.get(expr)) |ty| {
+            if (lowering_rules.growVecElementType(ty) != null) return true;
+        }
+        return switch (expr.*) {
+            .call_expr => |call| blk: {
+                if (call.associated_target != null and std.mem.eql(u8, call.associated_target.?, "GrowVec")) break :blk true;
+                if (call.callee) |callee| {
+                    if (self.exprNeedsGrowVecMacros(callee)) break :blk true;
+                }
+                for (call.args) |arg| {
+                    if (self.exprNeedsGrowVecMacros(arg)) break :blk true;
+                }
+                break :blk false;
+            },
+            .binary_expr => |bin| self.exprNeedsGrowVecMacros(bin.left) or self.exprNeedsGrowVecMacros(bin.right),
+            .borrow_expr => |borrow| self.exprNeedsGrowVecMacros(borrow.expr),
+            .move_expr => |move| self.exprNeedsGrowVecMacros(move.expr),
+            .deref_expr => |deref| self.exprNeedsGrowVecMacros(deref.expr),
+            .field_expr => |field| self.exprNeedsGrowVecMacros(field.expr),
+            .index_expr => |idx| self.exprNeedsGrowVecMacros(idx.target) or self.exprNeedsGrowVecMacros(idx.index),
+            .slice_expr => |slc| self.exprNeedsGrowVecMacros(slc.target) or self.exprNeedsGrowVecMacros(slc.start) or self.exprNeedsGrowVecMacros(slc.end),
+            .closure_literal => |lit| self.exprNeedsGrowVecMacros(lit.body),
+            .await_expr => |aw| self.exprNeedsGrowVecMacros(aw.expr),
+            .try_expr => |trye| self.exprNeedsGrowVecMacros(trye.expr),
+            .struct_literal => |lit| blk: {
+                for (lit.fields) |field| {
+                    if (self.exprNeedsGrowVecMacros(field.value)) break :blk true;
+                }
+                break :blk false;
+            },
+            .enum_literal => |lit| blk: {
+                for (lit.fields) |field| {
+                    if (self.exprNeedsGrowVecMacros(field.value)) break :blk true;
+                }
+                break :blk false;
+            },
+            .tuple_literal => |lit| blk: {
+                for (lit.elements) |elem| {
+                    if (self.exprNeedsGrowVecMacros(elem)) break :blk true;
+                }
+                break :blk false;
+            },
+            .array_literal => |lit| blk: {
+                for (lit.elements) |elem| {
+                    if (self.exprNeedsGrowVecMacros(elem)) break :blk true;
+                }
+                break :blk false;
+            },
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsGrowVecMacros, blockNeedsGrowVecMacros, ife),
+            .switch_expr => |swe| blk: {
+                if (self.exprNeedsGrowVecMacros(swe.val)) break :blk true;
+                for (swe.cases) |case| {
+                    if (self.exprNeedsGrowVecMacros(case.pattern) or self.blockNeedsGrowVecMacros(case.body)) break :blk true;
+                }
+                break :blk false;
+            },
+            .match_expr => |mat| blk: {
+                if (self.exprNeedsGrowVecMacros(mat.val)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsGrowVecMacros(guard)) break :blk true;
+                    if (self.blockNeedsGrowVecMacros(case.body)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    fn blockNeedsGrowVecMacros(self: *Codegen, block: []const *ast.Node) bool {
+        for (block) |stmt| {
+            switch (stmt.*) {
+                .let_stmt => |let| if (self.exprNeedsGrowVecMacros(let.value)) return true,
+                .let_destructure_stmt => |let| if (self.exprNeedsGrowVecMacros(let.value)) return true,
+                .const_stmt => |c| if (self.exprNeedsGrowVecMacros(c.value)) return true,
+                .assign_stmt => |assign| if (self.exprNeedsGrowVecMacros(assign.target) or self.exprNeedsGrowVecMacros(assign.value)) return true,
+                .expr_stmt => |expr| if (self.exprNeedsGrowVecMacros(expr)) return true,
+                .return_stmt => |ret| if (ret.value) |v| if (self.exprNeedsGrowVecMacros(v)) return true,
+                .for_stmt => |f| if (self.exprNeedsGrowVecMacros(f.start) or (if (f.end) |end_expr| self.exprNeedsGrowVecMacros(end_expr) else false) or self.blockNeedsGrowVecMacros(f.body)) return true,
+                .while_stmt => |w| if (self.exprNeedsGrowVecMacros(w.cond) or self.blockNeedsGrowVecMacros(w.body)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn programNeedsGrowVecMacros(self: *Codegen, program: *const ast.Node) bool {
+        // Signature scan first: a GrowVec that only ever appears in a
+        // parameter/field type (e.g. a by-value parameter whose whole
+        // body never names it) still needs growvec.sa for its drop.
+        for (program.program.decls) |decl| {
+            switch (decl.*) {
+                .func_decl => |f| {
+                    if (lowering_rules.growVecElementType(f.ret_ty) != null) return true;
+                    for (f.params) |param| {
+                        if (lowering_rules.growVecElementType(param.ty) != null) return true;
+                    }
+                },
+                .struct_decl => |sd| {
+                    for (sd.fields) |field| {
+                        if (lowering_rules.growVecElementType(field.ty) != null) return true;
+                    }
+                },
+                else => {},
+            }
+        }
+        for (program.program.decls) |decl| {
+            switch (decl.*) {
+                .func_decl => |f| if (self.blockNeedsGrowVecMacros(f.body)) return true,
+                .impl_decl => |i| for (i.methods) |method| {
+                    if (method.* == .func_decl and self.blockNeedsGrowVecMacros(method.func_decl.body)) return true;
+                },
+                .test_decl => |t| if (self.blockNeedsGrowVecMacros(t.body)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
 
     // `format("{}", path)` with a `ptr` arg emits `EXPAND CSTR_LEN ...` (from
     // `sa_std/ffi.sa`). Only import `ffi.sa` when such a call exists, so demos
@@ -8006,6 +8191,9 @@ pub const Codegen = struct {
         if (self.programNeedsVecMacros(program)) {
             self.outPrint("@import \"sa_std/vec.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
+        if (self.programNeedsGrowVecMacros(program)) {
+            self.outPrint("@import \"sa_std/growvec.sa\"\n", .{}) catch return CodegenError.CodegenError;
+        }
         if (programNeedsIterMacros(program)) {
             self.outPrint("@import \"sa_std/iter.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
@@ -8471,6 +8659,9 @@ pub const Codegen = struct {
             }
             if (!p.is_borrow and isOwnedVecType(p.ty)) {
                 self.vec_buf_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+            }
+            if (!p.is_borrow and isOwnedGrowVecType(p.ty)) {
+                self.growvec_buf_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
             }
             if (p.ty.* == .borrow and sliceElementType(p.ty.borrow) != null) {
                 const raw_param = try self.newTmp();
@@ -10717,6 +10908,15 @@ pub const Codegen = struct {
         return out;
     }
 
+    fn genGrowVecCloneValue(self: *Codegen, source_reg: []const u8, elem_ty: *const ast.Type) CodegenError![]const u8 {
+        const out = try self.newTmp();
+        self.outPrint(
+            "    EXPAND GROWVEC_CLONE {s}, {s}, {}\n",
+            .{ out, source_reg, self.vecElementSlotSize(elem_ty) },
+        ) catch return CodegenError.CodegenError;
+        return out;
+    }
+
     /// DEF-5 / borrowed handle-field extraction (Jev ruling:
     /// clone_on_extract, 0.86) — SA-text mirror of the SAB backend's
     /// cloneBorrowedHandleFieldValue. A handle-typed field (String/Vec)
@@ -10749,6 +10949,11 @@ pub const Codegen = struct {
         }
         if (vecElementType(result_ty)) |elem_ty| {
             const out = try self.genVecCloneValue(src, elem_ty);
+            try self.emitRelease(src);
+            return out;
+        }
+        if (lowering_rules.growVecElementType(result_ty)) |elem_ty| {
+            const out = try self.genGrowVecCloneValue(src, elem_ty);
             try self.emitRelease(src);
             return out;
         }
@@ -11046,6 +11251,15 @@ pub const Codegen = struct {
                     // when the binding is still needed after this call.
                     if (!move_out and arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
                         if (self.resolvedTypeForExpr(arg) orelse self.tc.expr_types.get(arg)) |ty| {
+                            if (lowering_rules.growVecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genGrowVecCloneValue(arg_reg, elem_ty);
+                                const move_arg = std.fmt.allocPrint(self.allocator, "^{s}", .{cloned}) catch return CodegenError.OutOfMemory;
+                                break :blk .{
+                                    .reg = move_arg,
+                                    .release_after_call = false,
+                                    .consume_reg = move_arg,
+                                };
+                            }
                             if (vecElementType(ty)) |elem_ty| {
                                 const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
                                 const move_arg = std.fmt.allocPrint(self.allocator, "^{s}", .{cloned}) catch return CodegenError.OutOfMemory;
@@ -11709,7 +11923,7 @@ pub const Codegen = struct {
         if (base_expr.* != .index_expr) return false;
         const idx = base_expr.index_expr;
         const target_ty = self.resolvedTypeForExpr(idx.target) orelse return false;
-        const elem_ty = vecElementType(target_ty) orelse return false;
+        const elem_ty = lowering_rules.vecLikeElementType(target_ty) orelse return false;
         if (!lowering_rules.isHeapHandleType(elem_ty)) return false;
         if (self.slotCopyStructType(elem_ty)) |copy_ty| {
             if (self.typeIsCopyStruct(copy_ty)) return false;
@@ -12443,7 +12657,9 @@ pub const Codegen = struct {
                     if (field.expr.* == .index_expr) {
                         const idx = field.expr.index_expr;
                         const idx_target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
-                        if (vecElementType(idx_target_ty)) |elem_ty| {
+                        if (lowering_rules.vecLikeElementType(idx_target_ty)) |elem_ty| {
+                            const len_def = if (lowering_rules.growVecElementType(idx_target_ty) != null) "GrowVec_len" else "Vec_len";
+                            const ptr_def = if (lowering_rules.growVecElementType(idx_target_ty) != null) "GrowVec_ptr" else "Vec_ptr";
                             const layout = try self.fieldAddressLayout(elem_ty, field.field_name);
                             const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
                             const vec_receiver = try self.genVecOwnerReceiver(idx.target, hoisted_allocs);
@@ -12453,7 +12669,7 @@ pub const Codegen = struct {
                             const in_bounds_reg = try self.newTmp();
                             const hit_label = try self.newLabel("L_VEC_INDEX_FIELD_ASSIGN_OK");
                             const miss_label = try self.newLabel("L_VEC_INDEX_FIELD_ASSIGN_OOB");
-                            self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = load {s}+{s} as u64\n", .{ len_reg, vec_reg, len_def }) catch return CodegenError.CodegenError;
                             self.outPrint("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
                             self.outPrint("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
                             self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
@@ -12464,7 +12680,7 @@ pub const Codegen = struct {
                             const slot_reg = try self.newTmp();
                             const owner_reg = try self.newTmp();
                             self.outPrint("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
-                            self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+                            self.outPrint("    {s} = load {s}+{s} as ptr\n", .{ data_reg, vec_reg, ptr_def }) catch return CodegenError.CodegenError;
                             self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
                             self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
                             self.outPrint("    {s} = load {s}+0 as ptr\n", .{ owner_reg, slot_reg }) catch return CodegenError.CodegenError;
@@ -13764,7 +13980,9 @@ pub const Codegen = struct {
         assign_node: *const ast.Node,
     ) CodegenError!void {
         const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
-        if (vecElementType(target_ty)) |elem_ty| {
+        if (lowering_rules.vecLikeElementType(target_ty)) |elem_ty| {
+            const len_def = if (lowering_rules.growVecElementType(target_ty) != null) "GrowVec_len" else "Vec_len";
+            const ptr_def = if (lowering_rules.growVecElementType(target_ty) != null) "GrowVec_ptr" else "Vec_ptr";
             const vec_receiver = try self.genVecOwnerReceiver(idx.target, hoisted_allocs);
             const vec_reg = vec_receiver.reg;
             const index_reg = try self.genExpr(idx.index, hoisted_allocs);
@@ -13773,7 +13991,7 @@ pub const Codegen = struct {
             const in_bounds_reg = try self.newTmp();
             const hit_label = try self.newLabel("L_VEC_INDEX_ASSIGN_OK");
             const miss_label = try self.newLabel("L_VEC_INDEX_ASSIGN_OOB");
-            self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{s} as u64\n", .{ len_reg, vec_reg, len_def }) catch return CodegenError.CodegenError;
             self.outPrint("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
             self.outPrint("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
             self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
@@ -13783,7 +14001,7 @@ pub const Codegen = struct {
             const offset_reg = try self.newTmp();
             const ptr_reg = try self.newTmp();
             self.outPrint("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
-            self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+            self.outPrint("    {s} = load {s}+{s} as ptr\n", .{ data_reg, vec_reg, ptr_def }) catch return CodegenError.CodegenError;
             self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
             self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
             {
@@ -13826,6 +14044,9 @@ pub const Codegen = struct {
         elem_ty: *ast.Type,
         hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
+        const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
+        const len_def = if (lowering_rules.growVecElementType(target_ty) != null) "GrowVec_len" else "Vec_len";
+        const ptr_def = if (lowering_rules.growVecElementType(target_ty) != null) "GrowVec_ptr" else "Vec_ptr";
         const vec_receiver = try self.genVecOwnerReceiver(idx.target, hoisted_allocs);
         const vec_reg = vec_receiver.reg;
         const index_reg = try self.genExpr(idx.index, hoisted_allocs);
@@ -13833,7 +14054,7 @@ pub const Codegen = struct {
         const in_bounds_reg = try self.newTmp();
         const hit_label = try self.newLabel("L_VEC_INDEX_OK");
         const miss_label = try self.newLabel("L_VEC_INDEX_OOB");
-        self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+{s} as u64\n", .{ len_reg, vec_reg, len_def }) catch return CodegenError.CodegenError;
         self.outPrint("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
         self.outPrint("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
         self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
@@ -13843,7 +14064,7 @@ pub const Codegen = struct {
         const offset_reg = try self.newTmp();
         const ptr_reg = try self.newTmp();
         self.outPrint("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
-        self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+{s} as ptr\n", .{ data_reg, vec_reg, ptr_def }) catch return CodegenError.CodegenError;
         self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
         self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
         const reg = try self.genLoadSlotValue(ptr_reg, elem_ty);
@@ -15013,7 +15234,7 @@ pub const Codegen = struct {
                     if (callArgNeedsRelease(idx.index)) try self.emitRelease(key_reg);
                     return reg;
                 }
-                if (vecElementType(target_ty)) |elem_ty| {
+                if (lowering_rules.vecLikeElementType(target_ty)) |elem_ty| {
                     return try self.genVecIndexRead(&idx, elem_ty, hoisted_allocs);
                 }
                 if (vecDequeElementType(target_ty) != null) {
@@ -15458,6 +15679,24 @@ pub const Codegen = struct {
                         self.outPrint("    EXPAND VEC_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
+                    if (std.mem.eql(u8, target, "GrowVec") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 0) return CodegenError.CodegenError;
+                        const result_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                        const elem_ty = lowering_rules.growVecElementType(result_ty) orelse return CodegenError.CodegenError;
+                        const reg = try self.newTmp();
+                        self.outPrint("    EXPAND GROWVEC_NEW {s}, {}, 0\n", .{ reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                        return reg;
+                    }
+                    if (std.mem.eql(u8, target, "GrowVec") and std.mem.eql(u8, call.func_name, "with_max")) {
+                        if (call.args.len != 1) return CodegenError.CodegenError;
+                        const result_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                        const elem_ty = lowering_rules.growVecElementType(result_ty) orelse return CodegenError.CodegenError;
+                        const max_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                        const reg = try self.newTmp();
+                        self.outPrint("    EXPAND GROWVEC_NEW {s}, {}, {s}\n", .{ reg, self.vecElementSlotSize(elem_ty), max_reg }) catch return CodegenError.CodegenError;
+                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(max_reg);
+                        return reg;
+                    }
                     const method_key = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ target, call.func_name });
                     defer self.allocator.free(method_key);
                     if (self.tc.funcs.contains(method_key)) {
@@ -15534,6 +15773,15 @@ pub const Codegen = struct {
                             const recv_reg = recv.reg;
                             const reg = try self.newTmp();
                             self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                            if (recv.release_reg) |release_reg| try self.emitRelease(release_reg);
+                            if (recv.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
+                            return reg;
+                        }
+                        if (lowering_rules.growVecElementType(ty) != null) {
+                            const recv = try self.genVecOwnerReceiver(call.args[0], hoisted_allocs);
+                            const recv_reg = recv.reg;
+                            const reg = try self.newTmp();
+                            self.outPrint("    {s} = load {s}+GrowVec_len as u64\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             if (recv.release_reg) |release_reg| try self.emitRelease(release_reg);
                             if (recv.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
                             return reg;
@@ -15633,10 +15881,14 @@ pub const Codegen = struct {
                 }
                 if (lowering_rules.isPushCall(call) and call.args.len == 2) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
-                    const elem_ty = vecElementType(recv_ty) orelse return CodegenError.CodegenError;
+                    const elem_ty = lowering_rules.vecLikeElementType(recv_ty) orelse return CodegenError.CodegenError;
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const arg_reg = try self.genExpr(call.args[1], hoisted_allocs);
-                    self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                    if (lowering_rules.growVecElementType(recv_ty) != null) {
+                        self.outPrint("    EXPAND GROWVEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                    } else {
+                        self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                    }
                     // POD / shallow-copy elements (including pure enums and structs of
                     // them) must remain usable after push so patterns like
                     // `registry.infos.push(info); return (registry, info);` match the

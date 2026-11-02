@@ -3348,6 +3348,18 @@ pub const VecAbi = struct {
     pub const len_offset: usize = 16;
 };
 
+/// GrowVec (F1) handle ABI: sa_std/alloc/growvec.sal. A grow-only,
+/// never-moving buffer over one mmap reservation; `max` is the exact
+/// element cap and `rsv` the page-rounded reservation size (both are
+/// stored: the cap cannot be recovered from the rounded size).
+pub const GrowVecAbi = struct {
+    pub const object_size: usize = 32;
+    pub const ptr_offset: usize = 0;
+    pub const len_offset: usize = 8;
+    pub const max_offset: usize = 16;
+    pub const rsv_offset: usize = 24;
+};
+
 pub const OptionClosureMethodKind = enum {
     map,
     and_then,
@@ -4648,6 +4660,18 @@ pub fn vecElementType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "Vec");
 }
 
+pub fn growVecElementType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "GrowVec");
+}
+
+/// Element type of either contiguous owned buffer (`Vec` or `GrowVec`).
+/// Only for sites whose behaviour is genuinely shared between the two
+/// (index/iteration/len shapes); push/drop lowering must dispatch on the
+/// concrete container kind instead.
+pub fn vecLikeElementType(ty: *const ast.Type) ?*ast.Type {
+    return vecElementType(ty) orelse growVecElementType(ty);
+}
+
 pub fn vecDequeElementType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "VecDeque");
 }
@@ -4890,6 +4914,7 @@ pub fn userDefinedStdOwnerIsNonCopy(ty: *const ast.Type) bool {
     if (ty.* != .user_defined) return false;
     const name = ty.user_defined.name;
     return std.mem.eql(u8, name, "Vec") or
+        std.mem.eql(u8, name, "GrowVec") or
         std.mem.eql(u8, name, "VecDeque") or
         std.mem.eql(u8, name, "String") or
         std.mem.eql(u8, name, "Box") or
@@ -4914,6 +4939,7 @@ pub fn keepsGenericUserDefinedName(name: []const u8) bool {
         std.mem.eql(u8, name, "Rc") or
         std.mem.eql(u8, name, "Arc") or
         std.mem.eql(u8, name, "Vec") or
+        std.mem.eql(u8, name, "GrowVec") or
         std.mem.eql(u8, name, "VecDeque") or
         std.mem.eql(u8, name, "HashMap") or
         std.mem.eql(u8, name, "BTreeMap") or
@@ -6621,6 +6647,7 @@ pub fn vecElementPushTransfersOwnership(elem_ty: *const ast.Type, elem_is_copy: 
 
 pub fn isStdCollectionType(ty: *const ast.Type) bool {
     return vecElementType(ty) != null or
+        growVecElementType(ty) != null or
         vecDequeElementType(ty) != null or
         hashMapTypes(ty) != null or
         btreeMapTypes(ty) != null or
@@ -10018,11 +10045,19 @@ test "planParamCleanup releases by-value copy scalar params" {
 // the container's own free macro); `buffer` is a plain Vec/String whose
 // elements own nothing (today's VEC_FREE / @sa_vec_free suffices);
 // `deep_vec`/`deep_struct` need element/field drops before the shallow
-// free of the container itself.
+// free of the container itself. The `*_growvec` pair mirrors
+// `buffer`/`deep_vec` for GrowVec, whose shallow free is
+// @sa_growvec_free (munmap) and whose element walker uses GrowVecAbi.
 pub const DropPlan = union(enum) {
     none,
     buffer,
     deep_vec: *const DropPlan,
+    /// GrowVec with flat elements: the shallow free is
+    /// `@sa_growvec_free` (munmap of the reservation), not `@sa_vec_free`.
+    buffer_growvec,
+    /// GrowVec whose elements own values: element drops use the
+    /// GrowVecAbi offsets, then `@sa_growvec_free`.
+    deep_growvec: *const DropPlan,
     deep_struct: []const FieldDropPlan,
 
     pub fn kind(self: *const DropPlan) std.meta.Tag(DropPlan) {

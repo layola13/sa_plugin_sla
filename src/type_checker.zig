@@ -187,6 +187,7 @@ pub const TypeChecker = struct {
     // cases (addresses are stable for the whole compile).
     const drop_plan_none_singleton: lowering_rules.DropPlan = .none;
     const drop_plan_buffer_singleton: lowering_rules.DropPlan = .buffer;
+    const drop_plan_buffer_growvec_singleton: lowering_rules.DropPlan = .buffer_growvec;
 
     allocator: std.mem.Allocator,
     structs: std.StringHashMap(*ast.StructDecl),
@@ -1420,6 +1421,14 @@ pub const TypeChecker = struct {
                         else => try self.internDropPlan(.{ .deep_vec = elem_plan }),
                     };
                 }
+                if (std.mem.eql(u8, ud.name, "GrowVec")) {
+                    if (ud.generics.len != 1) return &drop_plan_buffer_growvec_singleton;
+                    const elem_plan = try self.planValueDrop(ud.generics[0]);
+                    return switch (elem_plan.kind()) {
+                        .none => &drop_plan_buffer_growvec_singleton,
+                        else => try self.internDropPlan(.{ .deep_growvec = elem_plan }),
+                    };
+                }
                 if (dropPlanExcludedType(ud.name)) return &drop_plan_none_singleton;
                 const decl = self.structs.get(ud.name) orelse return &drop_plan_none_singleton;
                 if (decl.is_opaque or decl.is_union) return &drop_plan_none_singleton;
@@ -1761,8 +1770,8 @@ pub const TypeChecker = struct {
                 if (!same_place) {
                     switch (plan.kind()) {
                         .none => {},
-                        .buffer => try self.assign_drop_old.put(node, .shallow),
-                        .deep_vec, .deep_struct => try self.assign_drop_old.put(node, .deep),
+                        .buffer, .buffer_growvec => try self.assign_drop_old.put(node, .shallow),
+                        .deep_vec, .deep_growvec, .deep_struct => try self.assign_drop_old.put(node, .deep),
                     }
                 }
             }
@@ -1786,10 +1795,10 @@ pub const TypeChecker = struct {
                     }
                     if (affected) {
                         switch (plan.kind()) {
-                            .buffer => {
+                            .buffer, .buffer_growvec => {
                                 _ = self.assign_drop_old.remove(node);
                             },
-                            .deep_vec => {
+                            .deep_vec, .deep_growvec => {
                                 if (mode == .deep) try self.assign_drop_old.put(node, .shallow);
                             },
                             else => {},
@@ -2237,6 +2246,7 @@ pub const TypeChecker = struct {
                 if (hashMapTypes(target_ty)) |hm| return hm.value;
                 if (btreeMapTypes(target_ty)) |bm| return bm.value;
                 if (vecElementType(target_ty)) |elem_ty| return elem_ty;
+                if (lowering_rules.growVecElementType(target_ty)) |elem_ty| return elem_ty;
                 if (vecDequeElementType(target_ty)) |elem_ty| return elem_ty;
                 if (sliceElementType(target_ty)) |elem_ty| return elem_ty;
                 if (arrayType(target_ty)) |arr| return arr.elem;
@@ -2968,6 +2978,7 @@ pub const TypeChecker = struct {
         if (arrayType(ty)) |arr| return arr.elem;
         if (sliceElementType(ty)) |elem| return elem;
         if (vecElementType(ty)) |elem| return elem;
+        if (lowering_rules.growVecElementType(ty)) |elem| return elem;
         return null;
     }
 
@@ -4416,7 +4427,9 @@ pub const TypeChecker = struct {
         if (!lowering_rules.valueArgTransfersOwnershipFromParam(param, arg_ty, self.typeIsCopyValue(arg_ty))) return;
         // The emitters keep a Vec source binding live by cloning it when a
         // later use exists, so a Vec argument never strands the binding.
+        // GrowVec gets the same treatment (GROWVEC_CLONE in both emitters).
         if (lowering_rules.vecElementType(arg_ty) != null) return;
+        if (lowering_rules.growVecElementType(arg_ty) != null) return;
         // Shallow-copy-preserved struct arguments are copied at the call
         // boundary by both emitters; the source binding stays live.
         if (self.callArgShallowCopyPreserved(arg, param, arg_ty)) return;
@@ -4928,6 +4941,14 @@ pub const TypeChecker = struct {
         generics[0] = inner;
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .user_defined = .{ .name = "Vec", .generics = generics } };
+        return ty;
+    }
+
+    fn makeGrowVecType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "GrowVec", .generics = generics } };
         return ty;
     }
 
@@ -6998,8 +7019,8 @@ pub const TypeChecker = struct {
                             const plan = try self.planValueDrop(sym.ty);
                             switch (plan.kind()) {
                                 .none => {},
-                                .buffer => try self.assign_drop_old.put(stmt, .shallow),
-                                .deep_vec, .deep_struct => try self.assign_drop_old.put(stmt, .deep),
+                                .buffer, .buffer_growvec => try self.assign_drop_old.put(stmt, .shallow),
+                                .deep_vec, .deep_growvec, .deep_struct => try self.assign_drop_old.put(stmt, .deep),
                             }
                         }
                     }
@@ -7704,6 +7725,7 @@ pub const TypeChecker = struct {
                 if (!isNumericType(index_ty)) return TypeError.TypeMismatch;
 
                 if (vecElementType(target_ty)) |elem_ty| return elem_ty;
+                if (lowering_rules.growVecElementType(target_ty)) |elem_ty| return elem_ty;
                 if (vecDequeElementType(target_ty)) |elem_ty| return elem_ty;
                 if (sliceElementType(target_ty)) |elem_ty| return elem_ty;
 
@@ -8391,6 +8413,18 @@ pub const TypeChecker = struct {
                         const ty = try self.allocator.create(ast.Type);
                         ty.* = .{ .user_defined = .{ .name = "Vec", .generics = generics } };
                         return ty;
+                    }
+                    if (std.mem.eql(u8, target_name, "GrowVec") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                        const elem_ty = if (call.generics.len == 1) call.generics[0] else try self.makeInferType();
+                        return try self.makeGrowVecType(elem_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "GrowVec") and std.mem.eql(u8, call.func_name, "with_max")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const max_ty = try self.checkExpr(call.args[0], scope);
+                        if (!isNumericType(max_ty)) return TypeError.TypeMismatch;
+                        const elem_ty = if (call.generics.len == 1) call.generics[0] else try self.makeInferType();
+                        return try self.makeGrowVecType(elem_ty);
                     }
                     if (std.mem.eql(u8, target_name, "Chan") and std.mem.eql(u8, call.func_name, "new")) {
                         return try self.checkChanNewCall(expr, call, scope);
@@ -9107,7 +9141,7 @@ pub const TypeChecker = struct {
                 if (std.mem.eql(u8, call.func_name, "push")) {
                     if (call.args.len != 2) return TypeError.InvalidArgsCount;
                     const recv_ty = try self.checkExpr(call.args[0], scope);
-                    const elem_ty = vecElementType(recv_ty) orelse return TypeError.TypeMismatch;
+                    const elem_ty = lowering_rules.vecLikeElementType(recv_ty) orelse return TypeError.TypeMismatch;
                     const arg_ty = try self.checkExpr(call.args[1], scope);
                     if (!self.typesEqual(elem_ty, arg_ty)) return TypeError.TypeMismatch;
                     // F2-A C1: escape route 3, container fast path -
@@ -9118,7 +9152,10 @@ pub const TypeChecker = struct {
                     if (elem_ty.* == .infer) {
                         if (rootIdentifier(call.args[0])) |recv_name| {
                             if (scope.lookup(recv_name)) |sym| {
-                                const concrete_ty = try self.makeVecType(arg_ty);
+                                const concrete_ty = if (lowering_rules.growVecElementType(recv_ty) != null)
+                                    try self.makeGrowVecType(arg_ty)
+                                else
+                                    try self.makeVecType(arg_ty);
                                 sym.ty = concrete_ty;
                                 self.expr_types.put(call.args[0], concrete_ty) catch return TypeError.OutOfMemory;
                             }
@@ -9189,14 +9226,14 @@ pub const TypeChecker = struct {
                 if (lowering_rules.isIterOrIntoIterCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const target_ty = try self.checkExpr(call.args[0], scope);
-                    if (arrayType(target_ty) == null and vecElementType(target_ty) == null and sliceElementType(target_ty) == null) return TypeError.TypeMismatch;
+                    if (arrayType(target_ty) == null and vecElementType(target_ty) == null and lowering_rules.growVecElementType(target_ty) == null and sliceElementType(target_ty) == null) return TypeError.TypeMismatch;
                     return target_ty;
                 }
 
                 if (lowering_rules.isCopiedCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const target_ty = try self.checkExpr(call.args[0], scope);
-                    if (arrayType(target_ty) == null and vecElementType(target_ty) == null and sliceElementType(target_ty) == null) return TypeError.TypeMismatch;
+                    if (arrayType(target_ty) == null and vecElementType(target_ty) == null and lowering_rules.growVecElementType(target_ty) == null and sliceElementType(target_ty) == null) return TypeError.TypeMismatch;
                     return target_ty;
                 }
 
@@ -9222,7 +9259,7 @@ pub const TypeChecker = struct {
                 if (lowering_rules.isMapCall(call)) {
                     if (call.args.len != 2) return TypeError.InvalidArgsCount;
                     const source_ty = try self.checkExpr(call.args[0], scope);
-                    const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else vecElementType(source_ty) orelse return TypeError.TypeMismatch;
+                    const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else lowering_rules.vecLikeElementType(source_ty) orelse return TypeError.TypeMismatch;
                     const closure_ty = if (call.args[1].* == .closure_literal)
                         try self.checkClosureLiteralWithContext(call.args[1], scope, &.{elem_ty})
                     else
@@ -9245,7 +9282,7 @@ pub const TypeChecker = struct {
                 if (std.mem.eql(u8, call.func_name, "filter")) {
                     if (call.args.len != 2) return TypeError.InvalidArgsCount;
                     const source_ty = try self.checkExpr(call.args[0], scope);
-                    const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else vecElementType(source_ty) orelse return TypeError.TypeMismatch;
+                    const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else lowering_rules.vecLikeElementType(source_ty) orelse return TypeError.TypeMismatch;
                     const closure_ty = if (call.args[1].* == .closure_literal)
                         try self.checkClosureLiteralWithContext(call.args[1], scope, &.{elem_ty})
                     else
@@ -9260,7 +9297,7 @@ pub const TypeChecker = struct {
                 if (std.mem.eql(u8, call.func_name, "fold")) {
                     if (call.args.len != 3) return TypeError.InvalidArgsCount;
                     const source_ty = try self.checkExpr(call.args[0], scope);
-                    const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else vecElementType(source_ty) orelse return TypeError.TypeMismatch;
+                    const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else lowering_rules.vecLikeElementType(source_ty) orelse return TypeError.TypeMismatch;
                     const init_ty = try self.checkExpr(call.args[1], scope);
                     const closure_ty = if (call.args[2].* == .closure_literal)
                         try self.checkClosureLiteralWithContext(call.args[2], scope, &.{ init_ty, elem_ty })
@@ -9287,6 +9324,9 @@ pub const TypeChecker = struct {
                         return elem_ty;
                     }
                     if (vecElementType(target_ty)) |elem_ty| {
+                        return elem_ty;
+                    }
+                    if (lowering_rules.growVecElementType(target_ty)) |elem_ty| {
                         return elem_ty;
                     }
                     return TypeError.TypeMismatch;

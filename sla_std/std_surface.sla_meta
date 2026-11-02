@@ -41,6 +41,11 @@ fallible_method Vec remove sa_std/vec.sa VEC_REMOVE ok,out,receiver,index,elem_s
 index Vec sa_std/vec.sa VEC_GET_TYPED_{elem_ty} out,receiver,index,elem_size
 index_address Vec sa_std/vec.sa VEC_GET_MUT_PTR_U64 out,receiver,index
 index_assign Vec sa_std/vec.sa VEC_SET_TYPED receiver,index,value,elem_size,elem_ty
+function len GrowVec sa_std/growvec.sa GROWVEC_LEN out,receiver deps=sa_growvec_len
+method GrowVec push sa_std/growvec.sa GROWVEC_PUSH receiver,value,elem_size deps=sa_growvec_push,sa_mem_copy
+index GrowVec sa_std/growvec.sa GROWVEC_GET_TYPED_{elem_ty} out,receiver,index,elem_size
+index_address GrowVec sa_std/growvec.sa GROWVEC_GET_MUT_PTR_U64 out,receiver,index
+index_assign GrowVec sa_std/growvec.sa GROWVEC_SET_TYPED receiver,index,value,elem_size,elem_ty
 index Slice sa_std/core/slice.sa SLICE_GET_TYPED_{elem_ty} out,receiver,index,elem_size
 index_address Slice sa_std/core/slice.sa SLICE_GET_MUT_PTR_U64 out,receiver,index
 constructor Some Option sa_std/core/option.sa OPTION_NEW_SOME out,value

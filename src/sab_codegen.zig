@@ -3167,7 +3167,8 @@ pub const Codegen = struct {
         const t = ty orelse return false;
         if (t.* != .user_defined) return false;
         return std.mem.eql(u8, t.user_defined.name, "String") or
-            std.mem.eql(u8, t.user_defined.name, "Vec");
+            std.mem.eql(u8, t.user_defined.name, "Vec") or
+            std.mem.eql(u8, t.user_defined.name, "GrowVec");
     }
 
     /// Emit the deep drop for an owned String/Vec value: `@sa_vec_free`
@@ -3175,8 +3176,18 @@ pub const Codegen = struct {
     /// buffer and the struct. A bare SAB `release`/`move_` on the struct
     /// pointer frees only the struct allocation and leaks the buffer.
     /// Mirrors the F-perf-2 helper of the same name.
-    fn emitOwnedBufferFree(self: *Codegen, reg: u32) !void {
+    fn emitOwnedBufferFree(self: *Codegen, reg: u32, ty: ?*const ast.Type) !void {
         if (self.released_regs.contains(reg)) return;
+        // GrowVec's reservation is released by munmap of the whole VA
+        // range (@sa_growvec_free); String/Vec keep @sa_vec_free.
+        if (ty) |t| {
+            if (t.* == .user_defined and std.mem.eql(u8, t.user_defined.name, "GrowVec")) {
+                try self.ensureStdDeps("sa_std/growvec.sa", &.{"sa_growvec_free"});
+                try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_growvec_free(^{s})", .{self.symbols.items[reg]}));
+                try self.released_regs.put(reg, {});
+                return;
+            }
+        }
         try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_free"});
         try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_vec_free(^{s})", .{self.symbols.items[reg]}));
         try self.released_regs.put(reg, {});
@@ -3204,7 +3215,7 @@ pub const Codegen = struct {
                     return;
                 }
                 if (free_container) {
-                    try self.emitOwnedBufferFree(value_reg);
+                    try self.emitOwnedBufferFree(value_reg, ty);
                 } else {
                     try self.emitRelease(value_reg);
                 }
@@ -3218,7 +3229,32 @@ pub const Codegen = struct {
                     try self.emitVecElementDrops(value_reg, ty, elem_plan, key, taint_node);
                 }
                 if (free_container) {
-                    try self.emitOwnedBufferFree(value_reg);
+                    try self.emitOwnedBufferFree(value_reg, ty);
+                } else {
+                    try self.emitRelease(value_reg);
+                }
+            },
+            .buffer_growvec => {
+                if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitMove(value_reg);
+                    return;
+                }
+                if (free_container) {
+                    try self.emitOwnedBufferFree(value_reg, ty);
+                } else {
+                    try self.emitRelease(value_reg);
+                }
+            },
+            .deep_growvec => |elem_plan| {
+                if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitMove(value_reg);
+                    return;
+                }
+                if (!self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitGrowVecElementDrops(value_reg, ty, elem_plan, key, taint_node);
+                }
+                if (free_container) {
+                    try self.emitOwnedBufferFree(value_reg, ty);
                 } else {
                     try self.emitRelease(value_reg);
                 }
@@ -3239,8 +3275,19 @@ pub const Codegen = struct {
         // fallback silently substituted cap's offset for len's, so
         // this walker iterated [0, cap) and dropped uninitialised
         // slots as boxed elements whenever cap > len (SIGSEGV).
-        const ptr_off: usize = lowering_rules.VecAbi.ptr_offset;
-        const len_off: usize = lowering_rules.VecAbi.len_offset;
+        try self.emitContainerElementDrops(vec_reg, elem_ty, elem_plan, key, taint_node, lowering_rules.VecAbi.ptr_offset, lowering_rules.VecAbi.len_offset);
+    }
+
+    fn emitGrowVecElementDrops(self: *Codegen, vec_reg: u32, vec_ty: *const ast.Type, elem_plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node) anyerror!void {
+        const elem_ty = lowering_rules.growVecElementType(vec_ty) orelse return;
+        // GrowVec is likewise decl-less with a fixed sa_std ABI
+        // (alloc/growvec.sal: ptr@+0, len@+8, max@+16, rsv@+24). The
+        // walker iterates [0, len) exactly like Vec's; the offsets come
+        // from GrowVecAbi constants, never from a layout lookup.
+        try self.emitContainerElementDrops(vec_reg, elem_ty, elem_plan, key, taint_node, lowering_rules.GrowVecAbi.ptr_offset, lowering_rules.GrowVecAbi.len_offset);
+    }
+
+    fn emitContainerElementDrops(self: *Codegen, vec_reg: u32, elem_ty: *const ast.Type, elem_plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node, ptr_off: usize, len_off: usize) anyerror!void {
         const buf_reg = try self.intern(try self.newTmp());
         try self.emitLoad(buf_reg, vec_reg, ptr_off, .ptr);
         const len_reg = try self.intern(try self.newTmp());
@@ -3320,7 +3367,7 @@ pub const Codegen = struct {
         const ty = local.ty orelse return false;
         const plan = self.tc.planValueDrop(ty) catch return false;
         switch (plan.*) {
-            .deep_vec, .deep_struct => {},
+            .deep_vec, .deep_growvec, .deep_struct => {},
             else => return false,
         }
         if (local.stack_ty != null) {
@@ -3364,7 +3411,7 @@ pub const Codegen = struct {
             if (action.consumes()) {
                 if (try self.emitPlannedLocalDrop(local)) return;
                 if (deep_balance) {
-                    try self.emitOwnedBufferFree(local.reg);
+                    try self.emitOwnedBufferFree(local.reg, local.ty);
                     return;
                 }
                 try self.emitMove(local.reg);
@@ -3380,7 +3427,7 @@ pub const Codegen = struct {
                 const is_borrow = lowering_rules.isBorrowLikeType(ty);
                 if (is_copy or is_borrow) return;
                 if (deep_balance) {
-                    try self.emitOwnedBufferFree(local.reg);
+                    try self.emitOwnedBufferFree(local.reg, local.ty);
                     return;
                 }
                 try self.emitMove(local.reg);
@@ -3394,7 +3441,7 @@ pub const Codegen = struct {
             return;
         }
         if (deep_balance) {
-            try self.emitOwnedBufferFree(local.reg);
+            try self.emitOwnedBufferFree(local.reg, local.ty);
             return;
         }
         try self.emitRelease(local.reg);
@@ -3432,7 +3479,7 @@ pub const Codegen = struct {
             if (action.consumes()) {
                 if (try self.emitPlannedLocalDrop(local)) return;
                 if (ownedBufferDropType(local.ty)) {
-                    try self.emitOwnedBufferFree(local.reg);
+                    try self.emitOwnedBufferFree(local.reg, local.ty);
                     return;
                 }
                 try self.emitMove(local.reg);
@@ -3449,7 +3496,7 @@ pub const Codegen = struct {
             return;
         }
         if (ownedBufferDropType(local.ty)) {
-            try self.emitOwnedBufferFree(local.reg);
+            try self.emitOwnedBufferFree(local.reg, local.ty);
             return;
         }
         try self.emitRelease(local.reg);
@@ -3467,7 +3514,7 @@ pub const Codegen = struct {
                 const value = try self.intern(try self.newTmp());
                 try self.emitLoad(value, local.reg, 0, try storagePrimType(ty));
                 if (ownedBufferDropType(ty)) {
-                    try self.emitOwnedBufferFree(value);
+                    try self.emitOwnedBufferFree(value, ty);
                 } else {
                     try self.emitRelease(value);
                 }
@@ -3482,7 +3529,7 @@ pub const Codegen = struct {
         const value = try self.intern(try self.newTmp());
         try self.emitLoad(value, local.reg, 0, try storagePrimType(ty));
         if (ownedBufferDropType(ty)) {
-            try self.emitOwnedBufferFree(value);
+            try self.emitOwnedBufferFree(value, ty);
         } else {
             try self.emitRelease(value);
         }
@@ -3859,7 +3906,7 @@ pub const Codegen = struct {
             // buffer: drop it deeply instead of leaking the buffer behind
             // a bare register release.
             if (ownedBufferDropType(self.tc.expr_types.get(expr))) {
-                try self.emitOwnedBufferFree(reg);
+                try self.emitOwnedBufferFree(reg, self.tc.expr_types.get(expr));
             } else {
                 try self.emitRelease(reg);
             }
@@ -7147,6 +7194,20 @@ pub const Codegen = struct {
         return out;
     }
 
+    fn genGrowVecCloneValue(self: *Codegen, source_reg: u32, elem_ty: *const ast.Type) anyerror!u32 {
+        try self.ensureStdDeps("sa_std/growvec.sa", &.{ "sa_growvec_new", "sa_mem_copy", "sa_growvec_extend_from_slice" });
+        const out = try self.intern(try self.newTmp());
+        try self.recordReg(out);
+        const elem_size_text = try std.fmt.allocPrint(self.allocator, "{}", .{lowering_rules.vecElementSlotSize(elem_ty)});
+        defer self.allocator.free(elem_size_text);
+        try self.emitStdMacroFragmentWithLiteralArgs("sa_std/growvec.sa", "GROWVEC_CLONE", &.{
+            self.symbols.items[out],
+            self.symbols.items[source_reg],
+            elem_size_text,
+        }, &.{ false, false, true });
+        return out;
+    }
+
     fn genStringCloneValue(self: *Codegen, source_reg: u32) anyerror!u32 {
         const out = try self.intern(try self.newTmp());
         try self.recordReg(out);
@@ -7190,6 +7251,11 @@ pub const Codegen = struct {
         }
         if (lowering_rules.vecElementType(result_ty)) |elem_ty| {
             const cloned = try self.genVecCloneValue(src, elem_ty);
+            if (!self.isLocalReg(src)) try self.emitRelease(src);
+            return cloned;
+        }
+        if (lowering_rules.growVecElementType(result_ty)) |elem_ty| {
+            const cloned = try self.genGrowVecCloneValue(src, elem_ty);
             if (!self.isLocalReg(src)) try self.emitRelease(src);
             return cloned;
         }
@@ -9400,7 +9466,7 @@ pub const Codegen = struct {
             }
             if (!handled) {
                 if (ownedBufferDropType(self.localType(name))) {
-                    try self.emitOwnedBufferFree(dst);
+                    try self.emitOwnedBufferFree(dst, self.localType(name));
                 } else {
                     try self.emitRelease(dst);
                 }
@@ -10731,7 +10797,7 @@ pub const Codegen = struct {
             const local = self.locals.items[i];
             if (local.is_param or local.stack_ty != null or self.released_regs.contains(local.reg)) continue;
             if (ownedBufferDropType(local.ty)) {
-                try self.emitOwnedBufferFree(local.reg);
+                try self.emitOwnedBufferFree(local.reg, local.ty);
             } else {
                 try self.emitRelease(local.reg);
             }
@@ -13811,6 +13877,47 @@ pub const Codegen = struct {
         return dst;
     }
 
+    fn genGrowVecNewCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        const target_name = call.associated_target orelse return null;
+        if (!std.mem.eql(u8, target_name, "GrowVec")) return null;
+        const is_new = std.mem.eql(u8, call.func_name, "new") and call.args.len == 0;
+        const is_with_max = std.mem.eql(u8, call.func_name, "with_max") and call.args.len == 1;
+        if (!is_new and !is_with_max) return null;
+        const gv_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+        const elem_ty = lowering_rules.growVecElementType(gv_ty) orelse return null;
+
+        try self.ensureStdDeps("sa_std/growvec.sa", &.{"sa_growvec_new"});
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        if (is_new) {
+            try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sa_growvec_new({}, 0)", .{lowering_rules.vecElementSlotSize(elem_ty)}));
+        } else {
+            const max_reg = try self.genExpr(@constCast(call.args[0]));
+            try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sa_growvec_new({}, {s})", .{ lowering_rules.vecElementSlotSize(elem_ty), self.symbols.items[max_reg] }));
+            if (!self.isLocalReg(max_reg)) try self.emitRelease(max_reg);
+        }
+        return dst;
+    }
+
+    fn genGrowVecLenCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!lowering_rules.isBareLenUnaryCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.growVecElementType(receiver_ty) == null) return null;
+        try self.ensureStdDeps("sa_std/growvec.sa", &.{"sa_growvec_len"});
+        const receiver_source = try self.genVecOwnerReceiver(@constCast(call.args[0]));
+        const receiver_reg = receiver_source.reg;
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        // Same borrow-scoped len load as genVecLenCall (SA-text parity),
+        // at GrowVecAbi's len offset (+8; Vec's is +16).
+        const len_view = try self.intern(try self.newTmp());
+        try self.emitBorrowReg(len_view, receiver_reg, "read");
+        try self.emitLoad(dst, len_view, lowering_rules.GrowVecAbi.len_offset, .u64);
+        try self.emitRelease(len_view);
+        try self.releaseAddressSource(receiver_source);
+        return dst;
+    }
+
     fn genVecLenCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (!lowering_rules.isBareLenUnaryCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
@@ -14420,6 +14527,39 @@ pub const Codegen = struct {
         // element slot points at (latent while sci's native release was
         // a no-op; live since sci 75007ee3 made release really free).
         // Mirrors the DEF-ACL store rule via isHeapHandleType.
+        if (lowering_rules.isHeapHandleType(elem_ty)) {
+            if (!self.isLocalReg(value_reg)) {
+                try self.emitConsumedMarker(value_reg);
+                try self.markConsumed(value_reg);
+            }
+        } else if (!self.isLocalReg(value_reg)) {
+            try self.emitRelease(value_reg);
+        }
+
+        const sentinel = try self.intern(try self.newTmp());
+        try self.recordReg(sentinel);
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
+    }
+
+    fn genGrowVecPushCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!lowering_rules.isBarePushBinaryCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const elem_ty = lowering_rules.growVecElementType(receiver_ty) orelse return null;
+        if (lowering_rules.vecElementSlotSize(elem_ty) != 8) return null;
+
+        try self.ensureStdDeps("sa_std/growvec.sa", &.{ "sa_growvec_push", "sa_mem_copy" });
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const value_reg = try self.genExpr(@constCast(call.args[1]));
+        try self.emitCallBody(receiver_reg, try std.fmt.allocPrint(self.allocator, "@sa_growvec_push(^{s}, {s}, 8)", .{
+            self.symbols.items[receiver_reg],
+            self.symbols.items[value_reg],
+        }));
+
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        // DEF-ZRANGE mirror of genVecPushCall: the push stores the
+        // element's handle word itself, so heap-handle element temps
+        // are consumed by the push, never released.
         if (lowering_rules.isHeapHandleType(elem_ty)) {
             if (!self.isLocalReg(value_reg)) {
                 try self.emitConsumedMarker(value_reg);
@@ -16250,10 +16390,13 @@ pub const Codegen = struct {
         if (try self.genResultClosureCall(expr, call)) |reg| return reg;
         if (try self.genResultUnwrap(expr, call)) |reg| return reg;
         if (try self.genVecNewCall(expr, call)) |reg| return reg;
+        if (try self.genGrowVecNewCall(expr, call)) |reg| return reg;
         if (try self.genVecLenCall(call)) |reg| return reg;
+        if (try self.genGrowVecLenCall(call)) |reg| return reg;
         if (try self.genVecLiteralCall(expr, call)) |reg| return reg;
         if (try self.genVecPopCall(call)) |reg| return reg;
         if (try self.genVecPushCall(call)) |reg| return reg;
+        if (try self.genGrowVecPushCall(call)) |reg| return reg;
         if (try self.genVecRemoveCall(call)) |reg| return reg;
         if (try self.genMapInsertCall(expr, call)) |reg| return reg;
         if (try self.genMapGetCall(expr, call)) |reg| return reg;
@@ -17340,6 +17483,15 @@ pub const Codegen = struct {
                     if (rebind_move_out) self.claimRebindMoveOut(arg);
                     if (!move_out and prefix == '^' and arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
                         if (arg_ty) |ty| {
+                            if (lowering_rules.growVecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genGrowVecCloneValue(arg_reg, elem_ty);
+                                const operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[cloned]});
+                                break :blk .{
+                                    .operand = operand,
+                                    .release_reg = null,
+                                    .forget_reg = cloned,
+                                };
+                            }
                             if (lowering_rules.vecElementType(ty)) |elem_ty| {
                                 const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
                                 const operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[cloned]});
@@ -17382,6 +17534,14 @@ pub const Codegen = struct {
                     if (rebind_move_out) self.claimRebindMoveOut(arg);
                     if (!move_out and arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
                         if (arg_ty) |ty| {
+                            if (lowering_rules.growVecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genGrowVecCloneValue(arg_reg, elem_ty);
+                                break :blk .{
+                                    .operand = self.symbols.items[cloned],
+                                    .release_reg = null,
+                                    .forget_reg = cloned,
+                                };
+                            }
                             if (lowering_rules.vecElementType(ty)) |elem_ty| {
                                 const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
                                 break :blk .{

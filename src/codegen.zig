@@ -4899,7 +4899,28 @@ pub const Codegen = struct {
             const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
             const field_reg = try self.newTmp();
             self.outPrint("    {s} = load {s}+{} as {s}\n", .{ field_reg, source_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-            if (lowering_rules.shallowCopyCallArgFieldShouldRecurse(self.structDeclForType(field.ty) != null, field.ty)) {
+            // DEF-AOF-EXIT69: a shallow record copy must not alias the
+            // source's heap handles. The checker treats by-value argument
+            // passing as non-consuming (the source binding stays live and
+            // drops its handles at scope exit), so copying a Vec/String/
+            // GrowVec field by handle hands the same allocation to two
+            // owners and double-frees it (sa_vec_free releases buffer +
+            // handle cell). Clone handle fields so the copy owns its own;
+            // nested structs recurse through this same function.
+            if (lowering_rules.isStringType(field.ty)) {
+                const cloned = try self.newTmp();
+                self.outPrint("    EXPAND STRING_BUF_CLONE {s}, {s}\n", .{ cloned, field_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, ^{s} as {s}\n", .{ target, layout.offset, cloned, layout.ty_str }) catch return CodegenError.CodegenError;
+                try self.emitRelease(field_reg);
+            } else if (vecElementType(field.ty)) |elem_ty| {
+                const cloned = try self.genVecCloneValue(field_reg, elem_ty);
+                self.outPrint("    store {s}+{}, ^{s} as {s}\n", .{ target, layout.offset, cloned, layout.ty_str }) catch return CodegenError.CodegenError;
+                try self.emitRelease(field_reg);
+            } else if (lowering_rules.growVecElementType(field.ty)) |elem_ty| {
+                const cloned = try self.genGrowVecCloneValue(field_reg, elem_ty);
+                self.outPrint("    store {s}+{}, ^{s} as {s}\n", .{ target, layout.offset, cloned, layout.ty_str }) catch return CodegenError.CodegenError;
+                try self.emitRelease(field_reg);
+            } else if (lowering_rules.shallowCopyCallArgFieldShouldRecurse(self.structDeclForType(field.ty) != null, field.ty)) {
                 const copied_field = try self.genShallowCopyCallArgValue(field_reg, field.ty);
                 self.outPrint("    store {s}+{}, ^{s} as {s}\n", .{ target, layout.offset, copied_field, layout.ty_str }) catch return CodegenError.CodegenError;
                 try self.emitRelease(field_reg);
@@ -4909,6 +4930,34 @@ pub const Codegen = struct {
             }
         }
         return target;
+    }
+
+    /// DEF-AOF-EXIT69: does this type own heap handles (String/Vec/
+    /// GrowVec, possibly nested inside structs/arrays/tuples) whose
+    /// shallow copy would alias the source allocation? Used to decide
+    /// where an ownership-transfer materialization must clone.
+    fn typeContainsOwningHandles(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
+        if (depth > 8) return false;
+        if (lowering_rules.isStringType(ty)) return true;
+        if (vecElementType(ty) != null) return true;
+        if (lowering_rules.growVecElementType(ty) != null) return true;
+        switch (ty.*) {
+            .user_defined => {
+                const decl = self.structDeclForType(ty) orelse return false;
+                for (decl.fields) |field| {
+                    if (self.typeContainsOwningHandles(field.ty, depth + 1)) return true;
+                }
+                return false;
+            },
+            .array => |arr| return self.typeContainsOwningHandles(arr.elem, depth + 1),
+            .tuple => |tuple| {
+                for (tuple.elems) |elem| {
+                    if (self.typeContainsOwningHandles(elem, depth + 1)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
     }
 
     fn primitiveHashBits(self: *Codegen, value_reg: []const u8, ty: *const ast.Type) CodegenError![]const u8 {
@@ -11046,16 +11095,15 @@ pub const Codegen = struct {
     fn cloneBorrowedHandleFieldValue(self: *Codegen, expr: *ast.Node, src: []const u8) CodegenError!?[]const u8 {
         if (expr.* != .field_expr) return null;
         const result_ty = self.tc.expr_types.get(expr) orelse return null;
-        var root: *ast.Node = expr;
-        while (root.* == .field_expr) root = root.field_expr.expr;
-        const root_borrowed = blk: {
-            if (root.* == .borrow_expr or root.* == .deref_expr) break :blk true;
-            if (self.tc.expr_types.get(root)) |root_ty| {
-                if (lowering_rules.isBorrowLikeType(root_ty)) break :blk true;
-            }
-            break :blk false;
-        };
-        if (!root_borrowed) return null;
+        // DEF-AOF-EXIT69: the clone-on-extract rule is no longer limited
+        // to borrow-rooted places. The checker treats field extraction
+        // from an OWNED root as non-consuming too (the parent binding
+        // stays live, may be read again, passed on, and drops the field
+        // at scope exit), so an aliasing extraction double-frees exactly
+        // like the borrowed-root case: `let cfg = res.cfg;` freed
+        // cfg.path through both bindings (slaredis startup exit paths
+        // segfaulted in free()). Clone at every ownership-transfer point
+        // regardless of the root's ownership flavor.
         if (lowering_rules.isStringType(result_ty)) {
             const out = try self.newTmp();
             self.outPrint("    EXPAND STRING_BUF_CLONE {s}, {s}\n", .{ out, src }) catch return CodegenError.CodegenError;
@@ -11071,6 +11119,18 @@ pub const Codegen = struct {
             const out = try self.genGrowVecCloneValue(src, elem_ty);
             try self.emitRelease(src);
             return out;
+        }
+        // DEF-AOF-EXIT69: a struct-typed field whose value owns heap
+        // handles (e.g. `res.cfg` where Cfg holds a Vec) extracts as an
+        // independently-owned deep copy as well; the copy routine
+        // clones handle fields and recurses into nested structs. Pure
+        // POD structs keep the historical in-place view (no handles to
+        // alias), and shapes the copy routine cannot classify keep the
+        // view as a documented residual.
+        if (self.structDeclForType(result_ty) != null and self.typeContainsOwningHandles(result_ty, 0)) {
+            const cloned = self.genShallowCopyCallArgValue(src, result_ty) catch return null;
+            try self.emitRelease(src);
+            return cloned;
         }
         return null;
     }

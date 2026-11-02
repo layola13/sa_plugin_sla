@@ -7571,6 +7571,24 @@ pub const Codegen = struct {
             try self.pushLocal(let.name, dst, false);
             return;
         }
+        // FS-9 closure-alias fix: mirror of the SA-text fix — a plain
+        // alias of a closure binding must be registered under the new
+        // name (call dispatch is keyed by callee name); previously a
+        // call through the alias emitted a call to an undeclared
+        // callee register (UnknownRegister at SAB verification).
+        if (let.value.* == .identifier) {
+            if (self.closure_bindings.get(let.value.identifier)) |closure| {
+                const dst = try self.bindingReg(let.name);
+                try self.closure_bindings.put(let.name, closure);
+                if (self.localReg(let.value.identifier)) |src| {
+                    try self.emitAssignReg(dst, src);
+                } else {
+                    try self.emitAssignImm(dst, 0);
+                }
+                try self.pushLocal(let.name, dst, false);
+                return;
+            }
+        }
         // 字符串绑定的运行时物化形态走共享契约分类
         // (`lowering_rules.classifyStringLetBinding`),见 #3/#5.
         // Match the SA backend's local string-literal lowering. An inferred

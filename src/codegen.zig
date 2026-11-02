@@ -12367,6 +12367,19 @@ pub const Codegen = struct {
                     return;
                 }
                 try self.rememberLocalBindingType(let.name, let_ty);
+                // FS-9 closure-alias fix: `let g = f` where f is bound
+                // to a closure literal must register g for the same
+                // literal — call dispatch (genClosureCall) is keyed by
+                // the callee name, so an unregistered alias fell
+                // through to the imported-macro fallback and emitted
+                // invalid SA (EXPAND on the stub register, result
+                // register never defined). The value copy itself is
+                // emitted by the ordinary chain below.
+                if (let.value.* == .identifier) {
+                    if (self.closure_bindings.get(let.value.identifier)) |aliased_closure| {
+                        try self.closure_bindings.put(let.name, aliased_closure);
+                    }
+                }
                 if (isFormatStringType(let_ty)) {
                     self.string_buf_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                 }

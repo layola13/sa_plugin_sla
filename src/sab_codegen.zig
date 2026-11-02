@@ -5540,8 +5540,22 @@ pub const Codegen = struct {
         defer selected.deinit();
         try self.collectDecodedModuleDepClosure(module, deps, &selected);
 
+        // A name may appear twice in one flattened module: an external
+        // declaration (from the sibling .sai interface the flattener
+        // injects next to a .sa file) and a definition of the same name
+        // (an @export in the .sa import graph). The declaration must not
+        // claim the name in included_imports ahead of the definition:
+        // appending the decl only and skipping the definition leaves a
+        // dangling extern whose symbol no archive provides.
+        var defined_names = std.StringHashMap(void).init(self.allocator);
+        defer defined_names.deinit();
+        for (module.function_sigs) |fsig| {
+            if (fsig.kind != .external) try defined_names.put(fsig.name, {});
+        }
+
         for (module.function_sigs, 0..) |fsig, idx| {
             if (!selected.contains(fsig.name)) continue;
+            if (fsig.kind == .external and defined_names.contains(fsig.name)) continue;
             if (self.included_imports.contains(fsig.name)) continue;
             try self.included_imports.put(try self.allocator.dupe(u8, fsig.name), {});
             const entry_idx = self.instructions.items.len;
@@ -16318,6 +16332,16 @@ pub const Codegen = struct {
         // symbol at link time.
         if (std.mem.eql(u8, call.func_name, "sa_mem_copy")) {
             try self.ensureStdDeps("sa_std/core/mem.sa", &.{"sa_mem_copy"});
+        }
+        // Same shape as sa_mem_copy above: the GrowVec declaration view
+        // (sa_std/growvec.sai) registers the sa_growvec_* family as
+        // extern contracts, but their bodies are SA-level std functions
+        // in sa_std/growvec.sa. A plain call to any of them (e.g.
+        // sa_growvec_data_ptr) must pull the body into the module so
+        // the call resolves locally instead of becoming an undefined
+        // native symbol at link time.
+        if (std.mem.startsWith(u8, call.func_name, "sa_growvec_")) {
+            try self.ensureStdDeps("sa_std/growvec.sa", &.{call.func_name});
         }
         // #13: immediately-invoked closure literal; bypasses every
         // func_name-keyed path below (func_name is "" for these calls).

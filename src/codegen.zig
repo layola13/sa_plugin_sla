@@ -1283,13 +1283,18 @@ pub const Codegen = struct {
         self.outPrint("    {s} = mul {s}, {}\n", .{ off_reg, i_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
         self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ addr_reg, buf_reg, off_reg }) catch return CodegenError.CodegenError;
         self.outPrint("    !{s}\n", .{off_reg}) catch return CodegenError.CodegenError;
-        if (elem_plan.* == .deep_struct) {
-            try self.emitStructFieldDropsText(addr_reg, elem_ty, elem_plan.deep_struct, key, taint_node);
-        } else {
-            const elem_reg = try self.newTmp();
-            self.outPrint("    {s} = load {s}+0 as ptr\n", .{ elem_reg, addr_reg }) catch return CodegenError.CodegenError;
-            try self.emitDeepValueDropText(elem_reg, elem_ty, elem_plan, key, taint_node, false, true);
-        }
+        // Vec element slots hold the element VALUE; for aggregate
+        // (struct) elements that value is the pointer to the boxed
+        // struct (vecElementSlotSize is pointer-sized for them, the
+        // same model sa_vec_push and index reads use). Load the
+        // element out of the slot, then drop it through the canonical
+        // deep-value path -- dropping fields at addr_reg+offset would
+        // interpret neighbour slots / buffer contents as field values
+        // and free them (DEF deep-drop regression: slaredis sweep
+        // compaction freed free(0x70) and segfaulted).
+        const elem_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as ptr\n", .{ elem_reg, addr_reg }) catch return CodegenError.CodegenError;
+        try self.emitDeepValueDropText(elem_reg, elem_ty, elem_plan, key, taint_node, false, true);
         self.outPrint("    !{s}\n", .{addr_reg}) catch return CodegenError.CodegenError;
         const one_reg = try self.newTmp();
         const next_reg = try self.newTmp();

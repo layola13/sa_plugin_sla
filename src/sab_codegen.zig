@@ -3261,15 +3261,18 @@ pub const Codegen = struct {
         const elem_addr = try self.intern(try self.newTmp());
         try self.emitPtrAdd(elem_addr, buf_reg, .{ .reg = off_reg });
         try self.emitRelease(off_reg);
-        if (elem_plan.* == .deep_struct) {
-            // Struct elements live inline in the buffer: drop their
-            // fields in place; the storage itself dies with the buffer.
-            try self.emitStructFieldDrops(elem_addr, elem_ty, elem_plan.deep_struct, key, taint_node);
-        } else {
-            const elem_reg = try self.intern(try self.newTmp());
-            try self.emitLoad(elem_reg, elem_addr, 0, .ptr);
-            try self.emitDeepValueDrop(elem_reg, elem_ty, elem_plan, key, taint_node, false, true);
-        }
+        // Vec element slots hold the element VALUE; for aggregate
+        // (struct) elements that value is the pointer to the boxed
+        // struct (vecElementSlotSize is pointer-sized for them, the
+        // same model sa_vec_push and index reads use). Load the
+        // element out of the slot, then drop it through the canonical
+        // deep-value path -- dropping fields at elem_addr+offset would
+        // interpret neighbour slots / buffer contents as field values
+        // and free them (DEF deep-drop regression: slaredis sweep
+        // compaction freed free(0x70) and segfaulted).
+        const elem_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(elem_reg, elem_addr, 0, .ptr);
+        try self.emitDeepValueDrop(elem_reg, elem_ty, elem_plan, key, taint_node, false, true);
         try self.emitRelease(elem_addr);
         const next_reg = try self.intern(try self.newTmp());
         try self.emitOp(next_reg, .add, .{ .reg = i_reg }, .{ .imm_i64 = 1 });

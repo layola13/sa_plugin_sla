@@ -196,6 +196,12 @@ pub const Codegen = struct {
     closure_bindings: std.StringHashMap(*const ast.ClosureLiteral),
     closure_param_regs: std.StringHashMap([]const u8),
     stack_alloc_bindings: std.StringHashMap(void),
+    // DEF-PLACE-LOAD: bindings created by a `stack_alloc()` call, whose
+    // SA register IS the pointer value (the buffer address itself).
+    // Unlike a var slot, the binding stores nothing into the cell, so a
+    // value read of the binding must yield the register itself; loading
+    // `name+0` would dereference the uninitialized buffer.
+    stack_alloc_ptr_bindings: std.StringHashMap(void),
     addressable_bindings: std.StringHashMap(void),
     assigned_bindings: std.StringHashMap(void),
     assigned_value_slots: std.StringHashMap(void),
@@ -296,6 +302,7 @@ pub const Codegen = struct {
             .closure_bindings = std.StringHashMap(*const ast.ClosureLiteral).init(allocator),
             .closure_param_regs = std.StringHashMap([]const u8).init(allocator),
             .stack_alloc_bindings = std.StringHashMap(void).init(allocator),
+            .stack_alloc_ptr_bindings = std.StringHashMap(void).init(allocator),
             .addressable_bindings = std.StringHashMap(void).init(allocator),
             .assigned_bindings = std.StringHashMap(void).init(allocator),
             .assigned_value_slots = std.StringHashMap(void).init(allocator),
@@ -363,6 +370,7 @@ pub const Codegen = struct {
         self.closure_bindings.deinit();
         self.closure_param_regs.deinit();
         self.stack_alloc_bindings.deinit();
+        self.stack_alloc_ptr_bindings.deinit();
         self.addressable_bindings.deinit();
         self.assigned_bindings.deinit();
         self.assigned_value_slots.deinit();
@@ -8727,6 +8735,7 @@ pub const Codegen = struct {
         self.assigned_value_slots.clearRetainingCapacity();
         self.repeated_let_bindings.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
+        self.stack_alloc_ptr_bindings.clearRetainingCapacity();
         self.inline_thread_handles.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
         self.mpsc_sender_bindings.clearRetainingCapacity();
@@ -8831,6 +8840,9 @@ pub const Codegen = struct {
 
         for (hoisted_allocs.items) |h_name| {
             self.outPrint("    {s} = stack_alloc 16\n", .{h_name}) catch return CodegenError.CodegenError;
+            // DEF-PLACE-LOAD: a hoisted stack_alloc() binding's register
+            // is the pointer value, exactly as in the non-hoisted path.
+            self.stack_alloc_ptr_bindings.put(h_name, {}) catch return CodegenError.OutOfMemory;
         }
         for (loop_counter_slots.items) |slot_name| {
             self.outPrint("    {s} = stack_alloc 8\n", .{slot_name}) catch return CodegenError.CodegenError;
@@ -8955,6 +8967,7 @@ pub const Codegen = struct {
         self.assigned_value_slots.clearRetainingCapacity();
         self.repeated_let_bindings.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
+        self.stack_alloc_ptr_bindings.clearRetainingCapacity();
         self.inline_thread_handles.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
         self.mpsc_sender_bindings.clearRetainingCapacity();
@@ -9016,6 +9029,8 @@ pub const Codegen = struct {
 
         for (hoisted_allocs.items) |h_name| {
             self.outPrint("    {s} = stack_alloc 16\n", .{h_name}) catch return CodegenError.CodegenError;
+            // DEF-PLACE-LOAD: see genFuncDecl — register-is-value.
+            self.stack_alloc_ptr_bindings.put(h_name, {}) catch return CodegenError.OutOfMemory;
         }
         for (loop_counter_slots.items) |slot_name| {
             self.outPrint("    {s} = stack_alloc 8\n", .{slot_name}) catch return CodegenError.CodegenError;
@@ -12525,6 +12540,9 @@ pub const Codegen = struct {
                     if (self.storedIdentifierNeedsRelease(let.value, let_ty)) try self.markConsumedBinding(val_reg);
                 } else if (isStackAllocCall(let.value)) {
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                    // DEF-PLACE-LOAD: the register IS the pointer value;
+                    // record it so value reads never load through it.
+                    self.stack_alloc_ptr_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.outPrint("    {s} = stack_alloc {}\n", .{ let.name, self.stackAllocSize(&let.value.call_expr) }) catch return CodegenError.CodegenError;
                 } else if (let.value.* == .literal and let.value.literal == .string_val) {
                     const value = let.value.literal.string_val;
@@ -12580,6 +12598,9 @@ pub const Codegen = struct {
                     }
                     if (self.stack_alloc_bindings.contains(val_reg)) {
                         self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                    }
+                    if (self.stack_alloc_ptr_bindings.contains(val_reg)) {
+                        self.stack_alloc_ptr_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     }
                     if (self.mpsc_sender_bindings.contains(val_reg)) {
                         self.mpsc_sender_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
@@ -12864,6 +12885,9 @@ pub const Codegen = struct {
                     }
                     if (self.stack_alloc_bindings.contains(val_reg)) {
                         self.stack_alloc_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
+                    }
+                    if (self.stack_alloc_ptr_bindings.contains(val_reg)) {
+                        self.stack_alloc_ptr_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
                     }
                     if (self.mpsc_sender_bindings.contains(val_reg)) {
                         self.mpsc_sender_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
@@ -14981,6 +15005,16 @@ pub const Codegen = struct {
                     return capture_reg;
                 }
                 const resolved_name = self.resolveBindingName(name);
+                // DEF-PLACE-LOAD: a `stack_alloc()` binding's register is
+                // the pointer value itself (the buffer address); the
+                // binding never stores a value into the cell. Every load
+                // branch below models a slot that HOLDS a value (var
+                // slots, assigned-value slots), so applying one here
+                // dereferences the uninitialized buffer. The pointer is
+                // already the value: yield the register directly.
+                if (self.stack_alloc_ptr_bindings.contains(resolved_name)) {
+                    return resolved_name;
+                }
                 if (!std.mem.eql(u8, resolved_name, name)) {
                     if (self.assigned_value_slots.contains(resolved_name)) {
                         const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;

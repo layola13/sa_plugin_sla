@@ -2289,7 +2289,7 @@ pub const Codegen = struct {
                     if (lowering_rules.isJoinCall(call)) {
                         if (self.tc.expr_types.get(call.args[0])) |receiver_ty| {
                             if (joinHandleInnerType(receiver_ty) != null) {
-                                try self.ensureStdDeps("sa_std/thread.sa", &.{ "pthread_join", "pthread_drop" });
+                                try self.ensureStdDeps("sa_std/thread.sa", &.{ "sa_pthread_join", "pthread_drop" });
                             }
                         }
                     }

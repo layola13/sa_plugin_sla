@@ -6400,8 +6400,21 @@ pub fn shouldAutoBorrowResolvedArg(
     arg_index: usize,
     auto_borrow_receiver: bool,
 ) bool {
-    if (!param.is_borrow or arg.* == .borrow_expr) return false;
-    return (auto_borrow_receiver and arg_index == 0) or arg_ty.* == .borrow;
+    if (param.is_borrow) {
+        if (arg.* == .borrow_expr) return false;
+        return (auto_borrow_receiver and arg_index == 0) or arg_ty.* == .borrow;
+    }
+    // Borrow-TYPED receiver parameter (`v: &Vec<T>`, DEF-E0): a
+    // `using` extension receiver is written without `&`, so an owned
+    // receiver value in receiver position takes the same auto-borrow
+    // as the `&self` flag form. A borrow-typed argument already
+    // carries the right capability and keeps the value plan. No other
+    // checked program shape reaches this branch: the checker rejects
+    // owned arguments against borrow-typed parameters everywhere else.
+    if (param.ty.* == .borrow and arg.* != .borrow_expr and arg_ty.* != .borrow) {
+        return auto_borrow_receiver and arg_index == 0;
+    }
+    return false;
 }
 
 pub fn shouldAutoBorrowReceiverArg(param: ast.Param, arg: *const ast.Node, arg_ty: *const ast.Type) bool {

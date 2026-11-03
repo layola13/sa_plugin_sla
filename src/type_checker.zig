@@ -2887,8 +2887,12 @@ pub const TypeChecker = struct {
             defer self.allocator.free(symbol);
             if (!self.funcs.contains(symbol)) continue;
             const func = self.funcs.get(symbol) orelse continue;
+            // Visibility (sala 07_modules): `using` registers only the
+            // module's pub functions; non-pub members stay unreachable
+            // as extensions, same-file and cross-file alike (DEF-E0).
+            if (!func.is_pub) continue;
             if (func.params.len != arg_count) continue;
-            if (!self.receiverParamMatches(func.params[0], recv_ty)) continue;
+            if (!self.extensionReceiverParamMatches(func.params[0], recv_ty)) continue;
             if (found_symbol) |prev| {
                 if (!std.mem.eql(u8, prev, symbol)) {
                     const recv_name = if (recv.* == .user_defined) recv.user_defined.name else @tagName(recv.*);
@@ -2900,6 +2904,50 @@ pub const TypeChecker = struct {
             }
         }
         return found_symbol;
+    }
+
+    /// Receiver matching for `using` extensions: the general
+    /// borrow-aware match, plus a first parameter declared with a
+    /// borrow TYPE (`v: &Vec<T>`) — an extension receiver written that
+    /// way still matches an owned or borrowed receiver value, with the
+    /// auto-borrow applied at the call site (DEF-E0).
+    fn extensionReceiverParamMatches(self: *TypeChecker, param: ast.Param, recv_ty: *ast.Type) bool {
+        if (self.receiverParamMatches(param, recv_ty)) return true;
+        if (param.ty.* == .borrow) {
+            return self.typesEqual(param.ty.borrow, unwrappedReceiverType(recv_ty));
+        }
+        return false;
+    }
+
+    /// Check a call resolved to a `using` extension symbol. When the
+    /// extension's first parameter is declared with a borrow TYPE
+    /// (`v: &Vec<T>`) and the receiver argument is not already a borrow
+    /// expression, the parameter is re-expressed in the `&self` flag
+    /// form for argument checking so the shared checker applies the
+    /// method-call auto-borrow (DEF-E0); the resolved symbol and the
+    /// callee declaration are unchanged.
+    fn checkUsingExtensionCall(
+        self: *TypeChecker,
+        expr: *ast.Node,
+        symbol: []const u8,
+        call: ast.CallExpr,
+        scope: *Scope,
+    ) TypeError!?*ast.Type {
+        if (self.funcs.get(symbol)) |func| {
+            if (func.params.len > 0 and func.params[0].ty.* == .borrow and !func.params[0].is_borrow and call.args.len > 0 and call.args[0].* != .borrow_expr) {
+                var adjusted = func.*;
+                const params_copy = try self.allocator.alloc(ast.Param, func.params.len);
+                @memcpy(params_copy, func.params);
+                params_copy[0].is_borrow = true;
+                params_copy[0].ty = func.params[0].ty.borrow;
+                adjusted.params = params_copy;
+                try self.checkCallArgsAgainstFunc(&adjusted, call.args, scope, call.func_name, true);
+                self.resolved_call_symbols.put(expr, symbol) catch return TypeError.OutOfMemory;
+                if (func.is_async) return try self.makeFutureType(func.ret_ty);
+                return func.ret_ty;
+            }
+        }
+        return try self.checkStaticCallBySymbol(expr, symbol, call.args, scope, call.func_name, true);
     }
 
     fn isDiscardName(name: []const u8) bool {
@@ -8283,12 +8331,13 @@ pub const TypeChecker = struct {
                     return @constCast(lowering_rules.pointerOrBorrowPointee(ptr_ty) orelse return TypeError.TypeMismatch);
                 }
 
-                if (recv_node_ty) |rt| {
-                    if (try self.resolveUsingMethodSymbolForType(scope, rt, call.func_name, call.args.len)) |symbol| {
-                        if (try self.checkStaticCallBySymbol(expr, symbol, call.args, scope, call.func_name, false)) |ret_ty| return ret_ty;
-                        return TypeError.UndefinedVariable;
-                    }
-                }
+                // NOTE: `using` static-extension resolution is NOT done
+                // here. It used to hang off `recv_node_ty`, which is
+                // non-null only for channel probe names
+                // (send/recv/close/destroy/len/cap), so ordinary
+                // extension calls never reached the resolver (DEF-E0).
+                // It now lives with the other method-call resolution
+                // below, after inherent and trait lookup.
 
                 if (call.associated_target) |target_name| {
                     if (self.traits.contains(target_name)) {
@@ -9511,6 +9560,28 @@ pub const TypeChecker = struct {
                     if (concreteTypeName(recv_ty)) |type_name| {
                         if (try self.resolveTraitMethodSymbolForType(type_name, null, call.func_name, call.args.len)) |symbol| {
                             if (try self.checkStaticCallBySymbol(expr, symbol, call.args, scope, call.func_name, true)) |ret_ty| return ret_ty;
+                            return TypeError.UndefinedVariable;
+                        }
+                    }
+                }
+
+                // DEF-E0: `using` static extension resolution. Fixed
+                // resolution order: inherent impl methods (method_match
+                // above) -> trait methods -> using extensions -> the
+                // "Undefined call" fallback at the bottom of this branch.
+                // Only attempted when a `using` module is in scope, so
+                // programs without `using` see no behavior change.
+                // Associated calls (`Type::name(...)`) are excluded:
+                // routing those through `using` is a separate feature
+                // (static extension members), not part of this fix.
+                if (call.associated_target == null and call.args.len > 0 and call.args[0].* != .move_expr) {
+                    var using_mods = self.currentUsingModules(scope);
+                    const has_using = using_mods.items.len > 0;
+                    using_mods.deinit();
+                    if (has_using) {
+                        const recv_ty = try self.checkExpr(call.args[0], scope);
+                        if (try self.resolveUsingMethodSymbolForType(scope, recv_ty, call.func_name, call.args.len)) |symbol| {
+                            if (try self.checkUsingExtensionCall(expr, symbol, call, scope)) |ret_ty| return ret_ty;
                             return TypeError.UndefinedVariable;
                         }
                     }

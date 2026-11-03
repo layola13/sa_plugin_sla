@@ -11376,6 +11376,10 @@ pub const Codegen = struct {
                 };
             },
             .block_stmt => |blk| try self.genScopedBlock(blk.body),
+            // `using` is a checker-level directive with no runtime
+            // meaning; a function-scope `using` statement emits nothing
+            // (top-level using_decl is likewise a no-op above, DEF-E0).
+            .using_decl => {},
             .for_stmt => |f| try self.genFor(f),
             .while_stmt => |w| try self.genWhile(w),
             .break_stmt => try self.genLoopJump(stmt, .break_),

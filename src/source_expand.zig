@@ -1,5 +1,6 @@
 const std = @import("std");
 const sio = @import("sio");
+const cache_version = @import("cache_version.zig");
 
 pub const SourceExpandError = error{
     InvalidExpandTuple,
@@ -82,6 +83,7 @@ pub fn expandForModulePath(allocator: std.mem.Allocator, module_path: []const u8
 
 fn expandCachePath(allocator: std.mem.Allocator, module_path: []const u8, source: []const u8) ![]u8 {
     var hasher = std.hash.Wyhash.init(0);
+    cache_version.mixInto(&hasher);
     hasher.update(module_path);
     hasher.update(&std.mem.toBytes(@as(u64, source.len)));
     hasher.update(source);
@@ -447,4 +449,20 @@ test "expandForModulePath uses disk cache for expand_tuple" {
     const second = try expandForModulePath(std.testing.allocator, path, source);
     defer std.testing.allocator.free(second);
     try std.testing.expectEqualStrings(first, second);
+}
+
+test "expand cache path carries the compiler stamp" {
+    const allocator = std.testing.allocator;
+    const source = "@expand_tuple(1, 1, T) {\nfn f() -> i32 { return 1; }\n}\n";
+    const path = try expandCachePath(allocator, "mod.sla", source);
+    defer allocator.free(path);
+    // Legacy key construction: module path + length + source, no
+    // compiler stamp.
+    var legacy_hasher = std.hash.Wyhash.init(0);
+    legacy_hasher.update("mod.sla");
+    legacy_hasher.update(&std.mem.toBytes(@as(u64, source.len)));
+    legacy_hasher.update(source);
+    const legacy_path = try std.fmt.allocPrint(allocator, ".sla-cache/expand/{s}-{x}.sla", .{ "mod.sla", legacy_hasher.final() });
+    defer allocator.free(legacy_path);
+    try std.testing.expect(!std.mem.eql(u8, path, legacy_path));
 }

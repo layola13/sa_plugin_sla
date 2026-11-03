@@ -2,6 +2,7 @@ const std = @import("std");
 const plugin_api = @import("plugin_api");
 const sio = @import("sio");
 const plugin_compile_options = @import("plugin_compile_options.zig");
+const cache_version = @import("cache_version.zig");
 
 const SlaCompileOptions = plugin_compile_options.SlaCompileOptions;
 
@@ -205,6 +206,10 @@ fn optionsDigest(kind: FreshnessKind, options: SlaCompileOptions, output_file: ?
 
 fn gateKey(file: []const u8, kind: FreshnessKind, options: SlaCompileOptions, output_file: ?[]const u8) u64 {
     var hasher = std.hash.Wyhash.init(0);
+    // The recorded dep closure vouches for the inputs only; the stamp
+    // makes the compiler itself an input, so artifacts produced by an
+    // older build are never served after a behavior change.
+    cache_version.mixInto(&hasher);
     hasher.update(file);
     hasher.update("\x00");
     hasher.update(&std.mem.toBytes(optionsDigest(kind, options, output_file)));
@@ -316,4 +321,15 @@ pub fn storeFreshArtifact(
     const manifest_bytes = try std.json.Stringify.valueAlloc(allocator, manifest, .{});
     defer allocator.free(manifest_bytes);
     try sio.cwd().writeFile(.{ .sub_path = manifest_path, .data = manifest_bytes });
+}
+
+test "freshness gate key carries the compiler stamp" {
+    const options = SlaCompileOptions{};
+    const key = gateKey("root.sla", .sab, options, null);
+    // Legacy key construction: file + options digest, no compiler stamp.
+    var legacy_hasher = std.hash.Wyhash.init(0);
+    legacy_hasher.update("root.sla");
+    legacy_hasher.update("\x00");
+    legacy_hasher.update(&std.mem.toBytes(optionsDigest(.sab, options, null)));
+    try std.testing.expect(key != legacy_hasher.final());
 }

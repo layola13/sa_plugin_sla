@@ -3208,6 +3208,54 @@ test "sla contract loader fast paths macro free sources" {
     try std.testing.expectEqual(@as(usize, 0), tc.imported_macros.count());
 }
 
+test "sla imported macro index cache ignores entries keyed without the compiler stamp" {
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_source =
+        \\[MACRO] STAMPED_MACRO %out
+        \\    %out = 7
+        \\[END_MACRO]
+    ;
+    // Poison an entry at the legacy (pre-stamp) key: import path +
+    // length + source and nothing else. A loader that still keys its
+    // cache that way consumes the poisoned record below and never
+    // scans the source, so STAMPED_MACRO stays unregistered.
+    var legacy_hasher = std.hash.Wyhash.init(0);
+    legacy_hasher.update("imported_macros.sa");
+    legacy_hasher.update(&std.mem.toBytes(@as(u64, expanded_source.len)));
+    legacy_hasher.update(expanded_source);
+    const legacy_path = try std.fmt.allocPrint(allocator, ".sla-cache/macros/{s}-{x}.idx", .{ "imported_macros.sa", legacy_hasher.final() });
+    try tdir.makePath(".sla-cache/macros");
+    try tdir.writeFile(.{ .sub_path = legacy_path, .data = "POISON_MACRO|1|0|0|0||0\n" });
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try loadImportedMacrosFromExpandedSource(&tc, allocator, expanded_source, "imported_macros.sa");
+
+    try std.testing.expect(tc.imported_macros.get("POISON_MACRO") == null);
+    try std.testing.expect(tc.imported_macros.get("STAMPED_MACRO") != null);
+    // The rescan must have written a fresh entry next to the stale one.
+    var cache_dir = try sio.cwd().openDir(".sla-cache/macros", .{ .iterate = true });
+    defer cache_dir.close();
+    var it = cache_dir.iterate();
+    var entries: usize = 0;
+    while (try it.next()) |entry| {
+        if (entry.kind == .file) entries += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), entries);
+}
+
 test "sla load contracts reuses resolved non-sla imports" {
     var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();

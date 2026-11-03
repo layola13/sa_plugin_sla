@@ -8,6 +8,7 @@ const plugin_imports = @import("plugin_imports.zig");
 const plugin_module_table = @import("plugin_module_table.zig");
 const plugin_reachability = @import("plugin_reachability.zig");
 const plugin_imported_macros = @import("plugin_imported_macros.zig");
+const cache_version = @import("cache_version.zig");
 const plugin_compile_options = @import("plugin_compile_options.zig");
 
 const ResolvedImport = plugin_imports.ResolvedImport;
@@ -35,6 +36,7 @@ fn profileImportExpandStage(enabled: bool, label: []const u8, start_ns: i128) vo
 
 fn importListCachePath(allocator: std.mem.Allocator, source_path: []const u8, expanded_source: []const u8) ![]u8 {
     var hasher = std.hash.Wyhash.init(0);
+    cache_version.mixInto(&hasher);
     hasher.update(source_path);
     hasher.update(&std.mem.toBytes(@as(u64, expanded_source.len)));
     hasher.update(expanded_source);
@@ -869,6 +871,7 @@ fn reachablePlanCachePath(
     options: SlaImportExpansionOptions,
 ) ![]u8 {
     var hasher = std.hash.Wyhash.init(0);
+    cache_version.mixInto(&hasher);
     hasher.update(source_file);
     hasher.update(&std.mem.toBytes(@as(u64, root_source.len)));
     hasher.update(root_source);
@@ -1465,4 +1468,45 @@ pub fn loadImportedContracts(
             try loadImportContractsRecursive(tc, allocator, source_dir, decl.import_decl.path, source_abs, &visited);
         }
     }
+}
+
+test "import list cache path carries the compiler stamp" {
+    const allocator = std.testing.allocator;
+    const source = "@import \"child.sla\"\n";
+    const path = try importListCachePath(allocator, "root.sla", source);
+    defer allocator.free(path);
+    // Legacy key construction: source path + length + source, no
+    // compiler stamp.
+    var legacy_hasher = std.hash.Wyhash.init(0);
+    legacy_hasher.update("root.sla");
+    legacy_hasher.update(&std.mem.toBytes(@as(u64, source.len)));
+    legacy_hasher.update(source);
+    const legacy_path = try std.fmt.allocPrint(allocator, ".sla-cache/imports/{s}-{x}.lst", .{ "root.sla", legacy_hasher.final() });
+    defer allocator.free(legacy_path);
+    try std.testing.expect(!std.mem.eql(u8, path, legacy_path));
+}
+
+test "reachable plan cache path carries the compiler stamp" {
+    const allocator = std.testing.allocator;
+    const options = SlaImportExpansionOptions{};
+    const root_source = "fn main() {}";
+    const path = try reachablePlanCachePath(allocator, "root.sla", root_source, &.{}, options);
+    defer allocator.free(path);
+    // Legacy key construction: file + root source + options + module
+    // contents, no compiler stamp.
+    var legacy_hasher = std.hash.Wyhash.init(0);
+    legacy_hasher.update("root.sla");
+    legacy_hasher.update(&std.mem.toBytes(@as(u64, root_source.len)));
+    legacy_hasher.update(root_source);
+    const option_bits: u8 =
+        (@as(u8, @intFromBool(options.prune_for_test_codegen)) << 0) |
+        (@as(u8, @intFromBool(options.imported_bodies_decl_only)) << 1) |
+        (@as(u8, @intFromBool(options.load_reachable_imported_bodies_from_registry)) << 2) |
+        (@as(u8, @intFromBool(options.lazy_transitive_sla_imports)) << 3) |
+        (@as(u8, @intFromBool(options.include_all_imported_decls)) << 4);
+    legacy_hasher.update(&.{option_bits});
+    legacy_hasher.update(&std.mem.toBytes(@as(u64, std.math.maxInt(u64))));
+    const legacy_path = try std.fmt.allocPrint(allocator, ".sla-cache/reachable/{s}-{x}.plan", .{ "root.sla", legacy_hasher.final() });
+    defer allocator.free(legacy_path);
+    try std.testing.expect(!std.mem.eql(u8, path, legacy_path));
 }

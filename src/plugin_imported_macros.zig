@@ -2,6 +2,7 @@ const std = @import("std");
 const sio = @import("sio");
 const type_checker_mod = @import("type_checker.zig");
 const source_expand = @import("source_expand.zig");
+const cache_version = @import("cache_version.zig");
 
 pub fn expandedSourceMayContainImportedMacros(expanded_source: []const u8) bool {
     return std.mem.indexOf(u8, expanded_source, "[MACRO]") != null;
@@ -242,6 +243,7 @@ pub fn appendExpandedImportedMacroDirectCallees(
 
 fn macroIndexCachePath(allocator: std.mem.Allocator, import_path: []const u8, expanded_source: []const u8) ![]u8 {
     var hasher = std.hash.Wyhash.init(0);
+    cache_version.mixInto(&hasher);
     hasher.update(import_path);
     hasher.update(&std.mem.toBytes(@as(u64, expanded_source.len)));
     hasher.update(expanded_source);
@@ -398,4 +400,21 @@ pub fn loadImportedMacrosFromExpandedSource(
 pub fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, source: []const u8, import_path: ?[]const u8) !void {
     const expanded_source = try source_expand.expand(allocator, source);
     try loadImportedMacrosFromExpandedSource(tc, allocator, expanded_source, import_path);
+}
+
+test "macro index cache path carries the compiler stamp" {
+    const allocator = std.testing.allocator;
+    const source = "[MACRO] M %out\n    %out = 1\n[END_MACRO]\n";
+    const path = try macroIndexCachePath(allocator, "imported_macros.sa", source);
+    defer allocator.free(path);
+    // Legacy key construction: import path + length + source, no
+    // compiler stamp. Entries keyed that way must not be reachable
+    // through the current path.
+    var legacy_hasher = std.hash.Wyhash.init(0);
+    legacy_hasher.update("imported_macros.sa");
+    legacy_hasher.update(&std.mem.toBytes(@as(u64, source.len)));
+    legacy_hasher.update(source);
+    const legacy_path = try std.fmt.allocPrint(allocator, ".sla-cache/macros/{s}-{x}.idx", .{ "imported_macros.sa", legacy_hasher.final() });
+    defer allocator.free(legacy_path);
+    try std.testing.expect(!std.mem.eql(u8, path, legacy_path));
 }

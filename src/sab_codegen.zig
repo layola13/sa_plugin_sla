@@ -14883,17 +14883,20 @@ pub const Codegen = struct {
     }
 
     /// Direct-SAB `AtomicI32/AtomicUsize/AtomicPtr::new(value)`, mirroring the
-    /// SA-text backend (`src/codegen.zig` `ATOMIC_*_INIT` expansions): stack
-    /// allocate the value slot, then store the initial value through the
-    /// shared `*_INIT` macro. The returned register is a stack slot; `let`
-    /// adoption goes through `pushStackAllocTypedLocal` (see genLetFromValue).
+    /// SA-text backend (`src/codegen.zig` `ATOMIC_*_INIT` expansions): heap
+    /// allocate the value cell, then store the initial value through the
+    /// shared `*_INIT` macro. The cell is heap-owned, not a stack slot: an
+    /// atomic value is address-carried and its address routinely escapes
+    /// into owners (Arc/Rc/Box, struct fields, spawn slots); a stack home
+    /// made the consuming `move_` a StackEscape in the verifier (the
+    /// 123_barrier_sync shape) and would dangle.
     fn genAtomicNewCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
         _ = expr;
         const plan = lowering_rules.planAtomicNewCall(call) orelse return null;
         const target = call.associated_target orelse return Error.UnsupportedSabDirectFeature;
         const value_reg = try self.genAssociatedValueArg(target, call.func_name, @constCast(call.args[0]));
         const dst = try self.intern(try self.newTmp());
-        try self.emitStackAlloc(dst, plan.size);
+        try self.emitAlloc(dst, plan.size);
         try self.emitStdMacroFragment("sa_std/sync/atomic.sa", plan.macro_name, &.{
             self.symbols.items[dst],
             self.symbols.items[value_reg],

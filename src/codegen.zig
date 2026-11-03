@@ -12408,32 +12408,31 @@ pub const Codegen = struct {
                     const call = &let.value.call_expr;
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                    self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.outPrint("    {s} = stack_alloc AtomicI32_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                    // Heap cell, as in the expression form below: the
+                    // binding's address may escape into an owner at any
+                    // later use, which a stack home forbids (StackEscape).
+                    self.outPrint("    {s} = alloc AtomicI32_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
                     self.outPrint("    EXPAND ATOMIC_I32_INIT {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                 } else if (let.value.* == .call_expr and let.value.call_expr.associated_target != null and std.mem.eql(u8, let.value.call_expr.associated_target.?, "AtomicUsize") and std.mem.eql(u8, let.value.call_expr.func_name, "new")) {
                     const call = &let.value.call_expr;
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                    self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.outPrint("    {s} = stack_alloc AtomicUsize_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = alloc AtomicUsize_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
                     self.outPrint("    EXPAND ATOMIC_USIZE_INIT {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                 } else if (let.value.* == .call_expr and let.value.call_expr.associated_target != null and std.mem.eql(u8, let.value.call_expr.associated_target.?, "AtomicPtr") and std.mem.eql(u8, let.value.call_expr.func_name, "new")) {
                     const call = &let.value.call_expr;
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                    self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.outPrint("    {s} = stack_alloc AtomicPtr_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = alloc AtomicPtr_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
                     self.outPrint("    EXPAND ATOMIC_PTR_INIT {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                 } else if (let.value.* == .call_expr and let.value.call_expr.associated_target != null and std.mem.eql(u8, let.value.call_expr.associated_target.?, "Cell") and std.mem.eql(u8, let.value.call_expr.func_name, "new")) {
                     const call = &let.value.call_expr;
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                    self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.outPrint("    {s} = stack_alloc Cell_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = alloc Cell_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
                     self.outPrint("    EXPAND CELL_SET {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                 } else if (let.value.* == .call_expr and lowering_rules.isManuallyDropNewCall(let.value.call_expr)) {
@@ -15860,8 +15859,13 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.outPrint("    {s} = stack_alloc AtomicI32_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                        // Heap cell, not stack_alloc: an atomic value is an
+                        // address-carried cell whose address routinely
+                        // escapes into owners (Arc/Rc/Box, struct fields,
+                        // spawn slots). A stack home makes the consuming
+                        // move a StackEscape and would dangle; Mutex::new
+                        // and struct call results already heap-allocate.
+                        self.outPrint("    {s} = alloc AtomicI32_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
                         self.outPrint("    EXPAND ATOMIC_I32_INIT {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
@@ -15870,8 +15874,7 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.outPrint("    {s} = stack_alloc AtomicUsize_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = alloc AtomicUsize_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
                         self.outPrint("    EXPAND ATOMIC_USIZE_INIT {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
@@ -15880,8 +15883,7 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.outPrint("    {s} = stack_alloc AtomicPtr_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = alloc AtomicPtr_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
                         self.outPrint("    EXPAND ATOMIC_PTR_INIT {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
@@ -15890,8 +15892,7 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
-                        self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.outPrint("    {s} = stack_alloc Cell_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.outPrint("    {s} = alloc Cell_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
                         self.outPrint("    EXPAND CELL_SET {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;

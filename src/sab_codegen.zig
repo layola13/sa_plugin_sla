@@ -3818,7 +3818,7 @@ pub const Codegen = struct {
             .cast_expr => |cast| try self.collectEscapedCapturesInExpr(cast.expr, captures, locals),
             .field_expr => |field| try self.collectEscapedCapturesInExpr(field.expr, captures, locals),
             .call_expr => |call| {
-                if (call.associated_target == null and call.callee == null) {
+                if (call.associated_target == null and call.callee == null and self.callNameResolvesToValue(call.func_name)) {
                     try self.addEscapedCapture(call.func_name, self.localType(call.func_name), captures, locals);
                 }
                 if (call.callee) |callee| try self.collectEscapedCapturesInExpr(callee, captures, locals);
@@ -3849,6 +3849,24 @@ pub const Codegen = struct {
             .closure_literal => {},
             else => {},
         }
+    }
+
+    /// True when a bare call name denotes a value in scope — a free
+    /// function, a macro, an internal symbol, or an in-scope local (an
+    /// fn-ptr variable) — and so must be considered as an escaped
+    /// capture. Receiver method names (`recv.clone()`, `recv.unwrap()`,
+    /// ...) leave `associated_target` null in the AST but denote no
+    /// value: the typechecker resolved them against the receiver in
+    /// `args[0]`, which the walker visits separately. Skipping them
+    /// cannot silently drop a real capture: a name the worker body
+    /// actually needs as a value fails loudly when the worker is
+    /// generated (planStaticCallLowering has no plan for it), exactly
+    /// as an unmaterializable capture fails in genThreadSpawn.
+    fn callNameResolvesToValue(self: *Codegen, name: []const u8) bool {
+        if (self.tc.funcs.contains(name)) return true;
+        if (self.tc.macros.contains(name)) return true;
+        if (lowering_rules.isInternalSymbol(name)) return true;
+        return self.localReg(name) != null;
     }
 
     fn collectEscapedClosureCaptures(self: *Codegen, closure: *const ast.ClosureLiteral) ![]const EscapedCapture {

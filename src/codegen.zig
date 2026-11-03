@@ -2385,6 +2385,24 @@ pub const Codegen = struct {
         };
     }
 
+    /// True when a bare call name denotes a value in scope — a free
+    /// function, a macro, an internal symbol, a global const, or a
+    /// typed local binding (an fn-ptr variable) — and so must be
+    /// considered as a thread-closure capture. Receiver method names
+    /// (`recv.clone()`, `recv.unwrap()`, ...) leave `associated_target`
+    /// null in the AST but denote no value; recording one as an fn-ptr
+    /// capture poisons the escaped-closure capture summary and can
+    /// flip the execution plan to inline_join, silently running a
+    /// spin-wait worker synchronously (deadlock). Mirrors the SAB
+    /// walker's gate in sab_codegen.zig.
+    fn callNameResolvesToValue(self: *Codegen, name: []const u8) bool {
+        if (self.tc.funcs.contains(name)) return true;
+        if (self.tc.macros.contains(name)) return true;
+        if (lowering_rules.isInternalSymbol(name)) return true;
+        if (self.global_const_bindings.contains(name)) return true;
+        return self.localBindingTypeForName(name) != null;
+    }
+
     fn captureNameFromIdentifier(
         self: *Codegen,
         name: []const u8,
@@ -2484,7 +2502,7 @@ pub const Codegen = struct {
             .cast_expr => |cast| try self.collectThreadClosureCapturesInExpr(cast.expr, captures, locals),
             .field_expr => |field| try self.collectThreadClosureCapturesInExpr(field.expr, captures, locals),
             .call_expr => |call| {
-                if (call.associated_target == null and call.callee == null) {
+                if (call.associated_target == null and call.callee == null and self.callNameResolvesToValue(call.func_name)) {
                     try self.captureNameFromIdentifier(call.func_name, null, true, captures, locals);
                 }
                 for (call.args) |arg| try self.collectThreadClosureCapturesInExpr(arg, captures, locals);

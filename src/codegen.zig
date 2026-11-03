@@ -3990,6 +3990,20 @@ pub const Codegen = struct {
         return ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "GrowVec");
     }
 
+    fn isOwnedRefcountedHandleType(ty: *const ast.Type) bool {
+        if (ty.* != .user_defined) return false;
+        return std.mem.eql(u8, ty.user_defined.name, "Arc") or std.mem.eql(u8, ty.user_defined.name, "Rc");
+    }
+
+    /// By-value Arc/Rc parameters are adopted into a body-local register
+    /// at function entry (see genFuncDeclNamed): the raw argument register
+    /// is an opaque owned pointer to the SA backend, and releasing it
+    /// there raw-frees the shared box without decrementing the strong
+    /// count (DEF-4).
+    fn paramNeedsRefcountAlias(p: ast.Param) bool {
+        return !p.is_borrow and isOwnedRefcountedHandleType(p.ty);
+    }
+
     fn escapedStringByteLen(value: []const u8) usize {
         var len: usize = 0;
         var i: usize = 0;
@@ -8784,7 +8798,13 @@ pub const Codegen = struct {
             if (printed_params > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
             printed_params += 1;
             const prefix: []const u8 = self.abiParamPrefix(p);
-            self.outPrint("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+            if (paramNeedsRefcountAlias(p)) {
+                const arg_name = std.fmt.allocPrint(self.allocator, "{s}__sla_arg", .{p.name}) catch return CodegenError.OutOfMemory;
+                defer self.allocator.free(arg_name);
+                self.outPrint("{s}{s}: {s}", .{ prefix, arg_name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+            } else {
+                self.outPrint("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+            }
         }
         if (f.is_variadic) self.outPrint(", ...", .{}) catch return CodegenError.CodegenError;
         const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
@@ -8820,6 +8840,23 @@ pub const Codegen = struct {
         for (f.params) |p| {
             try self.rememberLocalBindingType(p.name, p.ty);
             if (p.ty.* == .primitive and p.ty.primitive == .va_list) continue;
+            const refcount_aliased = paramNeedsRefcountAlias(p);
+            if (refcount_aliased) {
+                // Adopt the handle into a body-local register (the
+                // signature carries it as `{name}__sla_arg`): the raw
+                // argument register is an opaque owned pointer to the
+                // SA backend, whose release raw-frees the shared box
+                // with no strong-count decrement — a second callee
+                // receiving another clone then double-frees (DEF-4:
+                // Arc<Counter> passed by value into two callees; the
+                // 123_barrier_sync workers). The local register takes
+                // the normal binding release path, exactly as a
+                // source-level `let local = param;` behaves, and the
+                // raw argument register is never released.
+                const arg_name = std.fmt.allocPrint(self.allocator, "{s}__sla_arg", .{p.name}) catch return CodegenError.OutOfMemory;
+                defer self.allocator.free(arg_name);
+                self.outPrint("    {s} = {s}\n", .{ p.name, arg_name }) catch return CodegenError.CodegenError;
+            }
             // By-value String/Vec parameters own their heap buffer, but
             // unlike let bindings they were never registered in the drop
             // sets, so scope cleanup fell back to a bare `!param` register
@@ -8850,14 +8887,14 @@ pub const Codegen = struct {
                 try self.emitRelease(raw_len);
                 try self.emitRelease(raw_param);
             }
-            if (!p.is_borrow and !p.is_move and self.bindingNeedsAddressableStorage(p.name, p.ty)) {
+            if (!p.is_borrow and !p.is_move and !refcount_aliased and self.bindingNeedsAddressableStorage(p.name, p.ty)) {
                 const raw_param = try self.newTmp();
                 self.outPrint("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
                 self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
                 self.outPrint("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
                 self.outPrint("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
                 try self.emitRelease(raw_param);
-            } else if (!p.is_borrow and !p.is_move and self.bindingNeedsAssignedValueSlot(p.name, p.ty)) {
+            } else if (!p.is_borrow and !p.is_move and !refcount_aliased and self.bindingNeedsAssignedValueSlot(p.name, p.ty)) {
                 const raw_param = try self.newTmp();
                 self.outPrint("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
                 self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;

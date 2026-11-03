@@ -4578,10 +4578,12 @@ pub fn isMpscChannelCall(call: ast.CallExpr) bool {
         std.mem.eql(u8, call.func_name, "channel");
 }
 
-/// Shared pure atomic `new` plan: stack-slot size plus the
+/// Shared pure atomic `new` plan: cell size plus the
 /// `sa_std/sync/atomic.sa` `*_INIT` macro that stores the initial value.
 /// Mirrors the SA-text backend (`src/codegen.zig` `ATOMIC_*_INIT` expansions):
-/// the slot must be stack-allocated first, the macro only stores.
+/// the cell must be allocated first (heap — the address escapes into
+/// owners, so a stack home traps StackEscape on the consuming move),
+/// the macro only stores.
 pub const AtomicNewPlan = struct {
     size: usize,
     macro_name: []const u8,
@@ -6417,7 +6419,19 @@ pub fn byValueRawPointerParam(param: ast.Param) bool {
 
 pub fn callArgUsesRawPointerStringLiteralValue(arg: *const ast.Node, param: ast.Param) bool {
     if (arg.* != .literal or arg.literal != .string_val) return false;
-    return byValueRawPointerParam(param);
+    // A string literal has no storage whose address could be borrowed:
+    // against a raw-pointer parameter it always denotes the literal's
+    // data address. That holds for by-value params and for the extern
+    // `&name: ptr` borrow form alike — the callee reads raw bytes
+    // through the pointer, never a Slice header (sa_global_u64_* and
+    // the other byte-keyed .sai surfaces). The previous by-value-only
+    // gate sent borrow-form extern args through generic value
+    // materialization, which built a Slice cell and passed its
+    // address, so byte-keyed lookups never matched on the SA-text
+    // backend (go_spawn's counters stayed invisible). Move params
+    // stay excluded: a literal cannot hand over an owned buffer.
+    if (param.is_move) return false;
+    return rawPointerValueType(param.ty);
 }
 
 /// Shared pure predicate for by-value Copy-struct identifier args that both
@@ -6632,7 +6646,15 @@ pub fn callArgIsExternFnPtrAddress(
 
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
     if (input.param) |param| {
-        if (callArgUsesRawPointerStringLiteralValue(arg, param)) {
+        // The borrow form of the raw-literal plan is SA-text only: SAB
+        // extern call sites prefix borrowed arguments with the `&`
+        // capability, which the owned data-pointer register does not
+        // carry (CapabilityMismatch at SAB verification). SAB's own
+        // literal path loads the data pointer out of the Slice cell
+        // with the right capability and was already correct.
+        if (callArgUsesRawPointerStringLiteralValue(arg, param) and
+            (input.target != .direct_sab or !param.is_borrow))
+        {
             return .{ .kind = .raw_pointer_string_literal, .release_after_call = true };
         }
         if (callArgIsExternFnPtrAddress(arg, param, if (input.arg_ty) |ty| ty.* == .fn_ptr else false)) {
@@ -7490,6 +7512,19 @@ test "shared lowering rules classify call materialization decisions" {
     const raw_string_plan = planCallArgMaterialization(&string_arg, .{ .param = raw_param });
     try std.testing.expect(raw_string_plan.isRawPointerStringLiteral());
     try std.testing.expect(raw_string_plan.release_after_call);
+
+    // The extern `&name: ptr` borrow form takes the same raw-literal
+    // plan: the callee reads raw bytes through the data pointer, so a
+    // Slice cell address would silently key byte-keyed lookups wrong.
+    const borrow_raw_param = ast.Param{ .name = "name", .ty = &raw_ptr_ty, .is_borrow = true };
+    const borrow_raw_string_plan = planCallArgMaterialization(&string_arg, .{ .param = borrow_raw_param });
+    try std.testing.expect(borrow_raw_string_plan.isRawPointerStringLiteral());
+    try std.testing.expect(borrow_raw_string_plan.release_after_call);
+
+    // SAB keeps its slice-load literal path for borrow parameters (see
+    // planCallArgMaterialization): the raw plan must not fire there.
+    const sab_borrow_raw_string_plan = planCallArgMaterialization(&string_arg, .{ .target = .direct_sab, .param = borrow_raw_param });
+    try std.testing.expect(!sab_borrow_raw_string_plan.isRawPointerStringLiteral());
 
     const dyn_plan = planCallArgMaterialization(&value, .{ .dyn_borrow_trait_name = "Drawable" });
     try std.testing.expect(dyn_plan.isDynBorrow());

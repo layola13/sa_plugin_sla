@@ -3388,11 +3388,15 @@ pub const Parser = struct {
                 return node;
             },
             .minus => {
-                // Unary minus: lower to (0 - expr)
+                // Unary minus: lower to (0 - expr). The operand is parsed at
+                // precedence 8 (same convention as prefix `!`) so binary
+                // +/- (7) and */% (8) stay OUTSIDE the negation — `-a + b`
+                // reads `(-a) + b`, never `-(a + b)` — while `as` (9) and
+                // postfix call/index/field (10) still fold into the operand.
                 self.advance();
                 const zero = try self.allocator.create(ast.Node);
                 zero.* = .{ .literal = .{ .int_val = 0 } };
-                const expr = try self.parseExpr(6);
+                const expr = try self.parseExpr(8);
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .binary_expr = .{ .op = .sub, .left = zero, .right = expr } };
                 return node;

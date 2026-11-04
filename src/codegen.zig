@@ -13044,7 +13044,19 @@ pub const Codegen = struct {
                     }
                     if (let_ty.* == .primitive) {
                         try self.emitPrimitiveCopy(let.name, val_reg, let_ty);
-                        if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
+                        // DEF-batch2 card 10a: callArgNeedsRelease is the
+                        // wrong predicate for the value temp here — it is
+                        // false for every cast, so a cross-type cast bound
+                        // by a let (`let y: i64 = x as i64;`) copied its
+                        // fresh result temp into the binding and left the
+                        // temp Active to function exit, and the SA verifier
+                        // trapped MemoryLeak. The field/store retirement
+                        // discipline (fieldBaseResultNeedsRelease: release
+                        // on expr-result-needs-release OR a fresh temp
+                        // that is not the resolved binding itself) retires
+                        // it; a plain identifier value still resolves to
+                        // its own binding register and is not released.
+                        if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitRelease(val_reg);
                     } else {
                         self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }

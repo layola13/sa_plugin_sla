@@ -4377,6 +4377,17 @@ pub fn isCloneCall(call: ast.CallExpr) bool {
     return std.mem.eql(u8, call.func_name, "clone");
 }
 
+/// DEF-ARC-DROP (F1): count-surface call-name facts. strong_count /
+/// weak_count had no dispatch anywhere in the compiler before this
+/// batch, so SLA programs could not express count queries at all.
+pub fn isStrongCountCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "strong_count");
+}
+
+pub fn isWeakCountCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "weak_count");
+}
+
 /// Shared pure unary `clone(x)` call recognition.
 pub fn isCloneUnaryCall(call: ast.CallExpr) bool {
     return isCloneCall(call) and call.args.len == 1;
@@ -10147,6 +10158,12 @@ pub const DropPlan = union(enum) {
     /// GrowVecAbi offsets, then `@sa_growvec_free`.
     deep_growvec: *const DropPlan,
     deep_struct: []const FieldDropPlan,
+    /// DEF-ARC-DROP (F1): smart-pointer plans; the payload plan is
+    /// dropped when the strong count reaches zero (Arc/Rc) or
+    /// unconditionally at the handle's own drop (Box).
+    arc_ptr: *const DropPlan,
+    rc_ptr: *const DropPlan,
+    box_ptr: *const DropPlan,
 
     pub fn kind(self: *const DropPlan) std.meta.Tag(DropPlan) {
         return std.meta.activeTag(self.*);

@@ -441,6 +441,23 @@ pub const TypeChecker = struct {
         sym.consumed_by_call = null;
     }
 
+    /// DEF-ARC-DROP: Box/Rc/Arc constructor calls store their
+    /// argument into the fresh cell -- an ownership transfer. A
+    /// root-identifier argument of non-Copy type is consumed (the
+    /// Box::into_raw pattern); anything else (literals, field
+    /// places, Copy values) transfers nothing out of a binding.
+    fn consumeConstructorArg(self: *TypeChecker, arg: *const ast.Node, arg_ty: *const ast.Type, scope: *Scope, operation: []const u8) TypeError!void {
+        if (arg.* != .identifier) return;
+        if (self.typeIsCopyValue(arg_ty)) return;
+        const sym = scope.lookup(arg.identifier) orelse return TypeError.UndefinedVariable;
+        if (sym.state == .consumed) return TypeError.UseAfterMove;
+        if (sym.state == .uninitialized) {
+            self.setError("UseBeforeInit: var `{s}` is read before assignment", .{arg.identifier});
+            return TypeError.UseBeforeInit;
+        }
+        try self.consumeBinding(scope, arg.identifier, sym, operation);
+    }
+
     fn consumeExternMoveArg(self: *TypeChecker, scope: *Scope, param: contract_parser.Param, arg: *const ast.Node) TypeError!void {
         if (!param.is_move) return;
         if (arg.* == .move_expr) return;
@@ -1429,6 +1446,30 @@ pub const TypeChecker = struct {
                         else => try self.internDropPlan(.{ .deep_growvec = elem_plan }),
                     };
                 }
+                // DEF-ARC-DROP (F1): Arc/Rc/Box are intercepted before
+                // the arena registry's drop_excluded flag, which marks
+                // them "has its own release machinery" -- for drop
+                // elaboration that machinery is exactly what was
+                // missing (counts never decremented, payloads never
+                // dropped, boxes never freed). The arena criterion
+                // reads only the registry `class`, never the drop
+                // plan, so planning drops here leaves arena semantics
+                // untouched.
+                if (std.mem.eql(u8, ud.name, "Arc")) {
+                    if (ud.generics.len != 1) return &drop_plan_none_singleton;
+                    const payload_plan = try self.planValueDrop(ud.generics[0]);
+                    return try self.internDropPlan(.{ .arc_ptr = payload_plan });
+                }
+                if (std.mem.eql(u8, ud.name, "Rc")) {
+                    if (ud.generics.len != 1) return &drop_plan_none_singleton;
+                    const payload_plan = try self.planValueDrop(ud.generics[0]);
+                    return try self.internDropPlan(.{ .rc_ptr = payload_plan });
+                }
+                if (std.mem.eql(u8, ud.name, "Box")) {
+                    if (ud.generics.len != 1) return &drop_plan_none_singleton;
+                    const payload_plan = try self.planValueDrop(ud.generics[0]);
+                    return try self.internDropPlan(.{ .box_ptr = payload_plan });
+                }
                 if (dropPlanExcludedType(ud.name)) return &drop_plan_none_singleton;
                 const decl = self.structs.get(ud.name) orelse return &drop_plan_none_singleton;
                 if (decl.is_opaque or decl.is_union) return &drop_plan_none_singleton;
@@ -1771,7 +1812,7 @@ pub const TypeChecker = struct {
                     switch (plan.kind()) {
                         .none => {},
                         .buffer, .buffer_growvec => try self.assign_drop_old.put(node, .shallow),
-                        .deep_vec, .deep_growvec, .deep_struct => try self.assign_drop_old.put(node, .deep),
+                        .deep_vec, .deep_growvec, .deep_struct, .arc_ptr, .rc_ptr, .box_ptr => try self.assign_drop_old.put(node, .deep),
                     }
                 }
             }
@@ -1855,6 +1896,10 @@ pub const TypeChecker = struct {
         if (isBorrowLikeType(ty)) return;
         const plan = try self.planValueDrop(ty);
         if (plan.kind() == .none) return;
+        // DEF-ARC-DROP: Arc/Rc read-outs are bump-compensated at the
+        // read site (see the patch note); tainting them would shallow
+        // the balancing husk drop and leak the count.
+        if (plan.kind() == .arc_ptr or plan.kind() == .rc_ptr) return;
         if (self.taintKeyOfPlace(expr)) |key| {
             try self.addDropTaint(taint, key);
         }
@@ -7020,7 +7065,7 @@ pub const TypeChecker = struct {
                             switch (plan.kind()) {
                                 .none => {},
                                 .buffer, .buffer_growvec => try self.assign_drop_old.put(stmt, .shallow),
-                                .deep_vec, .deep_growvec, .deep_struct => try self.assign_drop_old.put(stmt, .deep),
+                                .deep_vec, .deep_growvec, .deep_struct, .arc_ptr, .rc_ptr, .box_ptr => try self.assign_drop_old.put(stmt, .deep),
                             }
                         }
                     }
@@ -8282,6 +8327,7 @@ pub const TypeChecker = struct {
                     if (lowering_rules.isBoxNewCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const inner_ty = try self.checkExpr(call.args[0], scope);
+                        try self.consumeConstructorArg(call.args[0], inner_ty, scope, "Box::new");
                         return try self.makeBoxType(inner_ty);
                     }
                     if (lowering_rules.isBoxIntoRawCall(call)) {
@@ -8311,11 +8357,13 @@ pub const TypeChecker = struct {
                     if (lowering_rules.isRcNewCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const inner_ty = try self.checkExpr(call.args[0], scope);
+                        try self.consumeConstructorArg(call.args[0], inner_ty, scope, "Rc::new");
                         return try self.makeRcType(inner_ty);
                     }
                     if (lowering_rules.isArcNewCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const inner_ty = try self.checkExpr(call.args[0], scope);
+                        try self.consumeConstructorArg(call.args[0], inner_ty, scope, "Arc::new");
                         return try self.makeArcType(inner_ty);
                     }
                     if (std.mem.eql(u8, target_name, "AtomicI32") and std.mem.eql(u8, call.func_name, "new")) {
@@ -8904,6 +8952,19 @@ pub const TypeChecker = struct {
                     if (arcInnerType(recv_ty) != null and lowering_rules.isCloneCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         return unwrappedReceiverType(recv_ty);
+                    }
+
+                    // DEF-ARC-DROP (F1): count surface typing. The std
+                    // macros ARC_STRONG_COUNT / ARC_WEAK_COUNT (and the
+                    // Rc mirrors) existed but no call could reach them.
+                    if (rcInnerType(recv_ty) != null and (lowering_rules.isStrongCountCall(call) or lowering_rules.isWeakCountCall(call))) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        return try self.makeU64Type();
+                    }
+
+                    if (arcInnerType(recv_ty) != null and (lowering_rules.isStrongCountCall(call) or lowering_rules.isWeakCountCall(call))) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        return try self.makeU64Type();
                     }
 
                     if (atomicPtrInnerType(recv_ty)) |inner_ty| {

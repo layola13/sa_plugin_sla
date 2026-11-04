@@ -3301,7 +3301,130 @@ pub const Codegen = struct {
                 try self.emitStructFieldDrops(value_reg, ty, fields, key, taint_node);
                 try self.emitRelease(value_reg);
             },
+            .arc_ptr, .rc_ptr, .box_ptr => {
+                try self.emitSmartPointerDrop(value_reg, ty, plan, key, taint_node, may_alias);
+            },
         }
+    }
+
+    // DEF-ARC-DROP (F1): smart-pointer drop elaboration, SAB backend.
+    // No std drop macro is used: ARC_DROP / RC_DROP take a cleanup
+    // *label* argument, which the fragment expander cannot supply
+    // (its placeholders are registers, and the template is flattened
+    // standalone). The sequence is emitted from primitives in exactly
+    // the std macros' shape: ATOMIC_U64_FETCH_SUB fragments for the
+    // Arc counters (the ArcBox strong/weak cells are plain u64 words
+    // at +0/+8 -- the AtomicU64 cell layout), load/sub/store for Rc,
+    // explicit payload recursion, and the @sa_mem_free call for the
+    // box (mirroring emitOwnedBufferFree's sa_vec_free form).
+    fn emitSmartPointerDrop(self: *Codegen, value_reg: u32, ty: *const ast.Type, plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node, may_alias: bool) anyerror!void {
+        if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+            try self.emitMove(value_reg);
+            return;
+        }
+        const payload_ty: *const ast.Type = switch (plan.kind()) {
+            .arc_ptr => lowering_rules.arcInnerType(ty),
+            .rc_ptr => lowering_rules.rcInnerType(ty),
+            .box_ptr => lowering_rules.boxInnerType(ty),
+            else => null,
+        } orelse {
+            try self.emitRelease(value_reg);
+            return;
+        };
+        const payload_plan: *const lowering_rules.DropPlan = switch (plan.*) {
+            .arc_ptr, .rc_ptr, .box_ptr => |p| p,
+            else => unreachable,
+        };
+        const value_name = self.symbols.items[value_reg];
+        if (plan.kind() == .box_ptr) {
+            const data_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(data_reg, value_reg, 0, .ptr);
+            try self.emitDeepValueDrop(data_reg, payload_ty, payload_plan, key, taint_node, false, true);
+            try self.ensureStdDeps("sa_std/alloc/vec.sa", &.{"sa_mem_free"});
+            try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_mem_free(^{s})", .{value_name}));
+            try self.released_regs.put(value_reg, {});
+            return;
+        }
+        const is_arc = plan.kind() == .arc_ptr;
+        const clean_label = try self.newLabel("L_SMART_CLEAN");
+        const free_label = try self.newLabel("L_SMART_FREE");
+        const after_s_label = try self.newLabel("L_SMART_AFTER_S");
+        const after_w_label = try self.newLabel("L_SMART_AFTER_W");
+        const end_label = try self.newLabel("L_SMART_END");
+        // Path-sensitive releases in this sequence use
+        // emitBranchRelease (a raw release instruction with no
+        // compile-time released_regs bookkeeping): every control-flow
+        // path must dispose of the branch condition and of the handle
+        // exactly once, which emitRelease's suppressed-if-present
+        // logic cannot express. The two branch-false exits get their
+        // own after blocks so each condition is released exactly on
+        // the paths that reach it. The handle is marked released
+        // once, at the very end, for the caller's accounting.
+        var cond_reg: u32 = 0;
+        if (is_arc) {
+            const old_reg = try self.intern(try self.newTmp());
+            try self.recordReg(old_reg);
+            try self.emitStdMacroFragmentWithLiteralArgs("sa_std/sync/atomic.sa", "ATOMIC_U64_FETCH_SUB", &.{ self.symbols.items[old_reg], value_name, "1", "acq_rel" }, &.{ false, false, true, true });
+            cond_reg = try self.intern(try self.newTmp());
+            try self.emitOp(cond_reg, .eq, .{ .reg = old_reg }, .{ .imm_i64 = 1 });
+            try self.emitRelease(old_reg);
+            try self.emitBranch(cond_reg, clean_label, after_s_label);
+        } else {
+            const old_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(old_reg, value_reg, 0, .u64);
+            const new_reg = try self.intern(try self.newTmp());
+            try self.emitOp(new_reg, .sub, .{ .reg = old_reg }, .{ .imm_i64 = 1 });
+            try self.emitStore(value_reg, 0, new_reg, .u64);
+            try self.emitRelease(new_reg);
+            cond_reg = try self.intern(try self.newTmp());
+            try self.emitOp(cond_reg, .eq, .{ .reg = old_reg }, .{ .imm_i64 = 1 });
+            try self.emitRelease(old_reg);
+            try self.emitBranch(cond_reg, clean_label, after_s_label);
+        }
+        try self.emitLabel(after_s_label);
+        try self.emitBranchRelease(cond_reg);
+        try self.emitBranchMove(value_reg);
+        try self.emitJmp(end_label);
+        try self.emitLabel(clean_label);
+        try self.emitBranchRelease(cond_reg);
+        const data_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(data_reg, value_reg, 16, .ptr);
+        try self.emitDeepValueDrop(data_reg, payload_ty, payload_plan, key, taint_node, false, true);
+        var condw_reg: u32 = 0;
+        if (is_arc) {
+            const weak_cell = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(weak_cell, value_reg, .{ .imm_i64 = 8 });
+            const oldw_reg = try self.intern(try self.newTmp());
+            try self.recordReg(oldw_reg);
+            try self.emitStdMacroFragmentWithLiteralArgs("sa_std/sync/atomic.sa", "ATOMIC_U64_FETCH_SUB", &.{ self.symbols.items[oldw_reg], self.symbols.items[weak_cell], "1", "acq_rel" }, &.{ false, false, true, true });
+            try self.emitRelease(weak_cell);
+            condw_reg = try self.intern(try self.newTmp());
+            try self.emitOp(condw_reg, .eq, .{ .reg = oldw_reg }, .{ .imm_i64 = 1 });
+            try self.emitRelease(oldw_reg);
+            try self.emitBranch(condw_reg, free_label, after_w_label);
+        } else {
+            const oldw_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(oldw_reg, value_reg, 8, .u64);
+            const neww_reg = try self.intern(try self.newTmp());
+            try self.emitOp(neww_reg, .sub, .{ .reg = oldw_reg }, .{ .imm_i64 = 1 });
+            try self.emitStore(value_reg, 8, neww_reg, .u64);
+            try self.emitRelease(neww_reg);
+            condw_reg = try self.intern(try self.newTmp());
+            try self.emitOp(condw_reg, .eq, .{ .reg = oldw_reg }, .{ .imm_i64 = 1 });
+            try self.emitRelease(oldw_reg);
+            try self.emitBranch(condw_reg, free_label, after_w_label);
+        }
+        try self.emitLabel(after_w_label);
+        try self.emitBranchRelease(condw_reg);
+        try self.emitBranchMove(value_reg);
+        try self.emitJmp(end_label);
+        try self.emitLabel(free_label);
+        try self.emitBranchRelease(condw_reg);
+        try self.ensureStdDeps("sa_std/alloc/vec.sa", &.{"sa_mem_free"});
+        try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_mem_free(^{s})", .{value_name}));
+        try self.emitJmp(end_label);
+        try self.emitLabel(end_label);
+        try self.released_regs.put(value_reg, {});
     }
 
     fn emitVecElementDrops(self: *Codegen, vec_reg: u32, vec_ty: *const ast.Type, elem_plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node) anyerror!void {
@@ -3405,7 +3528,7 @@ pub const Codegen = struct {
         const ty = local.ty orelse return false;
         const plan = self.tc.planValueDrop(ty) catch return false;
         switch (plan.*) {
-            .deep_vec, .deep_growvec, .deep_struct => {},
+            .deep_vec, .deep_growvec, .deep_struct, .arc_ptr, .rc_ptr, .box_ptr => {},
             else => return false,
         }
         if (local.stack_ty != null) {
@@ -4291,6 +4414,7 @@ pub const Codegen = struct {
         item.operands[0] = .{ .reg = reg };
         try self.appendInst(item);
     }
+
 
     fn emitBranchMove(self: *Codegen, reg: u32) !void {
         var item = self.makeInst(.move_);
@@ -7301,8 +7425,17 @@ pub const Codegen = struct {
     /// read-only uses keep the view (they mutate/read through the
     /// handle in place and never take ownership). Returns the clone
     /// register, or null when the shape does not apply.
+    /// DEF-ARC-DROP: deref analogue of field extraction (see the
+    /// SA-text isSmartPointerDerefExpr).
+    fn isSmartPointerDerefExpr(self: *Codegen, expr: *const ast.Node) bool {
+        if (expr.* != .deref_expr) return false;
+        const inner_ty = self.tc.expr_types.get(expr.deref_expr.expr) orelse return false;
+        const base_name = typeBaseName(inner_ty) orelse return false;
+        return lowering_rules.isArcTypeName(base_name) or lowering_rules.isRcTypeName(base_name) or lowering_rules.isBoxTypeName(base_name);
+    }
+
     fn cloneBorrowedHandleFieldValue(self: *Codegen, expr: *ast.Node, src: u32) anyerror!?u32 {
-        if (expr.* != .field_expr) return null;
+        if (expr.* != .field_expr and !self.isSmartPointerDerefExpr(expr)) return null;
         const result_ty = self.tc.expr_types.get(expr) orelse return null;
         // DEF-AOF-EXIT69 (SA-text parity): clone-on-extract now applies
         // to owned roots too, not only borrow/deref roots. The checker
@@ -7325,6 +7458,27 @@ pub const Codegen = struct {
             const cloned = try self.genGrowVecCloneValue(src, elem_ty);
             if (!self.isLocalReg(src)) try self.emitRelease(src);
             return cloned;
+        }
+        // DEF-ARC-DROP (F1): an Arc/Rc field extracts as a fresh
+        // owning handle (count bump) -- the smart-pointer analogue of
+        // the DEF-5 clone-on-extract rule (Jev noul 0.80). The field
+        // stays owned by the parent, whose drop plan covers it; the
+        // extracted handle drops independently.
+        if (typeBaseName(result_ty)) |base_name| {
+            const smart_macro: ?[]const u8 = if (lowering_rules.isArcTypeName(base_name))
+                "ARC_CLONE_OUT"
+            else if (lowering_rules.isRcTypeName(base_name))
+                "RC_CLONE_OUT"
+            else
+                null;
+            if (smart_macro) |macro_name| {
+                const import_path = if (lowering_rules.isArcTypeName(base_name)) "sa_std/core/arc.sa" else "sa_std/core/rc.sa";
+                const dst = try self.intern(try self.newTmp());
+                try self.recordReg(dst);
+                try self.emitStdMacroFragment(import_path, macro_name, &.{ self.symbols.items[dst], self.symbols.items[src] });
+                if (!self.isLocalReg(src)) try self.emitRelease(src);
+                return dst;
+            }
         }
         // Struct-typed field owning heap handles: extract as an
         // independently-owned deep copy (handle fields cloned by the
@@ -15833,6 +15987,35 @@ pub const Codegen = struct {
         return dst;
     }
 
+    // DEF-ARC-DROP (F1): strong_count / weak_count wiring, SAB
+    // backend. The checker types these as u64; emission goes through
+    // the fragment path (the std count macros take no label
+    // arguments, unlike the drop macros).
+    fn genSmartPointerCountCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!lowering_rules.isStrongCountCall(call) and !lowering_rules.isWeakCountCall(call)) return null;
+        if (call.args.len != 1) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const receiver_type_name = typeBaseName(receiver_ty) orelse return null;
+        const is_arc = lowering_rules.isArcTypeName(receiver_type_name);
+        const is_rc = lowering_rules.isRcTypeName(receiver_type_name);
+        if (!is_arc and !is_rc) return null;
+        const strong = lowering_rules.isStrongCountCall(call);
+        const macro_name = if (is_arc)
+            (if (strong) "ARC_STRONG_COUNT" else "ARC_WEAK_COUNT")
+        else
+            (if (strong) "RC_STRONG_COUNT" else "RC_WEAK_COUNT");
+        const import_path = if (is_arc) "sa_std/core/arc.sa" else "sa_std/core/rc.sa";
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment(import_path, macro_name, &.{
+            self.symbols.items[dst],
+            self.symbols.items[receiver_reg],
+        });
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        return dst;
+    }
+
     fn importedMacroExistingAddressableSymbol(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) ?[]const u8 {
         if (arg.* != .identifier) return null;
         const name = arg.identifier;
@@ -16658,6 +16841,7 @@ pub const Codegen = struct {
         if (try self.genRwLockReadWriteCall(expr, call)) |reg| return reg;
         if (try self.genCatchUnwindCall(call)) |reg| return reg;
         if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
+        if (try self.genSmartPointerCountCall(call)) |reg| return reg;
         if (try self.genSenderCloneCall(expr, call)) |reg| return reg;
         if (try self.genMpscSendCall(expr, call)) |reg| return reg;
         if (try self.genMpscRecvCall(expr, call)) |reg| return reg;

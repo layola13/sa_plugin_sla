@@ -1225,6 +1225,12 @@ pub const Codegen = struct {
                         self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
                         return;
                     },
+                    // DEF-ARC-DROP (F1): smart-pointer binding drop.
+                    // The sequence runs on a private copy and leaves
+                    // this register to the generic `!name` tail below.
+                    .arc_ptr, .rc_ptr, .box_ptr => {
+                        try self.emitSmartPointerDropText(resolved_name, binding_ty, plan, resolved_name, self.current_drop_node, false, false);
+                    },
                     else => {},
                 }
             } else |_| {}
@@ -1308,7 +1314,112 @@ pub const Codegen = struct {
                 try self.emitStructFieldDropsText(value_reg, ty, fields, key, taint_node);
                 try self.emitRelease(value_reg);
             },
+            .arc_ptr, .rc_ptr, .box_ptr => {
+                try self.emitSmartPointerDropText(value_reg, ty, plan, key, taint_node, may_alias, true);
+            },
         }
+    }
+
+    // DEF-ARC-DROP (F1): smart-pointer drop elaboration, SA-text
+    // backend. `value_reg` holds an Arc/Rc/Box handle. The decrement,
+    // payload drop, weak decrement and box free run on a private copy
+    // of the handle: the std drop macros key their temporaries on the
+    // handle register name, and the ARC_DROP -> cleanup ->
+    // ARC_WEAK_DROP chain needs the handle alive across both
+    // expansions. The box free is an explicit @sa_mem_free call (the
+    // runtime's raw free for SA `alloc` blocks); a provenance-dependent
+    // `!` release cannot be relied on to free. `release_value` false
+    // is for the emitRelease binding fallthrough, whose generic tail
+    // releases the caller's register itself.
+    fn emitSmartPointerDropText(self: *Codegen, value_reg: []const u8, ty: *const ast.Type, plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node, may_alias: bool, release_value: bool) CodegenError!void {
+        if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+            if (release_value) try self.emitRelease(value_reg);
+            return;
+        }
+        const payload_ty: *const ast.Type = switch (plan.kind()) {
+            .arc_ptr => arcInnerType(ty),
+            .rc_ptr => rcInnerType(ty),
+            .box_ptr => boxInnerType(ty),
+            else => null,
+        } orelse {
+            if (release_value) try self.emitRelease(value_reg);
+            return;
+        };
+        const payload_plan: *const lowering_rules.DropPlan = switch (plan.*) {
+            .arc_ptr, .rc_ptr, .box_ptr => |p| p,
+            else => unreachable,
+        };
+        const h = try self.newTmp();
+        self.outPrint("    {s} = add {s}, 0\n", .{ h, value_reg }) catch return CodegenError.CodegenError;
+        if (plan.kind() == .box_ptr) {
+            const data_reg = try self.newTmp();
+            self.outPrint("    {s} = load {s}+Box_value as ptr\n", .{ data_reg, h }) catch return CodegenError.CodegenError;
+            try self.emitDeepValueDropText(data_reg, payload_ty, payload_plan, key, taint_node, false, true);
+            self.outPrint("    call @sa_mem_free(^{s})\n", .{h}) catch return CodegenError.CodegenError;
+            if (release_value) try self.emitRelease(value_reg);
+            return;
+        }
+        const is_arc = plan.kind() == .arc_ptr;
+        const clean_label = try self.newLabel("L_SMART_CLEAN");
+        const free_label = try self.newLabel("L_SMART_FREE");
+        const after_label = try self.newLabel("L_SMART_AFTER");
+        const end_label = try self.newLabel("L_SMART_END");
+        if (is_arc) {
+            self.outPrint("    EXPAND ARC_DROP {s}, {s}\n", .{ h, clean_label }) catch return CodegenError.CodegenError;
+        } else {
+            self.outPrint("    EXPAND RC_DROP {s}, {s}\n", .{ h, clean_label }) catch return CodegenError.CodegenError;
+        }
+        self.outPrint("    jmp {s}\n\n", .{after_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{clean_label}) catch return CodegenError.CodegenError;
+        // ARC_DROP / RC_DROP branch here directly, skipping their
+        // DONE blocks, so their temporaries are still live on this
+        // path while the not-last path released them in DONE. Release
+        // them now so register states agree at the merge labels.
+        if (is_arc) {
+            self.outPrint("    !__arc_is_last_{s}\n", .{h}) catch return CodegenError.CodegenError;
+            self.outPrint("    !__arc_strong_{s}\n", .{h}) catch return CodegenError.CodegenError;
+        } else {
+            self.outPrint("    !__rc_is_last_{s}\n", .{h}) catch return CodegenError.CodegenError;
+            self.outPrint("    !__rc_next_strong_{s}\n", .{h}) catch return CodegenError.CodegenError;
+            self.outPrint("    !__rc_strong_{s}\n", .{h}) catch return CodegenError.CodegenError;
+        }
+        const data_reg = try self.newTmp();
+        if (is_arc) {
+            self.outPrint("    {s} = load {s}+ArcBox_data as ptr\n", .{ data_reg, h }) catch return CodegenError.CodegenError;
+        } else {
+            self.outPrint("    {s} = load {s}+RcBox_data as ptr\n", .{ data_reg, h }) catch return CodegenError.CodegenError;
+        }
+        try self.emitDeepValueDropText(data_reg, payload_ty, payload_plan, key, taint_node, false, true);
+        if (is_arc) {
+            self.outPrint("    EXPAND ARC_WEAK_DROP {s}, {s}\n", .{ h, free_label }) catch return CodegenError.CodegenError;
+        } else {
+            self.outPrint("    EXPAND WEAK_DROP {s}, {s}\n", .{ h, free_label }) catch return CodegenError.CodegenError;
+        }
+        self.outPrint("    jmp {s}\n\n", .{after_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{free_label}) catch return CodegenError.CodegenError;
+        // Same skip-DONE situation for the weak drop's temporaries.
+        if (is_arc) {
+            self.outPrint("    !__weak_is_last_{s}\n", .{h}) catch return CodegenError.CodegenError;
+            self.outPrint("    !__weak_next_count_{s}\n", .{h}) catch return CodegenError.CodegenError;
+        } else {
+            self.outPrint("    !__weak_is_last_{s}\n", .{h}) catch return CodegenError.CodegenError;
+            self.outPrint("    !__weak_next_count_{s}\n", .{h}) catch return CodegenError.CodegenError;
+            self.outPrint("    !__weak_count_{s}\n", .{h}) catch return CodegenError.CodegenError;
+        }
+        // Free through a throwaway copy of the handle: the call
+        // consumes its argument, and a consumed-vs-released register
+        // state divergence at the merge label is a PhiStateConflict.
+        // `h` stays live on every incoming edge and is released once,
+        // after the merge.
+        const free_reg = try self.newTmp();
+        self.outPrint("    {s} = add {s}, 0\n", .{ free_reg, h }) catch return CodegenError.CodegenError;
+        self.outPrint("    call @sa_mem_free(^{s})\n", .{free_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{after_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{h}) catch return CodegenError.CodegenError;
+        if (release_value) try self.emitRelease(value_reg);
     }
 
     fn emitVecElementDropsText(self: *Codegen, vec_reg: []const u8, vec_ty: *const ast.Type, elem_plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node) CodegenError!void {
@@ -11141,6 +11252,15 @@ pub const Codegen = struct {
         }
     }
 
+    /// DEF-ARC-DROP: `*arc` / `*rc` / `*box` -- a dereference whose
+    /// operand is a smart-pointer value extracts the payload, the
+    /// deref analogue of a field extraction.
+    fn isSmartPointerDerefExpr(self: *Codegen, expr: *const ast.Node) bool {
+        if (expr.* != .deref_expr) return false;
+        const inner_ty = self.tc.expr_types.get(expr.deref_expr.expr) orelse return false;
+        return arcInnerType(inner_ty) != null or rcInnerType(inner_ty) != null or lowering_rules.boxInnerType(inner_ty) != null;
+    }
+
     fn genVecCloneValue(self: *Codegen, source_reg: []const u8, elem_ty: *const ast.Type) CodegenError![]const u8 {
         const out = try self.newTmp();
         self.outPrint(
@@ -11171,7 +11291,7 @@ pub const Codegen = struct {
     /// read-only uses keep the in-place view semantics. Returns the
     /// clone register, or null when the shape does not apply.
     fn cloneBorrowedHandleFieldValue(self: *Codegen, expr: *ast.Node, src: []const u8) CodegenError!?[]const u8 {
-        if (expr.* != .field_expr) return null;
+        if (expr.* != .field_expr and !self.isSmartPointerDerefExpr(expr)) return null;
         const result_ty = self.tc.expr_types.get(expr) orelse return null;
         // DEF-AOF-EXIT69: the clone-on-extract rule is no longer limited
         // to borrow-rooted places. The checker treats field extraction
@@ -11195,6 +11315,25 @@ pub const Codegen = struct {
         }
         if (lowering_rules.growVecElementType(result_ty)) |elem_ty| {
             const out = try self.genGrowVecCloneValue(src, elem_ty);
+            try self.emitRelease(src);
+            return out;
+        }
+        // DEF-ARC-DROP (F1): an Arc/Rc field extracts as a fresh
+        // owning handle (count bump) -- the smart-pointer analogue of
+        // the DEF-5 clone-on-extract rule (Jev noul 0.80). The field
+        // stays owned by the parent, whose drop plan covers it; the
+        // extracted handle is independently droppable.
+        if (arcInnerType(result_ty) != null) {
+            const out = try self.newTmp();
+            self.outPrint("    {s} = add {s}, 0\n", .{ out, src }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND ARC_CLONE {s}\n", .{out}) catch return CodegenError.CodegenError;
+            try self.emitRelease(src);
+            return out;
+        }
+        if (rcInnerType(result_ty) != null) {
+            const out = try self.newTmp();
+            self.outPrint("    {s} = add {s}, 0\n", .{ out, src }) catch return CodegenError.CodegenError;
+            self.outPrint("    EXPAND RC_CLONE {s}\n", .{out}) catch return CodegenError.CodegenError;
             try self.emitRelease(src);
             return out;
         }
@@ -13150,12 +13289,14 @@ pub const Codegen = struct {
             },
             .return_stmt => |ret| {
                 var val_reg: ?[]const u8 = null;
+                var result_extract_cloned = false;
                 if (ret.value) |v| {
                     const raw_val_reg = try self.genExpr(v, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
                     // DEF-5 clone_on_extract: `return q.field` through a
                     // borrow hands the caller a deep clone it truly owns.
                     val_reg = (try self.cloneBorrowedHandleFieldValue(v, raw_val_reg)) orelse raw_val_reg;
+                    result_extract_cloned = val_reg != null and !std.mem.eql(u8, val_reg.?, raw_val_reg);
                 }
                 if (self.current_async) {
                     if (val_reg == null) {
@@ -13170,7 +13311,13 @@ pub const Codegen = struct {
                 if (self.tc.cleanups.get(stmt)) |list| {
                     for (list.items) |c_var| {
                         if (ret.value) |v| {
-                            if ((try self.planFunctionResultCleanup(c_var, v)).releasesValue()) try self.emitRelease(c_var);
+                            // DEF-ARC-DROP: a cloned extraction (deep
+                            // clone or Arc/Rc bump) transfers nothing
+                            // out of the root binding; its cleanup is
+                            // a normal release, not a result transfer.
+                            if (result_extract_cloned and std.mem.eql(u8, c_var, lowering_rules.rootIdentifier(v) orelse "")) {
+                                try self.emitRelease(c_var);
+                            } else if ((try self.planFunctionResultCleanup(c_var, v)).releasesValue()) try self.emitRelease(c_var);
                         } else {
                             try self.emitRelease(c_var);
                         }
@@ -16875,6 +17022,13 @@ pub const Codegen = struct {
                                 self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
                                 self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 self.outPrint("    !{s}\n", .{handle}) catch return CodegenError.CodegenError;
+                                // DEF-ARC-DROP: the receiver register
+                                // itself must be released here (the
+                                // inline branch above does); marking it
+                                // consumed in codegen bookkeeping alone
+                                // leaves it Active in the emitted SA and
+                                // traps MemoryLeak at function exit.
+                                try self.emitRelease(recv_reg);
                                 try self.markConsumedBinding(recv_reg);
                                 return result_reg;
                             }
@@ -17400,6 +17554,39 @@ pub const Codegen = struct {
                             const reg = try self.newTmp();
                             self.outPrint("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             self.outPrint("    EXPAND ARC_CLONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                            return reg;
+                        }
+                        // DEF-ARC-DROP (F1): count surface emission. The
+                        // receiver is copied to a fresh register first:
+                        // the count macros key a temporary on the
+                        // receiver name, and a fresh name keeps repeated
+                        // queries on one receiver collision-free.
+                        if (rcInnerType(ty) != null and (lowering_rules.isStrongCountCall(call) or lowering_rules.isWeakCountCall(call))) {
+                            if (call.args.len != 1) return CodegenError.CodegenError;
+                            const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                            const src_reg = try self.newTmp();
+                            const reg = try self.newTmp();
+                            self.outPrint("    {s} = add {s}, 0\n", .{ src_reg, recv_reg }) catch return CodegenError.CodegenError;
+                            if (lowering_rules.isStrongCountCall(call)) {
+                                self.outPrint("    EXPAND RC_STRONG_COUNT {s}, {s}\n", .{ reg, src_reg }) catch return CodegenError.CodegenError;
+                            } else {
+                                self.outPrint("    EXPAND RC_WEAK_COUNT {s}, {s}\n", .{ reg, src_reg }) catch return CodegenError.CodegenError;
+                            }
+                            try self.emitRelease(src_reg);
+                            return reg;
+                        }
+                        if (arcInnerType(ty) != null and (lowering_rules.isStrongCountCall(call) or lowering_rules.isWeakCountCall(call))) {
+                            if (call.args.len != 1) return CodegenError.CodegenError;
+                            const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                            const src_reg = try self.newTmp();
+                            const reg = try self.newTmp();
+                            self.outPrint("    {s} = add {s}, 0\n", .{ src_reg, recv_reg }) catch return CodegenError.CodegenError;
+                            if (lowering_rules.isStrongCountCall(call)) {
+                                self.outPrint("    EXPAND ARC_STRONG_COUNT {s}, {s}\n", .{ reg, src_reg }) catch return CodegenError.CodegenError;
+                            } else {
+                                self.outPrint("    EXPAND ARC_WEAK_COUNT {s}, {s}\n", .{ reg, src_reg }) catch return CodegenError.CodegenError;
+                            }
+                            try self.emitRelease(src_reg);
                             return reg;
                         }
                         if (vecDequeElementType(ty) != null and std.mem.eql(u8, call.func_name, "rotate_left")) {

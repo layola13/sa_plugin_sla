@@ -52,6 +52,13 @@ pub const Symbol = struct {
     // the first consuming call, and the explicit-copy fix) instead of leaking
     // the SA referee's UseAfterMove 1009.
     consumed_by_call: ?[]const u8 = null,
+    // DEF-deep-copy: when this binding was consumed by being filled into
+    // a struct literal field of a deep (handle-owning) type, a
+    // preformatted description of that field (struct, field name, type),
+    // so a later use is diagnosed at the language level naming the
+    // literal fill instead of leaking the backends' divergent behavior
+    // (SA-text silent aliasing vs SAB's UseAfterMove 1009 trap).
+    consumed_by_literal: ?[]const u8 = null,
     // F2-A arena batch (C1): ownership-domain label of this binding.
     // 0 is the ordinary heap domain; a nonzero id names the arena block
     // (or @arena function body) the binding was declared in. The label
@@ -323,6 +330,12 @@ pub const TypeChecker = struct {
     injected_scope_bindings: []const InjectedScopeBinding,
     last_error: []const u8,
     last_error_buf: [1024]u8,
+    // DEF-deep-copy: a named diagnostic recorded by a code generator
+    // when it must refuse a shape the checker let through (a record
+    // copy reaching a map/set field). The compile pipelines print it
+    // alongside the generic codegen error so the refusal stays named.
+    codegen_diag: []const u8 = "",
+    codegen_diag_buf: [1024]u8 = undefined,
 
     pub fn init(allocator: std.mem.Allocator) TypeChecker {
         return initWithOptions(allocator, .{});
@@ -399,6 +412,11 @@ pub const TypeChecker = struct {
     pub fn setError(self: *TypeChecker, comptime fmt: []const u8, args: anytype) void {
         var fba = std.heap.FixedBufferAllocator.init(&self.last_error_buf);
         self.last_error = std.fmt.allocPrint(fba.allocator(), fmt, args) catch "Error formatting diagnostic";
+    }
+
+    pub fn setCodegenDiag(self: *TypeChecker, comptime fmt: []const u8, args: anytype) void {
+        var fba = std.heap.FixedBufferAllocator.init(&self.codegen_diag_buf);
+        self.codegen_diag = std.fmt.allocPrint(fba.allocator(), fmt, args) catch "Error formatting diagnostic";
     }
 
     fn defineSymbol(self: *TypeChecker, scope: *Scope, name: []const u8, ty: *ast.Type, is_const: bool) TypeError!void {
@@ -3107,6 +3125,7 @@ pub const TypeChecker = struct {
         name: []const u8,
         state: ValueState,
         consumed_by_call: ?[]const u8,
+        consumed_by_literal: ?[]const u8,
         borrow_source: ?[]const u8,
     };
 
@@ -3127,6 +3146,7 @@ pub const TypeChecker = struct {
                     .name = entry.key_ptr.*,
                     .state = entry.value_ptr.state,
                     .consumed_by_call = entry.value_ptr.consumed_by_call,
+                    .consumed_by_literal = entry.value_ptr.consumed_by_literal,
                     .borrow_source = entry.value_ptr.borrow_source,
                 });
             }
@@ -3141,6 +3161,7 @@ pub const TypeChecker = struct {
             if (mark.scope.symbols.getPtr(mark.name)) |sym| {
                 sym.state = mark.state;
                 sym.consumed_by_call = mark.consumed_by_call;
+                sym.consumed_by_literal = mark.consumed_by_literal;
                 sym.borrow_source = mark.borrow_source;
             }
         }
@@ -4165,6 +4186,18 @@ pub const TypeChecker = struct {
             // transfer, e.g. pushing an arena String into an arena Vec).
             const arena_receiver_domain: ?u32 = if (auto_borrow_receiver and args.len > 0) self.arenaPlaceDomainOf(args[0], scope) else null;
             try self.checkArenaMoveArg(arg, arg_ty, scope, call_name, arena_receiver_domain);
+            // DEF-deep-copy: a preserved by-value argument is
+            // materialized through the record copy routine, which has
+            // no clone for map/set fields; copying would alias the
+            // source's map under a second owner. Reject here, naming
+            // the offending type, instead of emitting the aliasing
+            // copy (the emitters also refuse as a backstop).
+            if (self.callArgShallowCopyPreserved(arg, param, arg_ty)) {
+                if (self.uncloneableTypeName(arg_ty, 0)) |bad_name| {
+                    self.setError("UncloneableCopy: argument of type `{s}` passed to `{s}` must be copied because the source stays live, but its closure contains {s}, which has no clone - pass it by borrow, or keep the {s} outside the copied value", .{ typeDesc(arg_ty), call_name, bad_name, bad_name });
+                    return TypeError.CompileError;
+                }
+            }
             try self.consumeCallArgIfMoved(scope, param, arg, arg_ty, call_name);
         }
         if (is_variadic) {
@@ -4441,6 +4474,105 @@ pub const TypeChecker = struct {
             self.typeIsCopyValue(arg_ty),
             self.typeIsShallowCopyCallArgValue(arg_ty, 0),
         ) and self.structDeclForType(arg_ty) != null;
+    }
+
+    /// DEF-deep-copy: does this type own heap handles (String/Vec/
+    /// GrowVec/Box/Rc/Arc/map/set, possibly nested inside structs,
+    /// arrays, tuples, or enum payloads) whose plain struct-literal
+    /// fill from a live binding would alias the source value? Mirrors
+    /// the emitters' typeContainsOwningHandles, extended with the
+    /// smart-pointer and map/set handle families that the literal
+    /// transfer plan also treats as pointer-backed moves.
+    fn literalFieldOwnsHandles(self: *TypeChecker, ty: *const ast.Type, depth: usize) bool {
+        if (depth > 8) return false;
+        if (isStringType(ty)) return true;
+        if (lowering_rules.vecElementType(ty) != null) return true;
+        if (lowering_rules.growVecElementType(ty) != null) return true;
+        if (lowering_rules.boxInnerType(ty) != null) return true;
+        if (lowering_rules.rcInnerType(ty) != null) return true;
+        if (lowering_rules.arcInnerType(ty) != null) return true;
+        if (self.uncloneableTypeName(ty, depth) != null) return true;
+        switch (ty.*) {
+            .user_defined => |ud| {
+                if (self.enums.get(ud.name)) |decl| {
+                    for (decl.variants) |variant| {
+                        for (variant.fields) |vf| {
+                            if (self.literalFieldOwnsHandles(vf.ty, depth + 1)) return true;
+                        }
+                    }
+                    return false;
+                }
+                const decl = self.structDeclForType(@constCast(ty)) orelse return false;
+                for (decl.fields) |field| {
+                    if (self.literalFieldOwnsHandles(field.ty, depth + 1)) return true;
+                }
+                return false;
+            },
+            .array => |arr| return self.literalFieldOwnsHandles(arr.elem, depth + 1),
+            .tuple => |tuple| {
+                for (tuple.elems) |elem| {
+                    if (self.literalFieldOwnsHandles(elem, depth + 1)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    /// DEF-deep-copy: the name of the first map/set type in this type's
+    /// clone closure (HashMap/HashSet/BTreeMap/BTreeSet). These types
+    /// have no clone routine, so a value whose closure contains one
+    /// cannot ride a materialized record copy or an explicit .clone().
+    /// The closure recurses through struct fields, arrays, tuples,
+    /// enum payloads, and the element/pointee types of Vec/GrowVec/
+    /// Box (all deep-cloned); Rc/Arc inners are not entered because
+    /// cloning an Rc/Arc bumps the count instead of cloning the value.
+    pub fn uncloneableTypeName(self: *TypeChecker, ty: *const ast.Type, depth: usize) ?[]const u8 {
+        if (depth > 8) return null;
+        if (lowering_rules.hashMapTypes(ty) != null) return "HashMap";
+        if (lowering_rules.hashSetElementType(ty) != null) return "HashSet";
+        if (lowering_rules.btreeMapTypes(ty) != null) return "BTreeMap";
+        if (lowering_rules.btreeSetElementType(ty) != null) return "BTreeSet";
+        if (lowering_rules.vecElementType(ty)) |elem| return self.uncloneableTypeName(elem, depth + 1);
+        if (lowering_rules.growVecElementType(ty)) |elem| return self.uncloneableTypeName(elem, depth + 1);
+        if (lowering_rules.boxInnerType(ty)) |inner| return self.uncloneableTypeName(inner, depth + 1);
+        switch (ty.*) {
+            .user_defined => |ud| {
+                if (self.enums.get(ud.name)) |decl| {
+                    for (decl.variants) |variant| {
+                        for (variant.fields) |vf| {
+                            if (self.uncloneableTypeName(vf.ty, depth + 1)) |bad| return bad;
+                        }
+                    }
+                    return null;
+                }
+                const decl = self.structDeclForType(@constCast(ty)) orelse return null;
+                for (decl.fields) |field| {
+                    if (self.uncloneableTypeName(field.ty, depth + 1)) |bad| return bad;
+                }
+                return null;
+            },
+            .array => |arr| return self.uncloneableTypeName(arr.elem, depth + 1),
+            .tuple => |tuple| {
+                for (tuple.elems) |elem| {
+                    if (self.uncloneableTypeName(elem, depth + 1)) |bad| return bad;
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    /// DEF-deep-copy: for a struct type, the first field whose clone
+    /// closure contains a map/set type, with that type's name.
+    fn firstUncloneableField(self: *TypeChecker, ty: *const ast.Type) ?struct { field: []const u8, bad: []const u8 } {
+        const decl = self.structDeclForType(@constCast(ty)) orelse return null;
+        for (decl.fields) |field| {
+            if (self.uncloneableTypeName(field.ty, 0)) |bad| {
+                return .{ .field = field.name, .bad = bad };
+            }
+        }
+        return null;
     }
 
     // Enums whose variant payloads are all Copy values move as plain scalars
@@ -7077,6 +7209,7 @@ pub const TypeChecker = struct {
                     if (sym.state == .consumed) {
                         sym.state = .active;
                         sym.consumed_by_call = null;
+                        sym.consumed_by_literal = null;
                     }
                     // View-types stage 1: rebinding a borrow binding to a
                     // new borrowed place registers the new borrow.
@@ -7303,6 +7436,13 @@ pub const TypeChecker = struct {
                 }
                 if (scope.lookup(name)) |sym| {
                     if (sym.state == .consumed) {
+                        if (sym.consumed_by_literal) |literal_ctx| {
+                            // DEF-deep-copy: language-level diagnostic for
+                            // a deep value moved into a struct literal
+                            // field by an earlier plain field fill.
+                            self.setError("UseAfterMove: variable `{s}` was already moved into {s}; a struct literal takes ownership of a deep field value, so the binding cannot be used again - fill the field with an explicit copy (for example `{s}.clone()`) if the value is still needed", .{ name, literal_ctx, name });
+                            return TypeError.UseAfterMove;
+                        }
                         if (sym.consumed_by_call) |first_call| {
                             // REG-BR-6: language-level diagnostic for a value
                             // moved by an earlier by-value call argument.
@@ -7662,6 +7802,25 @@ pub const TypeChecker = struct {
                     if (!self.typesEqual(field_ty, value_ty)) {
                         self.setError("TypeMismatch in struct literal field {s}.{s}: expected {s}, actual {s}", .{ ud.name, literal_field.name, typeDesc(field_ty), typeDesc(value_ty) });
                         return TypeError.TypeMismatch;
+                    }
+                    // DEF-deep-copy: filling a deep (handle-owning) field
+                    // from a plain binding transfers ownership into the
+                    // literal on both backends (the SA-text emitter stores
+                    // a move; the SAB emitter marks the binding consumed
+                    // and traps UseAfterMove 1009 on a later use). The
+                    // checker previously left the binding live, so the
+                    // text backend silently aliased the source value.
+                    // Consume the binding here so a later use is rejected
+                    // at check time, identically on both backends; the
+                    // explicit spellings are `^x` (move) and `x.clone()`.
+                    if (literal_field.value.* == .identifier and self.literalFieldOwnsHandles(field_ty, 0)) {
+                        if (scope.lookup(literal_field.value.identifier)) |sym| {
+                            if (sym.state == .active and !sym.is_const and sym.borrow_source == null) {
+                                const literal_ctx = std.fmt.allocPrint(self.allocator, "struct literal field `{s}.{s}` of type `{s}`", .{ ud.name, literal_field.name, typeDesc(field_ty) }) catch return TypeError.OutOfMemory;
+                                try self.consumeBinding(scope, literal_field.value.identifier, sym, "struct literal field fill");
+                                sym.consumed_by_literal = literal_ctx;
+                            }
+                        }
                     }
                 }
 
@@ -8953,6 +9112,45 @@ pub const TypeChecker = struct {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         return unwrappedReceiverType(recv_ty);
                     }
+                    // DEF-deep-copy: the explicit clone surface for value
+                    // types. String/Vec/GrowVec clone deeply (Vec/GrowVec
+                    // clone their elements too); a user struct clones
+                    // field by field through the record copy routine. A
+                    // closure reaching a map/set type is rejected by name
+                    // (no clone routine exists for those). A user-defined
+                    // `clone` method on the struct takes precedence.
+                    if (lowering_rules.isCloneCall(call) and self.methodForType(@constCast(recv_ty), "clone") == null) {
+                        if (isStringType(recv_ty)) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return unwrappedReceiverType(recv_ty);
+                        }
+                        if (lowering_rules.vecElementType(recv_ty)) |elem_ty| {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            if (self.uncloneableTypeName(elem_ty, 0)) |bad_name| {
+                                self.setError("UncloneableClone: Vec elements of type `{s}` cannot be cloned: their closure contains {s}, which has no clone", .{ typeDesc(elem_ty), bad_name });
+                                return TypeError.CompileError;
+                            }
+                            return unwrappedReceiverType(recv_ty);
+                        }
+                        if (lowering_rules.growVecElementType(recv_ty)) |elem_ty| {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            if (self.uncloneableTypeName(elem_ty, 0)) |bad_name| {
+                                self.setError("UncloneableClone: GrowVec elements of type `{s}` cannot be cloned: their closure contains {s}, which has no clone", .{ typeDesc(elem_ty), bad_name });
+                                return TypeError.CompileError;
+                            }
+                            return unwrappedReceiverType(recv_ty);
+                        }
+                        if (self.structDeclForType(@constCast(recv_ty)) != null) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            if (self.firstUncloneableField(recv_ty)) |bad_field| {
+                                self.setError("UncloneableClone: struct `{s}` cannot be cloned: field `{s}` reaches {s}, which has no clone", .{ typeDesc(recv_ty), bad_field.field, bad_field.bad });
+                                return TypeError.CompileError;
+                            }
+                            if (self.typeIsShallowCopyCallArgValue(@constCast(recv_ty), 0) and lowering_rules.shallowCopyCallArgFieldShouldRecurse(true, @constCast(recv_ty))) {
+                                return unwrappedReceiverType(recv_ty);
+                            }
+                        }
+                    }
 
                     // DEF-ARC-DROP (F1): count surface typing. The std
                     // macros ARC_STRONG_COUNT / ARC_WEAK_COUNT (and the
@@ -9210,6 +9408,40 @@ pub const TypeChecker = struct {
                     // outside its domain moves it out of the arena;
                     // a same-domain receiver keeps it inside.
                     try self.checkArenaMoveArg(call.args[1], arg_ty, scope, "push", self.arenaPlaceDomainOf(call.args[0], scope));
+                    // DEF-deep-copy follow-up (push consume): the
+                    // emitters' push contract copies copy-like elements
+                    // (vecElementPushTransfersOwnership == false; the
+                    // binding stays live, the copy is materialized by
+                    // pushArgCopyMaterialization) but MOVES every other
+                    // owned element into the container. This branch
+                    // never recorded the move, so a String/Vec element
+                    // binding could be pushed twice or used after the
+                    // push: the SA referee caught the text route while
+                    // SAB produced binaries that aborted or segfaulted
+                    // on the double ownership. Record the consumption
+                    // with consumeCallArgIfMoved's discipline (a
+                    // loop-carried consumption is reported by
+                    // consumeBinding as LoopConditionalConsume, not
+                    // left for the referee's PhiStateConflict).
+                    if (call.args[1].* == .identifier and arg_ty.* != .infer) {
+                        const copy_like = self.typeIsCopyValue(arg_ty) or self.typeIsShallowCopyCallArgValue(arg_ty, 0);
+                        if (copy_like) {
+                            if (self.uncloneableTypeName(arg_ty, 0)) |bad_name| {
+                                self.setError("UncloneableCopy: element of type `{s}` pushed here must be copied because the source stays live, but its closure contains {s}, which has no clone - move an owned value into the container instead, or keep the {s} outside the copied value", .{ typeDesc(arg_ty), bad_name, bad_name });
+                                return TypeError.CompileError;
+                            }
+                        } else if (lowering_rules.vecElementPushTransfersOwnership(arg_ty, copy_like)) {
+                            const self_push = if (rootIdentifier(call.args[0])) |recv_name| std.mem.eql(u8, recv_name, call.args[1].identifier) else false;
+                            if (!self_push) {
+                                if (scope.lookup(call.args[1].identifier)) |sym| {
+                                    if (!sym.is_const and sym.state == .active and sym.borrow_source == null) {
+                                        try self.consumeBinding(scope, call.args[1].identifier, sym, "push element argument");
+                                        sym.consumed_by_call = "push";
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if (elem_ty.* == .infer) {
                         if (rootIdentifier(call.args[0])) |recv_name| {
                             if (scope.lookup(recv_name)) |sym| {
@@ -10207,6 +10439,13 @@ pub const TypeChecker = struct {
             .fn_ptr => "fn_ptr",
             .user_defined => |ud| ud.name,
         };
+    }
+
+    /// DEF-deep-copy: public type description for the code generators'
+    /// named diagnostics.
+    pub fn describeType(self: *TypeChecker, ty: *const ast.Type) []const u8 {
+        _ = self;
+        return typeDesc(ty);
     }
 
     fn checkImpl(self: *TypeChecker, impl_decl: *ast.ImplDecl) !void {

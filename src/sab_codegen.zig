@@ -7412,6 +7412,211 @@ pub const Codegen = struct {
         return out;
     }
 
+    /// DEF-deep-copy: does cloning a value of this type require more
+    /// than copying its word(s)? SAB mirror of the SA-text predicate.
+    fn deepCloneNeeded(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
+        if (depth > 8) return false;
+        if (lowering_rules.isStringType(ty)) return true;
+        if (lowering_rules.vecElementType(ty) != null) return true;
+        if (lowering_rules.growVecElementType(ty) != null) return true;
+        if (lowering_rules.boxInnerType(ty) != null) return true;
+        if (lowering_rules.rcInnerType(ty) != null) return true;
+        if (lowering_rules.arcInnerType(ty) != null) return true;
+        switch (ty.*) {
+            .user_defined => {
+                const decl = self.structDeclForType(ty) orelse return false;
+                for (decl.fields) |field| {
+                    if (self.deepCloneNeeded(field.ty, depth + 1)) return true;
+                }
+                return false;
+            },
+            .array => |arr| return self.deepCloneNeeded(arr.elem, depth + 1),
+            .tuple => |tuple| {
+                for (tuple.elems) |elem| {
+                    if (self.deepCloneNeeded(elem, depth + 1)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    /// DEF-deep-copy: per-value deep clone shared by the record copy
+    /// routine and the explicit `.clone()` surface; SAB mirror of the
+    /// SA-text genDeepCloneValue. Returns a fresh register holding an
+    /// independently-owned clone, or null when the type is
+    /// plain-copyable. Map/set closures are refused with a named
+    /// diagnostic recorded on the checker (printed by the compile
+    /// pipeline next to the generic SAB error).
+    fn genDeepCloneValue(self: *Codegen, source: u32, ty: *const ast.Type) anyerror!?u32 {
+        if (lowering_rules.isStringType(ty)) return try self.genStringCloneValue(source);
+        if (lowering_rules.vecElementType(ty)) |elem_ty| return try self.genVecCloneValueDeep(source, elem_ty);
+        if (lowering_rules.growVecElementType(ty)) |elem_ty| return try self.genGrowVecCloneValueDeep(source, elem_ty);
+        if (lowering_rules.boxInnerType(ty)) |inner_ty| return try self.genBoxCloneValue(source, inner_ty);
+        if (lowering_rules.rcInnerType(ty) != null) return try self.genRcArcCloneValue(source, true);
+        if (lowering_rules.arcInnerType(ty) != null) return try self.genRcArcCloneValue(source, false);
+        if (self.tc.uncloneableTypeName(ty, 0)) |bad_name| {
+            self.tc.setCodegenDiag("UncloneableCopy: a value of type `{s}` cannot be copied: its closure contains {s}, which has no clone", .{ self.tc.describeType(ty), bad_name });
+            return Error.UnsupportedSabDirectFeature;
+        }
+        if (ty.* == .array) return try self.genArrayCloneValue(source, ty.array);
+        if (ty.* == .tuple) return try self.genTupleCloneValue(source, ty.tuple);
+        if (self.structDeclForType(ty) != null and self.typeIsShallowCopyCallArgValue(ty, 0) and lowering_rules.shallowCopyCallArgFieldShouldRecurse(true, ty)) {
+            return try self.genShallowCopyCallArgValue(source, ty);
+        }
+        return null;
+    }
+
+    /// DEF-deep-copy: clone an Rc/Arc by bumping its count (the
+    /// RC_CLONE_OUT/ARC_CLONE_OUT fragments used by .clone()).
+    fn genRcArcCloneValue(self: *Codegen, source: u32, is_rc: bool) anyerror!u32 {
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment(
+            if (is_rc) "sa_std/core/rc.sa" else "sa_std/core/arc.sa",
+            if (is_rc) "RC_CLONE_OUT" else "ARC_CLONE_OUT",
+            &.{ self.symbols.items[dst], self.symbols.items[source] },
+        );
+        return dst;
+    }
+
+    /// DEF-deep-copy: clone a Box by cloning its pointee into a
+    /// fresh cell (the cell holds exactly one word).
+    fn genBoxCloneValue(self: *Codegen, source: u32, inner_ty: *const ast.Type) anyerror!u32 {
+        const word_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(word_reg, source, 0, .u64);
+        const stored = (try self.genDeepCloneValue(word_reg, inner_ty)) orelse word_reg;
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/core/box.sa", "BOX_NEW", &.{
+            self.symbols.items[dst],
+            self.symbols.items[stored],
+        });
+        try self.emitMove(stored);
+        if (stored != word_reg) try self.emitRelease(word_reg);
+        return dst;
+    }
+
+    /// DEF-deep-copy: clone a standalone fixed-array value (a pointer
+    /// to an inline element block) into a fresh block, element-wise
+    /// through copyArrayValueInto's record-copy path.
+    fn genArrayCloneValue(self: *Codegen, source: u32, arr: ast.ArrayType) anyerror!u32 {
+        const dst = try self.intern(try self.newTmp());
+        try self.emitAlloc(dst, arraySize(arr));
+        try self.copyArrayValueInto(dst, 0, source, 0, arr, false);
+        return dst;
+    }
+
+    /// DEF-deep-copy: clone a tuple element-wise, like a struct with
+    /// positional fields, into a fresh tuple block.
+    fn genTupleCloneValue(self: *Codegen, source: u32, tuple: ast.TupleType) anyerror!u32 {
+        const dst = try self.intern(try self.newTmp());
+        try self.emitAlloc(dst, tupleSize(tuple));
+        for (tuple.elems, 0..) |elem_ty, idx| {
+            const layout = tupleFieldLayout(tuple, idx) orelse return Error.UnsupportedSabDirectFeature;
+            const elem_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(elem_reg, source, layout.offset, layout.ty);
+            if (try self.genDeepCloneValue(elem_reg, elem_ty)) |cloned| {
+                try self.emitStore(dst, layout.offset, cloned, layout.ty);
+                try self.emitConsumedMarker(cloned);
+                try self.emitRelease(elem_reg);
+            } else {
+                try self.emitStore(dst, layout.offset, elem_reg, layout.ty);
+                try self.emitConsumedMarker(elem_reg);
+            }
+        }
+        return dst;
+    }
+
+    /// DEF-deep-copy: buffer-clone a Vec, then replace each element
+    /// of the fresh buffer with a deep clone of the source element.
+    fn genVecCloneValueDeep(self: *Codegen, source: u32, elem_ty: *const ast.Type) anyerror!u32 {
+        const out = try self.genVecCloneValue(source, elem_ty);
+        if (!self.deepCloneNeeded(elem_ty, 0)) return out;
+        try self.genReplaceBufferElementsWithClones(out, elem_ty, lowering_rules.VecAbi.ptr_offset, lowering_rules.VecAbi.len_offset);
+        return out;
+    }
+
+    /// DEF-deep-copy: GrowVec twin of genVecCloneValueDeep; offsets
+    /// come from GrowVecAbi, never from a layout lookup.
+    fn genGrowVecCloneValueDeep(self: *Codegen, source: u32, elem_ty: *const ast.Type) anyerror!u32 {
+        const out = try self.genGrowVecCloneValue(source, elem_ty);
+        if (!self.deepCloneNeeded(elem_ty, 0)) return out;
+        try self.genReplaceBufferElementsWithClones(out, elem_ty, lowering_rules.GrowVecAbi.ptr_offset, lowering_rules.GrowVecAbi.len_offset);
+        return out;
+    }
+
+    /// DEF-deep-copy: loop over a cloned Vec/GrowVec buffer and
+    /// replace every element slot with a deep clone of the element it
+    /// currently (aliasingly) holds. Loop shape follows
+    /// emitContainerElementDrops.
+    fn genReplaceBufferElementsWithClones(self: *Codegen, vec_reg: u32, elem_ty: *const ast.Type, ptr_off: usize, len_off: usize) anyerror!void {
+        const buf_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(buf_reg, vec_reg, ptr_off, .ptr);
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(len_reg, vec_reg, len_off, .u64);
+        const idx_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(idx_slot, 8);
+        const zero_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero_reg, 0);
+        try self.emitStore(idx_slot, 0, zero_reg, .u64);
+        try self.emitRelease(zero_reg);
+        const head_label = try self.newLabel("L_CLONE_ELEM_HEAD");
+        const body_label = try self.newLabel("L_CLONE_ELEM_BODY");
+        const done_label = try self.newLabel("L_CLONE_ELEM_DONE");
+        try self.emitJmp(head_label);
+        try self.emitLabel(head_label);
+        const i_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(i_reg, idx_slot, 0, .u64);
+        const cond_reg = try self.intern(try self.newTmp());
+        try self.emitOp(cond_reg, .ult, .{ .reg = i_reg }, .{ .reg = len_reg });
+        try self.emitBranch(cond_reg, body_label, done_label);
+        try self.emitLabel(body_label);
+        const off_reg = try self.intern(try self.newTmp());
+        try self.emitOp(off_reg, .mul, .{ .reg = i_reg }, .{ .imm_i64 = @intCast(lowering_rules.vecElementSlotSize(elem_ty)) });
+        const elem_addr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_addr, buf_reg, .{ .reg = off_reg });
+        try self.emitRelease(off_reg);
+        const elem_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(elem_reg, elem_addr, 0, .ptr);
+        const cloned = (try self.genDeepCloneValue(elem_reg, elem_ty)) orelse elem_reg;
+        try self.emitStore(elem_addr, 0, cloned, .ptr);
+        try self.emitConsumedMarker(cloned);
+        if (cloned != elem_reg) try self.emitRelease(elem_reg);
+        try self.emitRelease(elem_addr);
+        const next_reg = try self.intern(try self.newTmp());
+        try self.emitOp(next_reg, .add, .{ .reg = i_reg }, .{ .imm_i64 = 1 });
+        try self.emitStore(idx_slot, 0, next_reg, .u64);
+        try self.emitRelease(next_reg);
+        try self.emitBranchRelease(i_reg);
+        try self.emitBranchRelease(cond_reg);
+        try self.emitJmp(head_label);
+        try self.emitLabel(done_label);
+        try self.emitRelease(buf_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(idx_slot);
+    }
+
+    /// DEF-deep-copy: the explicit `.clone()` surface for value
+    /// types (String/Vec/GrowVec deep, user structs field by field).
+    /// Rc/Arc/Sender clones are handled earlier in genCall; a
+    /// user-defined `clone` method takes precedence, mirroring the
+    /// checker. Returns null when the call is not this surface.
+    fn genDeepCopyCloneCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!lowering_rules.isCloneUnaryCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (self.tc.methodForType(@constCast(receiver_ty), "clone") != null) return null;
+        const is_surface = lowering_rules.isStringType(receiver_ty) or
+            lowering_rules.vecElementType(receiver_ty) != null or
+            lowering_rules.growVecElementType(receiver_ty) != null or
+            self.structDeclForType(receiver_ty) != null;
+        if (!is_surface) return null;
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const cloned = (try self.genDeepCloneValue(receiver_reg, receiver_ty)) orelse return Error.UnsupportedSabDirectFeature;
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        return cloned;
+    }
+
     /// DEF-5 / borrowed handle-field extraction (Jev ruling:
     /// clone_on_extract, 0.86). A handle-typed field (String/Vec) read
     /// out of a place rooted in a borrow or a pointer deref loads as a
@@ -16842,6 +17047,7 @@ pub const Codegen = struct {
         if (try self.genCatchUnwindCall(call)) |reg| return reg;
         if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
         if (try self.genSmartPointerCountCall(call)) |reg| return reg;
+        if (try self.genDeepCopyCloneCall(call)) |reg| return reg;
         if (try self.genSenderCloneCall(expr, call)) |reg| return reg;
         if (try self.genMpscSendCall(expr, call)) |reg| return reg;
         if (try self.genMpscRecvCall(expr, call)) |reg| return reg;
@@ -17801,7 +18007,11 @@ pub const Codegen = struct {
             return blk: {
                 const source_reg = try self.genExpr(@constCast(arg));
                 const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);
-                break :blk .{ .operand = self.symbols.items[copied], .release_reg = copied };
+                // Retire the fresh copy with a move after the call
+                // instead of releasing it: the callee owns the by-value
+                // parameter and may return it, and the returned value
+                // aliases this copy (see lowering_rules).
+                break :blk .{ .operand = self.symbols.items[copied], .release_reg = null, .consume_reg = copied };
             };
         } else if (materialization.isGeneratedFnPtrValueSlot()) {
             return blk: {
@@ -18103,7 +18313,11 @@ pub const Codegen = struct {
             return blk: {
                 const source_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);
-                break :blk .{ .operand = self.symbols.items[copied], .release_reg = copied };
+                // Retire the fresh copy with a move after the call
+                // instead of releasing it: the callee owns the by-value
+                // parameter and may return it, and the returned value
+                // aliases this copy (see lowering_rules).
+                break :blk .{ .operand = self.symbols.items[copied], .release_reg = null, .consume_reg = copied };
             };
         } else if (materialization.isGeneratedFnPtrValueSlot()) {
             return blk: {
@@ -20593,10 +20807,34 @@ pub const Codegen = struct {
             const elem = arr.elem;
             if (elem.* == .array) {
                 try self.copyArrayValueInto(dst, dst_offset + elem_layout.offset, source, source_offset + elem_layout.offset, elem.array, deep);
+            } else if (!deep) {
+                // DEF-deep-copy: on the record-copy path every element
+                // goes through the deep clone dispatcher first — a
+                // Vec/String/GrowVec/Box/Rc/Arc element, a tuple
+                // element, or a struct element owning handles must be
+                // cloned, not word-copied into a second owner (the
+                // dispatcher's struct branch applies the same gate as
+                // the historical genShallowCopyCallArgValue recursion;
+                // shapes it refuses keep the historical fallback below).
+                const elem_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(elem_reg, source, source_offset + elem_layout.offset, elem_layout.ty);
+                if (try self.genDeepCloneValue(elem_reg, elem)) |cloned| {
+                    try self.emitStore(dst, dst_offset + elem_layout.offset, cloned, elem_layout.ty);
+                    try self.emitConsumedMarker(cloned);
+                    try self.emitRelease(elem_reg);
+                } else if (self.structDeclForType(elem) != null) {
+                    const copied = try self.genShallowCopyCallArgValue(elem_reg, elem);
+                    try self.emitStore(dst, dst_offset + elem_layout.offset, copied, elem_layout.ty);
+                    try self.emitConsumedMarker(copied);
+                    try self.emitRelease(elem_reg);
+                } else {
+                    try self.emitStore(dst, dst_offset + elem_layout.offset, elem_reg, elem_layout.ty);
+                    try self.emitConsumedMarker(elem_reg);
+                }
             } else if (self.structDeclForType(elem) != null) {
                 const elem_reg = try self.intern(try self.newTmp());
                 try self.emitLoad(elem_reg, source, source_offset + elem_layout.offset, elem_layout.ty);
-                const copied = if (deep) try self.genCopyValue(elem_reg, elem) else try self.genShallowCopyCallArgValue(elem_reg, elem);
+                const copied = try self.genCopyValue(elem_reg, elem);
                 try self.emitStore(dst, dst_offset + elem_layout.offset, copied, elem_layout.ty);
                 try self.emitConsumedMarker(copied);
                 try self.emitRelease(elem_reg);
@@ -20657,18 +20895,14 @@ pub const Codegen = struct {
             // owners (sa_vec_free releases buffer + handle cell) and
             // double-frees. Clone handle fields; nested structs
             // recurse through this same function.
-            if (lowering_rules.isStringType(field.ty)) {
-                const cloned = try self.genStringCloneValue(field_reg);
-                try self.emitStore(dst, layout.offset, cloned, layout.ty);
-                try self.emitConsumedMarker(cloned);
-                try self.emitRelease(field_reg);
-            } else if (lowering_rules.vecElementType(field.ty)) |elem_ty| {
-                const cloned = try self.genVecCloneValue(field_reg, elem_ty);
-                try self.emitStore(dst, layout.offset, cloned, layout.ty);
-                try self.emitConsumedMarker(cloned);
-                try self.emitRelease(field_reg);
-            } else if (lowering_rules.growVecElementType(field.ty)) |elem_ty| {
-                const cloned = try self.genGrowVecCloneValue(field_reg, elem_ty);
+            // DEF-deep-copy (SA-text parity): the field dispatch now
+            // goes through the shared deep clone dispatcher — Box
+            // fields clone their pointee into a fresh cell, Rc/Arc
+            // fields bump, tuple fields clone element-wise, array
+            // fields are cloned element-wise by copyArrayValueInto
+            // above, and a map/set field is refused with a named
+            // diagnostic instead of being handle-copied.
+            if (try self.genDeepCloneValue(field_reg, field.ty)) |cloned| {
                 try self.emitStore(dst, layout.offset, cloned, layout.ty);
                 try self.emitConsumedMarker(cloned);
                 try self.emitRelease(field_reg);

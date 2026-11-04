@@ -6696,7 +6696,17 @@ pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializ
         }
     }
     if (input.copy_struct_value) {
-        return .{ .kind = .copy_struct_value, .release_after_call = true };
+        // The copy is a fresh owning allocation created for this call
+        // and handed to the callee's by-value parameter. The caller
+        // must NOT release it after the call: the callee may return
+        // the parameter, and the returned value aliases this very
+        // copy - releasing it freed the result's record under its
+        // feet (field writes through the parameter then read as lost
+        // and heap fields corrupted). The emitters forget the copy
+        // after the call instead (ownership treated as moved out
+        // through the call; the parameter's plain SA capability
+        // forbids a move pass).
+        return .{ .kind = .copy_struct_value, .release_after_call = false };
     }
     if (input.target == .direct_sab) {
         if (input.generated_fn_ptr_identifier) {
@@ -7594,7 +7604,9 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(!callArgIsShallowCopyValueCandidate(&field, boxed_param, &boxed_ty, false, true));
     const copy_plan = planCallArgMaterialization(&value, .{ .copy_struct_value = true });
     try std.testing.expect(copy_plan.isCopyStructValue());
-    try std.testing.expect(copy_plan.release_after_call);
+    // The fresh copy transfers to the callee (it may be returned);
+    // the caller must not release it after the call.
+    try std.testing.expect(!copy_plan.release_after_call);
 
     const generated_plan = planCallArgMaterialization(&value, .{ .generated_fn_ptr_identifier = true });
     try std.testing.expect(generated_plan.isValue());

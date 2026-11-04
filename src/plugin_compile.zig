@@ -887,6 +887,10 @@ pub fn compileSlaToSaStringWithOptions(
 
     const sa_code = cg.generate(specialized_prog) catch |err| {
         try stderr.print("Codegen Error: failed to generate SA code: {}\n", .{err});
+        // DEF-deep-copy: surface a named diagnostic recorded by the
+        // code generator (e.g. an UncloneableCopy refusal) alongside
+        // the generic error.
+        if (tc.codegen_diag.len > 0) try stderr.print("{s}\n", .{tc.codegen_diag});
         // NOTE(Zig 0.17): `@errorReturnTrace()` now yields `std.lang.StackTrace`,
         // which `std.debug.dumpStackTrace` no longer accepts; dump the current
         // trace instead (still inside the error path).
@@ -1021,6 +1025,10 @@ pub fn compileSlaFileToSabWithOptions(
             error.OutOfMemory => return err,
             else => {
                 try stderr.print("SAB Error: direct SLA-to-SAB lowering failed: {}\n", .{err});
+                // DEF-deep-copy: surface a named diagnostic recorded
+                // by the code generator (e.g. an UncloneableCopy
+                // refusal) alongside the generic error.
+                if (tc.codegen_diag.len > 0) try stderr.print("{s}\n", .{tc.codegen_diag});
                 return null;
             },
         }

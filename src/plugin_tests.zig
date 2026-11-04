@@ -523,6 +523,37 @@ test "sla check enforces the leading-output expression form (J-4)" {
     try expectSlaCheckNamedDiagnostic("tests/test_error_macro_expr_output_name.sla", "expects 2 args, got 1");
 }
 
+test "sla check enforces DEF-deep-copy rejections" {
+    // A struct literal field filled from a live binding of a deep
+    // type moves the value; the later use is rejected naming the
+    // literal field (the SA-text backend used to alias silently, the
+    // SAB backend trapped UseAfterMove 1009).
+    try expectSlaCheckNamedDiagnostic("tests/test_error_deep_copy_literal_live_binding.sla", "UseAfterMove");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_deep_copy_literal_live_binding.sla", "struct literal field `Wrap.inner` of type `Deep`");
+    // A preserved by-value copy whose closure contains a HashMap
+    // cannot be materialized (maps have no clone): named rejection
+    // instead of a handle copy.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_deep_copy_map_field_copy.sla", "UncloneableCopy");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_deep_copy_map_field_copy.sla", "HashMap");
+    // `.clone()` on a struct reaching a HashMap: named rejection
+    // naming the field and the map type.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_deep_copy_clone_uncloneable.sla", "UncloneableClone");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_deep_copy_clone_uncloneable.sla", "field `m` reaches HashMap");
+}
+
+test "sla check enforces push element consumption" {
+    // A Vec push moves a non-copy-like element into the container;
+    // the special-cased push branch used to skip the consumption
+    // entirely (the text route fell through to the SA referee, the
+    // SAB route emitted binaries that aborted on double ownership).
+    try expectSlaCheckNamedDiagnostic("tests/test_error_push_element_reuse.sla", "UseAfterMove");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_push_element_reuse.sla", "moved by the call to `push`");
+    // Loop form: the loop-carried consumption is named directly
+    // instead of surfacing as the referee's PhiStateConflict.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_push_loop_consume.sla", "LoopConditionalConsume");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_push_loop_consume.sla", "push element argument");
+}
+
 test "sla check enforces F2-A arena domains (C1)" {
     // Root admission: the section 2.2 forbidden registry, one
     // corpus file per row. The diagnostic quadruple names the

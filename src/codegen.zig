@@ -9569,11 +9569,12 @@ pub const Codegen = struct {
         const value_reg = try self.genExpr(value_expr, hoisted_allocs);
         const value_ty = self.tc.expr_types.get(value_expr) orelse return CodegenError.CodegenError;
         if (value_expr.* == .identifier and value_ty.* == .primitive) {
-            switch (value_ty.primitive) {
-                .boolean => self.outPrint("    {s} = or {s}, 0\n", .{ target, value_reg }) catch return CodegenError.CodegenError,
-                .f32, .f64, .float => self.outPrint("    {s} = add {s}, 0.0\n", .{ target, value_reg }) catch return CodegenError.CodegenError,
-                else => self.outPrint("    {s} = add {s}, 0\n", .{ target, value_reg }) catch return CodegenError.CodegenError,
-            }
+            // DEF-MANDEL: route through emitPrimitiveCopy — the inline
+            // float arm emitted an integer `add src, 0.0`, which the
+            // backend folds as an integer identity copy; for a
+            // loop-body-local source the destination then never
+            // receives the value at the loop back-edge.
+            try self.emitPrimitiveCopy(target, value_reg, value_ty);
         } else {
             self.outPrint("    {s} = {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
         }
@@ -9608,11 +9609,9 @@ pub const Codegen = struct {
 
         if (value_expr.* == .identifier and value_ty.* == .primitive) {
             const copied = try self.newTmp();
-            switch (value_ty.primitive) {
-                .boolean => self.outPrint("    {s} = or {s}, 0\n", .{ copied, value_reg }) catch return CodegenError.CodegenError,
-                .f32, .f64, .float => self.outPrint("    {s} = add {s}, 0.0\n", .{ copied, value_reg }) catch return CodegenError.CodegenError,
-                else => self.outPrint("    {s} = add {s}, 0\n", .{ copied, value_reg }) catch return CodegenError.CodegenError,
-            }
+            // DEF-MANDEL: see genBlockTailValueInto — no inline
+            // integer `add src, 0.0` float copies.
+            try self.emitPrimitiveCopy(copied, value_reg, value_ty);
             self.outPrint("    store {s}+0, {s} as {s}\n", .{ target_ptr, copied, typeString(target_ty) }) catch return CodegenError.CodegenError;
             try self.emitRelease(copied);
         } else {
@@ -13639,11 +13638,18 @@ pub const Codegen = struct {
                     } else {
                         try self.emitRelease(assign.target.identifier);
                         if (assign.value.* == .identifier and target_ty.* == .primitive) {
-                            switch (target_ty.primitive) {
-                                .boolean => self.outPrint("    {s} = or {s}, 0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
-                                .f32, .f64, .float => self.outPrint("    {s} = add {s}, 0.0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
-                                else => self.outPrint("    {s} = add {s}, 0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
-                            }
+                            // DEF-MANDEL: the inline float arm emitted
+                            // `add val, 0.0` (integer add on a float
+                            // register). The backend folds that as an
+                            // integer identity copy and coalesces the
+                            // destination onto the source, so when the
+                            // source is a loop-body local the write
+                            // never reaches the loop-carried binding's
+                            // slot: reads at the loop head keep seeing
+                            // the entry value (micro4 family). Route
+                            // through emitPrimitiveCopy, whose float
+                            // arm materializes a real `fadd` copy.
+                            try self.emitPrimitiveCopy(target_name, val_reg, target_ty);
                         } else {
                             self.outPrint("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
                         }

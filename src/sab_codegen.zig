@@ -14,6 +14,16 @@ const inst = sab.instruction;
 const sig = sab.signature;
 const const_decl = sab.const_decl;
 
+/// DEF-R2-GIANT-FILL: repeat fills and inline-array field copies at or
+/// below this element count keep the historic per-element unrolled
+/// emission. Above it, codegen switches to bulk std calls
+/// (@sa_mem_copy_nonoverlapping) so a giant constant aggregate cannot
+/// inflate the host's LLVM input per element (the unrolled shape put
+/// ~4 instructions per element into one function and the host mem2reg
+/// pass is quadratic in that shape: 49,152 elements extrapolated to
+/// ~2,600-3,100 s of host compile time).
+const bulk_array_threshold: usize = 32;
+
 fn stringSliceLessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
@@ -356,6 +366,18 @@ pub const Codegen = struct {
     // move_ branch so stack slots die with their scope silently.
     stack_alloc_regs: std.AutoHashMap(u32, void),
     borrow_result_regs: std.AutoHashMap(u32, void),
+    // DEF-SAB-BORROW-WRITE-NULL: registers whose runtime content is the
+    // pointee object pointer ITSELF, not the address of a cell holding
+    // it. The borrow/pointer field-access through-load (genField /
+    // genFieldAddress) is only correct for cell-handle registers (call
+    // result slots, pointer-field views, stack slots, pointer-backed
+    // element slots). Param registers (the ABI delivers the value),
+    // struct-literal allocs, and borrows of inline places hold the
+    // object pointer directly; loading through them reinterprets the
+    // object's first word as a pointer and lands on a null/wild access.
+    // Unmarked registers keep the historical through-load, so every
+    // shape that passes today keeps its emission bit-for-bit.
+    object_ptr_regs: std.AutoHashMap(u32, void),
     future_state_vtables: std.AutoHashMap(u32, []const u8),
     future_readiness: std.AutoHashMap(u32, lowering_rules.FutureReadiness),
     future_readiness_by_name: std.StringHashMap(lowering_rules.FutureReadiness),
@@ -459,6 +481,7 @@ pub const Codegen = struct {
             .field_handle_view_regs = std.AutoHashMap(u32, void).init(allocator),
             .stack_alloc_regs = std.AutoHashMap(u32, void).init(allocator),
             .borrow_result_regs = std.AutoHashMap(u32, void).init(allocator),
+            .object_ptr_regs = std.AutoHashMap(u32, void).init(allocator),
             .future_state_vtables = std.AutoHashMap(u32, []const u8).init(allocator),
             .future_readiness = std.AutoHashMap(u32, lowering_rules.FutureReadiness).init(allocator),
             .future_readiness_by_name = std.StringHashMap(lowering_rules.FutureReadiness).init(allocator),
@@ -544,6 +567,7 @@ pub const Codegen = struct {
         self.field_handle_view_regs.deinit();
         self.stack_alloc_regs.deinit();
         self.borrow_result_regs.deinit();
+        self.object_ptr_regs.deinit();
         self.future_state_vtables.deinit();
         self.future_readiness.deinit();
         self.future_readiness_by_name.deinit();
@@ -2478,8 +2502,28 @@ pub const Codegen = struct {
         try self.locals.append(.{ .name = name, .reg = reg, .is_param = is_param, .ty = ty });
     }
 
+    fn markObjectPtrReg(self: *Codegen, reg: u32) !void {
+        try self.object_ptr_regs.put(reg, {});
+    }
+
+    fn regIsObjectPtr(self: *Codegen, reg: u32) bool {
+        return self.object_ptr_regs.contains(reg);
+    }
+
     fn pushParamLocal(self: *Codegen, name: []const u8, reg: u32, ty: *const ast.Type, cap: inst.CapPrefix) !void {
         try self.recordReg(reg);
+        // DEF-SAB-BORROW-WRITE-NULL: the ABI delivers a BORROW param's
+        // value (the object pointer) in the param register -- borrow
+        // args are produced by genAddressOf at the call site and the
+        // `&reg` operand convention hands the callee the pointee
+        // address directly, and borrow params never get an entry stack
+        // slot (paramNeedsEntryStackSlot). Record the provenance so
+        // field / index access through the param skips the
+        // through-load. RAW-POINTER params are deliberately NOT
+        // marked: their args pass the caller's register as-is, which
+        // for cell producers (Box::into_raw results, field views) is
+        // the cell handle the DEF-CHAIN through-load expects.
+        if (ty.* == .borrow) try self.markObjectPtrReg(reg);
         try self.locals.append(.{ .name = name, .reg = reg, .is_param = true, .ty = ty, .param_cap = cap });
         // `Sender` handles are shared ring-buffer aliases (like sender locals
         // and clones): retire via `move_`, never free. Matches the SA-text
@@ -2489,6 +2533,10 @@ pub const Codegen = struct {
 
     fn pushRawParamLocal(self: *Codegen, name: []const u8, reg: u32, cap: inst.CapPrefix) !void {
         try self.recordReg(reg);
+        // DEF-SAB-BORROW-WRITE-NULL: synthesized helpers (async poll
+        // continuations) receive their state pointer directly from
+        // codegen-produced call sites -- the object pointer itself.
+        if (cap == .borrow) try self.markObjectPtrReg(reg);
         try self.locals.append(.{ .name = name, .reg = reg, .is_param = true, .param_cap = cap });
     }
 
@@ -2529,6 +2577,7 @@ pub const Codegen = struct {
         self.clearBorrowAddressTemps();
         self.non_owning_regs.clearRetainingCapacity();
         self.field_handle_view_regs.clearRetainingCapacity();
+        self.object_ptr_regs.clearRetainingCapacity();
         self.stack_alloc_regs.clearRetainingCapacity();
         self.hashmap_key_slots.clearRetainingCapacity();
         self.future_state_vtables.clearRetainingCapacity();
@@ -4568,6 +4617,11 @@ pub const Codegen = struct {
 
     fn emitAssignReg(self: *Codegen, dst: u32, src: u32) !void {
         if (dst == src) return;
+        // DEF-SAB-BORROW-WRITE-NULL: an assign copies the value, so an
+        // object-pointer source makes the destination an object
+        // pointer too (let bindings materialize call results and
+        // borrow values through this assign).
+        if (self.regIsObjectPtr(src)) try self.markObjectPtrReg(dst);
         try self.recordReg(dst);
         var item = self.makeInst(.assign);
         item.operands[0] = .{ .reg = dst };
@@ -6710,6 +6764,16 @@ pub const Codegen = struct {
             param_ids[spec_idx] = param_id;
             spec_idx += 1;
             try self.pushParamLocal(param.name, param_id, param.ty, cap);
+            // DEF-SAB-BORROW-RESIDUAL: the parser records a method's
+            // `&self` as the bare Self type with is_borrow set, NOT as
+            // a .borrow type (parser.zig impl param construction), so
+            // the object-pointer marking in pushParamLocal (keyed on
+            // ty == .borrow) never fires for self: field/index access
+            // through self kept the cell through-load and dereferenced
+            // the object's first word as a pointer. The ABI delivers
+            // a borrow param's value (the object pointer) regardless
+            // of which shape records the borrow; mark on the flag too.
+            if (param.is_borrow) try self.markObjectPtrReg(param_id);
         }
         return .{
             .id = id,
@@ -10484,9 +10548,14 @@ pub const Codegen = struct {
             .deref_borrow_or_pointer => .{ .reg = try self.genMacroExpr(expr.deref_expr.expr, ctx) },
             .deref_pointer_aggregate => blk: {
                 const source = try self.genMacroExpr(expr.deref_expr.expr, ctx);
+                // DEF-SAB-BORROW-WRITE-NULL: see genAddressOf.
+                if (self.regIsObjectPtr(source)) break :blk .{ .reg = source };
                 const loaded = try self.intern(try self.newTmp());
                 try self.emitLoad(loaded, source, 0, .ptr);
                 try self.markNonOwningReg(loaded);
+                // DEF-SAB-BORROW-WRITE-NULL: the loaded word IS the
+                // pointee object pointer.
+                try self.markObjectPtrReg(loaded);
                 break :blk .{
                     .reg = loaded,
                     .release_regs = if (!self.isLocalReg(source)) try self.singleReleaseReg(source) else &.{},
@@ -10526,8 +10595,11 @@ pub const Codegen = struct {
                     const owner = try self.intern(try self.newTmp());
                     try self.emitLoad(owner, projection.reg, 0, .ptr);
                     try self.markNonOwningReg(owner);
+                    // DEF-SAB-BORROW-WRITE-NULL: see genBorrow.
+                    try self.markObjectPtrReg(owner);
                     const dst = try self.intern(try self.newTmp());
                     try self.emitBorrowReg(dst, owner, "read");
+                    try self.markObjectPtrReg(dst);
                     try self.rememberBorrowAddressTemps(dst, .{
                         .reg = owner,
                         .release_regs = try self.fieldProjectionReleaseRegs(projection),
@@ -10542,6 +10614,8 @@ pub const Codegen = struct {
         }
         const dst = try self.intern(try self.newTmp());
         try self.emitBorrowReg(dst, source.reg, "read");
+        // DEF-SAB-BORROW-WRITE-NULL: see genBorrow.
+        if (self.regIsObjectPtr(source.reg)) try self.markObjectPtrReg(dst);
         try self.rememberBorrowAddressTemps(dst, source);
         return dst;
     }
@@ -10664,6 +10738,7 @@ pub const Codegen = struct {
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, structSize(decl));
+        try self.markObjectPtrReg(dst);
 
         const update_expr = lit.update_expr;
         var update_reg: ?u32 = null;
@@ -10836,13 +10911,40 @@ pub const Codegen = struct {
     }
 
     fn emitRepeatArrayFill(self: *Codegen, dst: u32, arr: ast.ArrayType, value: u32) !bool {
-        if (arr.elem.* != .primitive or arr.elem.primitive != .u8) return false;
-        try self.ensureStdDeps("sa_std/core/mem.sa", &.{"sa_mem_set"});
-        try self.emitCallBody(null, try std.fmt.allocPrint(
-            self.allocator,
-            "@sa_mem_set(&{s}, {s}, {d})",
-            .{ self.symbols.items[dst], self.symbols.items[value], arr.len },
-        ));
+        if (arr.elem.* == .primitive and arr.elem.primitive == .u8) {
+            try self.ensureStdDeps("sa_std/core/mem.sa", &.{"sa_mem_set"});
+            try self.emitCallBody(null, try std.fmt.allocPrint(
+                self.allocator,
+                "@sa_mem_set(&{s}, {s}, {d})",
+                .{ self.symbols.items[dst], self.symbols.items[value], arr.len },
+            ));
+            return true;
+        }
+        if (arr.len <= bulk_array_threshold) return false;
+        if (arrayElementLayout(arr, 0) == null) return false;
+        // DEF-R2-GIANT-FILL bulk fill: store the singly evaluated value
+        // once, then double the filled prefix with bulk copies until the
+        // array is covered — O(log N) instructions instead of N stores,
+        // byte-identical result. Chunk <= filled by construction, so
+        // source and destination regions are always disjoint, matching
+        // @sa_mem_copy_nonoverlapping's contract.
+        const elem_size = arrayStride(arr.elem);
+        const layout0 = arrayElementLayout(arr, 0) orelse return false;
+        try self.emitStore(dst, layout0.offset, value, layout0.ty);
+        try self.ensureStdDeps("sa_std/core/mem.sa", &.{"sa_mem_copy_nonoverlapping"});
+        var filled: usize = 1;
+        while (filled < arr.len) {
+            const chunk = @min(filled, arr.len - filled);
+            const ptr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(ptr, dst, .{ .imm_u64 = @intCast(filled * elem_size) });
+            try self.emitCallBody(null, try std.fmt.allocPrint(
+                self.allocator,
+                "@sa_mem_copy_nonoverlapping(&{s}, &{s}, {d})",
+                .{ self.symbols.items[ptr], self.symbols.items[dst], chunk * elem_size },
+            ));
+            try self.emitRelease(ptr);
+            filled += chunk;
+        }
         return true;
     }
 
@@ -12094,6 +12196,11 @@ pub const Codegen = struct {
                     const ty = slot.stack_ty orelse return Error.UnsupportedSabDirectFeature;
                     const dst = try self.intern(try self.newTmp());
                     try self.emitLoad(dst, slot.reg, 0, try storagePrimType(ty));
+                    // DEF-SAB-BORROW-WRITE-NULL: the load recovers the
+                    // stored VALUE; for borrow slots that is the object
+                    // pointer itself, not another cell. Pointer slots
+                    // keep the cell convention of their stored handle.
+                    if (ty.* == .borrow) try self.markObjectPtrReg(dst);
                     break :blk dst;
                 }
                 if (self.exprHasFnPtrType(expr) and self.tc.funcs.contains(name)) {
@@ -13349,6 +13456,47 @@ pub const Codegen = struct {
         return .{ .reg = dst };
     }
 
+    /// DEF-SAB-VALUE-ACCOUNTING (#33 residual): a method `self` param's
+    /// register holds the pointee object pointer itself -- method call
+    /// sites pass the receiver register (`&tmp` operand) and self params
+    /// get no entry stack slot. That is NOT the cell handle the
+    /// DEF-CHAIN / CLASSB-DEF2 through-load in genField /
+    /// genFieldAddress exists for: that convention covers borrows
+    /// materialized inside the function by genBorrow (a local's stack
+    /// slot, an element slot, a field cell). Field access through self
+    /// must skip the through-load, or it reinterprets the object's first
+    /// field word as a pointer (e.g. `len(self.values)` in a &self
+    /// method read the Vec's data pointer as the Vec base).
+    /// Provenance test: the base expression is an identifier bound to a
+    /// param local whose declared capability is .borrow AND whose param
+    /// type is the pointee itself rather than a .borrow wrapper. That is
+    /// exactly the method-`self` construction (the parser builds `self`
+    /// params with the pointee as the type and the borrow-ness in
+    /// Param.is_borrow, src/parser.zig), and method call sites pass the
+    /// receiver register itself (`&tmp` operand), i.e. the object
+    /// pointer. Plain `x: &T` params keep the .borrow type tag and the
+    /// historical cell-handle treatment here -- their call sites can
+    /// hand over a stack-slot address, and existing corpus shapes rely
+    /// on the through-load for them. (Integration note: the BORROW-WRITE
+    /// line guards the same two conditions with its object_ptr_regs
+    /// provenance for .borrow-typed params; the guards are independent
+    /// and combine with a plain `and`.)
+    fn baseIsBorrowParamObjectPtr(self: *Codegen, expr: *const ast.Node, reg: u32) bool {
+        if (expr.* != .identifier) return false;
+        var i = self.locals.items.len;
+        while (i > 0) {
+            i -= 1;
+            const local = self.locals.items[i];
+            if (!std.mem.eql(u8, local.name, expr.identifier)) continue;
+            // The most recent binding for this name decides, mirroring
+            // localReg's resolution order.
+            return local.is_param and local.reg == reg and
+                local.param_cap != null and local.param_cap.? == .borrow and
+                local.ty != null and local.ty.?.* != .borrow;
+        }
+        return false;
+    }
+
     fn genFieldAddress(self: *Codegen, field: ast.FieldExpr) anyerror!AddressSource {
         const expr_ty = self.tc.expr_types.get(field.expr) orelse return Error.MissingType;
         const layout = if (expr_ty.* == .tuple) blk: {
@@ -13379,17 +13527,36 @@ pub const Codegen = struct {
         // CLASSB-DEF2: borrow-typed bases of pointer-backed pointees
         // hold the same cell handle (see genField), so field-address
         // computation loads through them identically.
-        if (expr_ty.* == .pointer or
-            (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow)))
+        if ((expr_ty.* == .pointer or
+            (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow))) and
+            !self.regIsObjectPtr(base) and
+            !self.baseIsBorrowParamObjectPtr(field.expr, base))
         {
             const obj = try self.intern(try self.newTmp());
             try self.emitLoad(obj, base, 0, .ptr);
+            // DEF-SAB-BORROW-WRITE-NULL: the loaded register is the
+            // object pointer; a place computed from it addresses the
+            // object itself.
+            try self.markObjectPtrReg(obj);
             if (!self.isLocalReg(base)) try self.emitRelease(base);
             var obj_source = try self.addressWithOffset(obj, layout.offset);
+            try self.markObjectPtrReg(obj_source.reg);
             if (layout.offset != 0) obj_source.release_regs = try self.singleReleaseReg(obj);
             return obj_source;
         }
         var source = try self.addressWithOffset(base, layout.offset);
+        // DEF-SAB-BORROW-WRITE-NULL: a field place whose value is
+        // stored INLINE at the field address (scalar / pointer /
+        // borrow fields) addresses the object itself at the field
+        // offset; propagate the provenance so a borrow of the place
+        // is not mistaken for a cell handle. Aggregate fields store a
+        // pointer in the field slot instead (their borrows load it at
+        // creation in genBorrow), so their places stay unmarked.
+        if (self.regIsObjectPtr(base) and expr_ty.* != .tuple) {
+            if (self.fieldType(expr_ty, field.field_name)) |field_ty| {
+                if (!lowering_rules.structFieldIsPointerBacked(field_ty)) try self.markObjectPtrReg(source.reg);
+            }
+        }
         if (layout.offset != 0 and !self.isLocalReg(base)) source.release_regs = try self.singleReleaseReg(base);
         return source;
     }
@@ -13630,9 +13797,18 @@ pub const Codegen = struct {
                 // in p's cell — the same load genDeref uses as the
                 // field-access base.
                 const source = try self.genExpr(expr.deref_expr.expr);
+                // DEF-SAB-BORROW-WRITE-NULL: a source proven to hold
+                // the object pointer itself (a borrow/pointer param)
+                // IS the place address already; loading through it
+                // would reinterpret the object's first word as the
+                // address.
+                if (self.regIsObjectPtr(source)) break :blk .{ .reg = source };
                 const loaded = try self.intern(try self.newTmp());
                 try self.emitLoad(loaded, source, 0, .ptr);
                 try self.markNonOwningReg(loaded);
+                // DEF-SAB-BORROW-WRITE-NULL: the loaded word IS the
+                // pointee object pointer.
+                try self.markObjectPtrReg(loaded);
                 break :blk .{
                     .reg = loaded,
                     .release_regs = if (!self.isLocalReg(source)) try self.singleReleaseReg(source) else &.{},
@@ -13692,6 +13868,8 @@ pub const Codegen = struct {
         if (source.restore_slot != null) return source;
         const place = try self.intern(try self.newTmp());
         try self.emitPtrAdd(place, source.reg, .{ .imm_u64 = 0 });
+        // DEF-SAB-BORROW-WRITE-NULL: ptr_add 0 preserves provenance.
+        if (self.regIsObjectPtr(source.reg)) try self.markObjectPtrReg(place);
         var regs = std.array_list.Managed(u32).init(self.allocator);
         defer regs.deinit();
         if (!self.isLocalReg(source.reg)) try regs.append(source.reg);
@@ -13715,13 +13893,53 @@ pub const Codegen = struct {
                     const owner = try self.intern(try self.newTmp());
                     try self.emitLoad(owner, projection.reg, 0, .ptr);
                     try self.markNonOwningReg(owner);
+                    // DEF-SAB-BORROW-WRITE-NULL: the loaded owner is the
+                    // object pointer itself; the borrow of it inherits
+                    // that provenance.
+                    try self.markObjectPtrReg(owner);
                     const dst = try self.intern(try self.newTmp());
                     try self.emitBorrowReg(dst, owner, "read");
+                    try self.markObjectPtrReg(dst);
                     try self.rememberBorrowAddressTemps(dst, .{
                         .reg = owner,
                         .release_regs = try self.fieldProjectionReleaseRegs(projection),
                     });
                     return dst;
+                }
+            }
+        }
+        // DEF-SAB-BORROW-RESIDUAL: index twin of the field branch
+        // above -- a borrow of a pointer-backed container element
+        // (a Vec/GrowVec/slice/array slot holding a Vec/String or
+        // aggregate pointer) denotes the stored element pointer, not
+        // the slot address. The call-arg path already loads it
+        // (genPrefixedBorrowAddressCallArg via
+        // indexBorrowLoadsStoredPointer); the value path did not, so
+        // a let-bound `&v[i]` kept the slot address while consumers
+        // that expect the object pointer (len, method receivers,
+        // &params, re-borrows) read neighbouring slots as fields.
+        // Inline-POD elements are exempt: their record is packed in
+        // the slot itself, so the slot address IS the object address
+        // (the field-oriented predicate does not know this element
+        // distinction -- classb CbItem records regressed without it).
+        if (borrow.expr.* == .index_expr) {
+            if (self.tc.expr_types.get(borrow.expr)) |elem_ty| {
+                if (self.indexBorrowLoadsStoredPointer(elem_ty) and !self.inlinePodElement(elem_ty)) {
+                    const place = try self.genAddressOf(borrow.expr);
+                    if (place.restore_slot == null) {
+                        const owner = try self.intern(try self.newTmp());
+                        try self.emitLoad(owner, place.reg, 0, .ptr);
+                        try self.markNonOwningReg(owner);
+                        try self.markObjectPtrReg(owner);
+                        const dst = try self.intern(try self.newTmp());
+                        try self.emitBorrowReg(dst, owner, "read");
+                        try self.markObjectPtrReg(dst);
+                        try self.rememberBorrowAddressTemps(dst, .{
+                            .reg = owner,
+                            .release_regs = try self.fieldProjectionReleaseRegs(place),
+                        });
+                        return dst;
+                    }
                 }
             }
         }
@@ -13731,6 +13949,12 @@ pub const Codegen = struct {
         }
         const dst = try self.intern(try self.newTmp());
         try self.emitBorrowReg(dst, source.reg, "read");
+        // DEF-SAB-BORROW-WRITE-NULL: a borrow of a place that IS the
+        // object (param value, struct-literal alloc, inline place)
+        // holds the object pointer; a borrow of a pointer cell (Vec
+        // element slot, field view) stays a cell handle. Provenance
+        // propagates from the source register.
+        if (self.regIsObjectPtr(source.reg)) try self.markObjectPtrReg(dst);
         try self.rememberBorrowAddressTemps(dst, source);
         return dst;
     }
@@ -15108,6 +15332,7 @@ pub const Codegen = struct {
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, structSize(decl));
+        try self.markObjectPtrReg(dst);
         for (call.args, decl.fields) |arg, field| {
             const field_ty = self.tc.expr_types.get(arg) orelse field.ty;
             const layout = self.fieldLayoutFromDecl(decl, field.name) orelse return Error.UnsupportedSabDirectFeature;
@@ -15285,8 +15510,16 @@ pub const Codegen = struct {
         if (lowering_rules.isHeapHandleType(elem_ty)) {
             if (!self.isLocalReg(value_reg)) {
                 try self.emitConsumedMarker(value_reg);
-                try self.markConsumed(value_reg);
             }
+            // DEF-SAB-BORROW-RESIDUAL: the DEF-ZRANGE consumption also
+            // covers a local source -- sa_vec_push stores the handle
+            // word itself, so the container owns the cell from here
+            // and the local's exit drop must skip it. markConsumed is
+            // the same released_regs bookkeeping assignment moves use;
+            // without it a pushed local Vec/String was freed at scope
+            // exit AND again by the container's element drop
+            // (double free: Vec<Vec<u8>> push of a local aborted).
+            try self.markConsumed(value_reg);
         } else if (!self.isLocalReg(value_reg)) {
             try self.emitRelease(value_reg);
         }
@@ -15340,8 +15573,12 @@ pub const Codegen = struct {
         if (lowering_rules.isHeapHandleType(elem_ty)) {
             if (!self.isLocalReg(value_reg)) {
                 try self.emitConsumedMarker(value_reg);
-                try self.markConsumed(value_reg);
             }
+            // DEF-SAB-BORROW-RESIDUAL: GrowVec mirror of the
+            // genVecPushCall fix -- a pushed heap-handle local is
+            // consumed by the store; mark it so the exit drop skips
+            // it and the container's element drop is the only free.
+            try self.markConsumed(value_reg);
         } else if (!self.isLocalReg(value_reg)) {
             try self.emitRelease(value_reg);
         }
@@ -17127,6 +17364,20 @@ pub const Codegen = struct {
     }
 
     fn genCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!u32 {
+        const reg = try self.genCallInner(expr, call);
+        // DEF-SAB-BORROW-WRITE-NULL: a call whose result type is a
+        // borrow delivers the borrow VALUE the callee computed (the
+        // pointee object pointer), mirroring how SA-text consumes
+        // call-result borrows and how borrow parameters arrive.
+        // Place-shaped borrows are produced by genBorrow, never by a
+        // call, so the result register is an object pointer.
+        if (self.tc.expr_types.get(expr)) |ty| {
+            if (ty.* == .borrow) try self.markObjectPtrReg(reg);
+        }
+        return reg;
+    }
+
+    fn genCallInner(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!u32 {
         // Goroutine syntax batch: the syntax lowering emits plain
         // calls to sa_mem_copy (an SA-level std function in
         // sa_std/core/mem.sa, registered as an extern contract by
@@ -17685,7 +17936,15 @@ pub const Codegen = struct {
     fn fieldBorrowLoadsStoredPointer(self: *Codegen, field_ty: *const ast.Type) bool {
         if (!lowering_rules.structFieldIsPointerBacked(field_ty)) return false;
         if (lowering_rules.smartPointerType(field_ty) != null) return false;
-        return !self.typeIsCopyValue(field_ty) and !lowering_rules.isBorrowLikeType(field_ty);
+        // DEF-SAB-BORROW-WRITE-NULL: copy STRUCTS are stored behind a
+        // pointer in the field slot exactly like non-copy aggregates
+        // (both literal layouts emit a separate alloc + ptr store), so
+        // a place borrow of one must load the stored pointer at
+        // creation -- mirroring SA-text, whose borrow-of-field load
+        // keys on structFieldIsPointerBacked alone. The copy-value
+        // exclusion stays for non-struct copy values (scalars, Chan
+        // handles, copy tuples), whose slots hold the value itself.
+        return (!self.typeIsCopyValue(field_ty) or self.typeIsCopyStruct(field_ty)) and !lowering_rules.isBorrowLikeType(field_ty);
     }
 
     fn indexBorrowLoadsStoredPointer(self: *Codegen, elem_ty: *const ast.Type) bool {
@@ -20159,6 +20418,14 @@ pub const Codegen = struct {
         var body = std.array_list.Managed(u8).init(self.allocator);
         var arg_regs = std.array_list.Managed(u32).init(self.allocator);
         defer arg_regs.deinit();
+        // DEF-SAB-VALUE-ACCOUNTING (#33/#34): by-value owned identifier
+        // arguments are consumed by the callee, exactly as on the direct
+        // call path (emitPlannedStaticCallTo). They must be recorded, or
+        // the caller's cleanup disposes them a second time.
+        var consumed_regs = std.array_list.Managed(u32).init(self.allocator);
+        defer consumed_regs.deinit();
+        var cloned_regs = std.array_list.Managed(u32).init(self.allocator);
+        defer cloned_regs.deinit();
         try sio.managedPrint(&body, "{s}(", .{self.symbols.items[call_reg]});
         for (call.args, 0..) |arg, i| {
             const arg_reg = try self.genExpr(@constCast(arg));
@@ -20168,6 +20435,17 @@ pub const Codegen = struct {
                     const arg_ty = self.tc.expr_types.get(arg) orelse return Error.MissingType;
                     if (self.typeIsCopyValue(arg_ty) or lowering_rules.isBorrowLikeType(arg_ty)) {
                         reg = try self.copyFnPtrCallArg(arg_reg, arg_ty);
+                    } else if (self.identifierMustStayLiveForLaterUse(arg.identifier)) {
+                        // The source binding is used again after this
+                        // call, so the callee receives a deep clone and
+                        // the original stays live (mirrors the direct
+                        // call path's preserve-for-later-use handling).
+                        if (try self.genDeepCloneValue(arg_reg, arg_ty)) |cloned| {
+                            reg = cloned;
+                            try cloned_regs.append(cloned);
+                        }
+                    } else {
+                        try consumed_regs.append(arg_reg);
                     }
                 }
                 // Extern variadic batch: materialise the C default
@@ -20213,7 +20491,13 @@ pub const Codegen = struct {
             item.operands[3] = .{ .text = sig_text };
         }
         try self.appendInst(item);
+        // Cloned arguments were consumed by the callee; mark them before
+        // the temp release pass so it skips them, then record the moves
+        // of owned identifier arguments (same order as the direct path:
+        // releases first, moves after).
+        for (cloned_regs.items) |reg| try self.markConsumed(reg);
         try self.releaseNonLocalTemps(arg_regs.items);
+        for (consumed_regs.items) |reg| try self.emitMove(reg);
         try self.emitMove(call_reg);
         if (dst) |reg| return reg;
 
@@ -20268,6 +20552,7 @@ pub const Codegen = struct {
     fn genUnionLiteral(self: *Codegen, lit: ast.StructLiteral, decl: *const ast.StructDecl) anyerror!u32 {
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, structSize(decl));
+        try self.markObjectPtrReg(dst);
         for (lit.fields) |literal_field| {
             const layout = lowering_rules.structFieldLayout(decl, literal_field.name) orelse return Error.UnsupportedSabDirectFeature;
             const field_ty = for (decl.fields) |decl_field| {
@@ -20311,6 +20596,8 @@ pub const Codegen = struct {
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, structSize(decl));
+        // DEF-SAB-BORROW-WRITE-NULL: the alloc register IS the object.
+        try self.markObjectPtrReg(dst);
 
         const update_expr = lit.update_expr;
         var update_reg: ?u32 = null;
@@ -21128,6 +21415,7 @@ pub const Codegen = struct {
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, structSize(decl));
+        try self.markObjectPtrReg(dst);
         for (decl.fields) |field| {
             const layout = try self.fieldLayout(ty, field.name);
             if (field.ty.* == .array) {
@@ -21155,6 +21443,7 @@ pub const Codegen = struct {
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, structSize(decl));
+        try self.markObjectPtrReg(dst);
         for (decl.fields) |field| {
             const layout = try self.fieldLayout(ty, field.name);
             if (field.ty.* == .array) {
@@ -21295,6 +21584,28 @@ pub const Codegen = struct {
         // register is the temporary array allocation produced by genArrayLiteral.
         // Element loads are value copies (including raw ptr bits); do not
         // release them as owners or string/const data gets double-freed.
+        // DEF-R2-GIANT-FILL bulk copy: for large fields, replace the
+        // per-element path below with one bulk copy — those loads/stores
+        // transfer no ownership, so a byte copy of the whole field
+        // region is byte-identical; the per-element consumed markers
+        // exist only for the synthetic element temps, which the bulk
+        // form never creates. Applicability matches the per-element
+        // path exactly (same layout gate).
+        if (arr.len > bulk_array_threshold and arrayElementLayout(arr, 0) != null) {
+            try self.ensureStdDeps("sa_std/core/mem.sa", &.{"sa_mem_copy_nonoverlapping"});
+            var dst_ptr = dst;
+            if (field_offset != 0) {
+                dst_ptr = try self.intern(try self.newTmp());
+                try self.emitPtrAdd(dst_ptr, dst, .{ .imm_u64 = @intCast(field_offset) });
+            }
+            try self.emitCallBody(null, try std.fmt.allocPrint(
+                self.allocator,
+                "@sa_mem_copy_nonoverlapping(&{s}, &{s}, {d})",
+                .{ self.symbols.items[dst_ptr], self.symbols.items[value_reg], arraySize(arr) },
+            ));
+            if (dst_ptr != dst) try self.emitRelease(dst_ptr);
+            return;
+        }
         for (0..arr.len) |idx| {
             const elem_layout = arrayElementLayout(arr, idx) orelse return Error.UnsupportedSabDirectFeature;
             const elem_reg = try self.intern(try self.newTmp());
@@ -21376,11 +21687,19 @@ pub const Codegen = struct {
         // which loads through borrow-typed bases the same way.
         var eff_base = base;
         var through: ?u32 = null;
-        if (expr_ty.* == .pointer or
-            (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow)))
+        // DEF-SAB-BORROW-WRITE-NULL: the through-load is only correct
+        // when the base register is a cell handle. Bases proven to hold
+        // the object pointer directly (params, struct-literal allocs,
+        // borrows of inline places) skip it -- loading through them
+        // reinterprets the object's first word as a pointer.
+        if ((expr_ty.* == .pointer or
+            (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow))) and
+            !self.regIsObjectPtr(base) and
+            !self.baseIsBorrowParamObjectPtr(field.expr, base))
         {
             const obj = try self.intern(try self.newTmp());
             try self.emitLoad(obj, base, 0, .ptr);
+            try self.markObjectPtrReg(obj);
             eff_base = obj;
             through = obj;
         }

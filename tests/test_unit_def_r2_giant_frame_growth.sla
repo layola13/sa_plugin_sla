@@ -32,6 +32,27 @@
 // pointer taken in the worker frame must land in the worker's
 // sink field — the test asserts exactly that, plus the folded
 // checksum of every level's buffers.
+// DEF-R2-GIANT-FILL addendum (2026-11-04): the timeout this file
+// exhibited at the 0cc23855/aa657ef0 pins was a COMPILE-TIME defect,
+// distinct from the runtime stack-growth behaviour above: both
+// backends materialised the aggregate literals per element
+// (~4 host instructions/element, 197,176 SAB-disasm lines, 49,152
+// ownership fences), and the host's LLVM mem2reg is quadratic in
+// that shape (measured 139.6 s at 12,288 elements, 656.8 s at
+// 24,576; this file's 49,152 extrapolate to ~2,600-3,100 s -- the
+// text route timed out at the same libLLVM offset, so the "no
+// comparable pressure" observation above holds only for runtime
+// task-stack pressure, not for compilation). The fix emits bulk
+// forms above 32 elements (seed store + doubling
+// @sa_mem_copy_nonoverlapping; one bulk copy for struct-literal
+// array fields): the file now compiles in ~1 s and the text
+// backend passes end-to-end within the 240 s budget. NOTE: on a
+// fresh aa657ef0 host build the SAB route terminated by signal 11
+// in the &struct fill path -- reproduced with the STOCK plugin at
+// s25 scale, i.e. a pre-existing defect independent of the fill
+// fix (DEF-SAB-BORROW-WRITE-NULL). That defect is fixed in the
+// same integration train (2026-11-05), after which the SAB route
+// of this file passes as well.
 @import "sa_std/ptr.sa"
 @import "sa_std/task.sai"
 @import "sa_std/core/box.sa"

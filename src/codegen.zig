@@ -10,6 +10,12 @@ pub const CodegenError = error{
     OutOfMemory,
 };
 
+/// DEF-R2-GIANT-FILL bulk-fill threshold; mirrors sab_codegen.zig.
+/// Above this element count, scalar repeat fills switch from unrolled
+/// per-element stores to a doubling bulk-copy form (see
+/// genRepeatArrayLiteralInto).
+const bulk_array_threshold: usize = 32;
+
 const ThreadSpawnHelper = struct {
     worker_name: []const u8,
     spawn_name: []const u8,
@@ -14267,8 +14273,27 @@ pub const Codegen = struct {
         } else if (elem_is_scalar) {
             const value_reg = try self.genExpr(lit.value, hoisted_allocs);
             const elem_ty_str = typeString(arr.elem);
-            for (0..arr.len) |i| {
-                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, value_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+            if (arr.len > bulk_array_threshold) {
+                // DEF-R2-GIANT-FILL bulk fill (mirrors the SAB backend):
+                // one store of the singly evaluated value, then doubling
+                // bulk copies of the filled prefix — O(log N) lines
+                // instead of N stores. Chunks never exceed the filled
+                // prefix, so the copies are between disjoint regions,
+                // matching @sa_mem_copy_nonoverlapping's contract.
+                self.outPrint("    store {s}+0, {s} as {s}\n", .{ target, value_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                var filled: usize = 1;
+                while (filled < arr.len) {
+                    const chunk = @min(filled, arr.len - filled);
+                    const ptr_reg = try self.newTmp();
+                    self.outPrint("    {s} = ptr_add {s}, {}\n", .{ ptr_reg, target, filled * elem_size }) catch return CodegenError.CodegenError;
+                    self.outPrint("    call @sa_mem_copy_nonoverlapping(&{s}, &{s}, {})\n", .{ ptr_reg, target, chunk * elem_size }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(ptr_reg);
+                    filled += chunk;
+                }
+            } else {
+                for (0..arr.len) |i| {
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, value_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                }
             }
             if (callArgNeedsRelease(lit.value)) try self.emitRelease(value_reg);
         } else {

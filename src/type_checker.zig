@@ -4684,6 +4684,53 @@ pub const TypeChecker = struct {
         sym.consumed_by_call = call_name;
     }
 
+    // Insert-family sibling of the Vec push consumption fix (same
+    // REG-BR-6 discipline, same shared predicates): map/set `insert`
+    // emission in both backends stores the argument handle in the
+    // container slot as-is — no copy materialization exists on the
+    // insert path — so an owned identifier argument is moved into the
+    // container and must be consumed here. Arguments the store itself
+    // copies stay live: scalar leaf copy values, raw pointers, slice
+    // views, payload-copy enums (plain scalars at the SA level), and
+    // Chan handles (shared by design; typeIsCopyValue classifies Chan
+    // as a copy value).
+    fn consumeInsertArgIfMoved(
+        self: *TypeChecker,
+        scope: *Scope,
+        recv_arg: *const ast.Node,
+        arg: *const ast.Node,
+        arg_ty: *ast.Type,
+    ) TypeError!void {
+        if (arg.* != .identifier) return;
+        // Inference placeholders cannot be classified here (same
+        // posture as consumeCallArgIfMoved).
+        if (arg_ty.* == .infer) return;
+        const copy_leaf = (lowering_rules.typeIsCopyValueLeaf(arg_ty) orelse false) or arg_ty.* == .pointer;
+        if (!lowering_rules.insertArgTransfersOwnership(arg_ty, copy_leaf)) return;
+        if (lowering_rules.sliceElementType(arg_ty) != null) return;
+        if (self.enumPayloadIsCopy(arg_ty)) return;
+        if (arg_ty.* == .user_defined and std.mem.eql(u8, arg_ty.user_defined.name, "Chan")) return;
+        // Same self-move guard as the push branch: a container cannot
+        // be inserted into itself through this call.
+        if (rootIdentifier(recv_arg)) |recv_id| {
+            if (std.mem.eql(u8, recv_id, arg.identifier)) return;
+        }
+        const sym = scope.lookup(arg.identifier) orelse return;
+        if (sym.is_const) return;
+        if (sym.state == .consumed) {
+            // Reachable only when an earlier argument of this same
+            // insert already consumed the binding (insert(x, x)): both
+            // argument expressions were checked before any consumption
+            // in this branch ran.
+            self.setError("UseAfterMove: identifier `{s}` was already consumed", .{arg.identifier});
+            return TypeError.UseAfterMove;
+        }
+        if (sym.state != .active) return;
+        if (sym.borrow_source != null) return;
+        try self.consumeBinding(scope, arg.identifier, sym, "insert argument");
+        sym.consumed_by_call = "insert";
+    }
+
     fn typeIsEq(self: *TypeChecker, ty: *ast.Type) bool {
         const primitive_ok = if (ty.* == .primitive) lowering_rules.primitiveIsCopyValue(ty.primitive) else false;
         if (lowering_rules.typeHasNamedDeriveBase(ty, primitive_ok)) |decision| return decision;
@@ -9321,6 +9368,8 @@ pub const TypeChecker = struct {
                                     }
                                 }
                             }
+                            try self.consumeInsertArgIfMoved(scope, call.args[0], call.args[1], key_ty);
+                            try self.consumeInsertArgIfMoved(scope, call.args[0], call.args[2], value_ty);
                             return try self.makeOptionType(value_ty);
                         }
                         if (lowering_rules.isGetCall(call)) {
@@ -9352,6 +9401,7 @@ pub const TypeChecker = struct {
                                     }
                                 }
                             }
+                            try self.consumeInsertArgIfMoved(scope, call.args[0], call.args[1], key_ty);
                             const ty = try self.allocator.create(ast.Type);
                             ty.* = .{ .primitive = .boolean };
                             return ty;
@@ -9382,6 +9432,8 @@ pub const TypeChecker = struct {
                                     }
                                 }
                             }
+                            try self.consumeInsertArgIfMoved(scope, call.args[0], call.args[1], key_ty);
+                            try self.consumeInsertArgIfMoved(scope, call.args[0], call.args[2], value_ty);
                             return try self.makeOptionType(value_ty);
                         }
                         if (lowering_rules.isGetCall(call)) {
@@ -9415,6 +9467,7 @@ pub const TypeChecker = struct {
                                     }
                                 }
                             }
+                            try self.consumeInsertArgIfMoved(scope, call.args[0], call.args[1], key_ty);
                             const ty = try self.allocator.create(ast.Type);
                             ty.* = .{ .primitive = .boolean };
                             return ty;

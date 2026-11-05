@@ -6746,6 +6746,20 @@ pub fn vecElementPushTransfersOwnership(elem_ty: *const ast.Type, elem_is_copy: 
     return !elem_is_copy and !isBorrowLikeType(elem_ty);
 }
 
+/// Shared pure fact for map/set `insert` argument ownership (insert
+/// sibling of vecElementPushTransfersOwnership): insert emission in
+/// both backends (MAP_INSERT / BTREE_MAP_INSERT slot stores and the
+/// SAB genMapInsertCall / genSetInsertCall arms) stores the argument
+/// handle in the container slot as-is — unlike Vec push there is no
+/// copy materialization on the insert path — so every owned argument
+/// transfers into the container. Only arguments the store itself
+/// copies stay live: scalar leaf copy values and borrow-like handles.
+/// The checker layers its decl-aware carve-outs (slice views,
+/// payload-copy enums, Chan handles) on top of this fact.
+pub fn insertArgTransfersOwnership(arg_ty: *const ast.Type, arg_is_copy_value_leaf: bool) bool {
+    return !arg_is_copy_value_leaf and !isBorrowLikeType(arg_ty);
+}
+
 pub fn isStdCollectionType(ty: *const ast.Type) bool {
     return vecElementType(ty) != null or
         growVecElementType(ty) != null or

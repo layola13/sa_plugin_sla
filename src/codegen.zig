@@ -12712,6 +12712,45 @@ pub const Codegen = struct {
         return false;
     }
 
+
+    /// DEF-INSERT-TEXT-RETIRE: mirror of the checker's payload-copy
+    /// enum carve-out (type_checker.enumPayloadIsCopy) for the insert
+    /// consumption predicate below.
+    fn insertEnumPayloadIsCopy(self: *Codegen, ty: *const ast.Type) bool {
+        if (ty.* != .user_defined) return false;
+        const decl = self.tc.enums.get(ty.user_defined.name) orelse return false;
+        for (decl.variants) |variant| {
+            for (variant.fields) |field| {
+                if (!self.typeIsCopyValue(field.ty)) return false;
+            }
+        }
+        return true;
+    }
+
+    /// DEF-INSERT-TEXT-RETIRE: true when the type checker consumed
+    /// this insert argument (type_checker.consumeInsertArgIfMoved):
+    /// the container adopted the argument handle as-is, so the text
+    /// emitter must retire the source register with a forget at the
+    /// insert site -- the scope-exit drop is suppressed for consumed
+    /// bindings, and a release would free the adopted handle.
+    /// Mirrors the checker's classification exactly: identifier args
+    /// only, transfer-ownership types only, with the slice-view,
+    /// payload-copy-enum, Chan and self-insert carve-outs.
+    fn insertArgCheckerConsumed(self: *Codegen, recv_arg: *const ast.Node, arg: *const ast.Node) bool {
+        if (arg.* != .identifier) return false;
+        const arg_ty = self.resolvedTypeForExpr(arg) orelse return false;
+        if (arg_ty.* == .infer) return false;
+        const copy_leaf = (lowering_rules.typeIsCopyValueLeaf(arg_ty) orelse false) or arg_ty.* == .pointer;
+        if (!lowering_rules.insertArgTransfersOwnership(arg_ty, copy_leaf)) return false;
+        if (lowering_rules.sliceElementType(arg_ty) != null) return false;
+        if (self.insertEnumPayloadIsCopy(arg_ty)) return false;
+        if (arg_ty.* == .user_defined and std.mem.eql(u8, arg_ty.user_defined.name, "Chan")) return false;
+        if (lowering_rules.rootIdentifier(recv_arg)) |recv_id| {
+            if (std.mem.eql(u8, recv_id, arg.identifier)) return false;
+        }
+        return true;
+    }
+
     fn genHashMapKeyReg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (arg.* == .literal and arg.literal == .string_val) {
             const value = arg.literal.string_val;
@@ -12734,13 +12773,17 @@ pub const Codegen = struct {
         return try self.genExpr(arg, hoisted_allocs);
     }
 
-    fn genHashMapValueSlot(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
+    fn genHashMapValueSlot(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8), value_consumed: bool) CodegenError![]const u8 {
         const value_reg = try self.genExpr(arg, hoisted_allocs);
         const slot = try self.newTmp();
         self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
         self.outPrint("    {s} = stack_alloc 8\n", .{slot}) catch return CodegenError.CodegenError;
         self.outPrint("    store {s}+0, {s} as u64\n", .{ slot, value_reg }) catch return CodegenError.CodegenError;
-        if (callArgNeedsRelease(arg)) try self.emitRelease(value_reg);
+        if (value_consumed) {
+            try self.emitForgetMovedValue(value_reg);
+        } else if (callArgNeedsRelease(arg)) {
+            try self.emitRelease(value_reg);
+        }
         return slot;
     }
 
@@ -18028,11 +18071,12 @@ pub const Codegen = struct {
                                 if (call.args.len != 3) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
-                                const value_slot = try self.genHashMapValueSlot(call.args[2], hoisted_allocs);
+                                const value_slot = try self.genHashMapValueSlot(call.args[2], hoisted_allocs, self.insertArgCheckerConsumed(call.args[0], call.args[2]));
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND SLA_MAP_INSERT_OPTION_U64 {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg, value_slot }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
+                                if (self.insertArgCheckerConsumed(call.args[0], call.args[1])) try self.emitForgetMovedValue(key_reg);
                                 return reg;
                             }
                             if (lowering_rules.isGetCall(call)) {
@@ -18064,6 +18108,8 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 if (callArgNeedsRelease(call.args[2])) try self.emitRelease(value_reg);
+                                if (self.insertArgCheckerConsumed(call.args[0], call.args[1])) try self.emitForgetMovedValue(key_reg);
+                                if (self.insertArgCheckerConsumed(call.args[0], call.args[2])) try self.emitForgetMovedValue(value_reg);
                                 return reg;
                             }
                             if (lowering_rules.isGetCall(call)) {
@@ -18093,6 +18139,7 @@ pub const Codegen = struct {
                                 self.outPrint("    EXPAND SET_INSERT {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
+                                if (self.insertArgCheckerConsumed(call.args[0], call.args[1])) try self.emitForgetMovedValue(key_reg);
                                 return reg;
                             }
                             if (lowering_rules.isContainsCall(call)) {
@@ -18115,6 +18162,7 @@ pub const Codegen = struct {
                                 self.outPrint("    EXPAND BTREE_SET_INSERT {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
+                                if (self.insertArgCheckerConsumed(call.args[0], call.args[1])) try self.emitForgetMovedValue(key_reg);
                                 return reg;
                             }
                             if (lowering_rules.isContainsCall(call)) {

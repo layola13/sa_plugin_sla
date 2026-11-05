@@ -554,6 +554,21 @@ test "sla check enforces push element consumption" {
     try expectSlaCheckNamedDiagnostic("tests/test_error_push_loop_consume.sla", "push element argument");
 }
 
+test "sla check enforces insert argument consumption" {
+    // A map/set insert moves an owned key/value into the container;
+    // the special-cased insert branches used to skip the consumption
+    // entirely, leaving the container slot aliasing a handle the
+    // source binding still owned (dangling keys; segfault reading a
+    // value entry back after the source scope dropped it).
+    try expectSlaCheckNamedDiagnostic("tests/test_error_insert_element_reuse.sla", "UseAfterMove");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_insert_element_reuse.sla", "moved by the call to `insert`");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_insert_value_reuse.sla", "UseAfterMove");
+    // Loop form: the loop-carried consumption is named directly
+    // instead of surfacing downstream.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_insert_loop_consume.sla", "LoopConditionalConsume");
+    try expectSlaCheckNamedDiagnostic("tests/test_error_insert_loop_consume.sla", "insert argument");
+}
+
 test "sla check enforces F2-A arena domains (C1)" {
     // Root admission: the section 2.2 forbidden registry, one
     // corpus file per row. The diagnostic quadruple names the

@@ -15920,6 +15920,36 @@ pub const Codegen = struct {
                     if (dynTraitName(box_inner) != null) return inner;
                 }
                 const deref_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
+                // DEF-DEREF-BORROW-WRITE: dereferencing a borrow to an
+                // aggregate yields the pointee record address itself.
+                // A borrow value IS the pointee address in the text
+                // backend's consumption model (borrow params are
+                // delivered as the address; place borrows materialize
+                // the record pointer), and an aggregate expression's
+                // register is its record address for every consumer
+                // (field/index bases, place projections, copies).
+                // Loading through it reinterprets the record's first
+                // word as a pointer and lands on a null/wild address.
+                // Raw-pointer sources keep the cell load (DEF-CHAIN);
+                // scalar pointees keep the value load below. A borrow
+                // whose pointee is itself a smart pointer is excluded:
+                // its value is the handle CELL address, not the record
+                // (Rc/Arc are intercepted above; Box falls through to
+                // the generic handle load).
+                if (inner_ty.* == .borrow and
+                    lowering_rules.smartPointerDerefType(inner_ty.borrow) == null and
+                    ((deref_ty.* == .user_defined and lowering_rules.smartPointerDerefType(deref_ty) == null) or
+                        deref_ty.* == .tuple or deref_ty.* == .array))
+                {
+                    // Materialize a ptr_add alias temp instead of
+                    // returning the source register itself: consumers
+                    // treat a deref result as a disposable temp and
+                    // release it, which must never retire the borrow
+                    // binding's own register (cf. the ZOZI-2 cast
+                    // alias and the &ident ptr_add copy).
+                    self.outPrint("    {s} = ptr_add {s}, 0\n", .{ reg, inner }) catch return CodegenError.CodegenError;
+                    return reg;
+                }
                 self.outPrint("    {s} = load {s}+0 as {s}\n", .{ reg, inner, typeString(deref_ty) }) catch return CodegenError.CodegenError;
                 if (deref.expr.* != .identifier and
                     (self.refcell_borrow_handles.contains(inner) or self.mutex_guard_handles.contains(inner) or self.rwlock_guard_handles.contains(inner)))

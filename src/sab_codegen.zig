@@ -10708,6 +10708,10 @@ pub const Codegen = struct {
             const dst = try self.intern(try self.newTmp());
             try self.emitLoad(dst, base, layout.offset, layout.ty);
             try self.markLoadedFieldViewIfNeeded(dst, expr_ty.tuple.elems[index]);
+            // DEF-DEREF-BORROW-WRITE: a borrow-typed element's loaded
+            // word IS the pointee object pointer (same provenance as
+            // a borrow param's delivered value).
+            if (expr_ty.tuple.elems[index].* == .borrow) try self.markObjectPtrReg(dst);
             if (!self.isLocalReg(base)) try self.emitRelease(base);
             return dst;
         }
@@ -13497,6 +13501,34 @@ pub const Codegen = struct {
         return false;
     }
 
+    /// DEF-SAB-CHAN-PAYLOAD: the chan slot-view borrow
+    /// (`&slot as &__go_slot_view_N`, synthesized by the syntax
+    /// lowering for chan send/recv staging) holds the staging
+    /// slot's address itself: the wrapper struct's image lies
+    /// inline in the 16-byte slot, so a field projection on it is
+    /// an exact address computation (the lowering contract in
+    /// syntax_lowering's slotValueFromPtrFull). The DEF-CHAIN /
+    /// CLASSB-DEF2 through-load assumes the base register holds a
+    /// CELL HANDLE (a place storing a pointer to the record);
+    /// applied to the slot view it loads the payload's own first
+    /// word as the object pointer, so a pointer payload receives
+    /// the pointee's first word, a String/Chan/Vec payload is
+    /// loaded/stored through the payload bytes, and only an
+    /// exactly-8-byte primitive payload escapes (its view decl
+    /// happens to satisfy structDeclIsInlinePod). Recognize the
+    /// synthesized wrapper by its reserved type-name prefix: the
+    /// lowering is its sole producer and user code cannot declare
+    /// a colliding name (the decl is registered into the checker
+    /// under that fresh name).
+    fn baseIsSlotViewBorrow(self: *Codegen, field: ast.FieldExpr) bool {
+        if (field.expr.* != .identifier) return false;
+        const base_ty = self.tc.expr_types.get(field.expr) orelse return false;
+        if (base_ty.* != .borrow) return false;
+        const pointee = base_ty.borrow;
+        if (pointee.* != .user_defined) return false;
+        return std.mem.startsWith(u8, pointee.user_defined.name, "__go_slot_view_");
+    }
+
     fn genFieldAddress(self: *Codegen, field: ast.FieldExpr) anyerror!AddressSource {
         const expr_ty = self.tc.expr_types.get(field.expr) orelse return Error.MissingType;
         const layout = if (expr_ty.* == .tuple) blk: {
@@ -13527,10 +13559,14 @@ pub const Codegen = struct {
         // CLASSB-DEF2: borrow-typed bases of pointer-backed pointees
         // hold the same cell handle (see genField), so field-address
         // computation loads through them identically.
+        // DEF-SAB-CHAN-PAYLOAD: the chan slot-view borrow is the
+        // exception -- its register is the slot address itself, not
+        // a cell handle (see baseIsSlotViewBorrow).
         if ((expr_ty.* == .pointer or
             (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow))) and
             !self.regIsObjectPtr(base) and
-            !self.baseIsBorrowParamObjectPtr(field.expr, base))
+            !self.baseIsBorrowParamObjectPtr(field.expr, base) and
+            !self.baseIsSlotViewBorrow(field))
         {
             const obj = try self.intern(try self.newTmp());
             try self.emitLoad(obj, base, 0, .ptr);
@@ -13976,6 +14012,30 @@ pub const Codegen = struct {
         if (try self.genSmartPointerGet(source_ty, source)) |value| {
             if (value != source and !self.isLocalReg(source)) try self.emitRelease(source);
             return value;
+        }
+        // DEF-DEREF-BORROW-WRITE: dereferencing a borrow/pointer to an
+        // aggregate yields the pointee OBJECT ADDRESS, not a value
+        // load: every consumer of an aggregate-typed expression uses
+        // its register as the record address (field/index bases,
+        // place projections, value copies at assignment boundaries).
+        // A source proven to hold the object pointer itself
+        // (object_ptr_regs) IS the deref result unchanged; loading
+        // through it reinterprets the object's first word as a
+        // pointer and lands on a null/wild address. A cell-handle
+        // source keeps the historical load, and the loaded object
+        // pointer is registered so downstream place paths keep the
+        // provenance. Scalar pointees keep the plain value load.
+        if (((deref_ty.* == .user_defined and lowering_rules.smartPointerDerefType(deref_ty) == null) or
+            deref_ty.* == .tuple or deref_ty.* == .array) and
+            (source_ty.* == .borrow or source_ty.* == .pointer))
+        {
+            if (self.regIsObjectPtr(source)) return source;
+            const loaded = try self.intern(try self.newTmp());
+            try self.emitLoad(loaded, source, 0, .ptr);
+            try self.markNonOwningReg(loaded);
+            try self.markObjectPtrReg(loaded);
+            if (!self.isLocalReg(source)) try self.emitRelease(source);
+            return loaded;
         }
         const dst = try self.intern(try self.newTmp());
         try self.emitLoad(dst, source, 0, try storagePrimType(deref_ty));
@@ -21661,6 +21721,10 @@ pub const Codegen = struct {
             const dst = try self.intern(try self.newTmp());
             try self.emitLoad(dst, base, layout.offset, layout.ty);
             try self.markLoadedFieldViewIfNeeded(dst, expr_ty.tuple.elems[index]);
+            // DEF-DEREF-BORROW-WRITE: a borrow-typed element's loaded
+            // word IS the pointee object pointer (same provenance as
+            // a borrow param's delivered value).
+            if (expr_ty.tuple.elems[index].* == .borrow) try self.markObjectPtrReg(dst);
             if (!self.isLocalReg(base)) try self.emitRelease(base);
             return dst;
         }
@@ -21692,10 +21756,14 @@ pub const Codegen = struct {
         // the object pointer directly (params, struct-literal allocs,
         // borrows of inline places) skip it -- loading through them
         // reinterprets the object's first word as a pointer.
+        // DEF-SAB-CHAN-PAYLOAD: the chan slot-view borrow's register
+        // is the slot address itself, not a cell handle, so the
+        // through-load must not fire for it (see baseIsSlotViewBorrow).
         if ((expr_ty.* == .pointer or
             (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow))) and
             !self.regIsObjectPtr(base) and
-            !self.baseIsBorrowParamObjectPtr(field.expr, base))
+            !self.baseIsBorrowParamObjectPtr(field.expr, base) and
+            !self.baseIsSlotViewBorrow(field))
         {
             const obj = try self.intern(try self.newTmp());
             try self.emitLoad(obj, base, 0, .ptr);
@@ -21729,6 +21797,12 @@ pub const Codegen = struct {
         const dst = try self.intern(try self.newTmp());
         try self.emitLoad(dst, eff_base, layout.offset, layout.ty);
         try self.markLoadedFieldViewIfNeeded(dst, field_ty);
+        // DEF-DEREF-BORROW-WRITE: a borrow-typed field's loaded word
+        // IS the pointee object pointer (the stored borrow value,
+        // same provenance as a borrow param's delivered value), so a
+        // deref or field projection rooted in it must not load
+        // through it as if it were a cell handle.
+        if (field_ty.* == .borrow) try self.markObjectPtrReg(dst);
         if (!self.isLocalReg(base)) try self.emitRelease(base);
         if (through) |obj| try self.emitRelease(obj);
         return dst;

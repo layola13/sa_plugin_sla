@@ -3501,6 +3501,80 @@ pub const Codegen = struct {
         try self.emitRelease(idx_slot);
     }
 
+    /// DEF-HASHMAP-XTALK (A-form): free every live entry value cell of
+    /// a HashMap before the table itself is cleared/dropped. The std
+    /// table only stores the cell pointers (one heap cell per entry,
+    /// allocated by genMapInsertCall), so this Map layer — the cells'
+    /// owner — walks the slots (HashMap layout: slots+0, cap+8;
+    /// HashMapSlot: hash+0, key+8, value+16, state+24, size 32) and
+    /// returns each FILLED slot's cell to @sa_mem_free. Rehash only
+    /// moves slot pointers, so the walk is valid at any table shape;
+    /// @sa_map_clear zeroes the whole slot array, so a walk after a
+    /// clear finds no FILLED slot (no double free). Register
+    /// discipline mirrors emitContainerElementDrops.
+    fn emitHashMapValueCellsFree(self: *Codegen, map_reg: u32) anyerror!void {
+        const slots_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(slots_reg, map_reg, 0, .ptr);
+        const cap_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(cap_reg, map_reg, 8, .u64);
+        const idx_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(idx_slot, 8);
+        const zero_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero_reg, 0);
+        try self.emitStore(idx_slot, 0, zero_reg, .u64);
+        try self.emitRelease(zero_reg);
+        const head_label = try self.newLabel("L_MAP_CELL_FREE_HEAD");
+        const body_label = try self.newLabel("L_MAP_CELL_FREE_BODY");
+        const cell_label = try self.newLabel("L_MAP_CELL_FREE_CELL");
+        const skip_label = try self.newLabel("L_MAP_CELL_FREE_SKIP");
+        const merge_label = try self.newLabel("L_MAP_CELL_FREE_MERGE");
+        const done_label = try self.newLabel("L_MAP_CELL_FREE_DONE");
+        try self.emitJmp(head_label);
+        try self.emitLabel(head_label);
+        const i_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(i_reg, idx_slot, 0, .u64);
+        const cond_reg = try self.intern(try self.newTmp());
+        try self.emitOp(cond_reg, .ult, .{ .reg = i_reg }, .{ .reg = cap_reg });
+        try self.emitBranch(cond_reg, body_label, done_label);
+        try self.emitLabel(body_label);
+        const off_reg = try self.intern(try self.newTmp());
+        try self.emitOp(off_reg, .mul, .{ .reg = i_reg }, .{ .imm_i64 = 32 });
+        const slot_reg = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(slot_reg, slots_reg, .{ .reg = off_reg });
+        try self.emitRelease(off_reg);
+        const state_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(state_reg, slot_reg, 24, .u8);
+        const filled_reg = try self.intern(try self.newTmp());
+        try self.emitOp(filled_reg, .eq, .{ .reg = state_reg }, .{ .imm_i64 = 1 });
+        try self.emitBranch(filled_reg, cell_label, skip_label);
+        try self.emitLabel(cell_label);
+        try self.emitBranchRelease(filled_reg);
+        const cell_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(cell_reg, slot_reg, 16, .ptr);
+        // The call consumes the cell register (the raw free for SA
+        // `alloc` blocks, mirroring emitSmartPointerDrop's box free).
+        try self.ensureStdDeps("sa_std/alloc/vec.sa", &.{"sa_mem_free"});
+        try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_mem_free(^{s})", .{self.symbols.items[cell_reg]}));
+        try self.emitJmp(merge_label);
+        try self.emitLabel(skip_label);
+        try self.emitBranchRelease(filled_reg);
+        try self.emitJmp(merge_label);
+        try self.emitLabel(merge_label);
+        try self.emitRelease(state_reg);
+        try self.emitRelease(slot_reg);
+        const next_reg = try self.intern(try self.newTmp());
+        try self.emitOp(next_reg, .add, .{ .reg = i_reg }, .{ .imm_i64 = 1 });
+        try self.emitStore(idx_slot, 0, next_reg, .u64);
+        try self.emitRelease(next_reg);
+        try self.emitBranchRelease(i_reg);
+        try self.emitBranchRelease(cond_reg);
+        try self.emitJmp(head_label);
+        try self.emitLabel(done_label);
+        try self.emitRelease(slots_reg);
+        try self.emitRelease(cap_reg);
+        try self.emitRelease(idx_slot);
+    }
+
     fn emitStructFieldDrops(self: *Codegen, struct_reg: u32, struct_ty: *const ast.Type, fields: []const lowering_rules.FieldDropPlan, key: []const u8, taint_node: ?*const ast.Node) anyerror!void {
         const decl = self.structDeclForType(struct_ty) orelse return;
         for (fields) |field| {
@@ -3659,6 +3733,15 @@ pub const Codegen = struct {
         if (ownedBufferDropType(local.ty)) {
             try self.emitOwnedBufferFree(local.reg, local.ty);
             return;
+        }
+        // DEF-HASHMAP-XTALK (A-form): a dropped HashMap's entry value
+        // cells belong to this Map layer; free them before the handle
+        // itself is released. (The std table's buckets stay on the
+        // pre-existing SAB teardown path, unchanged.)
+        if (local.ty) |ty| {
+            if (lowering_rules.hashMapTypes(ty) != null) {
+                try self.emitHashMapValueCellsFree(local.reg);
+            }
         }
         try self.emitRelease(local.reg);
     }
@@ -19337,8 +19420,19 @@ pub const Codegen = struct {
         }
         if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
         const value_slot = try self.intern(try self.newTmp());
-        try self.emitStackAlloc(value_slot, 8);
-        try self.markNonOwningReg(value_slot);
+        if (plan.value_by_slot) {
+            // DEF-HASHMAP-XTALK (A-form): the value cell is per-entry
+            // HEAP storage owned by this Map layer, never a per-call-site
+            // stack cell. The std table is a pointer-identity table: it
+            // stores the cell pointer verbatim, so a stack cell shared
+            // by every loop iteration made all entries alias one address
+            // (later gets read recycled frame memory). Ownership of the
+            // cell moves into the map after the insert fragment below.
+            try self.emitAlloc(value_slot, 8);
+        } else {
+            try self.emitStackAlloc(value_slot, 8);
+            try self.markNonOwningReg(value_slot);
+        }
         try self.emitStore(value_slot, 0, value_u64, .u64);
         try self.ensureStdDeps(plan.import_path, &.{plan.dep_symbol});
         const replaced = try self.intern(try self.newTmp());
@@ -19363,7 +19457,16 @@ pub const Codegen = struct {
             });
         }
         try self.emitRelease(value_u64);
-        try self.emitRelease(value_slot);
+        if (plan.value_by_slot) {
+            // DEF-HASHMAP-XTALK (A-form): the insert fragment stored the
+            // heap cell's pointer into the table; the cell is consumed
+            // by the map, never released here (a release would free the
+            // live cell the table now points at).
+            try self.emitConsumedMarker(value_slot);
+            try self.markConsumed(value_slot);
+        } else {
+            try self.emitRelease(value_slot);
+        }
         const some_label = try self.newLabel("L_MAP_INSERT_SOME");
         const none_label = try self.newLabel("L_MAP_INSERT_NONE");
         const end_label = try self.newLabel("L_MAP_INSERT_END");
@@ -19376,7 +19479,13 @@ pub const Codegen = struct {
         if (plan.value_by_slot) {
             const old_loaded = try self.intern(try self.newTmp());
             try self.emitLoad(old_loaded, old_val, 0, .u64);
-            try self.emitBranchRelease(old_val);
+            // DEF-HASHMAP-XTALK (A-form): the replaced entry's heap
+            // cell is freed now that its value has been copied out for
+            // the Option return; the call consumes the cell register
+            // (the raw free for SA `alloc` blocks, mirroring
+            // emitSmartPointerDrop's box free).
+            try self.ensureStdDeps("sa_std/alloc/vec.sa", &.{"sa_mem_free"});
+            try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_mem_free(^{s})", .{self.symbols.items[old_val]}));
             try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
                 self.symbols.items[option_reg],
                 self.symbols.items[old_loaded],
@@ -19567,6 +19676,9 @@ pub const Codegen = struct {
         if (!is_hash_map and !is_btree_map) return null;
         const map_reg = try self.genExpr(@constCast(call.args[0]));
         if (is_hash_map) {
+            // DEF-HASHMAP-XTALK (A-form): return every entry's heap
+            // value cell before the std clear zeroes the slots.
+            try self.emitHashMapValueCellsFree(map_reg);
             try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_clear"});
             try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_CLEAR", &.{self.symbols.items[map_reg]});
         } else {

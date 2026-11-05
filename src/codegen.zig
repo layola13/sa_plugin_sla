@@ -1182,6 +1182,9 @@ pub const Codegen = struct {
             return;
         }
         if (self.hashmap_bindings.contains(resolved_name)) {
+            // DEF-HASHMAP-XTALK (A-form): free every entry's heap value
+            // cell before the std free releases the table itself.
+            try self.emitHashMapValueCellsFreeText(resolved_name);
             self.outPrint("    EXPAND MAP_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
@@ -5273,6 +5276,8 @@ pub const Codegen = struct {
             \\    __sla_map_insert_old_value_%out_opt = load __sla_map_insert_old_ptr_%out_opt+0 as u64
             \\    EXPAND OPTION_NEW_SOME %out_opt, __sla_map_insert_old_value_%out_opt
             \\    !__sla_map_insert_old_value_%out_opt
+            \\    __sla_map_insert_free_%out_opt = add __sla_map_insert_old_ptr_%out_opt, 0
+            \\    call @sa_mem_free(^__sla_map_insert_free_%out_opt)
             \\    !__sla_map_insert_old_ptr_%out_opt
             \\    !__sla_map_insert_replaced_%out_opt
             \\    jmp L_SLA_MAP_INSERT_END_%out_opt
@@ -12808,8 +12813,16 @@ pub const Codegen = struct {
     fn genHashMapValueSlot(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8), value_consumed: bool) CodegenError![]const u8 {
         const value_reg = try self.genExpr(arg, hoisted_allocs);
         const slot = try self.newTmp();
-        self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
-        self.outPrint("    {s} = stack_alloc 8\n", .{slot}) catch return CodegenError.CodegenError;
+        // DEF-HASHMAP-XTALK (A-form): the value cell is per-entry HEAP
+        // storage owned by this Map layer, never a per-call-site stack
+        // cell. The std table is a pointer-identity table: it stores
+        // the cell pointer verbatim, so a stack cell shared by every
+        // loop iteration made all entries alias one address (later
+        // gets read recycled frame memory). The caller forgets the
+        // cell register into the map after the insert expansion; the
+        // cell is returned by emitHashMapValueCellsFreeText (clear /
+        // drop) or by the insert macro's replaced branch (overwrite).
+        self.outPrint("    {s} = alloc 8\n", .{slot}) catch return CodegenError.CodegenError;
         self.outPrint("    store {s}+0, {s} as u64\n", .{ slot, value_reg }) catch return CodegenError.CodegenError;
         if (value_consumed) {
             try self.emitForgetMovedValue(value_reg);
@@ -12817,6 +12830,75 @@ pub const Codegen = struct {
             try self.emitRelease(value_reg);
         }
         return slot;
+    }
+
+    /// DEF-HASHMAP-XTALK (A-form): free every live entry value cell of
+    /// a HashMap before the table itself is cleared/freed. The std
+    /// table only stores the cell pointers, so the frontend — the
+    /// cells' owner — walks the slots and returns each FILLED slot's
+    /// cell to @sa_mem_free. Rehash only moves slot pointers, so the
+    /// walk is valid at any table shape; @sa_map_clear zeroes the
+    /// whole slot array, so a walk after a clear finds no FILLED slot
+    /// (no double free). Mirrors the register discipline of
+    /// emitContainerElementDropsText / std MAP_RETAIN.
+    fn emitHashMapValueCellsFreeText(self: *Codegen, map_reg: []const u8) CodegenError!void {
+        const slots_reg = try self.newTmp();
+        const cap_reg = try self.newTmp();
+        const i_reg = try self.newTmp();
+        const cond_reg = try self.newTmp();
+        const head_label = try self.newLabel("L_MAP_CELL_FREE_HEAD");
+        const body_label = try self.newLabel("L_MAP_CELL_FREE_BODY");
+        const cell_label = try self.newLabel("L_MAP_CELL_FREE_CELL");
+        const skip_label = try self.newLabel("L_MAP_CELL_FREE_SKIP");
+        const merge_label = try self.newLabel("L_MAP_CELL_FREE_MERGE");
+        const done_label = try self.newLabel("L_MAP_CELL_FREE_DONE");
+        self.outPrint("    {s} = load {s}+HashMap_slots as ptr\n", .{ slots_reg, map_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+HashMap_cap as u64\n", .{ cap_reg, map_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = 0\n", .{i_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ult {s}, {s}\n", .{ cond_reg, i_reg, cap_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ cond_reg, body_label, done_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
+        const off_reg = try self.newTmp();
+        const slot_reg = try self.newTmp();
+        const state_reg = try self.newTmp();
+        const filled_reg = try self.newTmp();
+        self.outPrint("    {s} = mul {s}, HashMapSlot_SIZE\n", .{ off_reg, i_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, slots_reg, off_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{off_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+HashMapSlot_state as u8\n", .{ state_reg, slot_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = eq {s}, HashMap_STATE_FILLED\n", .{ filled_reg, state_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ filled_reg, cell_label, skip_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{cell_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{filled_reg}) catch return CodegenError.CodegenError;
+        const cell_reg = try self.newTmp();
+        const free_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+HashMapSlot_value as ptr\n", .{ cell_reg, slot_reg }) catch return CodegenError.CodegenError;
+        // Free through a throwaway copy: the raw free for SA `alloc`
+        // blocks is @sa_mem_free (see emitSmartPointerDropText), and
+        // the copy keeps the loaded cell register's state uniform.
+        self.outPrint("    {s} = add {s}, 0\n", .{ free_reg, cell_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    call @sa_mem_free(^{s})\n", .{free_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{cell_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{merge_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{skip_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{filled_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{merge_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{state_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{slot_reg}) catch return CodegenError.CodegenError;
+        const next_reg = try self.newTmp();
+        self.outPrint("    {s} = add {s}, 1\n", .{ next_reg, i_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{i_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = {s}\n", .{ i_reg, next_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{i_reg}) catch return CodegenError.CodegenError;
+        try self.emitRelease(slots_reg);
+        try self.emitRelease(cap_reg);
     }
 
     fn stackAllocSize(self: *Codegen, call: *const ast.CallExpr) i64 {
@@ -18108,6 +18190,12 @@ pub const Codegen = struct {
                                 const reg = try self.newTmp();
                                 const map_insert_macro = if (lowering_rules.isStringType(hashMapTypes(ty).?.key)) "SLA_MAP_INSERT_STR_OPTION_U64" else "SLA_MAP_INSERT_OPTION_U64";
                                 self.outPrint("    EXPAND {s} {s}, {s}, {s}, {s}\n", .{ map_insert_macro, reg, recv_reg, key_reg, value_slot }) catch return CodegenError.CodegenError;
+                                // DEF-HASHMAP-XTALK (A-form): the heap
+                                // value cell's ownership moves into the
+                                // map; forget it, never release it (a
+                                // release here would free the live cell
+                                // the table now points at).
+                                try self.emitForgetMovedValue(value_slot);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 if (self.insertArgCheckerConsumed(call.args[0], call.args[1])) try self.emitForgetMovedValue(key_reg);
@@ -18127,6 +18215,10 @@ pub const Codegen = struct {
                             if (lowering_rules.isClearCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                // DEF-HASHMAP-XTALK (A-form): return every
+                                // entry's heap value cell before the std
+                                // clear zeroes the slots.
+                                try self.emitHashMapValueCellsFreeText(recv_reg);
                                 self.outPrint("    EXPAND MAP_CLEAR {s}\n", .{recv_reg}) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return "return_ty_sentinel";

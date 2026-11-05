@@ -10571,7 +10571,7 @@ pub const Codegen = struct {
             if (skip) |skip_name| {
                 if (std.mem.eql(u8, skip_name, local.name)) continue;
             }
-            w.print("    !{s}\n", .{local.name}) catch return CodegenError.CodegenError;
+            w.print("    ^{s}\n", .{local.name}) catch return CodegenError.CodegenError;
         }
     }
 
@@ -10620,7 +10620,7 @@ pub const Codegen = struct {
         w.print("    store data_slot+0, 1 as u64\n", .{}) catch return CodegenError.CodegenError;
         try self.emitLoopAwaitStoreLocals(plan, 0, plan.bindingIndex());
         try self.emitLoopAwaitFreeLocals(plan, 0, plan.bindingIndex(), null);
-        w.print("    !{s}\n", .{sub_obj}) catch return CodegenError.CodegenError;
+        w.print("    ^{s}\n", .{sub_obj}) catch return CodegenError.CodegenError;
         w.print("    jmp L_ASYNC_LOOP_AWAIT\n", .{}) catch return CodegenError.CodegenError;
         // Await stage: poll the current sub-future through its vtable.
         w.print(
@@ -10635,7 +10635,6 @@ pub const Codegen = struct {
             \\    !async_loop_ready
             \\    !async_loop_poll
             \\    !async_loop_ctx
-            \\    !async_loop_obj
             \\    jmp L_ASYNC_LOOP_DONE
             \\L_ASYNC_LOOP_SUBREADY:
             \\
@@ -12451,6 +12450,8 @@ pub const Codegen = struct {
         // params (the macro stores through the slot, never assigns it);
         // an assigned-output param must store back even when its body
         // also dereferences the freshly assigned value (PLUGIN_ASYNC_OP_NEW).
+        var assigned_storeback_indices = std.array_list.Managed(usize).init(self.allocator);
+        defer assigned_storeback_indices.deinit();
         if (!plan.expression_output) {
             for (call.args, 0..) |arg, i| {
                 if (i >= plan.leading_outputs) break;
@@ -12463,6 +12464,7 @@ pub const Codegen = struct {
                 if (std.mem.eql(u8, arg_reg, slot)) continue;
                 const arg_ty = try self.importedMacroArgType(arg);
                 self.outPrint("    store {s}+0, {s} as {s}\n", .{ slot, arg_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+                if (plan.callArgIsAssignedOutput(i)) assigned_storeback_indices.append(i) catch return CodegenError.OutOfMemory;
             }
         }
 
@@ -12492,8 +12494,25 @@ pub const Codegen = struct {
             }
         }
 
-        for (release_regs.items) |release_reg| {
-            if (release_reg) |arg_reg| try self.emitRelease(arg_reg);
+        for (release_regs.items, 0..) |release_reg, i| {
+            if (release_reg) |arg_reg| {
+                // MACRO-OUT (imported_macro_assigned_outputs): an
+                // assigned-output temp that was just stored back into
+                // the consumer's slot must retire as slot-transferred
+                // (forget if owned), not released: the store moved the
+                // expansion's freshly assigned value into the slot, so
+                // releasing the temp drops the very value the slot now
+                // holds and leaves the consumer with a dangling pointer
+                // (ptr output read back as garbage, panic 43211/43212).
+                if (std.mem.indexOfScalar(usize, assigned_storeback_indices.items, i) != null and
+                    std.mem.eql(u8, arg_reg, arg_regs.items[i]))
+                {
+                    const arg_ty = try self.importedMacroArgType(call.args[i]);
+                    try self.emitSlotTransferredRetire(arg_ty, arg_reg);
+                } else {
+                    try self.emitRelease(arg_reg);
+                }
+            }
         }
 
         return reg;

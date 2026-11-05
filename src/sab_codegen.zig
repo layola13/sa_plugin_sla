@@ -2437,6 +2437,14 @@ pub const Codegen = struct {
         if (src_float and dst_int) return .fptosi;
         if (src_float and dst_float) return if (dst_bits < src_bits) .fptrunc else .fpext;
         if (src_ty == .ptr and dst_ty == .ptr) return .bitcast;
+        // A pointer is a 64-bit value in this IR (primTypeBits(.ptr) == 64),
+        // so moving between a pointer and a 64-bit integer is a bit copy —
+        // the same ptrtoint/inttoptr bitcast the SA-text backend emits when
+        // a heap-typed value (String, Vec, struct) is stored into or loaded
+        // out of the u64 map slot. Without this, every SAB map insert/get
+        // with a heap-typed value died here as UnsupportedSabDirectFeature.
+        if ((src_ty == .ptr and dst_int and dst_bits == 64) or
+            (dst_ty == .ptr and src_int and src_bits == 64)) return .bitcast;
         return Error.UnsupportedSabDirectFeature;
     }
 
@@ -9059,7 +9067,12 @@ pub const Codegen = struct {
         try self.emitAssignImm(stage_one, 1);
         try self.emitStore(ids[0], 0, stage_one, .u64);
         try self.emitRelease(stage_one);
-        try self.emitRelease(obj);
+        // The sub-future object was just stored into the state block's
+        // sub-object slot: ownership moved to the state machine, which
+        // polls it in the AWAIT stage of this and every later poll call.
+        // Forget the register -- releasing it frees the wrapper the slot
+        // references, and AWAIT then polls freed memory (LOOP-SAB).
+        try self.emitForgetMovedValue(obj);
         for (0..plan.bindingIndex()) |i| {
             try self.emitLoopAwaitStoreLocal(ids[0], plan, i);
         }
@@ -17352,7 +17365,7 @@ pub const Codegen = struct {
         defer restores.deinit();
         var output_rebindings = std.array_list.Managed(struct { name: []const u8, reg: u32, ty: *const ast.Type }).init(self.allocator);
         defer output_rebindings.deinit();
-        var output_stores = std.array_list.Managed(struct { slot: u32, value: u32, ty: sig.PrimType }).init(self.allocator);
+        var output_stores = std.array_list.Managed(struct { slot: u32, value: u32, ty: sig.PrimType, forget: bool }).init(self.allocator);
         defer output_stores.deinit();
 
         if (dst) |reg| try arg_names.append(self.symbols.items[reg]);
@@ -17385,7 +17398,7 @@ pub const Codegen = struct {
             }
             if (lowered_arg.output_store_slot) |slot| {
                 const value = try self.intern(lowered_arg.operand);
-                try output_stores.append(.{ .slot = slot, .value = value, .ty = lowered_arg.output_store_ty orelse return Error.MissingType });
+                try output_stores.append(.{ .slot = slot, .value = value, .ty = lowered_arg.output_store_ty orelse return Error.MissingType, .forget = plan.callArgIsAssignedOutput(i) });
             }
         }
 
@@ -17413,7 +17426,19 @@ pub const Codegen = struct {
         }
         for (output_stores.items) |store| {
             try self.emitStore(store.slot, 0, store.value, store.ty);
-            try self.emitRelease(store.value);
+            // MACRO-OUT (imported_macro_assigned_outputs): an
+            // assigned-output temp that was just stored back into the
+            // consumer's slot must be forgotten (move-out), not
+            // released: the store transferred the expansion's freshly
+            // assigned value into the slot, so releasing the temp drops
+            // the very value the slot now holds and leaves the consumer
+            // with a dangling pointer (panic 43211/43212). Mirrors
+            // SA-text genImportedMacroCall's slot-transferred retire.
+            if (store.forget) {
+                try self.emitForgetMovedValue(store.value);
+            } else {
+                try self.emitRelease(store.value);
+            }
         }
         try self.releaseNonLocalTemps(release_regs.items);
         if (dst) |reg| return reg;
@@ -19549,6 +19574,23 @@ pub const Codegen = struct {
             }
         }
 
+        // DEF-SAB-SURFACE-GET-SHADOW: the bare-call surface lookups below
+        // key on (first-arg type, func name) only. A call whose name the
+        // checker knows as a function resolves to that function — the
+        // checker itself gives known callees precedence over the method
+        // reading (type_checker walkTaintCall's `known_callee`). Without
+        // this guard a user function named e.g. `get` is silently replaced
+        // by the matching std-surface projection (Arc ARC_GET, Cell
+        // CELL_SET, ...): no call is emitted and the function body never
+        // runs. Return null so the planned static-call path emits the real
+        // call, exactly like the SA-text backend.
+        if (self.tc.funcs.contains(call.func_name) or
+            self.tc.extern_funcs.contains(call.func_name) or
+            self.tc.imported_function_signatures.contains(call.func_name))
+        {
+            return null;
+        }
+
         if (call.args.len == 0) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         const receiver_type_name = typeBaseName(receiver_ty) orelse return null;
@@ -19602,7 +19644,44 @@ pub const Codegen = struct {
             try self.releaseNonLocalTemps(release_regs.items);
             return dst;
         }
-        const rule = self.findStdSurfaceRule(.method, receiver_type_name, call.func_name) orelse return null;
+        const rule = blk: {
+            const found = self.findStdSurfaceRule(.method, receiver_type_name, call.func_name) orelse return null;
+            // DEF-SAB-AUDIT item 3 (74622): a HashSet<String> must key on
+            // string CONTENT, not pointer identity — the plain SET_INSERT /
+            // SET_CONTAINS std macros hash the key pointer. The SA-text
+            // backend routes String-element sets to the *_str std variants
+            // (DEF-INSERT-GETMISS); mirror that routing here by substituting
+            // the surface rule when the inserted/queried value is a String.
+            // Requires the sa_std *_str variants (sci side of that fix).
+            if ((std.mem.eql(u8, found.macro_name, "SET_INSERT") or
+                std.mem.eql(u8, found.macro_name, "SET_CONTAINS")) and call.args.len > 1)
+            {
+                if (self.tc.expr_types.get(call.args[1])) |value_ty| {
+                    if (lowering_rules.isStringType(value_ty)) {
+                        var str_rule = found;
+                        if (std.mem.eql(u8, found.macro_name, "SET_INSERT")) {
+                            str_rule.macro_name = "SET_INSERT_STR";
+                            str_rule.deps = &.{
+                                "sa_set_insert_str",   "sa_map_put_str",
+                                "map_hash_str_seed",   "map_table_probe_str",
+                                "map_probe_existing_str", "map_str_key_eq",
+                                "map_rehash",          "map_table_insert",
+                                "sa_mem_set",
+                            };
+                        } else {
+                            str_rule.macro_name = "SET_CONTAINS_STR";
+                            str_rule.deps = &.{
+                                "sa_set_contains_str", "sa_map_get_str",
+                                "map_hash_str_seed",   "map_table_probe_str",
+                                "map_probe_existing_str", "map_str_key_eq",
+                            };
+                        }
+                        break :blk str_rule;
+                    }
+                }
+            }
+            break :blk found;
+        };
         const receiver_reg = try self.genExpr(@constCast(call.args[0]));
         const value_reg = if (call.args.len > 1) blk: {
             const value_expr = call.args[1];

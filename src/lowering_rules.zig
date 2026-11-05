@@ -3793,9 +3793,14 @@ pub fn planRefCellBorrowResult(target: RefCellBorrowResultTarget, value_kind: Re
                 .track_borrow_slot_release_temp = false,
             },
             .pointer_payload => .{
-                .action = .take_pointer_payload,
-                .release_borrow_slot_after_payload = false,
-                .track_borrow_slot_release_temp = true,
+                // DEF-REFCELL-FIX: as sa_text — the payload stays owned by
+                // the cell and the handle is a view of it. The old SAB form
+                // took the payload out of the cell slot, moving ownership
+                // into the handle temp; the handle release then freed the
+                // payload while the cell still owned it (double free).
+                .action = .load_pointer_payload,
+                .release_borrow_slot_after_payload = true,
+                .track_borrow_slot_release_temp = false,
             },
         },
     };
@@ -5079,14 +5084,9 @@ pub const SmartPointerAddressAction = enum {
     unsupported,
     dyn_box_identity,
     as_ptr_slot,
-    as_ptr_take_pointer_backed_value,
 
     pub fn isDynBoxIdentity(self: SmartPointerAddressAction) bool {
         return self == .dyn_box_identity;
-    }
-
-    pub fn isAsPtrTakePointerBackedValue(self: SmartPointerAddressAction) bool {
-        return self == .as_ptr_take_pointer_backed_value;
     }
 };
 
@@ -5112,8 +5112,25 @@ pub const SmartPointerGetAction = enum {
 pub fn planSmartPointerAddressAction(source_ty: *const ast.Type) SmartPointerAddressAction {
     const smart = smartPointerDerefType(source_ty) orelse return .unsupported;
     if (smart.kind == .box and smartPointerDerefIsDynBox(source_ty)) return .dyn_box_identity;
-    if (smartPointerDerefLoadsPointerBackedValue(smart.inner)) return .as_ptr_take_pointer_backed_value;
+    // DEF-SP2: the plan is uniform -- there is no take form. The
+    // kind-specific place computation (Box: the as_ptr result itself;
+    // Rc/Arc: one load from the RcBox/ArcBox data slot the as_ptr
+    // result addresses) lives in genSmartPointerAddressSource.
     return .as_ptr_slot;
+}
+
+/// DEF-SP2: true when a smart pointer's pointee is stored by pointer
+/// in the smart value's cell (user structs, tuples, arrays), as
+/// opposed to inline (scalars and nested smart pointers, whose cell
+/// word IS the value). Drives the receiver hop in
+/// genSmartPointerAddressSource: only pointer-backed payloads sit
+/// one load below their cell.
+pub fn smartPointerDerefLoadsPointerBackedValue(inner_ty: *const ast.Type) bool {
+    return switch (inner_ty.*) {
+        .user_defined => smartPointerDerefType(inner_ty) == null,
+        .tuple, .array => true,
+        else => false,
+    };
 }
 
 pub fn planSmartPointerValueSlotAction(source_ty: *const ast.Type) SmartPointerValueSlotAction {
@@ -5342,14 +5359,6 @@ pub fn planAsPtrReceiver(materialization: StringBindingMaterialization) AsPtrPla
 pub fn associatedRuleNeedsUnderlyingSmartPointer(type_name: []const u8, member_name: []const u8) bool {
     if (!std.mem.eql(u8, member_name, "clone")) return false;
     return std.mem.eql(u8, type_name, "Rc") or std.mem.eql(u8, type_name, "Arc");
-}
-
-pub fn smartPointerDerefLoadsPointerBackedValue(inner_ty: *const ast.Type) bool {
-    return switch (inner_ty.*) {
-        .user_defined => smartPointerDerefType(inner_ty) == null,
-        .tuple, .array => true,
-        else => false,
-    };
 }
 
 pub fn refCellPayloadIsPointer(ty: *const ast.Type) bool {
@@ -9058,9 +9067,9 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expect(!pointer_sa_result.track_borrow_slot_release_temp);
 
     const pointer_sab_result = planRefCellBorrowResult(.direct_sab, pointer_plan.value_kind);
-    try std.testing.expectEqual(RefCellBorrowResultAction.take_pointer_payload, pointer_sab_result.action);
-    try std.testing.expect(!pointer_sab_result.release_borrow_slot_after_payload);
-    try std.testing.expect(pointer_sab_result.track_borrow_slot_release_temp);
+    try std.testing.expectEqual(RefCellBorrowResultAction.load_pointer_payload, pointer_sab_result.action);
+    try std.testing.expect(pointer_sab_result.release_borrow_slot_after_payload);
+    try std.testing.expect(!pointer_sab_result.track_borrow_slot_release_temp);
 
     const scalar_sab_result = planRefCellBorrowResult(.direct_sab, scalar_plan.value_kind);
     try std.testing.expectEqual(RefCellBorrowResultAction.use_borrow_slot, scalar_sab_result.action);
@@ -9205,11 +9214,10 @@ test "shared dyn coercion and receiver plans" {
     try std.testing.expect(planDynDispatchReceiver(&concrete_ty) == null);
     try std.testing.expectEqual(SmartPointerAddressAction.dyn_box_identity, planSmartPointerAddressAction(&box_dyn_ty));
     try std.testing.expectEqual(SmartPointerAddressAction.as_ptr_slot, planSmartPointerAddressAction(&box_i32_ty));
-    try std.testing.expectEqual(SmartPointerAddressAction.as_ptr_take_pointer_backed_value, planSmartPointerAddressAction(&box_concrete_ty));
+    try std.testing.expectEqual(SmartPointerAddressAction.as_ptr_slot, planSmartPointerAddressAction(&box_concrete_ty));
     try std.testing.expectEqual(SmartPointerAddressAction.as_ptr_slot, planSmartPointerAddressAction(&rc_box_ty));
     try std.testing.expectEqual(SmartPointerAddressAction.unsupported, planSmartPointerAddressAction(&concrete_ty));
     try std.testing.expect(planSmartPointerAddressAction(&box_dyn_ty).isDynBoxIdentity());
-    try std.testing.expect(planSmartPointerAddressAction(&box_concrete_ty).isAsPtrTakePointerBackedValue());
     try std.testing.expectEqual(SmartPointerValueSlotAction.as_ptr_slot, planSmartPointerValueSlotAction(&box_box_i32_ty));
     try std.testing.expectEqual(SmartPointerValueSlotAction.unsupported, planSmartPointerValueSlotAction(&box_i32_ty));
     try std.testing.expectEqual(SmartPointerGetAction.dyn_box_identity, planSmartPointerGetAction(&box_dyn_ty));

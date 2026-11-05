@@ -357,6 +357,10 @@ pub const Codegen = struct {
     result_slot_refcell_handles: std.AutoHashMap(u32, ResultSlotRefCellHandle),
     result_slot_refcell_slots: std.AutoHashMap(u32, u32),
     borrow_address_temps: std.AutoHashMap(u32, BorrowAddressTempState),
+    /// DEF-SP2: borrow regs whose target is a field/index place slot
+    /// holding the register-form value (a cell for smart pointers),
+    /// as opposed to a handle pointing straight at value bits.
+    cell_target_borrows: std.AutoHashMap(u32, void),
     non_owning_regs: std.AutoHashMap(u32, void),
     field_handle_view_regs: std.AutoHashMap(u32, void),
     // Anonymous stack_alloc temporaries (string/slice materialization etc).
@@ -477,6 +481,7 @@ pub const Codegen = struct {
             .result_slot_refcell_handles = std.AutoHashMap(u32, ResultSlotRefCellHandle).init(allocator),
             .result_slot_refcell_slots = std.AutoHashMap(u32, u32).init(allocator),
             .borrow_address_temps = std.AutoHashMap(u32, BorrowAddressTempState).init(allocator),
+            .cell_target_borrows = std.AutoHashMap(u32, void).init(allocator),
             .non_owning_regs = std.AutoHashMap(u32, void).init(allocator),
             .field_handle_view_regs = std.AutoHashMap(u32, void).init(allocator),
             .stack_alloc_regs = std.AutoHashMap(u32, void).init(allocator),
@@ -563,6 +568,7 @@ pub const Codegen = struct {
         self.result_slot_refcell_slots.deinit();
         self.clearBorrowAddressTemps();
         self.borrow_address_temps.deinit();
+        self.cell_target_borrows.deinit();
         self.non_owning_regs.deinit();
         self.field_handle_view_regs.deinit();
         self.stack_alloc_regs.deinit();
@@ -2609,6 +2615,7 @@ pub const Codegen = struct {
     fn clearBorrowAddressTemps(self: *Codegen) void {
         self.freeBorrowAddressTempSlices(&self.borrow_address_temps);
         self.borrow_address_temps.clearRetainingCapacity();
+        self.cell_target_borrows.clearRetainingCapacity();
     }
 
     fn cloneBorrowAddressTemps(self: *Codegen) !std.AutoHashMap(u32, BorrowAddressTempState) {
@@ -10577,7 +10584,7 @@ pub const Codegen = struct {
             .deref_smart_pointer => blk: {
                 const source_ty = deref_source_ty orelse return Error.MissingType;
                 const source = try self.genMacroExpr(expr.deref_expr.expr, ctx);
-                break :blk try self.genDerefAddressFallback(source_ty, source);
+                break :blk try self.genDerefAddressFallback(source_ty, source, self.smartPointerSourceIsCell(source_ty, expr.deref_expr.expr, true));
             },
             .field => blk: {
                 if (expr.* != .field_expr) return Error.UnsupportedSabDirectFeature;
@@ -10591,7 +10598,7 @@ pub const Codegen = struct {
                 if (expr.* == .deref_expr) {
                     const source_ty = deref_source_ty orelse return Error.MissingType;
                     const source = try self.genMacroExpr(expr.deref_expr.expr, ctx);
-                    break :blk try self.genDerefAddressFallback(source_ty, source);
+                    break :blk try self.genDerefAddressFallback(source_ty, source, self.smartPointerSourceIsCell(source_ty, expr.deref_expr.expr, true));
                 }
                 break :blk .{ .reg = try self.genMacroExpr(expr, ctx) };
             },
@@ -10630,6 +10637,11 @@ pub const Codegen = struct {
         // DEF-SAB-BORROW-WRITE-NULL: see genBorrow.
         if (self.regIsObjectPtr(source.reg)) try self.markObjectPtrReg(dst);
         try self.rememberBorrowAddressTemps(dst, source);
+        // DEF-SP2: a borrow of a field/index place targets the place
+        // slot, which holds the register-form value (a cell for smart
+        // pointers); the deref receiver must hop once more to the
+        // value bits (genSmartPointerAddressSource).
+        if (borrow.expr.* == .field_expr or borrow.expr.* == .index_expr) try self.cell_target_borrows.put(dst, {});
         return dst;
     }
 
@@ -13576,7 +13588,7 @@ pub const Codegen = struct {
         // exception -- its register is the slot address itself, not
         // a cell handle (see baseIsSlotViewBorrow).
         if ((expr_ty.* == .pointer or
-            (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow))) and
+            (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow) and !self.refcell_borrow_values.contains(base))) and
             !self.regIsObjectPtr(base) and
             !self.baseIsBorrowParamObjectPtr(field.expr, base) and
             !self.baseIsSlotViewBorrow(field))
@@ -13642,6 +13654,52 @@ pub const Codegen = struct {
         for (source.release_regs) |release_reg| try self.emitRelease(release_reg);
     }
 
+    /// Disposal bookkeeping of one register, captured before a branch
+    /// arm disposes it so the sibling arm can dispose it again.
+    const RegDisposalSnapshot = struct {
+        reg: u32,
+        released: bool,
+        field_handle_view: bool,
+        non_owning: bool,
+    };
+
+    fn snapshotRegDisposal(self: *Codegen, reg: u32) RegDisposalSnapshot {
+        return .{
+            .reg = reg,
+            .released = self.released_regs.contains(reg),
+            .field_handle_view = self.field_handle_view_regs.contains(reg),
+            .non_owning = self.non_owning_regs.contains(reg),
+        };
+    }
+
+    /// DEF-PHI: `released_regs` is path-insensitive — once the first
+    /// emitted arm disposes a register, a plain `emitRelease` for it on
+    /// the sibling arm is swallowed, so the register stays Active on
+    /// that path only and the SAB verifier traps PhiStateConflict
+    /// where the paths join (a loop head's back-edge included).
+    /// Restoring the snapshot between arms lets each arm emit its own
+    /// disposal; it also re-registers the field-handle-view /
+    /// non-owning marks the first arm's `emitRelease` consumed via
+    /// fetchRemove, so the second arm's disposal takes the same form
+    /// (a real release for handle views, not the move_ no-op).
+    fn restoreRegDisposal(self: *Codegen, snap: RegDisposalSnapshot) !void {
+        if (!snap.released) _ = self.released_regs.remove(snap.reg);
+        if (snap.field_handle_view) try self.field_handle_view_regs.put(snap.reg, {});
+        if (snap.non_owning) try self.non_owning_regs.put(snap.reg, {});
+    }
+
+    fn snapshotSourceDisposal(self: *Codegen, source: AddressSource) ![]RegDisposalSnapshot {
+        var list = std.array_list.Managed(RegDisposalSnapshot).init(self.allocator);
+        errdefer list.deinit();
+        try list.append(self.snapshotRegDisposal(source.reg));
+        for (source.release_regs) |reg| try list.append(self.snapshotRegDisposal(reg));
+        return list.toOwnedSlice();
+    }
+
+    fn restoreSourceDisposal(self: *Codegen, snaps: []const RegDisposalSnapshot) !void {
+        for (snaps) |snap| try self.restoreRegDisposal(snap);
+    }
+
     fn genIndexAddress(self: *Codegen, idx: ast.IndexExpr) anyerror!AddressSource {
         const target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType;
         const addressable_target_ty = lowering_rules.ordinaryIndexAddressTargetType(target_ty);
@@ -13680,6 +13738,18 @@ pub const Codegen = struct {
                 }
             }
             _ = firstGenericArg(target_ty) orelse return Error.UnsupportedSabDirectFeature;
+            // DEF-PHI: for inline-POD Vec/GrowVec elements the std
+            // index_address surface returns the slot's *content* (the
+            // element record handle for pointer-stored elements); a
+            // POD slot's content is the element's packed word, which
+            // place consumers (borrows, field addresses) would mistake
+            // for a pointer. Compute the slot address directly, with
+            // the same address math as genVecPodIndexRead.
+            if (lowering_rules.vecLikeElementType(target_ty)) |pod_elem_ty| {
+                if (self.inlinePodElement(pod_elem_ty)) {
+                    return try self.genVecPodIndexSlotAddress(idx, target_ty);
+                }
+            }
             const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
             const rule = self.findStdSurfaceRule(.index_address, target_type_name, null) orelse return Error.UnsupportedSabDirectFeature;
             const target_reg = try self.genExpr(idx.target);
@@ -13765,35 +13835,107 @@ pub const Codegen = struct {
         return dst;
     }
 
-    fn genSmartPointerAddressSource(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?AddressSource {
+    /// DEF-SP2: true when genExpr's register for a smart-pointer deref
+    /// source denotes the value's storage CELL (whose first word is the
+    /// smart value) rather than the value itself. Identifier forms
+    /// (plain path): a Box binding's register is a cell whose content
+    /// is the box value (the payload pointer) -- home cells for lets,
+    /// entry cells for params -- while an Rc/Arc binding's register IS
+    /// the value (the RcBox/ArcBox allocation itself, params included:
+    /// the drop glue dereferences the counts straight off it). Macro
+    /// expansions bind identifiers to temps and argument substitutions
+    /// that do not follow the home convention, so the macro path keeps
+    /// the stack-slot rule (localRegIsAddress).
+    /// Field/index forms: pointer-backed field cells and element
+    /// slots. The receiver computation in
+    /// genSmartPointerAddressSource loads the value out of the cell,
+    /// mirroring the borrow/pointer handle load.
+    fn smartPointerSourceIsCell(self: *Codegen, source_ty: *const ast.Type, expr: *const ast.Node, in_macro: bool) bool {
+        switch (expr.*) {
+            .identifier => |name| {
+                if (in_macro) return self.localRegIsAddress(name);
+                const smart = lowering_rules.smartPointerDerefType(source_ty) orelse return false;
+                return smart.kind == .box;
+            },
+            .field_expr => {
+                const field_ty = self.tc.expr_types.get(expr) orelse return false;
+                return lowering_rules.structFieldIsPointerBacked(field_ty);
+            },
+            .index_expr => {
+                const elem_ty = self.tc.expr_types.get(expr) orelse return false;
+                return (self.indexBorrowLoadsStoredPointer(elem_ty) or lowering_rules.smartPointerDerefType(elem_ty) != null) and !self.inlinePodElement(elem_ty);
+            },
+            else => return false,
+        }
+    }
+
+    fn genSmartPointerAddressSource(self: *Codegen, source_ty: *const ast.Type, source: u32, source_is_cell: bool) anyerror!?AddressSource {
         const action = lowering_rules.planSmartPointerAddressAction(source_ty);
         if (action == .unsupported) return null;
         if (action.isDynBoxIdentity()) return .{ .reg = source };
 
-        const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
+        // DEF-SP2 receiver forms: the smart value reaches this point
+        // either as value bits (Box: the payload pointer; Rc/Arc: the
+        // handle) or as a cell whose first word is the bits. Borrow /
+        // pointer handles load to bits, except borrows created here
+        // from a field/index place, whose target slot holds the
+        // register-form value (a cell) -- those borrows are recorded
+        // in cell_target_borrows by genBorrow/genMacroBorrow. Cell
+        // sources (classifier) load to bits. A Box with an inline
+        // payload stores the payload IN the cell, so the cell itself
+        // is the receiver and no load may happen; an Rc/Arc cell
+        // always holds the handle, so its hop is unconditional.
+        const needs_load = lowering_rules.smartPointerReceiverNeedsLoad(source_ty);
+        const smart_recv = lowering_rules.smartPointerDerefType(source_ty) orelse return Error.MissingType;
+        const payload_pointer_backed = lowering_rules.smartPointerDerefLoadsPointerBackedValue(smart_recv.inner);
+        var receiver: u32 = source;
+        if (needs_load) {
             const loaded = try self.intern(try self.newTmp());
             try self.emitLoad(loaded, source, 0, .ptr);
-            break :blk loaded;
-        } else source;
+            receiver = loaded;
+            const targets_cell = self.cell_target_borrows.contains(source);
+            if (targets_cell and smart_recv.kind == .box and payload_pointer_backed) {
+                const hopped = try self.intern(try self.newTmp());
+                try self.emitLoad(hopped, receiver, 0, .ptr);
+                receiver = hopped;
+            }
+        } else if (source_is_cell and smart_recv.kind == .box and payload_pointer_backed) {
+            const loaded = try self.intern(try self.newTmp());
+            try self.emitLoad(loaded, source, 0, .ptr);
+            receiver = loaded;
+        }
 
         var release_regs = std.array_list.Managed(u32).init(self.allocator);
         defer release_regs.deinit();
 
         const slot = try self.intern(try self.newTmp());
         try self.emitStdSurfaceMethod(source_ty, "as_ptr", slot, receiver);
-        if (action.isAsPtrTakePointerBackedValue()) {
-            const value = try self.intern(try self.newTmp());
-            try self.emitTake(value, slot, 0, .ptr);
+        // DEF-SP2: the place of `*sp` is the pointee object pointer.
+        // What as_ptr returns differs by kind: BOX_AS_PTR is the box
+        // value itself, which IS the payload pointer, so the place is
+        // the as_ptr result. RC_AS_PTR / ARC_AS_PTR address the
+        // RcBox/ArcBox data slot, whose content is the payload pointer,
+        // so the place is one load further. (The former take/restore
+        // form applied the data-slot load to every kind and so
+        // dereferenced a struct payload's first word as an address for
+        // Box -- sig11 -- while also moving the word out and storing
+        // it back.) Record the object-pointer provenance on the place
+        // register so borrows of the place inherit it (genBorrow /
+        // genMacroBorrow) and field/index access through them skips
+        // the cell through-load (DEF-SAB-BORROW-WRITE-NULL discipline).
+        const smart = lowering_rules.smartPointerDerefType(source_ty) orelse return Error.MissingType;
+        if (smart.kind == .rc or smart.kind == .arc) {
+            const place = try self.intern(try self.newTmp());
+            try self.emitLoad(place, slot, 0, .ptr);
+            try self.markNonOwningReg(place);
+            try self.markObjectPtrReg(place);
             try release_regs.append(slot);
             if (receiver != source and !self.isLocalReg(receiver)) try release_regs.append(receiver);
             if (!self.isLocalReg(source) and source != receiver) try release_regs.append(source);
             if (source == receiver and !self.isLocalReg(source)) try release_regs.append(source);
-            return .{
-                .reg = value,
-                .release_regs = try self.ownedReleaseRegs(release_regs.items),
-                .restore_slot = slot,
-            };
+            return .{ .reg = place, .release_regs = try self.ownedReleaseRegs(release_regs.items) };
         }
+        try self.markObjectPtrReg(slot);
 
         if (receiver != source and !self.isLocalReg(receiver)) try release_regs.append(receiver);
         if (!self.isLocalReg(source) and source != receiver) try release_regs.append(source);
@@ -13801,8 +13943,8 @@ pub const Codegen = struct {
         return .{ .reg = slot, .release_regs = try self.ownedReleaseRegs(release_regs.items) };
     }
 
-    fn genDerefAddressFallback(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!AddressSource {
-        if (try self.genSmartPointerAddressSource(source_ty, source)) |address| return address;
+    fn genDerefAddressFallback(self: *Codegen, source_ty: *const ast.Type, source: u32, source_is_cell: bool) anyerror!AddressSource {
+        if (try self.genSmartPointerAddressSource(source_ty, source, source_is_cell)) |address| return address;
         if (try self.genSmartPointerValueSlot(source_ty, source)) |slot| {
             if (!self.isLocalReg(source)) try self.emitRelease(source);
             return .{ .reg = slot };
@@ -13866,7 +14008,7 @@ pub const Codegen = struct {
             .deref_smart_pointer => blk: {
                 const source_ty = deref_source_ty orelse return Error.MissingType;
                 const source = try self.genExpr(expr.deref_expr.expr);
-                break :blk try self.genDerefAddressFallback(source_ty, source);
+                break :blk try self.genDerefAddressFallback(source_ty, source, self.smartPointerSourceIsCell(source_ty, expr.deref_expr.expr, false));
             },
             .field => blk: {
                 if (expr.* != .field_expr) return Error.UnsupportedSabDirectFeature;
@@ -13882,7 +14024,7 @@ pub const Codegen = struct {
                 const deref = expr.deref_expr;
                 const source_ty = deref_source_ty orelse return Error.MissingType;
                 const source = try self.genExpr(deref.expr);
-                break :blk try self.genDerefAddressFallback(source_ty, source);
+                break :blk try self.genDerefAddressFallback(source_ty, source, self.smartPointerSourceIsCell(source_ty, deref.expr, false));
             },
         };
     }
@@ -14005,6 +14147,11 @@ pub const Codegen = struct {
         // propagates from the source register.
         if (self.regIsObjectPtr(source.reg)) try self.markObjectPtrReg(dst);
         try self.rememberBorrowAddressTemps(dst, source);
+        // DEF-SP2: a borrow of a field/index place targets the place
+        // slot, which holds the register-form value (a cell for smart
+        // pointers); the deref receiver must hop once more to the
+        // value bits (genSmartPointerAddressSource).
+        if (borrow.expr.* == .field_expr or borrow.expr.* == .index_expr) try self.cell_target_borrows.put(dst, {});
         return dst;
     }
 
@@ -16647,18 +16794,19 @@ pub const Codegen = struct {
         const result_plan = lowering_rules.planRefCellBorrowResult(.direct_sab, plan.value_kind);
         const borrow_reg = if (result_plan.action.usesBorrowSlot())
             borrow_slot_reg
-        else if (result_plan.action.takesPointerPayload()) blk: {
+        else if (result_plan.action.loadsPointerPayload()) blk: {
             const payload_reg = try self.intern(try self.newTmp());
-            try self.emitTake(payload_reg, borrow_slot_reg, 0, .ptr);
-            const temp_plan = lowering_rules.planBorrowAddressTemps(result_plan.track_borrow_slot_release_temp, false);
-            if (temp_plan.track_primary_temp) {
-                try self.borrow_address_temps.put(payload_reg, .{
-                    .release_regs = try self.singleReleaseReg(borrow_slot_reg),
-                });
-            }
+            // DEF-REFCELL-FIX: load the payload pointer as a non-owning
+            // view (mirrors SA-text load_pointer_payload). The cell keeps
+            // ownership; the handle release runs the borrow-release macro
+            // and retires this register with move_, never a freeing
+            // release. The previous take moved ownership into the handle
+            // temp, so handle release freed the payload under the cell.
+            try self.emitLoad(payload_reg, borrow_slot_reg, 0, .ptr);
+            try self.markNonOwningReg(payload_reg);
+            if (result_plan.release_borrow_slot_after_payload) try self.emitRelease(borrow_slot_reg);
             break :blk payload_reg;
         } else {
-            if (result_plan.action.loadsPointerPayload()) return Error.UnsupportedSabDirectFeature;
             return Error.UnsupportedSabDirectFeature;
         };
         const handle_plan = lowering_rules.planRefCellBorrowHandleRegistration(plan);
@@ -16668,6 +16816,11 @@ pub const Codegen = struct {
             .kind = plan.kind,
             .release_regs = release_regs,
         });
+        // DEF-SP2: a slot-form borrow result is a handle to the
+        // cell's payload slot, which holds the register-form value
+        // (a cell for Box payloads); record it so a smart-pointer
+        // deref through the coerced &Box binding hops to the bits.
+        if (result_plan.action.usesBorrowSlot()) try self.cell_target_borrows.put(borrow_reg, {});
         return borrow_reg;
     }
 
@@ -18033,6 +18186,11 @@ pub const Codegen = struct {
     }
 
     fn indexBorrowLoadsStoredPointer(self: *Codegen, elem_ty: *const ast.Type) bool {
+        // DEF-PHI: inline-POD elements are stored as their packed word
+        // in the buffer, not as a stored pointer — the field-storage
+        // predicate below must not fire for them, or a borrow of
+        // `vec[i]` loads the element's own bits as a record pointer.
+        if (self.inlinePodElement(elem_ty)) return false;
         return self.fieldBorrowLoadsStoredPointer(elem_ty);
     }
 
@@ -18680,6 +18838,37 @@ pub const Codegen = struct {
                             }
                         }
                     }
+                    // DEF-PARALLEL: field/index projection of a live
+                    // binding (`holder.field`, `vec[i]`) — the loaded
+                    // handle aliases storage the binding still owns, and
+                    // the binding's drop is not suppressed by a partial
+                    // "move" of one field/element. Clone the projected
+                    // Vec/GrowVec value for the consuming (^) parameter,
+                    // mirroring the identifier path above; the projection
+                    // temp is a plain handle copy and is released after
+                    // the call.
+                    if (!move_out and prefix == '^' and arg.* != .identifier and lowering_rules.rootIdentifier(arg) != null) {
+                        if (arg_ty) |ty| {
+                            if (lowering_rules.growVecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genGrowVecCloneValue(arg_reg, elem_ty);
+                                const operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[cloned]});
+                                break :blk .{
+                                    .operand = operand,
+                                    .release_reg = arg_reg,
+                                    .forget_reg = cloned,
+                                };
+                            }
+                            if (lowering_rules.vecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
+                                const operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[cloned]});
+                                break :blk .{
+                                    .operand = operand,
+                                    .release_reg = arg_reg,
+                                    .forget_reg = cloned,
+                                };
+                            }
+                        }
+                    }
                     const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                     const operand = try std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefix, self.symbols.items[arg_reg] });
                     break :blk .{
@@ -18724,6 +18913,31 @@ pub const Codegen = struct {
                                 break :blk .{
                                     .operand = self.symbols.items[cloned],
                                     .release_reg = null,
+                                    .forget_reg = cloned,
+                                };
+                            }
+                        }
+                    }
+                    // DEF-PARALLEL: field/index projection of a live
+                    // binding — clone the projected Vec/GrowVec value for
+                    // the ownership-transferring parameter, mirroring the
+                    // identifier path above (see the prefixed-arg site).
+                    // The projection temp is released after the call.
+                    if (!move_out and arg.* != .identifier and lowering_rules.rootIdentifier(arg) != null) {
+                        if (arg_ty) |ty| {
+                            if (lowering_rules.growVecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genGrowVecCloneValue(arg_reg, elem_ty);
+                                break :blk .{
+                                    .operand = self.symbols.items[cloned],
+                                    .release_reg = arg_reg,
+                                    .forget_reg = cloned,
+                                };
+                            }
+                            if (lowering_rules.vecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
+                                break :blk .{
+                                    .operand = self.symbols.items[cloned],
+                                    .release_reg = arg_reg,
                                     .forget_reg = cloned,
                                 };
                             }
@@ -20401,12 +20615,19 @@ pub const Codegen = struct {
         const miss_label = try self.newLabel("L_VEC_POD_ASSIGN_MISS");
         try self.emitBranch(in_bounds, hit_label, miss_label);
 
+        // DEF-PHI: the miss arm disposes target_source through plain
+        // emitRelease bookkeeping; restore it before the hit arm so
+        // the hit arm emits its own disposal (see restoreRegDisposal).
+        const target_disposal = try self.snapshotSourceDisposal(target_source);
+        defer self.allocator.free(target_disposal);
+
         try self.emitLabel(miss_label);
         try self.emitBranchRelease(in_bounds);
         if (!self.isLocalReg(index_reg)) try self.emitBranchRelease(index_reg);
         if (!self.isLocalReg(value_reg)) try self.emitBranchRelease(value_reg);
         try self.releaseAddressSource(target_source);
         try self.emitPanicCode(87);
+        try self.restoreSourceDisposal(target_disposal);
 
         try self.emitLabel(hit_label);
         try self.emitBranchRelease(in_bounds);
@@ -20432,6 +20653,37 @@ pub const Codegen = struct {
         try self.emitReplaceSourceNull(node);
     }
 
+    /// DEF-PHI: the element slot address of an inline-POD Vec/GrowVec
+    /// index place (buffer pointer + index * slot size) — the address
+    /// form of genVecPodIndexRead's hit path, without the bounds
+    /// branch and without loading the slot. Place consumers (element
+    /// borrows, element field addresses) route here via
+    /// genIndexAddress; the std index_address surface returns the
+    /// slot's content instead, which for POD elements is the packed
+    /// word itself, not a pointer.
+    fn genVecPodIndexSlotAddress(self: *Codegen, idx: ast.IndexExpr, target_ty: *const ast.Type) anyerror!AddressSource {
+        const is_grow = lowering_rules.growVecElementType(target_ty) != null;
+        const ptr_off = if (is_grow) lowering_rules.GrowVecAbi.ptr_offset else lowering_rules.VecAbi.ptr_offset;
+        const elem_ty = lowering_rules.vecLikeElementType(target_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const target_source = try self.genVecOwnerReceiver(idx.target);
+        const target_reg = target_source.reg;
+        const index_reg = try self.genExpr(idx.index);
+        const data_ptr = try self.intern(try self.newTmp());
+        const offset = try self.intern(try self.newTmp());
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.recordReg(data_ptr);
+        try self.recordReg(offset);
+        try self.recordReg(elem_ptr);
+        try self.emitLoad(data_ptr, target_reg, ptr_off, .ptr);
+        try self.emitOp(offset, .mul, .{ .reg = index_reg }, .{ .imm_i64 = @intCast(lowering_rules.vecElementSlotSize(elem_ty)) });
+        try self.emitPtrAdd(elem_ptr, data_ptr, .{ .reg = offset });
+        try self.emitRelease(data_ptr);
+        try self.emitRelease(offset);
+        if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+        try self.releaseAddressSource(target_source);
+        return .{ .reg = elem_ptr };
+    }
+
     /// CLASSB segment 3: index read of an inline-POD Vec/GrowVec
     /// element. Mirrors the SA-text genVecIndexRead (bounds check
     /// with panic 32, slot address = buffer + index * 8) and
@@ -20455,11 +20707,18 @@ pub const Codegen = struct {
         const miss_label = try self.newLabel("L_VEC_POD_INDEX_MISS");
         try self.emitBranch(in_bounds, hit_label, miss_label);
 
+        // DEF-PHI: the miss arm disposes target_source through plain
+        // emitRelease bookkeeping; restore it before the hit arm so
+        // the hit arm emits its own disposal (see restoreRegDisposal).
+        const target_disposal = try self.snapshotSourceDisposal(target_source);
+        defer self.allocator.free(target_disposal);
+
         try self.emitLabel(miss_label);
         try self.emitBranchRelease(in_bounds);
         if (!self.isLocalReg(index_reg)) try self.emitBranchRelease(index_reg);
         try self.releaseAddressSource(target_source);
         try self.emitPanicCode(32);
+        try self.restoreSourceDisposal(target_disposal);
 
         try self.emitLabel(hit_label);
         try self.emitBranchRelease(in_bounds);
@@ -21828,6 +22087,12 @@ pub const Codegen = struct {
         // for `b = &v[64]` loaded the record pointer's own bits as
         // the field value. Mirrors the SA-text backend's field read,
         // which loads through borrow-typed bases the same way.
+        // DEF-REFCELL-FIX: a registered RefCell borrow handle is the
+        // exception — its register holds the payload object pointer
+        // itself (genRefCellBorrowCall loads it out of the cell), not a
+        // cell handle, so loading through it would dereference the
+        // payload's first word as a pointer. genFieldAddress mirrors
+        // this exemption.
         var eff_base = base;
         var through: ?u32 = null;
         // DEF-SAB-BORROW-WRITE-NULL: the through-load is only correct
@@ -21839,7 +22104,7 @@ pub const Codegen = struct {
         // is the slot address itself, not a cell handle, so the
         // through-load must not fire for it (see baseIsSlotViewBorrow).
         if ((expr_ty.* == .pointer or
-            (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow))) and
+            (expr_ty.* == .borrow and lowering_rules.abiPassesAsPointer(expr_ty.borrow) and !self.inlinePodElement(expr_ty.borrow) and !self.refcell_borrow_values.contains(base))) and
             !self.regIsObjectPtr(base) and
             !self.baseIsBorrowParamObjectPtr(field.expr, base) and
             !self.baseIsSlotViewBorrow(field))

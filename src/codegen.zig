@@ -8881,6 +8881,32 @@ pub const Codegen = struct {
         }
     }
 
+    // DEF-9 (decided form B): materialise the addressable/assigned-value
+    // cell for a parameter whose name already holds a stack_alloc slot
+    // (the borrow-of-slice descriptor block above ran first). The classic
+    // prologue sequence rebinds the parameter name onto the cell and
+    // opens with `{tmp} = {name}`, a plain assignment that move-consumes
+    // the stack_alloc register: any `^` form on a stack_alloc product
+    // traps StackEscape 1025, and an Active register can be neither
+    // redefined nor released, so no legal rebind sequence exists.
+    // Instead the cell gets an independent register, the current slot
+    // value is stored into it (a read of the slot register, not a move),
+    // and the parameter name resolves to the cell through the internal
+    // alias map for the rest of the body: value reads load the stored
+    // value back out of the cell, place/address uses resolve to the cell
+    // itself. The parameter name is never rebound and no name-freeing
+    // move is emitted. SAB's materializeBorrowedParams models the same
+    // split with an independent `{name}_slot` register.
+    fn genParamStackSlotCellAlias(self: *Codegen, p: ast.Param) CodegenError!void {
+        const cell = try self.newTmp();
+        self.outPrint("    {s} = stack_alloc {}\n", .{ cell, typeSize(p.ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as {s}\n", .{ cell, p.name, typeString(p.ty) }) catch return CodegenError.CodegenError;
+        self.stack_alloc_bindings.put(cell, {}) catch return CodegenError.OutOfMemory;
+        self.assigned_value_slots.put(cell, {}) catch return CodegenError.OutOfMemory;
+        try self.pushBindingAliasTo(p.name, cell);
+        std.debug.assert(std.mem.eql(u8, self.resolveBindingName(p.name), cell));
+    }
+
     fn genFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl) CodegenError!void {
         const prev_async = self.current_async;
         const prev_async_return_ty = self.current_async_return_ty;
@@ -9064,19 +9090,34 @@ pub const Codegen = struct {
                 try self.emitRelease(raw_param);
             }
             if (!p.is_borrow and !p.is_move and !refcount_aliased and self.bindingNeedsAddressableStorage(p.name, p.ty)) {
-                const raw_param = try self.newTmp();
-                self.outPrint("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
-                self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
-                self.outPrint("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
-                self.outPrint("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
-                try self.emitRelease(raw_param);
+                if (self.stack_alloc_bindings.contains(p.name)) {
+                    // DEF-9: the borrow-of-slice block above already
+                    // materialised this parameter into a stack_alloc slot
+                    // under its own name; rebinding would move-consume
+                    // that slot (StackEscape 1025). Use an aliased cell.
+                    try self.genParamStackSlotCellAlias(p);
+                } else {
+                    const raw_param = try self.newTmp();
+                    self.outPrint("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
+                    self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                    self.outPrint("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(raw_param);
+                }
             } else if (!p.is_borrow and !p.is_move and !refcount_aliased and self.bindingNeedsAssignedValueSlot(p.name, p.ty)) {
-                const raw_param = try self.newTmp();
-                self.outPrint("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
-                self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
-                self.assigned_value_slots.put(p.name, {}) catch return CodegenError.OutOfMemory;
-                self.outPrint("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
-                self.outPrint("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
+                if (self.stack_alloc_bindings.contains(p.name)) {
+                    // DEF-9: same composition as the addressable branch
+                    // above (borrow-of-slice slot already under the
+                    // parameter name); use an aliased cell.
+                    try self.genParamStackSlotCellAlias(p);
+                } else {
+                    const raw_param = try self.newTmp();
+                    self.outPrint("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
+                    self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                    self.assigned_value_slots.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                    self.outPrint("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
+                }
             }
         }
 
@@ -11670,6 +11711,15 @@ pub const Codegen = struct {
     fn emitForgetMovedValue(self: *Codegen, reg: []const u8) CodegenError!void {
         if (std.mem.startsWith(u8, reg, "&")) return;
         if (std.mem.startsWith(u8, reg, "^")) return try self.markConsumedBinding(reg[1..]);
+        // DEF-STACKESCAPE (B1): a stack_alloc register can never be moved
+        // out -- the SA spec (sci design.md R2.1) makes any `^` on it a
+        // StackEscape trap. When a slot store kept the register address
+        // (a string literal descriptor slot stored into a let cell), the
+        // value home IS this stack slot, so retiring the source is a
+        // bookkeeping consume only and no instruction is emitted. The
+        // register stays Active to function exit, which the spec
+        // explicitly exempts from MemoryLeak for stack_alloc.
+        if (self.stack_alloc_bindings.contains(reg)) return try self.markConsumedBinding(reg);
         self.outPrint("    ^{s}\n", .{reg}) catch return CodegenError.CodegenError;
         try self.markConsumedBinding(reg);
     }
@@ -11924,6 +11974,43 @@ pub const Codegen = struct {
                             }
                             if (vecElementType(ty)) |elem_ty| {
                                 const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
+                                const move_arg = std.fmt.allocPrint(self.allocator, "^{s}", .{cloned}) catch return CodegenError.OutOfMemory;
+                                break :blk .{
+                                    .reg = move_arg,
+                                    .release_after_call = false,
+                                    .consume_reg = move_arg,
+                                };
+                            }
+                        }
+                    }
+                    // DEF-PARALLEL: a field/index projection of a live
+                    // binding (`holder.field`, `vec[i]`) materialises as a
+                    // raw handle load aliasing storage the binding still
+                    // owns. Passing it raw to a consuming (^) parameter
+                    // hands the callee the owner's buffer: the callee frees
+                    // it, and the owner's later uses and scope-exit drop
+                    // then touch freed memory (heap corruption once the
+                    // projection is re-read, e.g. across loop iterations).
+                    // The binding's drop is not suppressed by a partial
+                    // "move" of one field/element, so clone the projected
+                    // Vec/GrowVec value, mirroring the identifier path
+                    // above. The projection temp itself is a plain handle
+                    // copy and is retired after the clone.
+                    if (!move_out and arg.* != .identifier and rootIdentifier(arg) != null) {
+                        if (self.resolvedTypeForExpr(arg) orelse self.tc.expr_types.get(arg)) |ty| {
+                            if (lowering_rules.growVecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genGrowVecCloneValue(arg_reg, elem_ty);
+                                try self.emitRelease(arg_reg);
+                                const move_arg = std.fmt.allocPrint(self.allocator, "^{s}", .{cloned}) catch return CodegenError.OutOfMemory;
+                                break :blk .{
+                                    .reg = move_arg,
+                                    .release_after_call = false,
+                                    .consume_reg = move_arg,
+                                };
+                            }
+                            if (vecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
+                                try self.emitRelease(arg_reg);
                                 const move_arg = std.fmt.allocPrint(self.allocator, "^{s}", .{cloned}) catch return CodegenError.OutOfMemory;
                                 break :blk .{
                                     .reg = move_arg,
@@ -16660,7 +16747,14 @@ pub const Codegen = struct {
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.outPrint("    EXPAND REFCELL_U64_NEW {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                        // DEF-REFCELL-FIX: as BOX_NEW/ARC_NEW — REFCELL_U64_NEW
+                        // stores the value (payload pointer bits) into the
+                        // fresh cell and the cell owns it. Releasing the
+                        // source freed the payload at birth while the cell
+                        // owned it (borrow handles then read/write freed
+                        // memory; SAB freed it again at drop); retire the
+                        // source as consumed instead.
+                        if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(value_reg);
                         return reg;
                     }
                     if (std.mem.eql(u8, target, "Mutex") and std.mem.eql(u8, call.func_name, "new")) {

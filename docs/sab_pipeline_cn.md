@@ -1,5 +1,7 @@
 # SLA 直接输出 SAB 管线
 
+> SAB 格式的规范口径以 sala 仓 [SAB 格式白皮书（规范）](https://github.com/layola13/sala/blob/main/content/03_sa_asm/08_sab_whitepaper.html) 为准（往返 L1/L2 分层、禁止 SAB 降级文本、版本兼容政策）；本文只记本插件侧的管线、覆盖面与报错边界。
+
 ## 目标
 
 SAB 是 SA 的二进制 IR 文件格式，不是 `.sa` 文本压缩包，也不是把 `.sa` source 放进 section 的容器。本插件现在保留两条并行主线：
@@ -96,7 +98,7 @@ workspace 模式从当前目录解析 `sa.mod`，选择默认 member 或 `-p/--p
 sa sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]
 ```
 
-默认 `auto` 后端走 SAB 主线：SLA 前端生成 `.sla-cache/sab/...`，然后调用 `sa test <managed.sab> ...`。直接 AST-to-SAB 只是快速路径；如果它遇到尚未手写覆盖的 SLA 特性，例如函数指针间接调用，会改走内存 SA-compatible lowering，再通过 SCI flattener/SAB encoder 生成 SAB。输出仍然是 `.sab`，不会因为 direct fast path 不支持而回退到 `.test.sa`。SCI 的通用 SAB v4 encoder 覆盖 SA `InstKind` / `OpKind` / operand tag，并保留函数寄存器、native register、package identity、upstream location 等后端元数据；v4 不再保存每条 instruction 的完整 `.sa` raw_text。
+默认 `auto` 后端走 SAB 主线：SLA 前端生成 `.sla-cache/sab/...`，然后调用 `sa test <managed.sab> ...`。直接 AST-to-SAB 是唯一发射路径；如果它遇到尚未覆盖的 SLA 特性，`sab_codegen` 返回 `UnsupportedSabDirectFeature` 并响亮报错、编译失败，不会改走任何文本或兼容路径（内存 SA-compatible 回退已于 2026-09-28 移除，提交 `e96e6b39`；禁止 SAB 降级文本的治理口径见 [SAB 格式白皮书](https://github.com/layola13/sala/blob/main/content/03_sa_asm/08_sab_whitepaper.html) §4.2）。SCI 的通用 SAB v4 encoder 覆盖 SA `InstKind` / `OpKind` / operand tag，并保留函数寄存器、native register、package identity、upstream location 等后端元数据；v4 不再保存每条 instruction 的完整 `.sa` raw_text。
 
 - `--test-backend sab`：强制 SAB 主线；适合验证不会走旧 `.test.sa` 后端。
 - `--test-backend sa`：强制旧 `.test.sa` 文本测试路径。
@@ -155,17 +157,17 @@ section*:
 - `panic(code)`。
 - 函数内 `reg_ids` 元数据和 void/test return 前的局部释放，满足 SA verifier 的作用域和泄漏检查。
 
-当前目标是清零 fallback。未覆盖的 SLA 特性目前仍会显式返回 `UnsupportedSabDirectFeature`，旧路径随后走内存 SA-compatible SAB encoder；这只是过渡兼容，不是最终架构，也不能作为完成标准。后续必须通过通用 direct lowering 或通用 SAB macro/stdlib 表示移除这些缺口，不能在编译器里按 `Vec`、`thread`、ECS 或业务库名写死普通代码语义。
+静默 fallback 已清零并被明令禁止：未覆盖的 SLA 特性显式返回 `UnsupportedSabDirectFeature` 并使编译失败，不再有任何兼容路径接续。后续必须通过通用 direct lowering 或通用 SAB macro/stdlib 表示移除这些覆盖缺口，不能在编译器里按 `Vec`、`thread`、ECS 或业务库名写死普通代码语义。
 
 当前优先方向是继续扩大 std surface 元数据、可导出的闭包/function-object lowering、共享 lowering 规则/计划层和 SAB 宏表示，而不是把文本 codegen 中历史遗留的库分支复制到 `sab_codegen.zig`。目标形态是 `SLA AST/typecheck -> shared lowering rules/plan -> {SA text emitter, SAB structured emitter}`。编译器可以认识语言结构、类型信息、导入宏签名和 SAB 指令格式；普通库的名字、容器算法、线程 API、ECS 规则应留在 std / 插件 / 项目层。聚焦的 zero-arg `thread::spawn(^|| ...)` 捕获闭包、ordinary planned call array-to-slice borrow 和 `/home/vscode/projects/sla_ecs/lib/parallel.sla` no-fallback 路径已经通过；剩余工作是把入口函数/function-object lowering 泛化，并继续完善 result destination、remaining call materialization、macro 参数地址语义等共享计划层，而不是在 SAB 后端写 `thread` 或其它库专用分支。
 
 排查 direct SAB 缺口时使用：
 
 ```bash
-SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test <file.sla> --test-backend sab --filter "..."
+SA_PLUGIN_DEV=1 sa sla test <file.sla> --test-backend sab --filter "..."
 ```
 
-该开关会让 direct lowering 失败直接报错，而不是进入兼容 fallback。
+direct lowering 失败即直接报错（历史上曾有 `SLA_SAB_NO_FALLBACK` 开关控制是否进入兼容 fallback；fallback 已随 2026-09-28 的治理决定移除，该环境变量不再被源码读取）。
 
 ## 验证记录
 

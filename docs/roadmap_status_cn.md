@@ -3,6 +3,8 @@
 > **文档版本**：v0.1 / 2026-07-01
 > **状态**：基于 `tasks.md`、`progress.md` 和实际代码实现
 > **关联**：[`architecture_cn.md`](./architecture_cn.md)、[`testing_and_verification_cn.md`](./testing_and_verification_cn.md)
+>
+> **2026-11-05 状态注**：本文是 2026-07-01 的进度快照，下文指标与「回退」叙述均为当时状态。SA 兼容回退路径已于 2026-09-28 整体移除（提交 `e96e6b39`）：SAB 路径现为 direct-only、未覆盖特性以 `UnsupportedSabDirectFeature` 响亮报错，`SLA_SAB_NO_FALLBACK` 不再被源码读取。SAB 契约的现行口径以 sala 仓 [SAB 格式白皮书（规范）](https://github.com/layola13/sala/blob/main/content/03_sa_asm/08_sab_whitepaper.html) 为准，插件侧现状见 [`sab_pipeline_cn.md`](./sab_pipeline_cn.md) 与 [`architecture_cn.md`](./architecture_cn.md)。
 
 ---
 

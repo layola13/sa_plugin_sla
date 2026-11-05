@@ -23,7 +23,7 @@ Safe ASM (SA) 的 Sla 编译器与工具插件。提供 Sla → SA 编译能力�
 
 已知局限（详见 [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) §2 剩余失败清单）：
 
-- 部分语言特性（枚举 payload/match 提取、`derive`、`for in` 协议、`async/await`、集合类 std 元数据等）尚未进入 direct-SAB 快路径，命中时会走 SA 兼容回退路径。
+- 部分语言特性（枚举 payload/match 提取、`derive`、`for in` 协议、`async/await`、集合类 std 元数据等）尚未被 direct SAB 覆盖，命中时 SAB 路径会以 `UnsupportedSabDirectFeature` 响亮报错、编译失败，不会静默改走 SA 文本路径（禁止 SAB 降级文本，口径见 [SAB 格式白皮书](https://github.com/layola13/sala/blob/main/content/03_sa_asm/08_sab_whitepaper.html) §4.2）。
 - `demos/rosetta` 树是与 Rust 参考实现对照的样例集，**并非全部都能端到端通过**；请按需单独验证，不要假设整棵树已就绪。
 - `&mut T` / `&mut self` 尚未引入（Phase 2 计划）；当前 `&self` 同时覆盖读写，由 SA Referee 兜底。
 
@@ -69,7 +69,7 @@ Sla 源码默认使用编译器托管的生命周期清理。用户面 `.sla` �
 
 ## 性能
 
-SLA 编译性能的核心事实：**direct（AST→SAB）路径非常快，但命中未覆盖特性会掉到回退路径，回退才是瓶颈**。因此编译性能主要由 fallback 覆盖率决定，而非编译器稳态速度。
+SLA 编译性能的核心事实：**direct（AST→SAB）是唯一发射路径，未覆盖特性直接响亮报错，不存在回退慢路径**。历史上的 SA 兼容回退路径已于 2026-09-28 移除（提交 `e96e6b39`）；当时实测回退段是最大瓶颈（见下表标注），因此 direct 覆盖率至今仍是编译性能的关键变量，而非编译器稳态速度。
 
 以下数字取自 [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) §6 与 [`docs/compilation_optimization_cn.md`](docs/compilation_optimization_cn.md)，均为单文件、特定 fixture 上的微观测量（机器未标定），**不作性能保证**：
 
@@ -77,8 +77,8 @@ SLA 编译性能的核心事实：**direct（AST→SAB）路径非常快，但�
 |------|------|------|------|
 | Direct AST→SAB（热，带宏模板缓存） | `vec_remove_direct` | ~257 ms | 相对冷编译约 16× |
 | Direct AST→SAB（冷，无缓存） | 同上 | ~4094 ms | 缓存未命中的代价 |
-| SA 兼容 flatten（回退） | `parallel_table_erased` | ~4.04 s | 回退惩罚 |
-| SAB encode（回退） | 同上 | ~5.22 s | 最大单一阶段 |
+| SA 兼容 flatten（回退，已移除） | `parallel_table_erased` | ~4.04 s | 2026-09-28 前回退路径的历史实测 |
+| SAB encode（回退，已移除） | 同上 | ~5.22 s | 同上，当时最大单一阶段 |
 | `sa test` 后端（宿主侧） | 同上 | ~13.50 s | 下游，非本仓库范畴 |
 
 大数组初始化优化（`.repeat` + `@memset`，详见 [`docs/compilation_optimization_cn.md`](docs/compilation_optimization_cn.md)）把 `lvm.test.sa` 干净重构从 **>5 分钟缩短到 ~4.6 s**，`lparser.test.sa` 到 **~6.6 s**，消除了单测/增量编译卡死。
@@ -100,12 +100,13 @@ SLA AST/typecheck ── 共享 lowering 规则/plan ──┬── SA 文本 e
                                               └── SAB 结构化 emitter
 ```
 
-SAB 生成把 SAB 字节直接写到托管产物路径，不创建 `.test.sa`、也不调用遗留文本测试后端，除非显式 `--test-backend sa`。SAB 路径先尝试 direct AST→SAB 快路径；对尚未覆盖的 SA 指令族与 SLA 特性，SAB 暂时经 in-memory SA 兼容 lowering + SCI flattener/SAB encoder 作为兼容路径。
+SAB 生成把 SAB 字节直接写到托管产物路径，不创建 `.test.sa`、也不调用遗留文本测试后端，除非显式 `--test-backend sa`。SAB 只有 direct AST→SAB 一条发射路径；对尚未覆盖的 SA 指令族与 SLA 特性，`sab_codegen` 以 `UnsupportedSabDirectFeature` 响亮报错并使编译失败——不存在 in-memory SA 兼容路径（该路径已于 2026-09-28 移除，提交 `e96e6b39`；禁止 SAB 降级文本的治理口径见 [SAB 格式白皮书](https://github.com/layola13/sala/blob/main/content/03_sa_asm/08_sab_whitepaper.html) §4.2）。
 
 架构与快路径覆盖范围的完整说明见：
 
 - [`docs/architecture_cn.md`](docs/architecture_cn.md) — Y 型架构、共享前端主干、lowering 规则、emitter 设计
-- [`docs/sab_pipeline_cn.md`](docs/sab_pipeline_cn.md) — SAB 快路径已覆盖特性清单、SAB 二进制格式、回退边界
+- [`docs/sab_pipeline_cn.md`](docs/sab_pipeline_cn.md) — SAB 已覆盖特性清单、SAB 二进制格式、未覆盖特性的报错边界
+- SAB 格式的规范口径以 sala 仓 [SAB 格式白皮书（规范）](https://github.com/layola13/sala/blob/main/content/03_sa_asm/08_sab_whitepaper.html) 为准（往返 L1/L2 分层、禁止降级、版本政策）
 
 ## Build
 
@@ -185,7 +186,7 @@ SA_PLUGIN_DEV=1 sa sla test demos/rosetta/01_hello_world/main.sla
 | 文档 | 说明 |
 |------|------|
 | [`docs/architecture_cn.md`](docs/architecture_cn.md) | Y 型编译器架构、共享前端主干、lowering 规则、emitter 设计 |
-| [`docs/sab_pipeline_cn.md`](docs/sab_pipeline_cn.md) | SAB 快路径覆盖清单、二进制格式、回退边界 |
+| [`docs/sab_pipeline_cn.md`](docs/sab_pipeline_cn.md) | SAB 覆盖清单、二进制格式、未覆盖特性的报错边界 |
 | [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) | 当前完成进度、Phase 1-9 路线图、剩余失败归属 |
 | [`docs/compilation_optimization_cn.md`](docs/compilation_optimization_cn.md) | 编译优化策略与实测数字 |
 | [`docs/benchmarking_cn.md`](docs/benchmarking_cn.md) | Benchmark harness 与下游 hook |

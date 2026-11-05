@@ -602,11 +602,12 @@ or engine concepts into the compiler.
 No as a user-facing pipeline. `sa sla build` remains the `.sa` text mainline,
 while `sa sla sab build`, `sa sla sab workspace`, `sa slab build`,
 `sa slab workspace`, and the default `sa sla test` path produce SAB artifacts.
-The SAB path first attempts the direct AST/type-checker-to-SAB encoder. When a
-SA feature is not yet covered by that direct encoder, the plugin uses the
-in-memory SA-compatible lowering plus SCI's flattener to encode SAB, preserving
-SA backend metadata without writing a `.sa` file or invoking the legacy text
-test backend.
+The SAB path uses the direct AST/type-checker-to-SAB encoder as its only
+emission path. When a feature is not yet covered by that direct encoder,
+compilation fails loudly with `UnsupportedSabDirectFeature`; the plugin never
+reroutes through SA text. (The former in-memory SA-compatible fallback was
+removed on 2026-09-28, commit `e96e6b39`; see §4.2 of the SAB format
+whitepaper in the sala repo, `content/03_sa_asm/08_sab_whitepaper.html`.)
 
 **102. Where does `sa sla sab build` write output by default?**
 
@@ -646,8 +647,8 @@ No, not by default. Prefer focused commands and filtered unit tests with
 
 `sa sla test` defaults to `--test-backend auto`, which writes a managed
 `.sla-cache/sab/...` artifact and passes that SAB file to `sa test`. Auto mode
-uses the SAB mainline, including the in-memory SA-compatible SAB encoder for
-features that the direct AST-to-SAB fast path does not yet cover. It does not
-fall back to `.test.sa`; use `--test-backend sa` to force the old `.sa` text
+uses the SAB mainline: the direct AST-to-SAB encoder is the only SAB emission
+path, and features it does not yet cover fail loudly instead of falling back.
+It does not fall back to `.test.sa`; use `--test-backend sa` to force the old `.sa` text
 test backend. Use `--test-backend sab` when the command should document strict
 SAB intent explicitly.

@@ -206,30 +206,15 @@ pub fn smartPointerDerefType(ty) // 可解引用的智能指针
 ### SA 文本发射器 (`codegen.zig`)
 - 将类型化/特化的 SLA AST 扁平化为 SA 汇编文本
 - 输出 `.sa` 文件（可读、可调试）
-- 逻辑较快但不妨作为 SAB 的临时备选路径
+- 它是 `sa sla build` 的独立文本主线，不作为 SAB 的备选或回退路径
 
 ### SAB 结构化发射器 (`sab_codegen.zig`)
 - 直接发射结构化 SAB 字节（二进制格式）
-- 首先尝试直接 AST→SAB 快速路径
-- 若直接路径不支持某个特性，回退到 SA 兼容路径：
-  ```
-  AST → codegen (SA text) → flattener → SAB encoder
-  ```
-  这被称为 **SA-compatible fallback**。
+- direct AST→SAB 是唯一发射路径；不支持的特性返回 `UnsupportedSabDirectFeature` 响亮报错，不存在回退到 SA 文本的兼容路径（禁止 SAB 降级文本，治理口径见 sala 仓《SAB 格式白皮书（规范）》§4.2）
 
-### 回退路径的触发条件
+### 历史回退路径（已移除）
 
-通过 `SLA_SAB_NO_FALLBACK=1` 环境变量禁用回退：
-```bash
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_*.sla --test-backend sab
-```
-
-回退路径的**主要瓶颈**：
-```
-SA-compatible flatten: 4.04s
-SAB encode:            5.22s
-```
-相比之下，直接路径只需 24-257ms。**消除回退是整个项目 100% Y 型完成的核心指标。**
+旧设计曾在 direct 路径不支持某特性时回退到 `AST → codegen (SA text) → flattener → SAB encoder`（SA-compatible fallback），并可用 `SLA_SAB_NO_FALLBACK=1` 禁用。该路径实测瓶颈为 flatten 4.04s + encode 5.22s（直接路径仅 24-257ms），已于 2026-09-28 随治理决定整体移除（提交 `e96e6b39`）；`SLA_SAB_NO_FALLBACK` 不再被源码读取，direct 失败即报错是无条件行为。
 
 ---
 
@@ -295,7 +280,7 @@ read → source_expand → parse → @import → monomorphize → contracts → 
 ### `sa sla build-exe <file>`
 ```
 read → source_expand → parse → @import → monomorphize → contracts → typecheck
-  → {sab_codegen.generate → .sab} OR {SA-compatible fallback → .sab}
+  → sab_codegen.generate → .sab（不支持的特性响亮报错，无回退）
   → sa build-exe <sab>
 ```
 
@@ -303,7 +288,7 @@ read → source_expand → parse → @import → monomorphize → contracts → 
 ```
 read → source_expand → parse → @import → test_filter → monomorphize → contracts
   → typecheck → reachable-decl-filter
-  → {sab_codegen.generate → .sla-cache/sab/...sab} OR {SA-compatible fallback}
+  → sab_codegen.generate → .sla-cache/sab/...sab（不支持的特性响亮报错，无回退）
   → sa test <sab>
 ```
 

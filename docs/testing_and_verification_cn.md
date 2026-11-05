@@ -54,23 +54,23 @@ sa sla test tests/test_unit_basic.sla --filter "arithmetic"
 # 查看性能计时
 SLA_PROFILE=1 sa sla test tests/test_unit_basic.sla
 
-# 禁用回退（仅直接路径通过）
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_basic.sla --test-backend sab
+# SAB 路径即直接路径（无回退可禁用；未覆盖特性直接报错）
+sa sla test tests/test_unit_basic.sla --test-backend sab
 ```
 
 ### 1.3 测试后端
 
 | 后端 | 命令 | 说明 |
 |------|------|------|
-| `auto`（默认） | 先尝试直接 SAB，失败则用 SA 兼容回退 | 推荐日常使用 |
+| `auto`（默认） | 直接 SAB（唯一发射路径），未覆盖特性响亮报错 | 推荐日常使用 |
 | `sab` | 明确要求 SAB 路径，不支持则报错 | CI 中验证直接路径 |
-| `sa` | 传统 SA 文本后端（生成 `.test.sa`） | 调试回退路径用 |
+| `sa` | 传统 SA 文本后端（生成 `.test.sa`） | 显式调试文本路径时用 |
 
 ---
 
 ## 2. No-Fallback 测试
 
-**No-fallback** 模式是 Y 型架构完成度的核心指标。当设置 `SLA_SAB_NO_FALLBACK=1` 时，SAB 路径不会回退到 SA 兼容编码器，任何不受支持的特性会直接报错而非静默回退。
+**No-fallback** 现为 SAB 路径的无条件行为，是 Y 型架构完成度的核心指标：SA 兼容回退已于 2026-09-28 移除（提交 `e96e6b39`），任何不受支持的特性都会以 `UnsupportedSabDirectFeature` 直接报错，不存在静默回退。历史上的 `SLA_SAB_NO_FALLBACK=1` 开关不再被源码读取，下文命令已去除该变量。因此 no-fallback sweep 就是 SAB 路径的普通通过率。
 
 ### 2.1 运行 No-Fallback 全面扫描
 
@@ -80,7 +80,7 @@ rm -f /tmp/sla-sweep-failures.log
 passed=0; total=0
 for f in tests/test_unit_*.sla; do
     total=$((total+1))
-    if SLA_SAB_NO_FALLBACK=1 timeout 120s ./zig-out/bin/sla-local-cli sla test "$f" --test-backend sab --jobs 1 --trace-panic >/tmp/sla-sweep-one.log 2>&1; then
+    if timeout 120s ./zig-out/bin/sla-local-cli sla test "$f" --test-backend sab --jobs 1 --trace-panic >/tmp/sla-sweep-one.log 2>&1; then
         passed=$((passed+1))
     else
         printf 'FAIL %s\n' "$f" | tee -a /tmp/sla-sweep-failures.log
@@ -97,7 +97,7 @@ SA_PLUGIN_DEV=1 sa plugin install --dev .
 passed=0; total=0
 for f in tests/test_unit_*.sla; do
     total=$((total+1))
-    if SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 timeout 120s sa sla test "$f" --test-backend sab --jobs 1 --trace-panic >/tmp/host-sweep-one.log 2>&1; then
+    if SA_PLUGIN_DEV=1 timeout 120s sa sla test "$f" --test-backend sab --jobs 1 --trace-panic >/tmp/host-sweep-one.log 2>&1; then
         passed=$((passed+1))
     else
         printf 'FAIL %s\n' "$f" | tee -a /tmp/host-sweep-failures.log
@@ -108,10 +108,10 @@ printf 'HOST PASS %s/%s\n' "$passed" "$total"
 
 ### 2.3 不支持的表面调试
 
-使用跟踪模式查看哪些特性触发了回退：
+使用跟踪模式查看哪些特性不受支持：
 
 ```bash
-SLA_SAB_TRACE_UNSUPPORTED=1 SLA_SAB_NO_FALLBACK=1 timeout 180s \
+SLA_SAB_TRACE_UNSUPPORTED=1 timeout 180s \
     ./zig-out/bin/sla-local-cli sla test tests/test_unit_xxx.sla \
     --test-backend sab --jobs 1 --trace-panic
 ```
@@ -160,33 +160,33 @@ commit: <hash or pending>
 
 ```bash
 # 智能指针/RefCell
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_borrow_temp_release_order.sla --test-backend sab
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_refcell_struct_payload.sla --test-backend sab
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_smart_pointer_struct_field_cleanup.sla --test-backend sab
+sa sla test tests/test_unit_borrow_temp_release_order.sla --test-backend sab
+sa sla test tests/test_unit_refcell_struct_payload.sla --test-backend sab
+sa sla test tests/test_unit_smart_pointer_struct_field_cleanup.sla --test-backend sab
 
 # Option/Result
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_option_methods.sla --test-backend sab
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_option_direct.sla --test-backend sab
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_result_direct.sla --test-backend sab
+sa sla test tests/test_unit_option_methods.sla --test-backend sab
+sa sla test tests/test_unit_option_direct.sla --test-backend sab
+sa sla test tests/test_unit_result_direct.sla --test-backend sab
 
 # 宏
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_user_macro_direct.sla --test-backend sab
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_pkgjson_codegen.sla --test-backend sab
+sa sla test tests/test_unit_user_macro_direct.sla --test-backend sab
+sa sla test tests/test_unit_pkgjson_codegen.sla --test-backend sab
 
 # trait 静态分发
-SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_trait_static_dispatch.sla --test-backend sab
+sa sla test tests/test_unit_trait_static_dispatch.sla --test-backend sab
 
 # 外部回归（sla_ecs 项目）
-SLA_SAB_NO_FALLBACK=1 sa sla test /home/vscode/projects/sla_ecs/lib/parallel.sla --test-backend sab
+sa sla test /home/vscode/projects/sla_ecs/lib/parallel.sla --test-backend sab
 ```
 
 ### 4.2 直接路径回归测试
 
-当添加新的直接 SAB lowering 时，必须包含 `allow_fallback = false` 的 Zig 回归测试，确保新功能不能在静默回退下通过：
+当添加新的直接 SAB lowering 时，必须包含 Zig 回归测试：经 `compileSlaFileToSabWithOptions` 编译并断言成功、且不产生 `.test.sa` 文件，确保新功能确实走 direct SAB（回退机制已移除，旧 `.allow_fallback = false` 选项不复存在）：
 
 ```zig
 test "sla sab backend lowers xxx directly" {
-    // ...构建 SAB 选项时使用 .{ .allow_fallback = false }...
+    // ...经 compileSlaFileToSabWithOptions 编译并断言返回 SAB 字节...
     // 检查解码后的 SAB 包含结构化指令，无逐指令原始文本
 }
 ```
@@ -213,7 +213,7 @@ sa sla sab disasm <file.sab> | grep 'call .*@[^" ]\+('
 SLA_PROFILE=1 sa sla test tests/test_unit_xxx.sla
 
 # 获取 SAB 路径的详细计时
-SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 timeout 120s \
+SLA_PROFILE=1 timeout 120s \
     ./zig-out/bin/sla-local-cli sla test tests/test_unit_xxx.sla \
     --test-backend sab --jobs 1 --trace-panic
 ```
@@ -248,5 +248,5 @@ jobs:
       - run: zig build test --summary all
       - run: sa plugin install --dev .
       - run: SA_PLUGIN_DEV=1 sa sla help
-      - run: SLA_SAB_NO_FALLBACK=1 sa sla test <regression-set> --test-backend sab
+      - run: sa sla test <regression-set> --test-backend sab
 ```

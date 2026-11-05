@@ -4405,6 +4405,33 @@ pub const Codegen = struct {
         try self.released_regs.put(reg, {});
     }
 
+    /// Retire the source register of a value that was just MOVED into a
+    /// future state or a future/task wrapper (the FUTURE_NEW /
+    /// *_STATE_NEW / TASK_NEW construction points and the stores into a
+    /// parent future's state slots). The destination owns the value now,
+    /// so the source must be forgotten (move-out), not released:
+    /// releasing it drops the very state/object the parent references
+    /// (UAF-STATE, async cluster 1; the SA-text backend applies the same
+    /// discipline via its emitForgetMovedValue). Mirrors emitRelease's
+    /// bookkeeping for stack slots, whose retire is bookkeeping-only;
+    /// every other register kind retires with a visible .move_. Only
+    /// future construction registers are passed here — never guard,
+    /// borrow-handle, or field-view registers, whose release side
+    /// effects emitRelease owns.
+    fn emitForgetMovedValue(self: *Codegen, reg: u32) !void {
+        if (self.released_regs.contains(reg)) return;
+        if (self.stack_alloc_regs.contains(reg) or self.stack_alloc_emitted.contains(reg)) {
+            _ = self.non_owning_regs.fetchRemove(reg);
+            _ = self.future_state_vtables.remove(reg);
+            _ = self.future_readiness.remove(reg);
+            try self.released_regs.put(reg, {});
+            return;
+        }
+        _ = self.future_state_vtables.remove(reg);
+        _ = self.future_readiness.remove(reg);
+        try self.emitMove(reg);
+    }
+
     fn paramCapability(self: *Codegen, param: ast.Param) inst.CapPrefix {
         const cap = lowering_rules.sharedAbiParamCap(
             param.is_borrow,
@@ -6804,7 +6831,9 @@ pub const Codegen = struct {
             if (capture.storage == .scalar) try self.emitRelease(addend_reg);
         }
         try self.emitRelease(zero);
-        try self.emitRelease(inner_state);
+        // inner_state was stored into the async state above (moved);
+        // forget it instead of releasing it (UAF-STATE, async cluster 1).
+        try self.emitForgetMovedValue(inner_state);
         try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         try self.releaseOpenLocals(async_state);
@@ -6838,8 +6867,10 @@ pub const Codegen = struct {
         try self.emitStore(async_state, 16, second_state, .ptr);
         try self.emitStore(async_state, 24, zero, .u64);
         try self.emitRelease(zero);
-        try self.emitRelease(second_state);
-        try self.emitRelease(first_state);
+        // Both sub-states were stored into the async state above
+        // (moved); forget them instead of releasing them.
+        try self.emitForgetMovedValue(second_state);
+        try self.emitForgetMovedValue(first_state);
         try self.future_state_vtables.put(async_state, try self.asyncTwoAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         try self.releaseOpenLocals(async_state);
@@ -6875,7 +6906,9 @@ pub const Codegen = struct {
         try self.emitStore(async_state, 0, zero, .u64);
         try self.emitStore(async_state, 8, join_state, .ptr);
         try self.emitRelease(zero);
-        try self.emitRelease(join_state);
+        // join_state was stored into the async state above (moved);
+        // forget it instead of releasing it.
+        try self.emitForgetMovedValue(join_state);
         try self.future_state_vtables.put(async_state, try self.asyncJoin2AwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         try self.releaseOpenLocals(async_state);
@@ -8192,7 +8225,17 @@ pub const Codegen = struct {
             self.symbols.items[vt_reg],
         });
         try self.emitRelease(vt_reg);
-        if (!self.isLocalReg(state_reg)) try self.emitRelease(state_reg);
+        // The state was moved into the future wrapper by FUTURE_NEW;
+        // forget the source reg instead of releasing it — a release
+        // drops the state the wrapper now owns (UAF-STATE, cluster 1).
+        // This must hold for pre-bound locals too: a local left
+        // un-retired here stays open and is released by the enclosing
+        // scope's cleanup (releaseOpenLocals), freeing the state the
+        // wrapper owns (join2 over pre-bound locals — the Join2Await
+        // entry construction retired the child states that way;
+        // cluster-1 census gap, join2_local_await). The SA-text
+        // emitter records the same consumption with no local guard.
+        try self.emitForgetMovedValue(state_reg);
         return future_obj;
     }
 
@@ -8209,8 +8252,10 @@ pub const Codegen = struct {
         });
         try self.future_state_vtables.put(join_state, "SLA_JOIN2_FUTURE_VT");
         try self.recordFutureReadiness(join_state, readiness);
-        try self.emitRelease(left_future);
-        try self.emitRelease(right_future);
+        // The child future objects were moved into the join state by
+        // FUTURE_JOIN2_STATE_NEW; forget them instead of releasing them.
+        try self.emitForgetMovedValue(left_future);
+        try self.emitForgetMovedValue(right_future);
         return join_state;
     }
 
@@ -8227,8 +8272,9 @@ pub const Codegen = struct {
         });
         try self.future_state_vtables.put(select_state, "SLA_SELECT2_FUTURE_VT");
         try self.recordFutureReadiness(select_state, readiness);
-        try self.emitRelease(left_future);
-        try self.emitRelease(right_future);
+        // Same moved-into-state discipline as genJoin2Future.
+        try self.emitForgetMovedValue(left_future);
+        try self.emitForgetMovedValue(right_future);
         return select_state;
     }
 
@@ -9056,7 +9102,7 @@ pub const Codegen = struct {
         var i: usize = plan.count;
         while (i > 0) {
             i -= 1;
-            try self.emitRelease(sub_states[i]);
+            try self.emitForgetMovedValue(sub_states[i]);
         }
         try self.future_state_vtables.put(async_state, try self.asyncLinearAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
@@ -9101,7 +9147,9 @@ pub const Codegen = struct {
             try self.emitStore(async_state, plan.valueOffset(i), zero, .u64);
         }
         try self.emitRelease(zero);
-        try self.emitRelease(first_obj);
+        // first_obj was stored into the async state above (moved);
+        // forget it instead of releasing it.
+        try self.emitForgetMovedValue(first_obj);
         try self.future_state_vtables.put(async_state, try self.asyncGeneralAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         try self.releaseOpenLocals(async_state);
@@ -9216,7 +9264,9 @@ pub const Codegen = struct {
                 try self.emitAssignImm(stage_next, @intCast(s + 1));
                 try self.emitStore(ids[0], 0, stage_next, .u64);
                 try self.emitRelease(stage_next);
-                try self.emitRelease(next_obj);
+                // next_obj was stored into the parent state above
+                // (moved); forget it instead of releasing it.
+                try self.emitForgetMovedValue(next_obj);
                 try self.emitRelease(value);
                 try self.emitRelease(obj);
                 try self.emitRelease(ctx);
@@ -9788,7 +9838,9 @@ pub const Codegen = struct {
                 self.symbols.items[ctx],
             });
             try self.emitRelease(ctx);
-            try self.emitRelease(future_obj);
+            // future_obj was moved into the task by TASK_NEW; forget it
+            // instead of releasing it.
+            try self.emitForgetMovedValue(future_obj);
             return task;
         }
         if (task_plan.isPoll()) {
@@ -9945,6 +9997,62 @@ pub const Codegen = struct {
                 self.symbols.items[future],
             });
             if (!self.isLocalReg(future)) try self.emitRelease(future);
+            return out;
+        }
+        const await_is_custom = lowering_rules.awaitExprFutureIsCustom(aw.expr, &self.tc.funcs);
+        const await_is_defer_ready = blk: {
+            if (aw.expr.* != .call_expr) break :blk false;
+            const rt = lowering_rules.planFutureRuntimeCall(aw.expr.call_expr) orelse break :blk false;
+            break :blk rt.isDeferReady();
+        };
+        if (await_is_custom and !await_is_defer_ready) {
+            // AWAIT-EXTRACT (async cluster 4): a state-machine or
+            // composite future awaited where the delegation branch above
+            // does not apply — a sync fn, or an eager async fn whose
+            // return type the awaited value does not match. Such a
+            // future has no ready-state layout, so the ready-state read
+            // below would return its inner state pointer as the value;
+            // poll it until Ready instead, exactly like the delegation
+            // branch does. future::defer_ready is carved out: its state
+            // IS a ready-state cell with the value pre-staged, so the
+            // existing paths already read it correctly.
+            const future_obj = try self.genFutureObjectForState(future);
+            const ctx = try self.intern(try self.newTmp());
+            try self.emitAssignImm(ctx, 0);
+            const poll = try self.intern(try self.newTmp());
+            const is_ready = try self.intern(try self.newTmp());
+            const out = try self.intern(try self.newTmp());
+            try self.recordReg(out);
+            const loop_label = try self.newLabel("L_AWAIT_BUSYPOLL");
+            const again_label = try self.newLabel("L_AWAIT_BUSYPOLL_AGAIN");
+            const done_label = try self.newLabel("L_AWAIT_BUSYPOLL_DONE");
+            var pre_loop_released = try self.released_regs.clone();
+            defer pre_loop_released.deinit();
+            try self.emitLabel(loop_label);
+            try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_POLL", &.{
+                self.symbols.items[poll],
+                self.symbols.items[future_obj],
+                self.symbols.items[ctx],
+            });
+            try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_IS_READY", &.{
+                self.symbols.items[is_ready],
+                self.symbols.items[poll],
+            });
+            try self.emitBranch(is_ready, done_label, again_label);
+            try self.emitLabel(again_label);
+            try self.emitRelease(poll);
+            try self.emitRelease(is_ready);
+            try self.restoreReleased(&pre_loop_released);
+            try self.emitJmp(loop_label);
+            try self.emitLabel(done_label);
+            try self.emitRelease(is_ready);
+            try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_VALUE", &.{
+                self.symbols.items[out],
+                self.symbols.items[poll],
+            });
+            try self.emitRelease(poll);
+            try self.emitRelease(ctx);
+            try self.emitRelease(future_obj);
             return out;
         }
         if (!plan.ready_state_inner) return Error.UnsupportedSabDirectFeature;

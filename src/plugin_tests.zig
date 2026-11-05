@@ -2499,7 +2499,7 @@ test "sla typechecker plans exact explicit return cleanup" {
     }
 }
 
-test "sla generated async exits release stored state inputs" {
+test "sla generated async exits forget stored state inputs" {
     var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{});
@@ -2552,8 +2552,13 @@ test "sla generated async exits release stored state inputs" {
     const store_line = function_body[store_line_start + 1 .. state_store];
     const comma = std.mem.lastIndexOfScalar(u8, store_line, ',') orelse return error.TestUnexpectedResult;
     const stored_state = std.mem.trim(u8, store_line[comma + 1 ..], " \t");
+    // The stored state input was moved into the async state: the ctor
+    // must forget (^) it, never release (!) it — releasing frees the
+    // state the parent now owns (async UAF-STATE cluster 1).
+    const forget_line = try std.fmt.allocPrint(arena.allocator(), "    ^{s}\n", .{stored_state});
+    try std.testing.expect(std.mem.indexOfPos(u8, function_body, state_store, forget_line) != null);
     const release_line = try std.fmt.allocPrint(arena.allocator(), "    !{s}\n", .{stored_state});
-    try std.testing.expect(std.mem.indexOfPos(u8, function_body, state_store, release_line) != null);
+    try std.testing.expect(std.mem.indexOf(u8, function_body, release_line) == null);
     try std.testing.expect(std.mem.indexOf(u8, function_body, "    !unused\n") != null);
 }
 

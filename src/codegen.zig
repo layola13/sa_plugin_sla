@@ -9702,8 +9702,12 @@ pub const Codegen = struct {
         self.outPrint("    EXPAND FUTURE_JOIN2_STATE_NEW {s}, {s}, {s}\n", .{ join_state, left_future, right_future }) catch return CodegenError.CodegenError;
         self.future_state_vtables.put(join_state, "SLA_JOIN2_FUTURE_VT") catch return CodegenError.OutOfMemory;
         try self.recordFutureReadiness(join_state, lowering_rules.join2Readiness(self.futureReadinessForState(left_state), self.futureReadinessForState(right_state)));
-        try self.emitRelease(left_future);
-        try self.emitRelease(right_future);
+        // The child future objects were moved into the join state by
+        // FUTURE_JOIN2_STATE_NEW; forget the source regs instead of
+        // releasing them — a release drops what the join state now owns
+        // (UAF-STATE, async cluster 1).
+        try self.emitForgetMovedValue(left_future);
+        try self.emitForgetMovedValue(right_future);
         return join_state;
     }
 
@@ -9714,8 +9718,10 @@ pub const Codegen = struct {
         self.outPrint("    EXPAND FUTURE_SELECT2_STATE_NEW {s}, {s}, {s}\n", .{ select_state, left_future, right_future }) catch return CodegenError.CodegenError;
         self.future_state_vtables.put(select_state, "SLA_SELECT2_FUTURE_VT") catch return CodegenError.OutOfMemory;
         try self.recordFutureReadiness(select_state, lowering_rules.select2Readiness(self.futureReadinessForState(left_state), self.futureReadinessForState(right_state)));
-        try self.emitRelease(left_future);
-        try self.emitRelease(right_future);
+        // Same moved-into-state discipline as genJoin2Future: forget,
+        // do not release, the child future objects.
+        try self.emitForgetMovedValue(left_future);
+        try self.emitForgetMovedValue(right_future);
         return select_state;
     }
 
@@ -9784,7 +9790,7 @@ pub const Codegen = struct {
             // The state object was moved into the future wrapper above; forget
             // the source reg like every sibling branch does for its consumed
             // arg, otherwise it stays Active until function exit (MemoryLeak).
-            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(state_reg);
+            if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(state_reg);
             self.task_future_objects.put(task, future_obj) catch return CodegenError.OutOfMemory;
             return task;
         }
@@ -10444,7 +10450,9 @@ pub const Codegen = struct {
             self.outPrint("    store {s}+{}, {s} as {s}\n", .{ async_state, capture.offset, addend_reg, store_ty }) catch return CodegenError.CodegenError;
             if (capture.storage == .scalar) try self.emitRelease(addend_reg);
         }
-        try self.emitRelease(inner_state);
+        // inner_state was stored into the async state above (moved);
+        // forget it instead of releasing it (UAF-STATE, async cluster 1).
+        try self.emitForgetMovedValue(inner_state);
         for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
@@ -10485,7 +10493,7 @@ pub const Codegen = struct {
         var i: usize = plan.count;
         while (i > 0) {
             i -= 1;
-            try self.emitRelease(sub_states[i]);
+            try self.emitForgetMovedValue(sub_states[i]);
         }
         for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncLinearAwaitVTableName(name));
@@ -10525,7 +10533,9 @@ pub const Codegen = struct {
         while (zi < plan.count) : (zi += 1) {
             w.print("    store {s}+{d}, 0 as u64\n", .{ async_state, plan.valueOffset(zi) }) catch return CodegenError.CodegenError;
         }
-        w.print("    !{s}\n", .{first_obj}) catch return CodegenError.CodegenError;
+        // first_obj was stored into the async state above (moved);
+        // forget it instead of releasing it (UAF-STATE, async cluster 1).
+        try self.emitForgetMovedValue(first_obj);
         for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncGeneralAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
@@ -10778,10 +10788,14 @@ pub const Codegen = struct {
             if (s + 1 < plan.count) {
                 const next_state = try self.genExpr(@constCast(plan.await_exprs[s + 1]), &helper_allocs);
                 const next_obj = try self.genFutureObjectForState(next_state);
+                // The first retire below is next_obj, just stored into
+                // the parent state (moved): forget (^), do not release.
+                // The second retires the completed stage binding temp,
+                // whose scalar value was latched into the state above.
                 w.print(
                     \\    store data_slot+{d}, {s} as ptr
                     \\    store data_slot+0, {d} as u64
-                    \\    !{s}
+                    \\    ^{s}
                     \\    !{s}
                     \\    !async_general_ready_{d}
                     \\    !async_general_poll_{d}
@@ -10874,8 +10888,10 @@ pub const Codegen = struct {
         self.outPrint("    store {s}+8, {s} as ptr\n", .{ async_state, first_state }) catch return CodegenError.CodegenError;
         self.outPrint("    store {s}+16, {s} as ptr\n", .{ async_state, second_state }) catch return CodegenError.CodegenError;
         self.outPrint("    store {s}+24, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
-        try self.emitRelease(second_state);
-        try self.emitRelease(first_state);
+        // Both sub-states were stored into the async state above
+        // (moved); forget them instead of releasing them.
+        try self.emitForgetMovedValue(second_state);
+        try self.emitForgetMovedValue(first_state);
         for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncTwoAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
@@ -10910,7 +10926,9 @@ pub const Codegen = struct {
         self.outPrint("    {s} = alloc {}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
         self.outPrint("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
         self.outPrint("    store {s}+8, {s} as ptr\n", .{ async_state, join_state }) catch return CodegenError.CodegenError;
-        try self.emitRelease(join_state);
+        // join_state was stored into the async state above (moved);
+        // forget it instead of releasing it.
+        try self.emitForgetMovedValue(join_state);
         for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncJoin2AwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
@@ -16155,6 +16173,49 @@ pub const Codegen = struct {
                     const out_reg = try self.newTmp();
                     self.outPrint("    EXPAND FUTURE_READY_STATE_INTO_INNER {s}, {s}\n", .{ out_reg, future_reg }) catch return CodegenError.CodegenError;
                     try self.emitRelease(future_reg);
+                    return out_reg;
+                }
+                const await_is_custom = lowering_rules.awaitExprFutureIsCustom(aw.expr, &self.tc.funcs);
+                const await_is_defer_ready = blk: {
+                    if (aw.expr.* != .call_expr) break :blk false;
+                    const rt = lowering_rules.planFutureRuntimeCall(aw.expr.call_expr) orelse break :blk false;
+                    break :blk rt.isDeferReady();
+                };
+                if (await_is_custom and !await_is_defer_ready) {
+                    // AWAIT-EXTRACT (async cluster 4): a state-machine or
+                    // composite future awaited where the delegation branch
+                    // above does not apply — a sync fn, or an eager async
+                    // fn whose return type the awaited value does not
+                    // match. Such a future has no ready-state layout, so
+                    // the ready-state read below would return its inner
+                    // state pointer as the value; poll it until Ready
+                    // instead, exactly like the delegation branch does.
+                    // future::defer_ready is carved out: its state IS a
+                    // ready-state cell with the value pre-staged, so the
+                    // existing paths already read it correctly.
+                    const future_obj = try self.genFutureObjectForState(future_reg);
+                    const ctx = try self.newTmp();
+                    const poll_reg = try self.newTmp();
+                    const ready_reg = try self.newTmp();
+                    const out_reg = try self.newTmp();
+                    const loop_label = try self.newLabel("L_AWAIT_BUSYPOLL");
+                    const again_label = try self.newLabel("L_AWAIT_BUSYPOLL_AGAIN");
+                    const done_label = try self.newLabel("L_AWAIT_BUSYPOLL_DONE");
+                    self.outPrint("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{loop_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND FUTURE_POLL {s}, {s}, {s}\n", .{ poll_reg, future_obj, ctx }) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND POLL_IS_READY {s}, {s}\n", .{ ready_reg, poll_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ready_reg, done_label, again_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{again_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{poll_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{ready_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    jmp {s}\n\n", .{loop_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{ready_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    EXPAND POLL_VALUE {s}, {s}\n", .{ out_reg, poll_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{poll_reg}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{ctx}) catch return CodegenError.CodegenError;
+                    self.outPrint("    !{s}\n", .{future_obj}) catch return CodegenError.CodegenError;
                     return out_reg;
                 }
                 if (!plan.ready_state_inner) return CodegenError.CodegenError;

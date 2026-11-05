@@ -4758,12 +4758,24 @@ pub const MapInsertPlan = struct {
 };
 
 pub fn mapInsertPlan(ty: *const ast.Type) ?MapInsertPlan {
-    if (hashMapTypes(ty) != null) return .{
-        .import_path = "sa_std/hashmap.sa",
-        .macro_name = "MAP_INSERT",
-        .dep_symbol = "sa_map_insert",
-        .value_by_slot = true,
-    };
+    if (hashMapTypes(ty)) |mt| {
+        // Owned String keys are content-keyed: the generic map hashes and
+        // compares the key register's identity bits, so a fresh equal key
+        // would miss (DEF-INSERT-GETMISS). Route String-keyed maps through
+        // the content-hash/content-compare variants in sa_std/hashmap.sa.
+        if (isStringType(mt.key)) return .{
+            .import_path = "sa_std/hashmap.sa",
+            .macro_name = "MAP_INSERT_STR",
+            .dep_symbol = "sa_map_insert_str",
+            .value_by_slot = true,
+        };
+        return .{
+            .import_path = "sa_std/hashmap.sa",
+            .macro_name = "MAP_INSERT",
+            .dep_symbol = "sa_map_insert",
+            .value_by_slot = true,
+        };
+    }
     if (btreeMapTypes(ty) != null) return .{
         .import_path = "sa_std/btree_map.sa",
         .macro_name = "BTREE_MAP_INSERT_OLD",
@@ -4774,12 +4786,20 @@ pub fn mapInsertPlan(ty: *const ast.Type) ?MapInsertPlan {
 }
 
 pub fn mapIndexPlan(ty: *const ast.Type) ?MapIndexPlan {
-    if (hashMapTypes(ty) != null) return .{
-        .import_path = "sa_std/hashmap.sa",
-        .macro_name = "MAP_TRY_GET",
-        .dep_symbol = "sa_map_try_get",
-        .shape = .try_get_ptr,
-    };
+    if (hashMapTypes(ty)) |mt| {
+        if (isStringType(mt.key)) return .{
+            .import_path = "sa_std/hashmap.sa",
+            .macro_name = "MAP_TRY_GET_STR",
+            .dep_symbol = "sa_map_try_get_str",
+            .shape = .try_get_ptr,
+        };
+        return .{
+            .import_path = "sa_std/hashmap.sa",
+            .macro_name = "MAP_TRY_GET",
+            .dep_symbol = "sa_map_try_get",
+            .shape = .try_get_ptr,
+        };
+    }
     if (btreeMapTypes(ty) != null) return .{
         .import_path = "sa_std/btree_map.sa",
         .macro_name = "BTREE_MAP_TRY_GET",

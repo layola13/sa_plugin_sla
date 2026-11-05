@@ -5283,6 +5283,38 @@ pub const Codegen = struct {
             \\L_SLA_MAP_INSERT_END_%out_opt:
             \\[END_MACRO]
             \\
+            \\[MACRO] SLA_MAP_TRY_GET_STR_OPTION %out_opt, %map_reg, %key_reg
+            \\    EXPAND MAP_TRY_GET_STR __sla_map_get_str_ok_%out_opt, __sla_map_get_str_ptr_%out_opt, %map_reg, %key_reg
+            \\    br __sla_map_get_str_ok_%out_opt -> L_SLA_MAP_GET_STR_SOME_%out_opt, L_SLA_MAP_GET_STR_NONE_%out_opt
+            \\L_SLA_MAP_GET_STR_SOME_%out_opt:
+            \\    EXPAND OPTION_NEW_SOME %out_opt, __sla_map_get_str_ptr_%out_opt
+            \\    !__sla_map_get_str_ptr_%out_opt
+            \\    !__sla_map_get_str_ok_%out_opt
+            \\    jmp L_SLA_MAP_GET_STR_END_%out_opt
+            \\L_SLA_MAP_GET_STR_NONE_%out_opt:
+            \\    EXPAND OPTION_NEW_NONE %out_opt
+            \\    !__sla_map_get_str_ptr_%out_opt
+            \\    !__sla_map_get_str_ok_%out_opt
+            \\L_SLA_MAP_GET_STR_END_%out_opt:
+            \\[END_MACRO]
+            \\
+            \\[MACRO] SLA_MAP_INSERT_STR_OPTION_U64 %out_opt, %map_reg, %key_reg, %value_reg
+            \\    EXPAND MAP_INSERT_STR __sla_map_insert_str_replaced_%out_opt, __sla_map_insert_str_old_ptr_%out_opt, %map_reg, %key_reg, %value_reg
+            \\    br __sla_map_insert_str_replaced_%out_opt -> L_SLA_MAP_INSERT_STR_SOME_%out_opt, L_SLA_MAP_INSERT_STR_NONE_%out_opt
+            \\L_SLA_MAP_INSERT_STR_SOME_%out_opt:
+            \\    __sla_map_insert_str_old_value_%out_opt = load __sla_map_insert_str_old_ptr_%out_opt+0 as u64
+            \\    EXPAND OPTION_NEW_SOME %out_opt, __sla_map_insert_str_old_value_%out_opt
+            \\    !__sla_map_insert_str_old_value_%out_opt
+            \\    !__sla_map_insert_str_old_ptr_%out_opt
+            \\    !__sla_map_insert_str_replaced_%out_opt
+            \\    jmp L_SLA_MAP_INSERT_STR_END_%out_opt
+            \\L_SLA_MAP_INSERT_STR_NONE_%out_opt:
+            \\    EXPAND OPTION_NEW_NONE %out_opt
+            \\    !__sla_map_insert_str_old_ptr_%out_opt
+            \\    !__sla_map_insert_str_replaced_%out_opt
+            \\L_SLA_MAP_INSERT_STR_END_%out_opt:
+            \\[END_MACRO]
+            \\
         , .{}) catch return CodegenError.CodegenError;
     }
 
@@ -16057,7 +16089,8 @@ pub const Codegen = struct {
                     const found = try self.newTmp();
                     const hit_label = try self.newLabel("L_HASHMAP_INDEX_HIT");
                     const miss_label = try self.newLabel("L_HASHMAP_INDEX_MISS");
-                    self.outPrint("    EXPAND MAP_GET {s}, {s}, {s}\n", .{ value_ptr, map_reg, key_reg }) catch return CodegenError.CodegenError;
+                    const map_index_macro = if (lowering_rules.isStringType(hm.key)) "MAP_GET_STR" else "MAP_GET";
+                    self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ map_index_macro, value_ptr, map_reg, key_reg }) catch return CodegenError.CodegenError;
                     self.outPrint("    {s} = ne {s}, 0\n", .{ found, value_ptr }) catch return CodegenError.CodegenError;
                     self.outPrint("    br {s} -> {s}, {s}\n\n", .{ found, hit_label, miss_label }) catch return CodegenError.CodegenError;
                     self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
@@ -18073,7 +18106,8 @@ pub const Codegen = struct {
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const value_slot = try self.genHashMapValueSlot(call.args[2], hoisted_allocs, self.insertArgCheckerConsumed(call.args[0], call.args[2]));
                                 const reg = try self.newTmp();
-                                self.outPrint("    EXPAND SLA_MAP_INSERT_OPTION_U64 {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg, value_slot }) catch return CodegenError.CodegenError;
+                                const map_insert_macro = if (lowering_rules.isStringType(hashMapTypes(ty).?.key)) "SLA_MAP_INSERT_STR_OPTION_U64" else "SLA_MAP_INSERT_OPTION_U64";
+                                self.outPrint("    EXPAND {s} {s}, {s}, {s}, {s}\n", .{ map_insert_macro, reg, recv_reg, key_reg, value_slot }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 if (self.insertArgCheckerConsumed(call.args[0], call.args[1])) try self.emitForgetMovedValue(key_reg);
@@ -18084,7 +18118,8 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.outPrint("    EXPAND SLA_MAP_TRY_GET_OPTION {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                const map_get_macro = if (lowering_rules.isStringType(hashMapTypes(ty).?.key)) "SLA_MAP_TRY_GET_STR_OPTION" else "SLA_MAP_TRY_GET_OPTION";
+                                self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ map_get_macro, reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
@@ -18136,7 +18171,8 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.outPrint("    EXPAND SET_INSERT {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                const set_insert_macro = if (lowering_rules.isStringType(hashSetTypes(ty).?.key)) "SET_INSERT_STR" else "SET_INSERT";
+                                self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ set_insert_macro, reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 if (self.insertArgCheckerConsumed(call.args[0], call.args[1])) try self.emitForgetMovedValue(key_reg);
@@ -18147,7 +18183,8 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.outPrint("    EXPAND SET_CONTAINS {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                const set_contains_macro = if (lowering_rules.isStringType(hashSetTypes(ty).?.key)) "SET_CONTAINS_STR" else "SET_CONTAINS";
+                                self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ set_contains_macro, reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;

@@ -19275,6 +19275,40 @@ pub const Codegen = struct {
         return try self.genExpr(@constCast(arg));
     }
 
+    fn insertEnumPayloadIsCopy(self: *Codegen, ty: *const ast.Type) bool {
+        if (ty.* != .user_defined) return false;
+        const decl = self.tc.enums.get(ty.user_defined.name) orelse return false;
+        for (decl.variants) |variant| {
+            for (variant.fields) |field| {
+                if (!self.typeIsCopyValue(field.ty)) return false;
+            }
+        }
+        return true;
+    }
+
+    /// DEF-INSERT-GETMISS: SAB twin of the SA-text emitter's
+    /// insertArgCheckerConsumed. True when the type checker consumed this
+    /// insert argument (type_checker.consumeInsertArgIfMoved): the map
+    /// adopted the argument's handle as-is, so the source register must be
+    /// retired with a consumed marker at the insert site. Without it the
+    /// scope-exit cleanup drop deep-frees the adopted String key/value
+    /// buffer while the map still points at it (a later fresh-key lookup
+    /// then reads recycled bytes and misses, or hits by accident).
+    fn insertArgCheckerConsumed(self: *Codegen, recv_arg: *const ast.Node, arg: *const ast.Node) bool {
+        if (arg.* != .identifier) return false;
+        const arg_ty = self.tc.expr_types.get(arg) orelse return false;
+        if (arg_ty.* == .infer) return false;
+        const copy_leaf = (lowering_rules.typeIsCopyValueLeaf(arg_ty) orelse false) or arg_ty.* == .pointer;
+        if (!lowering_rules.insertArgTransfersOwnership(arg_ty, copy_leaf)) return false;
+        if (lowering_rules.sliceElementType(arg_ty) != null) return false;
+        if (self.insertEnumPayloadIsCopy(arg_ty)) return false;
+        if (arg_ty.* == .user_defined and std.mem.eql(u8, arg_ty.user_defined.name, "Chan")) return false;
+        if (lowering_rules.rootIdentifier(recv_arg)) |recv_id| {
+            if (std.mem.eql(u8, recv_id, arg.identifier)) return false;
+        }
+        return true;
+    }
+
     /// Direct-SAB `map.insert(key, value)`, mirroring the SA-text emitter's
     /// `SLA_MAP_INSERT_OPTION_U64` / `SLA_BTREE_MAP_INSERT_OPTION_U64`
     /// wrappers: run the insert, then fold replaced/old into an Option via
@@ -19374,7 +19408,19 @@ pub const Codegen = struct {
         try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
         try self.emitLabel(end_label);
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
-        try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        // Checker-consumed key/value handles were adopted by the map:
+        // retire them with a consumed marker instead of leaving them for
+        // the scope-exit cleanup drop (see insertArgCheckerConsumed).
+        if (self.insertArgCheckerConsumed(call.args[0], call.args[2])) {
+            try self.emitConsumedMarker(value_reg);
+            try self.markConsumed(value_reg);
+        }
+        if (self.insertArgCheckerConsumed(call.args[0], key_arg)) {
+            try self.emitConsumedMarker(key_reg);
+            try self.markConsumed(key_reg);
+        } else {
+            try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        }
         return option_reg;
     }
 
@@ -19391,10 +19437,15 @@ pub const Codegen = struct {
         const recv_reg = try self.genExpr(@constCast(call.args[0]));
         const key_arg = call.args[1];
         const key_reg = try self.genMapKeyReg(key_arg);
-        try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_try_get"});
+        // Route through the shared index plan so String-keyed maps use the
+        // content-keyed MAP_TRY_GET_STR variant, matching insert and the
+        // index path (DEF-INSERT-GETMISS). Hardcoding the generic
+        // MAP_TRY_GET here made every fresh-key get miss on this backend.
+        const plan = lowering_rules.mapIndexPlan(receiver_ty) orelse return null;
+        try self.ensureStdDeps(plan.import_path, &.{plan.dep_symbol});
         const ok_reg = try self.intern(try self.newTmp());
         const payload_reg = try self.intern(try self.newTmp());
-        try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_TRY_GET", &.{
+        try self.emitStdMacroFragment(plan.import_path, plan.macro_name, &.{
             self.symbols.items[ok_reg],
             self.symbols.items[payload_reg],
             self.symbols.items[recv_reg],

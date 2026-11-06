@@ -1,3 +1,4 @@
+// expect: UseAfterMove
 @import "sa_std/string.sa"
 
 // DEF triage batch 11 guard: a genuine second use of a moved String

@@ -1,3 +1,4 @@
+// expect: ArenaEscape
 // F2-A C1 corpus: escape route 2 - storing an arena-owned
 // value into an ordinary-domain place (design 3 R2, red item).
 fn neg_store_out() -> i32 {

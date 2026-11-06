@@ -1,3 +1,4 @@
+// expect: Redeclaration
 fn repeated_value() -> int {
     return 1;
 }

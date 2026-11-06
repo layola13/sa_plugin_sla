@@ -1,3 +1,4 @@
+// expect: BorrowConflict
 // View-types stage 1: a parent-path borrow and a child-path borrow
 // live in the same call, both written through by the callee. The
 // places are prefix-related (o.inner vs o.inner.x), so the checker

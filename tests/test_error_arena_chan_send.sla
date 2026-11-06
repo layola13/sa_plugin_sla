@@ -1,3 +1,4 @@
+// expect: ArenaGoroutine
 // F2-A C1 corpus: escape route 5 - sending an arena-owned
 // value on a channel crosses the goroutine boundary (design 4:
 // arena values must not cross; clone out first).

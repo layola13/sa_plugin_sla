@@ -1,3 +1,4 @@
+// expect: BorrowConflict
 // View-types stage 1: borrow a field, then write THE SAME field
 // directly while the borrow is live and used afterwards. The checker
 // must reject the direct write with a BorrowConflict diagnostic.

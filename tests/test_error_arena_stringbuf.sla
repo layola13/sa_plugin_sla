@@ -1,3 +1,4 @@
+// expect: ArenaUnsafe
 // F2-A C1 corpus: StringBuf is a self-managed container (the
 // growable string header machinery); Jev U2 = A bans it in v1.
 // Plain String (a flat buffer value) stays arena-safe.

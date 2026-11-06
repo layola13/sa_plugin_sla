@@ -1,3 +1,4 @@
+// expect: TypeMismatch
 trait ExtraMethodTrait {
     fn required(self) -> i32;
 }

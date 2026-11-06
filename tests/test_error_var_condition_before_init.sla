@@ -1,3 +1,4 @@
+// expect: UseBeforeInit
 fn bad_var_condition_before_init() -> i32 {
     var ok: bool;
     if ok {

@@ -1,3 +1,4 @@
+// expect: ArenaUnsafe
 // F2-A C1 corpus: a borrow field is a view into memory owned
 // elsewhere; an arena root may not contain one (design 2.2).
 struct BorrowWrap { r: &Vec<u8> }

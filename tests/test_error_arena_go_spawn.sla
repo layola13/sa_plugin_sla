@@ -1,3 +1,4 @@
+// expect: ArenaGoroutine
 // F2-A C1 corpus: escape route 6 - passing an arena-owned
 // value to a spawned function crosses the goroutine boundary;
 // the diagnostic uses the ArenaGoroutine category (design 4).

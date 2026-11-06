@@ -1,3 +1,4 @@
+// expect: ArenaUnsafe
 // F2-A C1 corpus: Weak is the non-owning half of a refcounted
 // pair; it can never be an arena root (design 2.2).
 fn id_weak(x: Weak<i32>) -> Weak<i32> { return x; }

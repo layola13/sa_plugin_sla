@@ -1,3 +1,4 @@
+// expect: ArenaUnsafe
 // F2-A C1 corpus: design 2.4 counterexample. The recursive
 // edge Vec<Node> must NOT be cut the way drop plans cut cycles:
 // the greatest-fixpoint closure still reaches File through

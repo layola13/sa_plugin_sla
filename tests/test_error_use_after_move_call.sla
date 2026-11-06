@@ -1,3 +1,4 @@
+// expect: UseAfterMove
 @import "sa_std/string.sa"
 
 // REG-BR-6: passing the same owned String local as a plain by-value

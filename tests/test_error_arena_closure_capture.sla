@@ -1,3 +1,4 @@
+// expect: ArenaEscape
 // F2-A C1 corpus: escape route 4 - a closure capturing an
 // arena root may escape the block with the reference inside.
 fn neg_closure_capture() -> i32 {

@@ -1,3 +1,4 @@
+// expect: UseBeforeInit
 fn bad_var_shadow_does_not_init_outer() -> i32 {
     var x: i32;
     {

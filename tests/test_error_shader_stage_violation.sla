@@ -1,3 +1,4 @@
+// expect: ShaderStageViolation
 // J-1 negative (stage rules, DESIGN.md 6.2): an @input may only be
 // read in the vertex stage. Reading `position` in the fragment
 // stage is ShaderStageViolation. Judged by standalone `sla check`

@@ -1,3 +1,4 @@
+// expect: ExpectedDeclaration
 // J-1 guard: registration is load-bearing. Without a preceding
 // `@sublanguage shader;`, a `shader` declaration is not recognised
 // at all — this file must keep failing with ExpectedDeclaration on

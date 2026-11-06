@@ -1,3 +1,4 @@
+// expect: TypeMismatch
 fn bad_var_type_mismatch() -> bool {
     var ok: bool;
     ok = 1;

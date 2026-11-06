@@ -1,3 +1,4 @@
+// expect: BorrowConflict
 // View-types stage 1: two local mutable borrows of the SAME field at
 // a nonzero offset, written through interleaved. The checker must
 // reject the second borrow with a BorrowConflict diagnostic. Before

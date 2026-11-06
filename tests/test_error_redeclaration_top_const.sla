@@ -1,3 +1,4 @@
+// expect: Redeclaration
 const LIMIT: int = 1;
 const LIMIT: int = 2;
 

@@ -1,3 +1,4 @@
+// expect: Redeclaration
 macro duplicate_macro_param(value, value) {
     let result = value + 1;
 }

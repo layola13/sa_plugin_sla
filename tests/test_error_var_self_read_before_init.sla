@@ -1,3 +1,4 @@
+// expect: UseBeforeInit
 fn bad_var_self_read_before_init() -> i32 {
     var x: i32;
     x = x + 1;

@@ -1,3 +1,4 @@
+// expect: ArenaUnsafe
 // F2-A C1 corpus: enum payloads are closure edges - an enum
 // with a File payload is not arena-safe (design 2.2).
 enum FileMsg { F(File), Empty }

@@ -1,3 +1,4 @@
+// expect: UseBeforeInit
 fn bad_var_compare_before_init() -> bool {
     var ok: bool;
     return ok == true;

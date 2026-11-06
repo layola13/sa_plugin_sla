@@ -1,3 +1,4 @@
+// expect: ArenaEscape
 // F2-A C1 corpus: escape route 3 - passing an arena-owned
 // value by value to a function moves it out of its domain;
 // only borrow passes are allowed (design 3).

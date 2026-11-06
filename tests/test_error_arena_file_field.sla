@@ -1,3 +1,4 @@
+// expect: ArenaUnsafe
 // F2-A C1 corpus: a struct with a File field is not arena-safe
 // (design section 2.2, external resource row; diagnostic quadruple
 // names root type / field path / forbidden type / class).

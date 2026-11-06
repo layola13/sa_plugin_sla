@@ -1,3 +1,4 @@
+// expect: Redeclaration
 macro repeated_macro(value) {
     let result = value + 1;
 }

@@ -1,3 +1,4 @@
+// expect: Redeclaration
 fn duplicate_local_const() -> int {
     const value: int = 1;
     const value: int = 2;

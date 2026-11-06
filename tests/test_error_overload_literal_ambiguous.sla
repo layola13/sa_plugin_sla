@@ -1,3 +1,4 @@
+// expect: AmbiguousCall
 // Negative: an untyped integer literal adapts to ANY integer member,
 // so with both an i32 and an i64 member it matches two overloads and
 // the call is rejected as ambiguous, listing both candidates. There is

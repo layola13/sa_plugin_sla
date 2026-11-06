@@ -1,3 +1,4 @@
+// expect: MacroParamUnused
 // J-5 negative: with macro_param_audit attached, a macro parameter
 // that is never referenced in the body is a named diagnostic
 // (MacroParamUnused). The same macro without the hook declaration

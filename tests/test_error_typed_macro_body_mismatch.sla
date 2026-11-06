@@ -1,3 +1,4 @@
+// expect: TypeMismatch
 // J-3 negative: the declared parameter type is visible inside the
 // macro body, so assigning an f64 value to a parameter declared i64
 // is a TypeMismatch when the macro body itself is checked (with

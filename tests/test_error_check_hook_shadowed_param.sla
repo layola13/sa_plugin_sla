@@ -1,3 +1,4 @@
+// expect: MacroParamUnused
 // J-5 negative (scope awareness): the body's `x` references bind
 // to the macro-local `let x`, which shadows the parameter from its
 // declaration point on — so parameter `x` is still unreferenced and

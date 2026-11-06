@@ -1,3 +1,4 @@
+// expect: UseAfterMove
 @import "sa_std/hashmap.sa"
 @import "sa_std/string.sa"
 

@@ -1,3 +1,4 @@
+// expect: UncloneableClone
 @import "sa_std/vec.sa"
 @import "sa_std/ptr.sa"
 @import "sa_std/core/slice.sa"

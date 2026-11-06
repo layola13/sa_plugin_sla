@@ -1,3 +1,4 @@
+// expect: ArenaUnsafe
 // F2-A C1 corpus: a field whose type has no declaration in
 // scope is unverifiable; the closed-world criterion rejects it.
 struct MysteryWrap { m: Mystery }

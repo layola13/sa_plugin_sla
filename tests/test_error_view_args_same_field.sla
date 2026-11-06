@@ -1,3 +1,4 @@
+// expect: BorrowConflict
 // View-types stage 1: the same field mutably borrowed twice in one
 // call, where the callee writes through both parameters. The checker
 // must reject this with a BorrowConflict diagnostic. Before stage 1 no

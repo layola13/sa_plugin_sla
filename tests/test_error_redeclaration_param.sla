@@ -1,3 +1,4 @@
+// expect: Redeclaration
 fn duplicate_param(value: int, value: int) -> int {
     return value;
 }

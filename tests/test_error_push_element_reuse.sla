@@ -1,3 +1,4 @@
+// expect: UseAfterMove
 @import "sa_std/vec.sa"
 @import "sa_std/string.sa"
 

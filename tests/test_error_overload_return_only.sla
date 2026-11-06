@@ -1,3 +1,4 @@
+// expect: Redeclaration
 // Negative: overloads may not differ by return type only. Two
 // declarations with identical parameters and different returns are a
 // redeclaration, reported with the return-type note. Judge with a

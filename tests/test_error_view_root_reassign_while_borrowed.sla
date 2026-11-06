@@ -1,3 +1,4 @@
+// expect: BorrowConflict
 // View-types stage 1: reassigning the root struct while a borrow of
 // one of its fields is still live (and used afterwards). The checker
 // must reject the reassignment with a BorrowConflict diagnostic.

@@ -1,3 +1,4 @@
+// expect: BorrowConflict
 // DEF-12 preservation nail (must stay rejected): the call borrows
 // doc while also passing doc.soff BY VALUE — that moves the whole
 // Vec field out of the borrowed root, and the callee's &Doc would

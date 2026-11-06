@@ -1,3 +1,4 @@
+// expect: ArenaUnsafe
 // F2-A C1 corpus: generic substitution is a closure edge -
 // Pair<File> reaches File through the type parameter.
 struct Pair<T> { a: T, b: T }

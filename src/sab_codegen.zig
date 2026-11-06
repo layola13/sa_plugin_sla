@@ -3784,6 +3784,15 @@ pub const Codegen = struct {
                 try self.emitMove(local.reg);
                 return;
             }
+            if (action.releases() and local.param_cap == .borrow) {
+                // FORIN-GEN: a borrow parameter owns nothing it points
+                // at. The planned drop below would deep-drop the
+                // caller's value through the borrow (freeing e.g. a
+                // Vec field of the borrowed struct); retire only the
+                // register, mirroring the SA-text emitter's `!param`.
+                try self.emitRelease(local.reg);
+                return;
+            }
         }
         if (try self.emitPlannedLocalDrop(local)) return;
         if (local.stack_ty != null) {
@@ -19628,6 +19637,11 @@ pub const Codegen = struct {
         try self.emitJmp(exit_label);
 
         try self.emitLabel(exit_label);
+        // FORIN-GEN: the counted loop's length register is a plain
+        // owned temp; SA-text `genFor` releases its protocol_len_reg
+        // at loop exit. Leaving it Active here tripped the exit-leak
+        // scan (MemoryLeak) for protocol for-in loops.
+        try self.emitRelease(len_reg);
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
     }
 

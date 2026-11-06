@@ -230,6 +230,10 @@ pub const Codegen = struct {
     btree_map_bindings: std.StringHashMap(void),
     hashset_bindings: std.StringHashMap(void),
     btree_set_bindings: std.StringHashMap(void),
+    // FORIN-GEN: parameters that arrive as borrows (`&self`, `x: &T`).
+    // They own nothing they point at, so emitRelease must retire only
+    // the register and never run the deep value drop on them.
+    borrow_param_bindings: std.StringHashMap(void),
     borrow_source_temps: std.StringHashMap([]const u8),
     refcell_borrow_handles: std.StringHashMap(RefCellBorrowHandle),
     result_slot_refcell_handles: std.StringHashMap(ResultSlotRefCellHandle),
@@ -331,6 +335,7 @@ pub const Codegen = struct {
             .btree_map_bindings = std.StringHashMap(void).init(allocator),
             .hashset_bindings = std.StringHashMap(void).init(allocator),
             .btree_set_bindings = std.StringHashMap(void).init(allocator),
+            .borrow_param_bindings = std.StringHashMap(void).init(allocator),
             .borrow_source_temps = std.StringHashMap([]const u8).init(allocator),
             .refcell_borrow_handles = std.StringHashMap(RefCellBorrowHandle).init(allocator),
             .result_slot_refcell_handles = std.StringHashMap(ResultSlotRefCellHandle).init(allocator),
@@ -409,6 +414,7 @@ pub const Codegen = struct {
         self.btree_map_bindings.deinit();
         self.hashset_bindings.deinit();
         self.btree_set_bindings.deinit();
+        self.borrow_param_bindings.deinit();
         self.borrow_source_temps.deinit();
         self.refcell_borrow_handles.deinit();
         self.result_slot_refcell_handles.deinit();
@@ -1213,8 +1219,11 @@ pub const Codegen = struct {
         // DEF deep drop: a deep-planned binding that reaches the plain
         // release fallthrough (a struct with owned fields, or a Vec
         // binding outside the vec_buf map) drops its elements/fields
-        // before the cell release below.
-        if (self.local_binding_types.get(resolved_name)) |binding_ty| {
+        // before the cell release below. Borrow parameters are exempt:
+        // they do not own the value, so only the register release at
+        // the tail applies (FORIN-GEN).
+        if (!self.borrow_param_bindings.contains(resolved_name)) {
+            if (self.local_binding_types.get(resolved_name)) |binding_ty| {
             if (self.tc.planValueDrop(binding_ty)) |plan| {
                 switch (plan.*) {
                     .deep_struct => |fields| try self.emitStructFieldDropsText(resolved_name, binding_ty, fields, resolved_name, self.current_drop_node),
@@ -1243,6 +1252,7 @@ pub const Codegen = struct {
                     else => {},
                 }
             } else |_| {}
+            }
         }
         self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
         self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
@@ -8938,6 +8948,7 @@ pub const Codegen = struct {
         self.btree_map_bindings.clearRetainingCapacity();
         self.hashset_bindings.clearRetainingCapacity();
         self.btree_set_bindings.clearRetainingCapacity();
+        self.borrow_param_bindings.clearRetainingCapacity();
         self.borrow_source_temps.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
         self.result_slot_refcell_handles.clearRetainingCapacity();
@@ -9041,6 +9052,15 @@ pub const Codegen = struct {
 
         for (f.params) |p| {
             try self.rememberLocalBindingType(p.name, p.ty);
+            // FORIN-GEN: borrow parameters own nothing they point at.
+            // Record them so emitRelease retires only the register; the
+            // deep value drop would free the caller's buffers through
+            // the borrow (e.g. `&self` of a struct with a Vec field,
+            // whose exit cleanup freed `self.items` and left the
+            // caller's Vec dangling).
+            if (p.is_borrow or p.ty.* == .borrow) {
+                self.borrow_param_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+            }
             if (p.ty.* == .primitive and p.ty.primitive == .va_list) continue;
             const refcount_aliased = paramNeedsRefcountAlias(p);
             if (refcount_aliased) {
@@ -9185,6 +9205,7 @@ pub const Codegen = struct {
         self.btree_map_bindings.clearRetainingCapacity();
         self.hashset_bindings.clearRetainingCapacity();
         self.btree_set_bindings.clearRetainingCapacity();
+        self.borrow_param_bindings.clearRetainingCapacity();
         self.borrow_source_temps.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
         self.result_slot_refcell_handles.clearRetainingCapacity();

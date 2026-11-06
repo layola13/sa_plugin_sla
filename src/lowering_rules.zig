@@ -7227,10 +7227,22 @@ test "shared lowering rules keep string literals as raw pointers for ptr params"
         .name = "data",
         .ty = &ptr_ty,
     }));
-    try std.testing.expect(!callArgUsesRawPointerStringLiteralValue(&string_arg, .{
+    // DEF-2 (3f51ace3): the extern `&name: ptr` borrow form takes the same
+    // raw-literal reading — the callee reads raw bytes through the data
+    // pointer, so materializing a Slice cell would key byte-keyed lookups
+    // (sa_global_u64_*) on the cell address instead of the literal bytes.
+    // The SAB-target exclusion for borrow params lives in
+    // planCallArgMaterialization, not in this predicate.
+    try std.testing.expect(callArgUsesRawPointerStringLiteralValue(&string_arg, .{
         .name = "data",
         .ty = &borrow_ptr_ty,
         .is_borrow = true,
+    }));
+    // Move params stay excluded: a literal cannot hand over an owned buffer.
+    try std.testing.expect(!callArgUsesRawPointerStringLiteralValue(&string_arg, .{
+        .name = "data",
+        .ty = &ptr_ty,
+        .is_move = true,
     }));
 }
 

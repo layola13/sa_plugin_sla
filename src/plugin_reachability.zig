@@ -928,16 +928,35 @@ pub fn updateFactsForLetBinding(
 /// the callee's body is never materialized and test-mode checking reports
 /// the surviving call as undefined (C1 test-path form).
 fn clearFactsForCallArg(facts: *SyntacticFactSet, arg: *const ast.Node) void {
+    clearFactsForCallArgExcept(facts, arg, null);
+}
+
+/// Same invalidation as clearFactsForCallArg, but the root local named
+/// `protected_name` keeps its facts. Let/const handling derives the new
+/// binding's facts from the value call's shape against the argument facts
+/// as they stood at the call (e.g. a `parse_import_specifiers(text, ...)`
+/// result is a zero-import scan only because `text` was a known
+/// no-import source at the call), so derivation must run BEFORE the
+/// argument invalidation — and the invalidation must then skip the fresh
+/// binding itself: for `let x = f(x)` the new x is the call's result,
+/// not the possibly mutated argument.
+fn clearFactsForCallArgExcept(facts: *SyntacticFactSet, arg: *const ast.Node, protected_name: ?[]const u8) void {
     switch (arg.*) {
-        .identifier => |name| facts.clearName(name),
-        .borrow_expr => |borrow| clearFactsForCallArg(facts, borrow.expr),
-        .move_expr => |move| clearFactsForCallArg(facts, move.expr),
-        .deref_expr => |deref| clearFactsForCallArg(facts, deref.expr),
-        .field_expr => |field| clearFactsForCallArg(facts, field.expr),
-        .index_expr => |idx| clearFactsForCallArg(facts, idx.target),
-        .slice_expr => |slice| clearFactsForCallArg(facts, slice.target),
+        .identifier => |name| {
+            if (protected_name == null or !std.mem.eql(u8, name, protected_name.?)) facts.clearName(name);
+        },
+        .borrow_expr => |borrow| clearFactsForCallArgExcept(facts, borrow.expr, protected_name),
+        .move_expr => |move| clearFactsForCallArgExcept(facts, move.expr, protected_name),
+        .deref_expr => |deref| clearFactsForCallArgExcept(facts, deref.expr, protected_name),
+        .field_expr => |field| clearFactsForCallArgExcept(facts, field.expr, protected_name),
+        .index_expr => |idx| clearFactsForCallArgExcept(facts, idx.target, protected_name),
+        .slice_expr => |slice| clearFactsForCallArgExcept(facts, slice.target, protected_name),
         else => {},
     }
+}
+
+fn clearFactsForCallArgsExcept(facts: *SyntacticFactSet, call: ast.CallExpr, protected_name: ?[]const u8) void {
+    for (call.args) |arg| clearFactsForCallArgExcept(facts, arg, protected_name);
 }
 
 /// Roots whose fields are written anywhere inside `block` — by a field or
@@ -1075,13 +1094,15 @@ pub fn pruneKnownFalseBranchesInBlock(
         switch (stmt.*) {
             .let_stmt => |let| {
                 try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
-                if (let.value.* == .call_expr) clearFactsForCallArgs(&facts, let.value.call_expr);
+                // Derive the binding's facts from the value call before
+                // invalidating its arguments (see clearFactsForCallArgExcept).
                 try updateFactsForLetBinding(&facts, null, null, let.name, let.ty, let.value);
+                if (let.value.* == .call_expr) clearFactsForCallArgsExcept(&facts, let.value.call_expr, let.name);
             },
             .const_stmt => |c| {
                 try pruneKnownFalseBranchesInExpr(allocator, c.value, &facts);
-                if (c.value.* == .call_expr) clearFactsForCallArgs(&facts, c.value.call_expr);
                 try updateFactsForLetBinding(&facts, null, null, c.name, c.ty, c.value);
+                if (c.value.* == .call_expr) clearFactsForCallArgsExcept(&facts, c.value.call_expr, c.name);
             },
             .let_else_stmt => |let| {
                 try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
@@ -2655,8 +2676,10 @@ pub fn collectSyntacticReachableBlock(
                 if (let.ty) |ty| try recordReferencedType(referenced_types, ty);
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, let.value);
                 if (local_facts) |*facts| {
-                    if (let.value.* == .call_expr) clearFactsForCallArgs(facts, let.value.call_expr);
+                    // Derive the binding's facts from the value call before
+                    // invalidating its arguments (see clearFactsForCallArgExcept).
                     try updateFactsForLetBinding(facts, funcs, modules, let.name, let.ty, let.value);
+                    if (let.value.* == .call_expr) clearFactsForCallArgsExcept(facts, let.value.call_expr, let.name);
                 }
             },
             .let_else_stmt => |let| {
@@ -2675,8 +2698,8 @@ pub fn collectSyntacticReachableBlock(
                 if (c.ty) |ty| try recordReferencedType(referenced_types, ty);
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, c.value);
                 if (local_facts) |*facts| {
-                    if (c.value.* == .call_expr) clearFactsForCallArgs(facts, c.value.call_expr);
                     try updateFactsForLetBinding(facts, funcs, modules, c.name, c.ty, c.value);
+                    if (c.value.* == .call_expr) clearFactsForCallArgsExcept(facts, c.value.call_expr, c.name);
                 }
             },
             .assign_stmt => |assign| {

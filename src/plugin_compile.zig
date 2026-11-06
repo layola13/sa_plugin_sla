@@ -783,9 +783,19 @@ fn runSlaFrontend(
     // .zig). A registration missing on the production backend
     // (SAB) is a hard error, listed in full above the failure —
     // never a reroute through the text backend. Registrations
-    // missing only on the text mirror print as mirror-distortion
-    // lines and do not block (SA text is the teaching/debug
+    // missing only on the text mirror are mirror-distortion
+    // findings and do not block (SA text is the teaching/debug
     // mirror; SAB is the production path).
+    //
+    // Print policy: the audit RUNS on every compile, but the
+    // per-finding listing is diagnostics output. It is printed
+    // when the compile fails the audit (full list above the
+    // failure) or when SLA_SAB_AUDIT_REPORT=1 explicitly asks
+    // for the report; a compile with no hard findings otherwise
+    // leaves the diagnostics channel silent, so non-blocking
+    // mirror/unprobed findings never pollute a successful
+    // compile's stderr. The standalone audit driver
+    // (src/sab_audit_driver.zig) always prints every finding.
     {
         const audit_result = sab_audit.auditProgram(allocator, tc, specialized_prog, .production) catch |err| {
             try stderr.print("SAB Audit Error: audit failed: {}\n", .{err});
@@ -794,13 +804,17 @@ fn runSlaFrontend(
         var audit_hard: usize = 0;
         for (audit_result.findings) |finding| {
             if (finding.severity == .hard) audit_hard += 1;
-            try stderr.print("SAB Audit: {s} ({s}) backend={s} severity={s}: {s}\n", .{
-                finding.symbol,
-                finding.class,
-                if (finding.backend) |be| @tagName(be) else "-",
-                @tagName(finding.severity),
-                finding.signature,
-            });
+        }
+        if (audit_hard > 0 or sabAuditReportEnabled(allocator)) {
+            for (audit_result.findings) |finding| {
+                try stderr.print("SAB Audit: {s} ({s}) backend={s} severity={s}: {s}\n", .{
+                    finding.symbol,
+                    finding.class,
+                    if (finding.backend) |be| @tagName(be) else "-",
+                    @tagName(finding.severity),
+                    finding.signature,
+                });
+            }
         }
         if (audit_hard > 0) {
             try stderr.print("SAB Audit Error: {d} missing backend registration(s); full list above\n", .{audit_hard});
@@ -1094,6 +1108,12 @@ pub const CompiledTestInput = struct {
     path: []const u8,
     delete_after: bool = false,
 };
+
+fn sabAuditReportEnabled(allocator: std.mem.Allocator) bool {
+    const value = sio.getEnvVarOwned(allocator, "SLA_SAB_AUDIT_REPORT") catch return false;
+    defer allocator.free(value);
+    return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false") and !std.mem.eql(u8, value, "no");
+}
 
 fn keepGeneratedSaTestInput(allocator: std.mem.Allocator) bool {
     const value = sio.getEnvVarOwned(allocator, "SLA_KEEP_TEST_SA") catch return false;

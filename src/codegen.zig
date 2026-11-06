@@ -9859,6 +9859,21 @@ pub const Codegen = struct {
         self.outPrint("    {s} = &{s}\n", .{ vt_reg, vt_name }) catch return CodegenError.CodegenError;
         self.outPrint("    EXPAND FUTURE_NEW {s}, {s}, {s}\n", .{ future_obj, state_reg, vt_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(vt_reg);
+        // DEF-BATCH1-R5: the future object takes ownership of the state
+        // operand (FUTURE_NEW stores the state pointer into the future
+        // object); retire a fresh temp operand right after the EXPAND,
+        // like the FUTURE_SELECT2_STATE_NEW operands already do. The
+        // retire must be the move-consume form (emitForgetMovedValue,
+        // `^reg`): a plain release (`!reg`) is a real free in the native
+        // backend and frees the very state cell the future now owns, so
+        // every later poll reads freed memory and never becomes ready.
+        // Identifier bindings keep their normal scope cleanup, and the
+        // readiness / vtable bookkeeping is deliberately left alone:
+        // genSelect2Future / genJoin2Future read the state name's
+        // readiness after wrapping.
+        if (std.mem.startsWith(u8, state_reg, "tmp_") and !self.consumed_bindings.contains(state_reg)) {
+            try self.emitForgetMovedValue(state_reg);
+        }
         return future_obj;
     }
 
@@ -9957,7 +9972,10 @@ pub const Codegen = struct {
             // The state object was moved into the future wrapper above; forget
             // the source reg like every sibling branch does for its consumed
             // arg, otherwise it stays Active until function exit (MemoryLeak).
-            if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(state_reg);
+            // DEF-BATCH1-R5: genFutureObjectForState already retired a
+            // fresh temp operand after the EXPAND; a second forget here
+            // would print `^` for a Consumed register (UseAfterMove).
+            if (callArgNeedsRelease(call.args[0]) and !self.consumed_bindings.contains(state_reg)) try self.emitForgetMovedValue(state_reg);
             self.task_future_objects.put(task, future_obj) catch return CodegenError.OutOfMemory;
             return task;
         }
@@ -11592,6 +11610,21 @@ pub const Codegen = struct {
         const elem_ty_str = typeString(arr.elem);
         const out = try self.newTmp();
         self.outPrint("    {s} = alloc {}\n", .{ out, @max(elem_size * arr.len, 1) }) catch return CodegenError.CodegenError;
+        if (self.inlinePodElement(arr.elem)) {
+            // CLASSB segment 3 / DEF-BATCH1-R4: inline-POD element
+            // slots hold the packed record image, not a record
+            // pointer, so the generic loop below would clone through
+            // the image bits as an address. POD records own no
+            // handles: copying the word is the deep copy.
+            var wi: usize = 0;
+            while (wi < arr.len) : (wi += 1) {
+                const word = try self.newTmp();
+                self.outPrint("    {s} = load {s}+{} as u64\n", .{ word, source_reg, elem_size * wi }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+{}, {s} as u64\n", .{ out, elem_size * wi, word }) catch return CodegenError.CodegenError;
+                try self.emitForgetMovedValue(word);
+            }
+            return out;
+        }
         var i: usize = 0;
         while (i < arr.len) : (i += 1) {
             const elem_reg = try self.newTmp();
@@ -14518,16 +14551,43 @@ pub const Codegen = struct {
         self.outPrint("    {s} = alloc {}\n", .{ target, total_size }) catch return CodegenError.CodegenError;
         for (lit.elements, 0..) |elem, i| {
             const val_reg = try self.genExpr(elem, hoisted_allocs);
-            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, val_reg, elem_ty_str }) catch return CodegenError.CodegenError;
-            // DEF-ACL: an aggregate (heap-handle) element's cell is
-            // retained by the array through the stored handle, so the
-            // element temp transfers into the array instead of being
-            // released (a release freed the cell the array points
-            // at). Identifier elements keep their binding, as before.
-            if (lowering_rules.isHeapHandleType(eff_ty) and elem.* != .identifier) {
-                try self.markConsumedBinding(val_reg);
-            } else if (callArgNeedsRelease(elem)) {
-                try self.emitRelease(val_reg);
+            // DEF-BATCH1-R4: an owned element temporary (non-Copy value,
+            // not an identifier binding) moves into the array: store it
+            // with a consume, the same transfer rule struct field stores
+            // use. A plain store left the temp Active at function exit
+            // (MemoryLeak on correct programs). Identifier elements keep
+            // their binding, and Copy-value elements keep the plain
+            // store + release path, exactly as before.
+            const move_elem = elem.* != .identifier and !std.mem.startsWith(u8, val_reg, "&") and !self.typeIsCopyValue(eff_ty);
+            if (self.inlinePodElement(eff_ty)) {
+                // CLASSB segment 3: an inline-POD element's slot holds
+                // the packed record image, not a record pointer (the
+                // read side materializes the record from the word).
+                // Storing the pointer here made every field read of a
+                // struct array literal element consume pointer bits as
+                // record data. Mirror the whole-element index
+                // assignment store. An identifier element's record is
+                // only read for its word; the binding stays live.
+                const word = try self.inlinePodWordOfValue(val_reg);
+                self.outPrint("    store {s}+{}, {s} as u64\n", .{ target, elem_size * i, word }) catch return CodegenError.CodegenError;
+                try self.emitForgetMovedValue(word);
+                if (elem.* != .identifier) try self.emitForgetMovedValue(val_reg);
+            } else if (move_elem) {
+                const move_reg = if (std.mem.startsWith(u8, val_reg, "^")) val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg});
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, move_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                try self.markMovedExprBinding(elem, val_reg);
+            } else {
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, val_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                // DEF-ACL: an aggregate (heap-handle) element's cell is
+                // retained by the array through the stored handle, so the
+                // element temp transfers into the array instead of being
+                // released (a release freed the cell the array points
+                // at). Identifier elements keep their binding, as before.
+                if (lowering_rules.isHeapHandleType(eff_ty) and elem.* != .identifier) {
+                    try self.markConsumedBinding(val_reg);
+                } else if (callArgNeedsRelease(elem)) {
+                    try self.emitRelease(val_reg);
+                }
             }
         }
     }
@@ -14591,14 +14651,30 @@ pub const Codegen = struct {
             const elem_ty_str = typeString(arr.elem);
             for (0..arr.len) |i| {
                 const slot_reg = try self.genExpr(lit.value, hoisted_allocs);
-                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, slot_reg, elem_ty_str }) catch return CodegenError.CodegenError;
-                // DEF-ACL: composite elements are heap handles retained
-                // by the array (see genArrayLiteralInto); transfer the
-                // per-slot temp instead of releasing it.
-                if (lowering_rules.isHeapHandleType(arr.elem) and lit.value.* != .identifier) {
-                    try self.markConsumedBinding(slot_reg);
-                } else if (callArgNeedsRelease(lit.value)) {
-                    try self.emitRelease(slot_reg);
+                // DEF-BATCH1-R4: same owned-element transfer rule as
+                // genArrayLiteralInto above.
+                const move_elem = lit.value.* != .identifier and !std.mem.startsWith(u8, slot_reg, "&") and !self.typeIsCopyValue(arr.elem);
+                if (self.inlinePodElement(arr.elem)) {
+                    // CLASSB segment 3: packed-image store, as in
+                    // genArrayLiteralInto above.
+                    const word = try self.inlinePodWordOfValue(slot_reg);
+                    self.outPrint("    store {s}+{}, {s} as u64\n", .{ target, elem_size * i, word }) catch return CodegenError.CodegenError;
+                    try self.emitForgetMovedValue(word);
+                    if (lit.value.* != .identifier) try self.emitForgetMovedValue(slot_reg);
+                } else if (move_elem) {
+                    const move_reg = if (std.mem.startsWith(u8, slot_reg, "^")) slot_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{slot_reg});
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, move_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                    try self.markMovedExprBinding(lit.value, slot_reg);
+                } else {
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, slot_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                    // DEF-ACL: composite elements are heap handles retained
+                    // by the array (see genArrayLiteralInto); transfer the
+                    // per-slot temp instead of releasing it.
+                    if (lowering_rules.isHeapHandleType(arr.elem) and lit.value.* != .identifier) {
+                        try self.markConsumedBinding(slot_reg);
+                    } else if (callArgNeedsRelease(lit.value)) {
+                        try self.emitRelease(slot_reg);
+                    }
                 }
             }
         }

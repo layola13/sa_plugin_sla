@@ -1909,6 +1909,55 @@ pub const TypeChecker = struct {
         }
     }
 
+    /// Struct update (`{ ...base, field: v }`): the update place is
+    /// read out FIELD BY FIELD, not as a whole — non-overridden
+    /// fields transfer into the new struct while overridden fields
+    /// keep their old value (and its drop) in the source. The
+    /// whole-place consuming walk therefore records the wrong taint
+    /// key: drop sites ignore ancestor taint on purpose (a parent
+    /// place's drop is decided field by field), so the moved fields
+    /// were dropped a second time by the source's own cleanup
+    /// (struct_update_pointer_backed: VEC_FREE of the just-moved Vec,
+    /// both backends). Register one taint per field whose transfer
+    /// plan is a move, mirroring the classification both codegens
+    /// apply in their struct-literal emitters: direct (POD) fields
+    /// carry no ownership, deep-copy fields keep the source's value,
+    /// and Arc/Rc fields follow maybeTaintPlace's exclusion (their
+    /// read-outs are bump-compensated at the read site). Shapes the
+    /// field walk cannot resolve (non-place update expression, no
+    /// struct decl, unions) keep the previous whole-place walk.
+    fn walkTaintStructUpdate(self: *TypeChecker, update: *const ast.Node, lit: *const ast.StructLiteral, taint: *std.StringHashMap(void)) TypeError!void {
+        const place = self.placeOfExpr(update);
+        const decl = self.structDeclForType(lit.ty);
+        if (place == null or decl == null or decl.?.is_union) {
+            try self.walkTaintExpr(update, true, taint);
+            return;
+        }
+        // The spine's value sub-expressions (indexes and the like)
+        // are walked without tainting the spine itself.
+        try self.walkTaintExpr(update, false, taint);
+        for (decl.?.fields) |field| {
+            if (lowering_rules.structLiteralExplicitValue(lit, field.name) != null) continue;
+            const plan = lowering_rules.planStructLiteralField(decl.?, lit, field) orelse continue;
+            const field_is_copy_struct = lowering_rules.typeIsCopyStructFact(
+                self.structDeclForType(@constCast(plan.field_ty)) != null,
+                self.typeHasCopyDerive(plan.field_ty),
+            );
+            const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, field_is_copy_struct);
+            if (!transfer.isMove()) continue;
+            const field_plan = try self.planValueDrop(plan.field_ty);
+            switch (field_plan.kind()) {
+                .none, .arc_ptr, .rc_ptr => continue,
+                else => {},
+            }
+            const child_segs = self.allocator.alloc([]const u8, place.?.segs.len + 1) catch return TypeError.OutOfMemory;
+            @memcpy(child_segs[0..place.?.segs.len], place.?.segs);
+            child_segs[place.?.segs.len] = field.name;
+            const key = self.fieldPlaceDesc(.{ .root = place.?.root, .segs = child_segs });
+            try self.addDropTaint(taint, key);
+        }
+    }
+
     fn maybeTaintPlace(self: *TypeChecker, expr: *const ast.Node, taint: *std.StringHashMap(void)) TypeError!void {
         const ty = self.expr_types.get(expr) orelse return;
         if (isBorrowLikeType(ty)) return;
@@ -1958,7 +2007,7 @@ pub const TypeChecker = struct {
                 for (lit.fields) |field| {
                     try self.walkTaintExpr(field.value, true, taint);
                 }
-                if (lit.update_expr) |update| try self.walkTaintExpr(update, true, taint);
+                if (lit.update_expr) |update| try self.walkTaintStructUpdate(update, &lit, taint);
             },
             .enum_literal => |lit| {
                 for (lit.fields) |field| {

@@ -1343,6 +1343,15 @@ pub const Codegen = struct {
                 }
             },
             .deep_struct => |fields| {
+                // A struct place read out by value (e.g. a struct
+                // update's untouched nested field) is taint-covered
+                // at its own key: shallow to the husk release like
+                // every other plan kind instead of recursing into
+                // fields whose ownership already moved out.
+                if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitRelease(value_reg);
+                    return;
+                }
                 try self.emitStructFieldDropsText(value_reg, ty, fields, key, taint_node);
                 try self.emitRelease(value_reg);
             },

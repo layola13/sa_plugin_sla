@@ -3362,6 +3362,14 @@ pub const Codegen = struct {
                 }
             },
             .deep_struct => |fields| {
+                // Mirror of the SA-text emitter: a taint-covered
+                // struct place (read out by value, e.g. a struct
+                // update's untouched nested field) shallows to the
+                // husk release instead of dropping moved-out fields.
+                if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                    try self.emitMove(value_reg);
+                    return;
+                }
                 try self.emitStructFieldDrops(value_reg, ty, fields, key, taint_node);
                 try self.emitRelease(value_reg);
             },

@@ -10637,6 +10637,30 @@ pub const Codegen = struct {
                 }
             }
         }
+        // DEF-BORROW-TEMP: macro twin of the genBorrow Box-place
+        // branch -- a borrow of a Box field/index place denotes the
+        // Box's home cell (load the cell pointer out of the place
+        // slot and borrow it), never the place slot, so the borrow
+        // means the same thing at call boundaries as it does locally.
+        if (borrow.expr.* == .field_expr or borrow.expr.* == .index_expr) {
+            if ((try self.macroExprType(borrow.expr, ctx))) |inner_ty| {
+                if (self.fieldBorrowIsBoxCell(inner_ty)) {
+                    const place = try self.genMacroAddressOf(borrow.expr, ctx);
+                    if (place.restore_slot == null) {
+                        const owner = try self.intern(try self.newTmp());
+                        try self.emitLoad(owner, place.reg, 0, .ptr);
+                        try self.markNonOwningReg(owner);
+                        const dst = try self.intern(try self.newTmp());
+                        try self.emitBorrowReg(dst, owner, "read");
+                        try self.rememberBorrowAddressTemps(dst, .{
+                            .reg = owner,
+                            .release_regs = try self.fieldProjectionReleaseRegs(place),
+                        });
+                        return dst;
+                    }
+                }
+            }
+        }
         var source = try self.genMacroAddressOf(borrow.expr, ctx);
         if (borrow.expr.* == .field_expr or borrow.expr.* == .index_expr) {
             source = try self.borrowPlaceSource(source);
@@ -13886,10 +13910,12 @@ pub const Codegen = struct {
         // DEF-SP2 receiver forms: the smart value reaches this point
         // either as value bits (Box: the payload pointer; Rc/Arc: the
         // handle) or as a cell whose first word is the bits. Borrow /
-        // pointer handles load to bits, except borrows created here
-        // from a field/index place, whose target slot holds the
-        // register-form value (a cell) -- those borrows are recorded
-        // in cell_target_borrows by genBorrow/genMacroBorrow. Cell
+        // pointer handles load to bits, except slot-form borrows
+        // whose target slot holds the register-form value (a cell) --
+        // those borrows are recorded in cell_target_borrows (RefCell
+        // slot-form results; Box field/index place borrows now denote
+        // the cell directly at creation in genBorrow/genMacroBorrow).
+        // Cell
         // sources (classifier) load to bits. A Box with an inline
         // payload stores the payload IN the cell, so the cell itself
         // is the receiver and no load may happen; an Rc/Arc cell
@@ -13898,17 +13924,34 @@ pub const Codegen = struct {
         const smart_recv = lowering_rules.smartPointerDerefType(source_ty) orelse return Error.MissingType;
         const payload_pointer_backed = lowering_rules.smartPointerDerefLoadsPointerBackedValue(smart_recv.inner);
         var receiver: u32 = source;
+        // DEF-BORROW-TEMP: when the cell-target Box path hops twice, the
+        // first hop's load temp is superseded by the second hop as
+        // `receiver`; it must still be disposed with the borrow, or it
+        // survives a loop back-edge in Active|InteriorPtr state (it is a
+        // load through a borrow view) while the loop-entry edge has it
+        // Uninitialized -- a PhiStateConflict at the loop head.
+        var superseded_hop: ?u32 = null;
+        // DEF-BORROW-TEMP: the home cell the receiver bits were loaded
+        // out of, when the source denoted one (a cell-denoting source
+        // per the classifier, or a cell-target borrow's first hop).
+        // Used by the Rc/Arc payload place return below.
+        var cell_reg: ?u32 = null;
         if (needs_load) {
             const loaded = try self.intern(try self.newTmp());
             try self.emitLoad(loaded, source, 0, .ptr);
             receiver = loaded;
             const targets_cell = self.cell_target_borrows.contains(source);
             if (targets_cell and smart_recv.kind == .box and payload_pointer_backed) {
+                cell_reg = loaded;
                 const hopped = try self.intern(try self.newTmp());
                 try self.emitLoad(hopped, receiver, 0, .ptr);
+                superseded_hop = loaded;
                 receiver = hopped;
+            } else if (smart_recv.kind == .box and source_is_cell) {
+                cell_reg = source;
             }
         } else if (source_is_cell and smart_recv.kind == .box and payload_pointer_backed) {
+            cell_reg = source;
             const loaded = try self.intern(try self.newTmp());
             try self.emitLoad(loaded, source, 0, .ptr);
             receiver = loaded;
@@ -13916,6 +13959,35 @@ pub const Codegen = struct {
 
         var release_regs = std.array_list.Managed(u32).init(self.allocator);
         defer release_regs.deinit();
+
+        // DEF-BORROW-TEMP: a Box whose payload is an Rc/Arc stores the
+        // handle word in its home cell, and an Rc/Arc borrow denotes
+        // the slot holding the handle (the doctrine in
+        // smartPointerSourceIsCell: an Rc/Arc binding's register IS
+        // the value, so a borrow of it denotes the containing slot).
+        // The place of `*box` for such a payload is therefore the
+        // cell itself, not the handle bits: returning the bits makes
+        // &*box denote the RcBox allocation, whose first word is the
+        // strong count, and the Rc deref chain reads the count as the
+        // data pointer. This was masked while place borrows denoted
+        // the field slot (the receiver load stopped one hop early and
+        // landed on the cell by accident). Only when a cell register
+        // was identified above; a bits-only source keeps the as_ptr
+        // place below.
+        if (smart_recv.kind == .box) {
+            if (lowering_rules.smartPointerType(smart_recv.inner)) |inner_smart| {
+                if (inner_smart.kind == .rc or inner_smart.kind == .arc) {
+                    if (cell_reg) |cell| {
+                        if (receiver != cell and receiver != source and !self.isLocalReg(receiver)) try release_regs.append(receiver);
+                        if (superseded_hop) |hop| {
+                            if (hop != cell and hop != receiver and hop != source and !self.isLocalReg(hop)) try release_regs.append(hop);
+                        }
+                        if (source != cell and source != receiver and !self.isLocalReg(source)) try release_regs.append(source);
+                        return .{ .reg = cell, .release_regs = try self.ownedReleaseRegs(release_regs.items) };
+                    }
+                }
+            }
+        }
 
         const slot = try self.intern(try self.newTmp());
         try self.emitStdSurfaceMethod(source_ty, "as_ptr", slot, receiver);
@@ -13947,6 +14019,9 @@ pub const Codegen = struct {
         try self.markObjectPtrReg(slot);
 
         if (receiver != source and !self.isLocalReg(receiver)) try release_regs.append(receiver);
+        if (superseded_hop) |hop| {
+            if (hop != receiver and hop != source and !self.isLocalReg(hop)) try release_regs.append(hop);
+        }
         if (!self.isLocalReg(source) and source != receiver) try release_regs.append(source);
         if (source == receiver and !self.isLocalReg(source)) try release_regs.append(source);
         return .{ .reg = slot, .release_regs = try self.ownedReleaseRegs(release_regs.items) };
@@ -14134,6 +14209,39 @@ pub const Codegen = struct {
                         const dst = try self.intern(try self.newTmp());
                         try self.emitBorrowReg(dst, owner, "read");
                         try self.markObjectPtrReg(dst);
+                        try self.rememberBorrowAddressTemps(dst, .{
+                            .reg = owner,
+                            .release_regs = try self.fieldProjectionReleaseRegs(place),
+                        });
+                        return dst;
+                    }
+                }
+            }
+        }
+        // DEF-BORROW-TEMP: a borrow of a Box field/index place must
+        // denote the Box's home cell, not the place slot. The slot
+        // holds a pointer to the cell, and every consumer of a &Box
+        // (a callee's deref, a local deref) loads the box bits out of
+        // the denoted address in one hop; the place denotation needed
+        // a compensating second hop that exists only inside this
+        // function (cell_target_borrows), so the borrow silently
+        // changed meaning when it crossed a call boundary. The fresh
+        // &place call-arg path already loads the cell pointer inline
+        // (fieldBorrowIsBoxCell branches); materialize the same
+        // denotation here: load the cell pointer at creation and
+        // borrow it, mirroring the stored-pointer branch's
+        // bookkeeping. The borrow is not registered in
+        // cell_target_borrows, so all consumers see one denotation.
+        if (borrow.expr.* == .field_expr or borrow.expr.* == .index_expr) {
+            if (self.tc.expr_types.get(borrow.expr)) |inner_ty| {
+                if (self.fieldBorrowIsBoxCell(inner_ty)) {
+                    const place = try self.genAddressOf(borrow.expr);
+                    if (place.restore_slot == null) {
+                        const owner = try self.intern(try self.newTmp());
+                        try self.emitLoad(owner, place.reg, 0, .ptr);
+                        try self.markNonOwningReg(owner);
+                        const dst = try self.intern(try self.newTmp());
+                        try self.emitBorrowReg(dst, owner, "read");
                         try self.rememberBorrowAddressTemps(dst, .{
                             .reg = owner,
                             .release_regs = try self.fieldProjectionReleaseRegs(place),
@@ -18194,6 +18302,23 @@ pub const Codegen = struct {
         return (!self.typeIsCopyValue(field_ty) or self.typeIsCopyStruct(field_ty)) and !lowering_rules.isBorrowLikeType(field_ty);
     }
 
+    /// DEF-BORROW-TEMP: a Box field's place slot holds a pointer to the
+    /// Box's home cell, not the handle itself (an Rc/Arc field slot
+    /// holds the handle directly, so the plain place borrow already
+    /// matches the callee's first load). A borrow of the place thus
+    /// denotes the cell pointer, while a `&Box` parameter's first load
+    /// expects the handle, so a fresh `&place` call argument must load
+    /// the stored cell pointer and denote it -- the same shape as the
+    /// stored-pointer branch in the call-arg paths. Let-bound borrows
+    /// materialize the same cell denotation at creation in
+    /// genBorrow/genMacroBorrow, so a &Box denotes the home cell on
+    /// every path (the single source of truth for the convention).
+    fn fieldBorrowIsBoxCell(self: *Codegen, field_ty: *const ast.Type) bool {
+        _ = self;
+        const smart = lowering_rules.smartPointerType(field_ty) orelse return false;
+        return smart.kind == .box;
+    }
+
     fn indexBorrowLoadsStoredPointer(self: *Codegen, elem_ty: *const ast.Type) bool {
         // DEF-PHI: inline-POD elements are stored as their packed word
         // in the buffer, not as a stored pointer — the field-storage
@@ -18320,6 +18445,17 @@ pub const Codegen = struct {
                     .release_regs = try self.fieldProjectionReleaseRegs(projection),
                 };
             }
+            if (inner_ty != null and self.fieldBorrowIsBoxCell(inner_ty.?)) {
+                const projection = try self.genFieldAddress(inner.field_expr);
+                const owner = try self.intern(try self.newTmp());
+                try self.emitLoad(owner, projection.reg, 0, .ptr);
+                try self.markNonOwningReg(owner);
+                return .{
+                    .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[owner]}),
+                    .release_reg = owner,
+                    .release_regs = try self.fieldProjectionReleaseRegs(projection),
+                };
+            }
         }
         if (prefix == '&' and inner.* == .index_expr) {
             const inner_ty = self.tc.expr_types.get(inner);
@@ -18371,6 +18507,17 @@ pub const Codegen = struct {
         if (prefix == '&' and inner.* == .field_expr) {
             const inner_ty = self.tc.expr_types.get(inner);
             if (inner_ty != null and self.fieldBorrowLoadsStoredPointer(inner_ty.?)) {
+                const projection = try self.genMacroAddressOf(inner, ctx);
+                const owner = try self.intern(try self.newTmp());
+                try self.emitLoad(owner, projection.reg, 0, .ptr);
+                try self.markNonOwningReg(owner);
+                return .{
+                    .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[owner]}),
+                    .release_reg = owner,
+                    .release_regs = try self.fieldProjectionReleaseRegs(projection),
+                };
+            }
+            if (inner_ty != null and self.fieldBorrowIsBoxCell(inner_ty.?)) {
                 const projection = try self.genMacroAddressOf(inner, ctx);
                 const owner = try self.intern(try self.newTmp());
                 try self.emitLoad(owner, projection.reg, 0, .ptr);

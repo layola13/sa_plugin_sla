@@ -1,0 +1,14 @@
+@import "sa_std/vec.sa"
+
+fn total_of(values: [int; 4]) -> int {
+    return values.iter().sum();
+}
+
+@test "good surfaces"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    if v.len() != 3 { panic(1); };
+    if total_of([1, 2, 3, 4]) != 10 { panic(2); };
+}

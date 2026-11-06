@@ -1,0 +1,10 @@
+@import "sa_std/vec.sa"
+@import "sa_std/hashmap.sa"
+@import "sa_std/core/option.sa"
+
+@test "sab audit probe"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    MAP_PUT(m, "c", 3); if len(m) != 3 { panic(40105); }; let v = m.get("c").copied().unwrap_or(0); if v != 3 { panic(40106); };
+}

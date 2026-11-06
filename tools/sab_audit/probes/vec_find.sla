@@ -1,0 +1,9 @@
+@import "sa_std/vec.sa"
+
+@test "sab audit probe"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let f = v.iter().find(|x| x == 2); if f.is_none() { panic(107); };
+}

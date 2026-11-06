@@ -1,0 +1,9 @@
+@import "sa_std/btree_map.sa"
+@import "sa_std/core/option.sa"
+
+@test "sab audit probe"() {
+    let m = BTreeMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    if m.get("a").copied().unwrap_or_default() != 1 { panic(403); };
+}

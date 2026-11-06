@@ -1,0 +1,4 @@
+@test "sab audit probe"() {
+    let a = [1, 2, 3];
+    if a.iter().count() != 3 { panic(120); };
+}

@@ -1,0 +1,4 @@
+@test "sab audit probe"() {
+    let a = [1, 2, 3];
+    let f = a.iter().find(|x| x == 2); if f.is_none() { panic(121); };
+}

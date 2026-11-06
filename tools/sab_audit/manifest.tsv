@@ -1,0 +1,53 @@
+probe_id	symbol	class	note
+vec_sum	Vec.sum	method	chain: iter+sum (direct chain shape)
+vec_count	Vec.count	method	P1-6: count name absent from checker cascade
+vec_collect	Vec.collect	method	only checker-supported collect form at this head: u8 iterable -> String
+vec_collect	Vec.iter	method	chain-head iter verdict rides on the collect<String> chain probe (the only fully checkable Vec chain at this head); the sab failure signature is the chain terminal's
+vec_collect_vec_target	Vec.collect<target=Vec>	probe_only	boundary row: collect with a Vec target is checker-rejected (TypeMismatch); probe-only, never audit-looked-up
+vec_map	Vec.map	method	map returns Vec<ret> per checker isMapCall branch
+vec_fold	Vec.fold	method	P1-6: fold lowers to pseudo-EXPAND
+vec_find	Vec.find	method	P1-6: find name absent from all layers
+vec_max	Vec.max	method	P1-6: max Undefined call family
+vec_rev	Vec.rev	method	P1-6: rev absent from checker cascade
+vec_skip	Vec.skip	method	P1-6: skip Undefined call family
+vec_take	Vec.take	method	P1-6: take Undefined call family
+vec_iter	Vec.iter[held]	method	held iterator binding; text emits pseudo-EXPAND for held sum
+vec_push	Vec.push	method	control: cascade core surface
+vec_len	Vec.len	method	control: cascade core surface
+array_sum	Array.sum	method	control: corpus test_unit_arrays shape
+array_sum	Array.iter	method	chain-head iter verdict rides on the array_sum chain probe (ok on both backends)
+array_iter	Array.iter[held]	method	held iterator binding, array receiver
+array_count	Array.count	method	adapter family, array receiver
+array_find	Array.find	method	adapter family, array receiver
+map_keys_macro	MAP_KEYS	macro_bridge	triage mechanism A: SAB bridge UnknownRegister; text ok (single handle arg)
+map_values_macro	MAP_VALUES	macro_bridge	triage card 6: same bridge family as MAP_KEYS
+map_del_macro	MAP_DEL	macro_bridge	triage mechanism B: text silently returns wrong old value (value assertion catches it)
+map_put_macro	MAP_PUT	macro_bridge	triage mechanism B: text corrupts the inserted key (get misses)
+map_contains_macro	MAP_CONTAINS_KEY	macro_bridge	triage mechanism B: text returns false for an existing key
+map_del_method	HashMap.del	method	the HashMap deletion method surface (del, not remove)
+map_keys_method	HashMap.keys	method	method surface does not exist at this head (Undefined call); the macro is the surface
+map_values_method	HashMap.values	method	method surface does not exist at this head (Undefined call); the macro is the surface
+map_contains_method	HashMap.contains_key	method	method surface does not exist at this head (Undefined call); the macro is the surface
+map_remove_method	HashMap.remove	method	no remove method on HashMap at this head (del is the name); checker TypeMismatch
+map_keys_index	MAP_KEYS[index]	probe_only	P1-6 second-order: Vec<String> from MAP_KEYS unindexable on SAB; probe-only row (index expr, not a call)
+map_get	HashMap.get	method	corpus chain shape; text hits the !0 unwrap_or_default misgenerate
+map_get	Option.copied	method	shared verdict with the HashMap.get probe (chain link)
+map_insert	HashMap.insert	method	control: cascade core surface
+map_len	HashMap.len	method	control: cascade core surface
+option_unwrap_or_default	Option.unwrap_or_default	method	P1-6 #1: unwrap_or_default misgenerates !0 (both backends, shape-dependent); None case
+option_unwrap_or	Option.unwrap_or	method	control: corpus workaround shape
+set_keys_macro	SET_KEYS	macro_bridge	triage mechanism A: SAB UnknownRegister (nested EXPAND MAP_KEYS)
+set_remove_macro	SET_REMOVE	macro_bridge	triage mechanism B: text returns false
+set_union_method	HashSet.union	method	triage mechanism B: text returns wrong length
+set_contains	HashSet.contains	method	control: core surface
+set_insert	HashSet.insert	method	control: cascade core surface
+set_len	HashSet.len	method	control: core surface
+set_remove_method	HashSet.remove	method	no remove method surface at this head; the macro is the surface
+btree_remove_macro	BTREE_MAP_REMOVE	macro_bridge	triage mechanism A: SAB UnknownRegister
+btree_keys_method	BTreeMap.keys	method	method surface does not exist at this head (Undefined call)
+btree_remove_method	BTreeMap.remove	method	method surface shape rejected at this head (TypeMismatch); the macro is the surface
+btree_get	BTreeMap.get	method	control chain shape
+btree_insert	BTreeMap.insert	method	control: cascade core surface
+using_ext	i32.double	method	using static extension on i32 (E0 domain); verdict is the whole probe file
+using_ext	i32.add_offset	method	using static extension on i32 (E0 domain); verdict is the whole probe file
+builtin_panic	panic	builtin	language builtin; probe compiles the panic call lowering on the never-taken path

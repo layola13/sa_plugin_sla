@@ -7,6 +7,7 @@ const syntax_lowering = @import("syntax_lowering.zig");
 const coop_lowering = @import("coop_lowering.zig");
 const defer_desugar = @import("defer_desugar.zig");
 const type_checker_mod = @import("type_checker.zig");
+const sab_audit = @import("sab_audit.zig");
 const codegen_mod = @import("codegen.zig");
 const sab_codegen_mod = @import("sab_codegen.zig");
 const source_expand = @import("source_expand.zig");
@@ -774,6 +775,38 @@ fn runSlaFrontend(
         return null;
     };
     slaProfileStage(stderr, profile, "type check", stage_start);
+
+    // DEF-SAB-AUDIT (form A'): dual-backend registration audit on
+    // the just-checked program, before syntax lowering rewrites
+    // it. Every hardcoded-class call is looked up in the
+    // probe-built registration registry (src/sab_audit_registry
+    // .zig). A registration missing on the production backend
+    // (SAB) is a hard error, listed in full above the failure —
+    // never a reroute through the text backend. Registrations
+    // missing only on the text mirror print as mirror-distortion
+    // lines and do not block (SA text is the teaching/debug
+    // mirror; SAB is the production path).
+    {
+        const audit_result = sab_audit.auditProgram(allocator, tc, specialized_prog, .production) catch |err| {
+            try stderr.print("SAB Audit Error: audit failed: {}\n", .{err});
+            return null;
+        };
+        var audit_hard: usize = 0;
+        for (audit_result.findings) |finding| {
+            if (finding.severity == .hard) audit_hard += 1;
+            try stderr.print("SAB Audit: {s} ({s}) backend={s} severity={s}: {s}\n", .{
+                finding.symbol,
+                finding.class,
+                if (finding.backend) |be| @tagName(be) else "-",
+                @tagName(finding.severity),
+                finding.signature,
+            });
+        }
+        if (audit_hard > 0) {
+            try stderr.print("SAB Audit Error: {d} missing backend registration(s); full list above\n", .{audit_hard});
+            return null;
+        }
+    }
 
     // Goroutine syntax batch: lower go/chan/select constructs into
     // plain SLA now that the checker has validated them, so both

@@ -1,0 +1,9 @@
+@import "sa_std/vec.sa"
+
+@test "sab audit probe"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    if v.iter().sum() != 6 { panic(101); };
+}

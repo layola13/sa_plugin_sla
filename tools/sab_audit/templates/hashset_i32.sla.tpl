@@ -1,0 +1,9 @@
+@import "sa_std/hashset.sa"
+@import "sa_std/btree_set.sa"
+
+@test "sab audit probe"() {
+    let s = HashSet::new();
+    s.insert(5);
+    s.insert(9);
+    {{BODY}}
+}

@@ -1,0 +1,9 @@
+@import "sa_std/vec.sa"
+
+@test "sab audit probe"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let mapped = v.iter().map(|x| x + 1); if mapped.len() != 3 { panic(105); }; if mapped[0] != 2 { panic(115); };
+}

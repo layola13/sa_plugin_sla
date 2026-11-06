@@ -1,0 +1,9 @@
+@import "sa_std/hashmap.sa"
+@import "sa_std/core/option.sa"
+
+@test "sab audit probe"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    if m.get("a").copied().unwrap_or_default() != 1 { panic(206); };
+}

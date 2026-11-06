@@ -1,0 +1,85 @@
+# DEF-SAB-AUDIT — minimal main-flow wiring patch (NOT APPLIED by the
+# audit line; the main session lands it in integration order).
+#
+# Scope proof:
+# - Exactly ONE added import line (module registration) and ONE
+#   added call block in src/plugin_compile.zig (diff below, machine
+#   generated against sla master b85fdb54 and verified with
+#   `git apply --check`).
+# - The call sits inside runSlaFrontend, immediately after
+#   tc.checkProgram succeeds and BEFORE syntax lowering rewrites the
+#   program — i.e. the audit sees exactly the tree the checker
+#   approved, with expr_types intact. runSlaFrontend is the single
+#   shared frontend for BOTH backend paths (text and SAB compile
+#   entry points), so one call covers every production command.
+# - No logic of any in-flight line is touched: the insertion is
+#   purely additive between the existing "type check" profile stage
+#   and the goroutine syntax-lowering comment block.
+#
+# Target-set note: SlaCompileOptions carries no backend field (the
+# frontend is shared), so the wired call uses the ruled default —
+# production {SAB}: SAB gaps are hard errors listed in full; text
+# gaps print as mirror-distortion lines and do not block. If the
+# integration wants per-command targets (e.g. {SAB, text} on the
+# test path, {text} for `sa sla build`), thread a field through
+# SlaCompileOptions at integration time; do NOT move the call.
+#
+# Behavior contract:
+# - Hard findings: every finding is printed (full list, no
+#   first-failure stop) and the compile returns null — a loud
+#   failure, never a reroute to the other backend (user ruling
+#   2026-11-03 23:40).
+# - Mirror / unprobed findings print and the compile proceeds.
+# - Audit internal failure (OOM) fails the compile loudly.
+#
+# Apply with: git apply tools/sab_audit/wiring.patch
+
+--- a/src/plugin_compile.zig
++++ b/src/plugin_compile.zig
+@@ -7,6 +7,7 @@
+ const coop_lowering = @import("coop_lowering.zig");
+ const defer_desugar = @import("defer_desugar.zig");
+ const type_checker_mod = @import("type_checker.zig");
++const sab_audit = @import("sab_audit.zig");
+ const codegen_mod = @import("codegen.zig");
+ const sab_codegen_mod = @import("sab_codegen.zig");
+ const source_expand = @import("source_expand.zig");
+@@ -775,6 +776,38 @@
+     };
+     slaProfileStage(stderr, profile, "type check", stage_start);
+ 
++    // DEF-SAB-AUDIT (form A'): dual-backend registration audit on
++    // the just-checked program, before syntax lowering rewrites
++    // it. Every hardcoded-class call is looked up in the
++    // probe-built registration registry (src/sab_audit_registry
++    // .zig). A registration missing on the production backend
++    // (SAB) is a hard error, listed in full above the failure —
++    // never a reroute through the text backend. Registrations
++    // missing only on the text mirror print as mirror-distortion
++    // lines and do not block (SA text is the teaching/debug
++    // mirror; SAB is the production path).
++    {
++        const audit_result = sab_audit.auditProgram(allocator, tc, specialized_prog, .production) catch |err| {
++            try stderr.print("SAB Audit Error: audit failed: {}\n", .{err});
++            return null;
++        };
++        var audit_hard: usize = 0;
++        for (audit_result.findings) |finding| {
++            if (finding.severity == .hard) audit_hard += 1;
++            try stderr.print("SAB Audit: {s} ({s}) backend={s} severity={s}: {s}\n", .{
++                finding.symbol,
++                finding.class,
++                if (finding.backend) |be| @tagName(be) else "-",
++                @tagName(finding.severity),
++                finding.signature,
++            });
++        }
++        if (audit_hard > 0) {
++            try stderr.print("SAB Audit Error: {d} missing backend registration(s); full list above\n", .{audit_hard});
++            return null;
++        }
++    }
++
+     // Goroutine syntax batch: lower go/chan/select constructs into
+     // plain SLA now that the checker has validated them, so both
+     // codegens only see let bindings and extern calls.

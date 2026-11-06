@@ -1,0 +1,9 @@
+@import "sa_std/hashset.sa"
+@import "sa_std/btree_set.sa"
+
+@test "sab audit probe"() {
+    let s = HashSet::new();
+    s.insert(5);
+    s.insert(9);
+    let b = HashSet::new(); b.insert(7); let u = s.union(b); if len(u) != 3 { panic(40204); };
+}

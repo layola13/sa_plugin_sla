@@ -9332,6 +9332,36 @@ pub const TypeChecker = struct {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const value_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(elem_ty, value_ty)) return TypeError.TypeMismatch;
+                            // DEF-VECDEQUE-PUSH-CONSUME (registered probe
+                            // p11, confirmed 2026-11-06): mirror the Vec
+                            // push discipline — push_back MOVES a
+                            // non-copy element into the deque (the
+                            // emitters materialize an owned record for
+                            // it), so record the consumption here; a
+                            // copy-like element stays live and is copied
+                            // by the emitters. Without this the same
+                            // owned binding could be pushed twice,
+                            // leaving two deque slots owning one value.
+                            try self.checkArenaMoveArg(call.args[1], value_ty, scope, "push_back", self.arenaPlaceDomainOf(call.args[0], scope));
+                            if (call.args[1].* == .identifier and value_ty.* != .infer) {
+                                const copy_like = self.typeIsCopyValue(value_ty) or self.typeIsShallowCopyCallArgValue(value_ty, 0);
+                                if (copy_like) {
+                                    if (self.uncloneableTypeName(value_ty, 0)) |bad_name| {
+                                        self.setError("UncloneableCopy: element of type `{s}` pushed here must be copied because the source stays live, but its closure contains {s}, which has no clone - move an owned value into the container instead, or keep the {s} outside the copied value", .{ typeDesc(value_ty), bad_name, bad_name });
+                                        return TypeError.CompileError;
+                                    }
+                                } else if (lowering_rules.vecElementPushTransfersOwnership(value_ty, copy_like)) {
+                                    const self_push = if (rootIdentifier(call.args[0])) |recv_name| std.mem.eql(u8, recv_name, call.args[1].identifier) else false;
+                                    if (!self_push) {
+                                        if (scope.lookup(call.args[1].identifier)) |sym| {
+                                            if (!sym.is_const and sym.state == .active and sym.borrow_source == null) {
+                                                try self.consumeBinding(scope, call.args[1].identifier, sym, "push_back element argument");
+                                                sym.consumed_by_call = "push_back";
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             if (elem_ty.* == .infer) {
                                 if (rootIdentifier(call.args[0])) |recv_name| {
                                     if (scope.lookup(recv_name)) |sym| {

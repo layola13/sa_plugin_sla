@@ -16342,11 +16342,18 @@ pub const Codegen = struct {
         });
         for (call.args[0].array_literal.elements) |elem| {
             const elem_reg = try self.genExpr(@constCast(elem));
+            var store_reg = elem_reg;
+            var release = !self.isLocalReg(elem_reg);
+            if (self.tc.expr_types.get(elem)) |elem_ty| {
+                const stored = try self.genVecDequeElementStoreReg(elem, elem_reg, elem_ty);
+                store_reg = stored.reg;
+                release = stored.release_value and release;
+            }
             try self.emitStdMacroFragment("sa_std/vec_deque.sa", "VEC_DEQUE_PUSH_BACK", &.{
                 self.symbols.items[dst],
-                self.symbols.items[elem_reg],
+                self.symbols.items[store_reg],
             });
-            if (!self.isLocalReg(elem_reg)) try self.emitRelease(elem_reg);
+            if (release) try self.emitRelease(elem_reg);
         }
         return dst;
     }
@@ -20617,6 +20624,51 @@ pub const Codegen = struct {
         return dst;
     }
 
+    /// DEF-VECDEQUE-STRUCT-ELEM (SA-text parity): the VEC_DEQUE_*
+    /// slot contract is a raw u64 VALUE, but a struct element's
+    /// register denotes its record cell — storing it verbatim saved
+    /// the address of a temporary that the push then released, so
+    /// pop_front handed back a dangling address and field loads read
+    /// recycled memory. Materialize an owned heap record for struct
+    /// elements and store ITS address as the slot value. Returns the
+    /// register to store, plus whether the caller must still release
+    /// the source register (false when ownership of a fresh record
+    /// transfers into the deque).
+    fn genVecDequeElementStoreReg(
+        self: *Codegen,
+        arg: *const ast.Node,
+        value_reg: u32,
+        elem_ty: *const ast.Type,
+    ) anyerror!struct { reg: u32, release_value: bool } {
+        const decl = self.structDeclForType(elem_ty) orelse return .{ .reg = value_reg, .release_value = true };
+        if (decl.is_opaque or decl.is_union) return .{ .reg = value_reg, .release_value = true };
+        // Fresh owned records (struct literals, call results)
+        // transfer into the deque instead of being released.
+        if (arg.* == .struct_literal or arg.* == .call_expr) {
+            return .{ .reg = value_reg, .release_value = false };
+        }
+        // Live sources are copied into a fresh owned record; the
+        // shallow-copy helper deep-clones handle fields so the box
+        // never aliases the source's handles.
+        if (self.typeIsShallowCopyCallArgValue(elem_ty, 0)) {
+            const copied = try self.genShallowCopyCallArgValue(value_reg, elem_ty);
+            return .{ .reg = copied, .release_value = true };
+        }
+        // Remaining plain structs transfer by byte copy; the source
+        // is consumed (checker-recorded move), so the box owns the
+        // field bits outright.
+        const box = try self.intern(try self.newTmp());
+        try self.emitAlloc(box, structSize(decl));
+        try self.markObjectPtrReg(box);
+        try self.ensureStdDeps("sa_std/core/mem.sa", &.{"sa_mem_copy"});
+        try self.emitCallBody(null, try std.fmt.allocPrint(
+            self.allocator,
+            "@sa_mem_copy(&{s}, &{s}, {d})",
+            .{ self.symbols.items[box], self.symbols.items[value_reg], structSize(decl) },
+        ));
+        return .{ .reg = box, .release_value = true };
+    }
+
     /// Direct-SAB `VecDeque.push_back(value)`, mirroring the SA-text emitter's
     /// `VEC_DEQUE_PUSH_BACK` expansion (void; returns a 0 sentinel).
     fn genVecDequePushBackCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
@@ -20624,16 +20676,17 @@ pub const Codegen = struct {
         if (call.args.len != 2) return null;
         if (!lowering_rules.isPushBackCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
-        if (lowering_rules.vecDequeElementType(receiver_ty) == null) return null;
+        const elem_ty = lowering_rules.vecDequeElementType(receiver_ty) orelse return null;
         try self.ensureStdDeps("sa_std/vec_deque.sa", &.{"sa_vec_deque_push_back"});
         const deque_reg = try self.genExpr(@constCast(call.args[0]));
         const value_reg = try self.genExpr(@constCast(call.args[1]));
+        const stored = try self.genVecDequeElementStoreReg(call.args[1], value_reg, elem_ty);
         try self.emitStdMacroFragment("sa_std/vec_deque.sa", "VEC_DEQUE_PUSH_BACK", &.{
             self.symbols.items[deque_reg],
-            self.symbols.items[value_reg],
+            self.symbols.items[stored.reg],
         });
         if (!self.isLocalReg(deque_reg)) try self.emitRelease(deque_reg);
-        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        if (stored.release_value and !self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
         const sentinel = try self.intern(try self.newTmp());
         try self.recordReg(sentinel);
         try self.emitAssignImm(sentinel, 0);

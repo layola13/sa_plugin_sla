@@ -15787,6 +15787,52 @@ pub const Codegen = struct {
         return try self.genExpr(lit.body, hoisted_allocs);
     }
 
+    /// DEF-VECDEQUE-STRUCT-ELEM (demos/rosetta/89_job_queue): the
+    /// VEC_DEQUE_* slot contract is a raw u64 VALUE, but a struct
+    /// element's register denotes its record cell — storing it
+    /// verbatim saved the address of a temporary that the push then
+    /// released, so pop_front handed back a dangling address and
+    /// field loads read recycled memory (VecDeque<Job> printed
+    /// garbage on both backends). Materialize an owned heap record
+    /// for struct elements and store ITS address as the slot value;
+    /// the popped u64 then denotes a live record the consumer owns.
+    /// Returns the register to store, plus whether the caller must
+    /// still release the source register (false when ownership of a
+    /// fresh record transfers into the deque).
+    fn genVecDequeElementStoreReg(
+        self: *Codegen,
+        arg: *const ast.Node,
+        value_reg: []const u8,
+        elem_ty: *const ast.Type,
+    ) CodegenError!struct { reg: []const u8, release_value: bool } {
+        const decl = self.structDeclForType(elem_ty) orelse return .{ .reg = value_reg, .release_value = true };
+        if (decl.is_opaque or decl.is_union) return .{ .reg = value_reg, .release_value = true };
+        // Fresh owned records (struct literals, call results) are
+        // already unique heap records: transfer them into the deque
+        // instead of releasing them at the push.
+        if (arg.* == .struct_literal or arg.* == .call_expr) {
+            return .{ .reg = value_reg, .release_value = false };
+        }
+        // Live sources (locals, projections) are copied into a fresh
+        // owned record; the shallow-copy helper deep-clones handle
+        // fields so the box never aliases the source's handles.
+        if (self.typeIsShallowCopyCallArgValue(elem_ty, 0)) {
+            const copied = try self.genShallowCopyCallArgValue(value_reg, elem_ty);
+            return .{ .reg = copied, .release_value = true };
+        }
+        // Remaining plain structs (e.g. a field closure containing a
+        // map/set, which the checker makes the caller move) transfer
+        // by byte copy; the source is consumed, so the box owns the
+        // field bits outright.
+        const box = try self.newTmp();
+        self.outPrint("    {s} = alloc {}\n", .{ box, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
+        const size_reg = try self.newTmp();
+        try self.emitIntConst(size_reg, @intCast(typeSize(elem_ty)));
+        self.outPrint("    call @sa_mem_copy(&{s}, &{s}, {s})\n", .{ box, value_reg, size_reg }) catch return CodegenError.CodegenError;
+        try self.emitRelease(size_reg);
+        return .{ .reg = box, .release_value = true };
+    }
+
     fn genVecDequeRotateLeft(self: *Codegen, deque_reg: []const u8, count_reg: []const u8) CodegenError![]const u8 {
         const len_reg = try self.newTmp();
         self.outPrint("    EXPAND VEC_DEQUE_LEN {s}, {s}\n", .{ len_reg, deque_reg }) catch return CodegenError.CodegenError;
@@ -17133,8 +17179,14 @@ pub const Codegen = struct {
                         self.outPrint("    EXPAND VEC_DEQUE_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         for (call.args[0].array_literal.elements) |elem| {
                             const elem_reg = try self.genExpr(elem, hoisted_allocs);
-                            self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ reg, elem_reg }) catch return CodegenError.CodegenError;
-                            if (callArgNeedsRelease(elem)) try self.emitRelease(elem_reg);
+                            if (self.tc.expr_types.get(elem)) |elem_ty| {
+                                const stored = try self.genVecDequeElementStoreReg(elem, elem_reg, elem_ty);
+                                self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ reg, stored.reg }) catch return CodegenError.CodegenError;
+                                if (stored.release_value and callArgNeedsRelease(elem)) try self.emitRelease(elem_reg);
+                            } else {
+                                self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ reg, elem_reg }) catch return CodegenError.CodegenError;
+                                if (callArgNeedsRelease(elem)) try self.emitRelease(elem_reg);
+                            }
                         }
                         return reg;
                     }
@@ -18522,8 +18574,9 @@ pub const Codegen = struct {
                             if (call.args.len != 2) return CodegenError.CodegenError;
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
-                            self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ recv_reg, value_reg }) catch return CodegenError.CodegenError;
-                            if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
+                            const stored = try self.genVecDequeElementStoreReg(call.args[1], value_reg, vecDequeElementType(ty).?);
+                            self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ recv_reg, stored.reg }) catch return CodegenError.CodegenError;
+                            if (stored.release_value and callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                             return "return_ty_sentinel";
                         }
                         if (vecDequeElementType(ty) != null and lowering_rules.isPopFrontCall(call)) {

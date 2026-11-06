@@ -16,9 +16,34 @@ SAX=/content/sa_all/sa_plugin_sax
 # (LLVMDIBuilderInsertDeclareRecordAtEnd -> LLVM >= 19; the box has
 # llvm-20-dev from apt.llvm.org). A -Dllvm=false bootstrap plugin
 # loads but cannot emit app.wasm.
+# Resolve a zig binary without assuming a machine-specific install
+# path (this script previously hardcoded /opt/zig17/zig, which exists
+# only on the author's machine): $ZIG override first, then PATH, then
+# the well-known toolchain locations. Fail loudly, listing what was
+# tried, instead of dying on a stale hardcoded path.
+resolve_zig() {
+  if [ -n "${ZIG:-}" ] && [ -x "${ZIG:-}" ]; then echo "$ZIG"; return 0; fi
+  if command -v zig >/dev/null 2>&1; then command -v zig; return 0; fi
+  local cand c
+  for cand in \
+    /content/tools/zig/zig \
+    /content/tools/zig-x86_64-linux-*/zig \
+    /usr/local/bin/zig \
+    "$HOME/zig/zig" \
+    /opt/zig/zig \
+    /opt/zig17/zig; do
+    for c in $cand; do
+      if [ -x "$c" ]; then echo "$c"; return 0; fi
+    done
+  done
+  return 1
+}
+ZIG_BIN="$(resolve_zig)" || { echo "D12 ZIG NOT FOUND: set \$ZIG or put zig on PATH (tried: \$ZIG, PATH, /content/tools/zig, /content/tools/zig-x86_64-linux-*/zig, /usr/local/bin/zig, ~/zig/zig, /opt/zig/zig, /opt/zig17/zig)"; exit 1; }
+echo "using zig: $ZIG_BIN ($("$ZIG_BIN" version))"
+
 if [ ! -f "$SAX/zig-out/lib/libsax.so" ]; then
   echo "building sax plugin (ReleaseFast, LLVM-C backend)..."
-  (cd "$SAX" && timeout 1200 /opt/zig17/zig build -Doptimize=ReleaseFast) || { echo "D12 SAX BUILD FAILED"; exit 1; }
+  (cd "$SAX" && timeout 1200 "$ZIG_BIN" build -Doptimize=ReleaseFast) || { echo "D12 SAX BUILD FAILED"; exit 1; }
 fi
 
 rm -rf web server server.sa server.sa.bc client client.sa client.sa.bc

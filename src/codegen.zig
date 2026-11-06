@@ -219,6 +219,14 @@ pub const Codegen = struct {
     thread_capture_regs: std.StringHashMap([]const u8),
     inline_thread_handles: std.StringHashMap(void),
     consumed_bindings: std.StringHashMap(void),
+    /// SCATTER-3 (7b): bindings whose consumption was a store-move of the
+    /// value into a memory cell (markMovedExprBinding). The SA verifier's
+    /// register mask does NOT change on a store-move (the register stays
+    /// Active), unlike a real release or a `^` call pass, which consume
+    /// it. Branch-merge compensation must know which consumed names are
+    /// still register-Active so it can emit the balancing `!name` on the
+    /// consuming side; see emitBranchConsumptionCompensation.
+    store_moved_bindings: std.StringHashMap(void),
     mpsc_sender_bindings: std.StringHashMap(void),
     mpsc_sender_channels: std.StringHashMap([]const u8),
     mpsc_receiver_bindings: std.StringHashMap(void),
@@ -324,6 +332,7 @@ pub const Codegen = struct {
             .thread_capture_regs = std.StringHashMap([]const u8).init(allocator),
             .inline_thread_handles = std.StringHashMap(void).init(allocator),
             .consumed_bindings = std.StringHashMap(void).init(allocator),
+            .store_moved_bindings = std.StringHashMap(void).init(allocator),
             .mpsc_sender_bindings = std.StringHashMap(void).init(allocator),
             .mpsc_sender_channels = std.StringHashMap([]const u8).init(allocator),
             .mpsc_receiver_bindings = std.StringHashMap(void).init(allocator),
@@ -404,6 +413,7 @@ pub const Codegen = struct {
         self.thread_capture_regs.deinit();
         self.inline_thread_handles.deinit();
         self.consumed_bindings.deinit();
+        self.store_moved_bindings.deinit();
         self.mpsc_sender_bindings.deinit();
         self.mpsc_sender_channels.deinit();
         self.mpsc_receiver_bindings.deinit();
@@ -1047,6 +1057,9 @@ pub const Codegen = struct {
     fn emitRelease(self: *Codegen, name: []const u8) CodegenError!void {
         const resolved_name = self.resolveBindingName(name);
         if (lowering_rules.isInternalSymbol(resolved_name)) return;
+        // SCATTER-3 (7b): a real release settles the register, so the
+        // name is no longer a store-move-only consumption.
+        _ = self.store_moved_bindings.remove(resolved_name);
         const borrow_temp_release = lowering_rules.planBorrowAddressTempRelease(self.borrow_source_temps.contains(resolved_name));
         if (borrow_temp_release.release_source_temps) {
             if (self.borrow_source_temps.get(resolved_name)) |source_temp| {
@@ -1648,11 +1661,26 @@ pub const Codegen = struct {
         // source name never matches, so the return cleanup freed Vec
         // fields that a struct literal had just moved into the result
         // (sse_process_line's per-field rebuild branches).
-        if (lowering_rules.rootIdentifier(expr)) |name| return try self.markConsumedBinding(self.resolveBindingName(name));
+        // SCATTER-3 (7b): also record the name in store_moved_bindings.
+        // A store-move transfers the value into a memory cell but leaves
+        // the source register Active in the SA verifier's mask, so a
+        // branch that consumes a binding this way reaches a merge with a
+        // different mask than a sibling branch that really released it.
+        // emitBranchConsumptionCompensation uses this set to balance the
+        // consuming side with a bare `!name`.
+        if (lowering_rules.rootIdentifier(expr)) |name| {
+            const resolved = self.resolveBindingName(name);
+            try self.markConsumedBinding(resolved);
+            self.store_moved_bindings.put(resolved, {}) catch return CodegenError.OutOfMemory;
+            return;
+        }
         if (std.mem.startsWith(u8, reg, "^") or std.mem.startsWith(u8, reg, "&")) {
-            return try self.markConsumedBinding(reg[1..]);
+            try self.markConsumedBinding(reg[1..]);
+            self.store_moved_bindings.put(reg[1..], {}) catch return CodegenError.OutOfMemory;
+            return;
         }
         try self.markConsumedBinding(reg);
+        self.store_moved_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
     }
 
     /// DEF-3: the Option/Result constructor macros (OPTION_NEW_SOME /
@@ -1991,6 +2019,14 @@ pub const Codegen = struct {
         }
     }
 
+    fn restoreStoreMovedBindings(self: *Codegen, saved: *std.StringHashMap(void)) CodegenError!void {
+        self.store_moved_bindings.clearRetainingCapacity();
+        var iter = saved.iterator();
+        while (iter.next()) |entry| {
+            self.store_moved_bindings.put(entry.key_ptr.*, entry.value_ptr.*) catch return CodegenError.OutOfMemory;
+        }
+    }
+
     fn mergeConsumedIntoUnion(self: *Codegen, acc: *std.StringHashMap(void)) CodegenError!void {
         var iter = self.consumed_bindings.keyIterator();
         while (iter.next()) |key| {
@@ -2027,6 +2063,9 @@ pub const Codegen = struct {
         pre_branch_consumed: *const std.StringHashMap(void),
         then_branch_consumed: *const std.StringHashMap(void),
         pre_branch_refcell_handles: *const std.StringHashMap(RefCellBorrowHandle),
+        pre_store_moved: *const std.StringHashMap(void),
+        then_store_moved: *const std.StringHashMap(void),
+        else_store_moved: *const std.StringHashMap(void),
         then_text_end: usize,
         then_terminates: bool,
         else_terminates: bool,
@@ -2040,37 +2079,63 @@ pub const Codegen = struct {
         // the releases its exit cleanup marks as consumed must not leak
         // into the surviving side -- the surviving side's end state alone
         // defines the merge state, and values it still needs stay live.
+        //
+        // SCATTER-3 (7b): forget_in_then / forget_in_else cover names a
+        // branch consumed by store-moving the value into a memory cell
+        // (struct/array literal, constructor payload). Codegen's books
+        // mark such a binding consumed, but the SA verifier's register
+        // mask stays Active for a store-move, so the merge sees Active
+        // on the consuming side against Consumed on a sibling side that
+        // really released the name (or vice versa). A bare `!name` at
+        // the end of the consuming branch settles the register without
+        // touching the moved value (ownership already lives in the
+        // cell), making both merge predecessors agree on Consumed.
         var for_then = std.array_list.Managed([]const u8).init(self.allocator);
         defer for_then.deinit();
         var for_else = std.array_list.Managed([]const u8).init(self.allocator);
         defer for_else.deinit();
+        var forget_in_then = std.array_list.Managed([]const u8).init(self.allocator);
+        defer forget_in_then.deinit();
+        var forget_in_else = std.array_list.Managed([]const u8).init(self.allocator);
+        defer forget_in_else.deinit();
         if (!then_terminates and !else_terminates) {
             var iter = self.consumed_bindings.iterator(); // else end state
             while (iter.next()) |entry| {
                 const n = entry.key_ptr.*;
                 if (pre_branch_consumed.contains(n)) continue;
-                if (then_branch_consumed.contains(n)) continue;
                 if (!live_owned.contains(n)) continue;
                 if (pre_branch_refcell_handles.contains(n)) continue;
+                if (else_store_moved.contains(n) and !pre_store_moved.contains(n)) {
+                    forget_in_else.append(n) catch return CodegenError.OutOfMemory;
+                }
+                if (then_branch_consumed.contains(n)) continue;
                 for_then.append(n) catch return CodegenError.OutOfMemory;
             }
             var then_iter = then_branch_consumed.iterator();
             while (then_iter.next()) |entry| {
                 const n = entry.key_ptr.*;
                 if (pre_branch_consumed.contains(n)) continue;
-                if (self.consumed_bindings.contains(n)) continue;
                 if (!live_owned.contains(n)) continue;
                 if (pre_branch_refcell_handles.contains(n)) continue;
+                if (then_store_moved.contains(n) and !pre_store_moved.contains(n)) {
+                    forget_in_then.append(n) catch return CodegenError.OutOfMemory;
+                }
+                if (self.consumed_bindings.contains(n)) continue;
                 for_else.append(n) catch return CodegenError.OutOfMemory;
             }
         }
         std.mem.sort([]const u8, for_then.items, {}, branchCompensationNameLessThan);
         std.mem.sort([]const u8, for_else.items, {}, branchCompensationNameLessThan);
+        std.mem.sort([]const u8, forget_in_then.items, {}, branchCompensationNameLessThan);
+        std.mem.sort([]const u8, forget_in_else.items, {}, branchCompensationNameLessThan);
 
         // Else side first: its text is the current tail of the output, so
         // compensation, jump and the deferred blank line simply append.
         if (!else_terminates) {
             for (for_else.items) |n| try self.emitRelease(n);
+            for (forget_in_else.items) |n| {
+                self.outPrint("    !{s}\n", .{n}) catch return CodegenError.CodegenError;
+            }
             self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
         }
         self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
@@ -2085,6 +2150,9 @@ pub const Codegen = struct {
         if (!then_terminates) {
             const saved_out = self.out;
             self.out = scratch;
+            for (forget_in_then.items) |n| {
+                self.outPrint("    !{s}\n", .{n}) catch return CodegenError.CodegenError;
+            }
             for (for_then.items) |n| {
                 _ = self.consumed_bindings.remove(n);
                 try self.emitRelease(n);
@@ -2168,11 +2236,25 @@ pub const Codegen = struct {
         self: *Codegen,
         compensation_union: []const []const u8,
         arm_end_consumed: *const std.StringHashMap(void),
+        arm_store_moved: *const std.StringHashMap(void),
+        pre_store_moved: *const std.StringHashMap(void),
         insert_offset: usize,
     ) CodegenError!void {
+        // SCATTER-3 (7b, match/switch form): a union name this arm
+        // consumed by store-moving it into a cell (struct literal) is
+        // marked consumed in the books, but the SA store left the
+        // register Active; sibling arms really release it, so the
+        // merge would see Consumed vs Active (PhiStateConflict). The
+        // arm must additionally forget the register (`!name`) — the
+        // N-way counterpart of the if/else forget sets in
+        // emitBranchConsumptionCompensation.
         var needed = false;
         for (compensation_union) |n| {
             if (!arm_end_consumed.contains(n)) {
+                needed = true;
+                break;
+            }
+            if (arm_store_moved.contains(n) and !pre_store_moved.contains(n)) {
                 needed = true;
                 break;
             }
@@ -2182,6 +2264,12 @@ pub const Codegen = struct {
         defer scratch.deinit();
         const saved_out = self.out;
         self.out = scratch;
+        for (compensation_union) |n| {
+            if (!arm_end_consumed.contains(n)) continue;
+            if (arm_store_moved.contains(n) and !pre_store_moved.contains(n)) {
+                self.outPrint("    !{s}\n", .{n}) catch return CodegenError.CodegenError;
+            }
+        }
         for (compensation_union) |n| {
             if (arm_end_consumed.contains(n)) continue;
             _ = self.consumed_bindings.remove(n);
@@ -8930,6 +9018,7 @@ pub const Codegen = struct {
         defer self.current_async = prev_async;
         defer self.current_async_return_ty = prev_async_return_ty;
         defer self.async_pending_return_emitted = prev_async_pending_return;
+        self.store_moved_bindings.clearRetainingCapacity();
         self.addressable_bindings.clearRetainingCapacity();
         self.assigned_bindings.clearRetainingCapacity();
         self.assigned_value_slots.clearRetainingCapacity();
@@ -9187,6 +9276,7 @@ pub const Codegen = struct {
     }
 
     fn genTestDecl(self: *Codegen, t: *const ast.TestDecl) CodegenError!void {
+        self.store_moved_bindings.clearRetainingCapacity();
         self.addressable_bindings.clearRetainingCapacity();
         self.assigned_bindings.clearRetainingCapacity();
         self.assigned_value_slots.clearRetainingCapacity();
@@ -12041,6 +12131,49 @@ pub const Codegen = struct {
                             }
                         }
                     }
+                    // SCATTER-3 (7a): the DEF-PARALLEL branch above covers
+                    // only Vec/GrowVec projections. A projection of any
+                    // other owning shape (a nested struct value, a String,
+                    // a smart-pointer payload) aliases the root binding's
+                    // storage the same way: passing the raw load to a
+                    // consuming (^) parameter hands the callee the owner's
+                    // record/buffer, the callee drops it, and the root's
+                    // later uses (and its own scope-exit drop) then touch
+                    // freed memory (nested_value_field_call_arg_direct:
+                    // the second call re-read and re-freed
+                    // `response.body`). Materialise an independent value
+                    // instead: handle-shaped projections clone through
+                    // cloneBorrowedHandleFieldValue (which retires the
+                    // projection temp itself); a plain struct projection
+                    // goes through the shallow-copy materialiser, which
+                    // allocates a fresh record cell and deep-clones its
+                    // handle fields, so the callee-owned copy never
+                    // aliases the root's record. Shapes eligible for
+                    // neither keep the historical raw pass.
+                    if (!move_out and arg.* != .identifier and rootIdentifier(arg) != null) {
+                        if (try self.cloneBorrowedHandleFieldValue(arg, arg_reg)) |cloned| {
+                            const move_arg = std.fmt.allocPrint(self.allocator, "^{s}", .{cloned}) catch return CodegenError.OutOfMemory;
+                            break :blk .{
+                                .reg = move_arg,
+                                .release_after_call = false,
+                                .consume_reg = move_arg,
+                            };
+                        }
+                        if (self.resolvedTypeForExpr(arg) orelse self.tc.expr_types.get(arg)) |ty| {
+                            if (self.structDeclForType(ty)) |decl| {
+                                if (!decl.is_opaque and !decl.is_union and self.typeIsShallowCopyCallArgValue(ty, 0)) {
+                                    const copied = try self.genShallowCopyCallArgValue(arg_reg, ty);
+                                    try self.emitRelease(arg_reg);
+                                    const move_arg = std.fmt.allocPrint(self.allocator, "^{s}", .{copied}) catch return CodegenError.OutOfMemory;
+                                    break :blk .{
+                                        .reg = move_arg,
+                                        .release_after_call = false,
+                                        .consume_reg = move_arg,
+                                    };
+                                }
+                            }
+                        }
+                    }
                     const move_arg = if (std.mem.startsWith(u8, arg_reg, "^"))
                         arg_reg
                     else
@@ -13363,7 +13496,29 @@ pub const Codegen = struct {
                         // that is not the resolved binding itself) retires
                         // it; a plain identifier value still resolves to
                         // its own binding register and is not released.
-                        if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitRelease(val_reg);
+                        if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) {
+                            // SCATTER-3 (7c): a raw_ptr value produced by
+                            // a call (an imported alloc macro such as
+                            // SLA_BUF_ALLOC, or a ptr-returning function)
+                            // is a fresh OWNING allocation temp, and the
+                            // copy above transferred ownership to the
+                            // binding. Retire the temp by FORGET
+                            // (move-consume), never by release: since
+                            // the native backend's release became a real
+                            // free, releasing it frees the allocation at
+                            // birth while the binding still owns it
+                            // (tsconfig_buffer_cleanup: the fixture path
+                            // buffer was dead on arrival, and a later
+                            // same-size alloc — the clone — reused and
+                            // overwrote it). Same discipline as
+                            // DEF-R8PIN / DEF-ZRANGE: a transferred
+                            // value is retired by forget.
+                            if (let_ty.primitive == .raw_ptr and let.value.* == .call_expr) {
+                                try self.emitForgetMovedValue(val_reg);
+                            } else {
+                                try self.emitRelease(val_reg);
+                            }
+                        }
                     } else {
                         self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }
@@ -14549,6 +14704,7 @@ pub const Codegen = struct {
         // merge. Without this, a returning arm's cleanup consumptions
         // leak past the merge and poison enclosing branch analysis.
         var pre_match_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+        var pre_match_store_moved = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
         var fallthrough_consumed = std.StringHashMap(void).init(self.allocator);
         var has_fallthrough_state = false;
         // Family 3: merge consumption compensation (the N-way form of
@@ -14559,6 +14715,7 @@ pub const Codegen = struct {
         var pre_match_live_owned = try self.snapshotLiveOwnedBindings();
         var pre_match_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
         var arm_end_sets = std.array_list.Managed(*std.StringHashMap(void)).init(self.allocator);
+        var arm_sm_sets = std.array_list.Managed(*std.StringHashMap(void)).init(self.allocator);
         var arm_jmp_offsets = std.array_list.Managed(usize).init(self.allocator);
 
         self.outPrint("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
@@ -14583,6 +14740,7 @@ pub const Codegen = struct {
 
             self.outPrint("{s}:\n", .{case_labels.items[i]}) catch return CodegenError.CodegenError;
             try self.restoreConsumedBindings(&pre_match_consumed);
+            try self.restoreStoreMovedBindings(&pre_match_store_moved);
             const variant = enumVariant(decl, case.pattern.variant_name) orelse return CodegenError.CodegenError;
             for (case.pattern.bindings, variant.fields) |binding, field| {
                 const layout = enumFieldLayout(variant, field.name) orelse return CodegenError.CodegenError;
@@ -14621,18 +14779,28 @@ pub const Codegen = struct {
                 const arm_end = self.allocator.create(std.StringHashMap(void)) catch return CodegenError.OutOfMemory;
                 arm_end.* = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
                 arm_end_sets.append(arm_end) catch return CodegenError.OutOfMemory;
+                const arm_sm = self.allocator.create(std.StringHashMap(void)) catch return CodegenError.OutOfMemory;
+                arm_sm.* = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
+                arm_sm_sets.append(arm_sm) catch return CodegenError.OutOfMemory;
                 arm_jmp_offsets.append(self.out.items.len) catch return CodegenError.OutOfMemory;
                 self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
             }
             self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
         }
         if (has_fallthrough_state) try self.restoreConsumedBindings(&fallthrough_consumed);
+        if (has_fallthrough_state) {
+            self.store_moved_bindings.clearRetainingCapacity();
+            for (arm_sm_sets.items) |sm| {
+                var sm_it = sm.iterator();
+                while (sm_it.next()) |e| self.store_moved_bindings.put(e.key_ptr.*, {}) catch return CodegenError.OutOfMemory;
+            }
+        }
         if (arm_end_sets.items.len > 0) {
             const compensation_union = try self.mergeCompensationUnion(&pre_match_live_owned, &pre_match_consumed, &pre_match_refcell_handles, arm_end_sets.items);
             var arm_idx = arm_end_sets.items.len;
             while (arm_idx > 0) {
                 arm_idx -= 1;
-                try self.insertArmMergeCompensation(compensation_union.items, arm_end_sets.items[arm_idx], arm_jmp_offsets.items[arm_idx]);
+                try self.insertArmMergeCompensation(compensation_union.items, arm_end_sets.items[arm_idx], arm_sm_sets.items[arm_idx], &pre_match_store_moved, arm_jmp_offsets.items[arm_idx]);
             }
         }
 
@@ -14686,12 +14854,14 @@ pub const Codegen = struct {
 
         // Arm-state discipline: see genMatchExpr.
         var pre_match_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+        var pre_match_store_moved = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
         var fallthrough_consumed = std.StringHashMap(void).init(self.allocator);
         var has_fallthrough_state = false;
         // Family 3 merge compensation state: see genMatchExpr.
         var pre_match_live_owned = try self.snapshotLiveOwnedBindings();
         var pre_match_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
         var arm_end_sets = std.array_list.Managed(*std.StringHashMap(void)).init(self.allocator);
+        var arm_sm_sets = std.array_list.Managed(*std.StringHashMap(void)).init(self.allocator);
         var arm_jmp_offsets = std.array_list.Managed(usize).init(self.allocator);
 
         self.outPrint("    jmp {s}\n\n", .{check_labels.items[0]}) catch return CodegenError.CodegenError;
@@ -14723,6 +14893,7 @@ pub const Codegen = struct {
 
             self.outPrint("{s}:\n", .{case_labels.items[i]}) catch return CodegenError.CodegenError;
             try self.restoreConsumedBindings(&pre_match_consumed);
+            try self.restoreStoreMovedBindings(&pre_match_store_moved);
             if (std.mem.eql(u8, case.pattern.variant_name, "Some") and case.pattern.bindings.len == 1) {
                 self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
             } else if (std.mem.eql(u8, case.pattern.variant_name, "Ok") and case.pattern.bindings.len == 1) {
@@ -14763,18 +14934,28 @@ pub const Codegen = struct {
                 const arm_end = self.allocator.create(std.StringHashMap(void)) catch return CodegenError.OutOfMemory;
                 arm_end.* = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
                 arm_end_sets.append(arm_end) catch return CodegenError.OutOfMemory;
+                const arm_sm = self.allocator.create(std.StringHashMap(void)) catch return CodegenError.OutOfMemory;
+                arm_sm.* = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
+                arm_sm_sets.append(arm_sm) catch return CodegenError.OutOfMemory;
                 arm_jmp_offsets.append(self.out.items.len) catch return CodegenError.OutOfMemory;
                 self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
             }
             self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
         }
         if (has_fallthrough_state) try self.restoreConsumedBindings(&fallthrough_consumed);
+        if (has_fallthrough_state) {
+            self.store_moved_bindings.clearRetainingCapacity();
+            for (arm_sm_sets.items) |sm| {
+                var sm_it = sm.iterator();
+                while (sm_it.next()) |e| self.store_moved_bindings.put(e.key_ptr.*, {}) catch return CodegenError.OutOfMemory;
+            }
+        }
         if (arm_end_sets.items.len > 0) {
             const compensation_union = try self.mergeCompensationUnion(&pre_match_live_owned, &pre_match_consumed, &pre_match_refcell_handles, arm_end_sets.items);
             var arm_idx = arm_end_sets.items.len;
             while (arm_idx > 0) {
                 arm_idx -= 1;
-                try self.insertArmMergeCompensation(compensation_union.items, arm_end_sets.items[arm_idx], arm_jmp_offsets.items[arm_idx]);
+                try self.insertArmMergeCompensation(compensation_union.items, arm_end_sets.items[arm_idx], arm_sm_sets.items[arm_idx], &pre_match_store_moved, arm_jmp_offsets.items[arm_idx]);
             }
         }
 
@@ -19133,6 +19314,8 @@ pub const Codegen = struct {
 
                 var pre_branch_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
                 defer pre_branch_consumed.deinit();
+                var pre_branch_store_moved = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
+                defer pre_branch_store_moved.deinit();
                 // β fix: source bindings already live before this branch are
                 // the only candidates for merge consumption compensation
                 // (branch-local declarations are released by their own
@@ -19210,6 +19393,8 @@ pub const Codegen = struct {
                 defer then_branch_refcell_handles.deinit();
                 var then_branch_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
                 defer then_branch_consumed.deinit();
+                var then_branch_store_moved = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
+                defer then_branch_store_moved.deinit();
 
                 if (then_terminates) {
                     try self.restoreMutexState(&pre_then_mutex_guards, &pre_then_mutex_results);
@@ -19219,6 +19404,7 @@ pub const Codegen = struct {
                 }
 
                 try self.restoreConsumedBindings(&pre_branch_consumed);
+                try self.restoreStoreMovedBindings(&pre_branch_store_moved);
                 try self.restoreBorrowSourceTemps(&pre_branch_borrow_sources);
                 try self.restoreRefCellBorrowHandles(&pre_branch_refcell_handles);
                 try self.restoreResultSlotRefCellState(&pre_branch_result_refcell_handles, &pre_branch_result_refcell_slots);
@@ -19281,7 +19467,17 @@ pub const Codegen = struct {
                     // post-merge consumed state: the union of both branch
                     // end states when both sides reach the merge, or the
                     // surviving side's end state when the other terminates.
-                    try self.emitBranchConsumptionCompensation(&pre_branch_live_owned, &pre_branch_consumed, &then_branch_consumed, &pre_branch_refcell_handles, then_text_end, then_terminates, else_terminates, merge_label);
+                    var else_branch_store_moved = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
+                    defer else_branch_store_moved.deinit();
+                    try self.emitBranchConsumptionCompensation(&pre_branch_live_owned, &pre_branch_consumed, &then_branch_consumed, &pre_branch_refcell_handles, &pre_branch_store_moved, &then_branch_store_moved, &else_branch_store_moved, then_text_end, then_terminates, else_terminates, merge_label);
+                    // Keep the post-merge store-move record as the union
+                    // of both branch end states (mirrors merged_consumed).
+                    {
+                        var sm_iter = then_branch_store_moved.iterator();
+                        while (sm_iter.next()) |entry| {
+                            self.store_moved_bindings.put(entry.key_ptr.*, {}) catch return CodegenError.OutOfMemory;
+                        }
+                    }
                     if (else_terminates) {
                         try self.restoreConsumedBindings(&then_branch_consumed);
                     } else if (!then_terminates) {
@@ -19359,6 +19555,7 @@ pub const Codegen = struct {
                 // routed through a dedicated skip block below, which
                 // carries that path's share of the compensation.
                 var pre_switch_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+                var pre_switch_store_moved = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
                 var pre_switch_live_owned = try self.snapshotLiveOwnedBindings();
                 var pre_switch_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
                 var switch_has_default = false;
@@ -19375,6 +19572,7 @@ pub const Codegen = struct {
                 var switch_fallthrough_consumed = std.StringHashMap(void).init(self.allocator);
                 var switch_has_fallthrough_state = false;
                 var switch_arm_end_sets = std.array_list.Managed(*std.StringHashMap(void)).init(self.allocator);
+                var switch_arm_sm_sets = std.array_list.Managed(*std.StringHashMap(void)).init(self.allocator);
                 var switch_arm_jmp_offsets = std.array_list.Managed(usize).init(self.allocator);
 
                 // Jump to first check
@@ -19440,6 +19638,7 @@ pub const Codegen = struct {
                     // Generate case body
                     self.outPrint("{s}:\n", .{cases_labels.items[idx]}) catch return CodegenError.CodegenError;
                     try self.restoreConsumedBindings(&pre_switch_consumed);
+                    try self.restoreStoreMovedBindings(&pre_switch_store_moved);
                     if (!is_default) self.outPrint("    !{s}\n", .{is_eq}) catch return CodegenError.CodegenError;
                     if (val_needs_release and blockTerminates(case.body)) try self.emitRelease(val_reg);
                     try self.genBlock(case.body, hoisted_allocs);
@@ -19449,6 +19648,9 @@ pub const Codegen = struct {
                         const arm_end = self.allocator.create(std.StringHashMap(void)) catch return CodegenError.OutOfMemory;
                         arm_end.* = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
                         switch_arm_end_sets.append(arm_end) catch return CodegenError.OutOfMemory;
+                        const arm_sm = self.allocator.create(std.StringHashMap(void)) catch return CodegenError.OutOfMemory;
+                        arm_sm.* = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
+                        switch_arm_sm_sets.append(arm_sm) catch return CodegenError.OutOfMemory;
                         switch_arm_jmp_offsets.append(self.out.items.len) catch return CodegenError.OutOfMemory;
                         self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                         any_fallthrough = true;
@@ -19464,15 +19666,21 @@ pub const Codegen = struct {
                 // appended at the current tail in settled state.
                 if (switch_has_fallthrough_state) {
                     try self.restoreConsumedBindings(&switch_fallthrough_consumed);
+                    self.store_moved_bindings.clearRetainingCapacity();
+                    for (switch_arm_sm_sets.items) |sm| {
+                        var sm_it = sm.iterator();
+                        while (sm_it.next()) |e| self.store_moved_bindings.put(e.key_ptr.*, {}) catch return CodegenError.OutOfMemory;
+                    }
                 } else if (skip_label != null) {
                     try self.restoreConsumedBindings(&pre_switch_consumed);
+                    try self.restoreStoreMovedBindings(&pre_switch_store_moved);
                 }
                 if (switch_arm_end_sets.items.len > 0 or skip_label != null) {
                     const compensation_union = try self.mergeCompensationUnion(&pre_switch_live_owned, &pre_switch_consumed, &pre_switch_refcell_handles, switch_arm_end_sets.items);
                     var arm_idx = switch_arm_end_sets.items.len;
                     while (arm_idx > 0) {
                         arm_idx -= 1;
-                        try self.insertArmMergeCompensation(compensation_union.items, switch_arm_end_sets.items[arm_idx], switch_arm_jmp_offsets.items[arm_idx]);
+                        try self.insertArmMergeCompensation(compensation_union.items, switch_arm_end_sets.items[arm_idx], switch_arm_sm_sets.items[arm_idx], &pre_switch_store_moved, switch_arm_jmp_offsets.items[arm_idx]);
                     }
                     if (skip_label) |sl| {
                         self.outPrint("{s}:\n", .{sl}) catch return CodegenError.CodegenError;

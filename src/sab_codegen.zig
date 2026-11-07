@@ -21519,6 +21519,11 @@ pub const Codegen = struct {
                     };
                     try self.emitStore(dst, layout.offset, copied, prim);
                     try self.releaseCopiedFieldValue(copied, plan.field_ty);
+                    // REG2-D3: the deep copy supersedes the source value
+                    // (e.g. a nested struct literal's own record); settle
+                    // the source temporary like the array-field branch
+                    // does, or it stays Active at function exit.
+                    try self.releaseCopiedArrayFieldSource(value, source_reg, plan.field_ty);
                 } else if (transfer.isDirect() or transfer.isMove()) {
                     const direct_const_string = lowering_rules.structLiteralDirectFieldUsesConstStringSymbol(value, plan.field_ty);
                     const value_reg = if (direct_const_string)

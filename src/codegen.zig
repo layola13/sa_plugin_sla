@@ -1073,9 +1073,30 @@ pub const Codegen = struct {
         return lowering_rules.stmtTerminates(stmt);
     }
 
+    // P1-8 (companion to restoreMutexReceiverAfterGuardRelease): a
+    // statement cleanup list may visit the mutex receiver before the
+    // guards that keep it marked consumed; when the receiver's release
+    // is requested in that poisoned state, release its live guards
+    // first so the receiver's own release is not suppressed.
+    fn flushMutexGuardsForReceiver(self: *Codegen, mutex_reg: []const u8) CodegenError!void {
+        if (!self.consumed_bindings.contains(mutex_reg)) return;
+        var guard_names: std.array_list.Managed([]const u8) = .init(self.allocator);
+        defer guard_names.deinit();
+        var git = self.mutex_guard_handles.iterator();
+        while (git.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.mutex_reg, mutex_reg)) guard_names.append(entry.key_ptr.*) catch return CodegenError.OutOfMemory;
+        }
+        var rit = self.mutex_lock_results.iterator();
+        while (rit.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.mutex_reg, mutex_reg)) guard_names.append(entry.key_ptr.*) catch return CodegenError.OutOfMemory;
+        }
+        for (guard_names.items) |guard_name| try self.emitRelease(guard_name);
+    }
+
     fn emitRelease(self: *Codegen, name: []const u8) CodegenError!void {
         const resolved_name = self.resolveBindingName(name);
         if (lowering_rules.isInternalSymbol(resolved_name)) return;
+        try self.flushMutexGuardsForReceiver(resolved_name);
         // SCATTER-3 (7b): a real release settles the register, so the
         // name is no longer a store-move-only consumption.
         _ = self.store_moved_bindings.remove(resolved_name);
@@ -1111,6 +1132,7 @@ pub const Codegen = struct {
             _ = self.mutex_guard_handles.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            try self.restoreMutexReceiverAfterGuardRelease(handle.mutex_reg);
             return;
         }
         if (self.mutex_lock_results.get(resolved_name)) |handle| {
@@ -1119,6 +1141,7 @@ pub const Codegen = struct {
             _ = self.mutex_lock_results.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            try self.restoreMutexReceiverAfterGuardRelease(handle.mutex_reg);
             return;
         }
         if (self.rwlock_guard_handles.get(resolved_name)) |handle| {
@@ -2026,6 +2049,24 @@ pub const Codegen = struct {
             return true;
         }
         return false;
+    }
+
+    /// P1-8 (REG2-D3 companion): `mutex.lock()` marks an identifier
+    /// receiver as consumed so the mutex register is not released while
+    /// a guard borrows it. That mark must be lifted once the last live
+    /// guard for the mutex is released, or the binding's own scope-end
+    /// cleanup is suppressed forever and the mutex register stays Active
+    /// at function exit (MemoryLeak at @test exit).
+    fn restoreMutexReceiverAfterGuardRelease(self: *Codegen, mutex_reg: []const u8) CodegenError!void {
+        var guard_it = self.mutex_guard_handles.iterator();
+        while (guard_it.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.mutex_reg, mutex_reg)) return;
+        }
+        var result_it = self.mutex_lock_results.iterator();
+        while (result_it.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.mutex_reg, mutex_reg)) return;
+        }
+        _ = self.consumed_bindings.remove(mutex_reg);
     }
 
     fn releaseTemporaryHandleRegister(self: *Codegen, handle_reg: []const u8) CodegenError!void {
@@ -5176,9 +5217,18 @@ pub const Codegen = struct {
             if (self.structDeclForType(field.ty) != null) {
                 const copied_field = try self.newTmp();
                 try self.genCopyValueInto(copied_field, field_reg, field.ty);
-                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied_field, layout.ty_str }) catch return CodegenError.CodegenError;
+                // REG2-D3: settle the nested copy with the consume
+                // marker in the store itself (a plain release would
+                // free the allocation the target now references); the
+                // loaded source field register is a borrow-load and is
+                // settled with a plain release. The SAB genCopyValue
+                // mirror uses the same marker + field-release pairing.
+                const move_field = try std.fmt.allocPrint(self.allocator, "^{s}", .{copied_field});
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_field, layout.ty_str }) catch return CodegenError.CodegenError;
+                try self.emitRelease(field_reg);
             } else {
                 self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, field_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                try self.emitRelease(field_reg);
             }
         }
     }
@@ -14696,7 +14746,11 @@ pub const Codegen = struct {
                 } else if (transfer.isDeepCopy()) {
                     const copied = try self.newTmp();
                     try self.genCopyValueInto(copied, loaded_reg, plan.field_ty);
-                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                    // REG2-D3: settle the copy with the consume marker
+                    // in the store (a plain release would free the
+                    // allocation the target now references).
+                    const move_copied = try std.fmt.allocPrint(self.allocator, "^{s}", .{copied});
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_copied, layout.ty_str }) catch return CodegenError.CodegenError;
                     if (plan.release_loaded) try self.emitRelease(loaded_reg);
                 } else if (transfer.isMove()) {
                     const move_reg = if (std.mem.startsWith(u8, loaded_reg, "^")) loaded_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{loaded_reg});
@@ -14733,7 +14787,11 @@ pub const Codegen = struct {
                     const source_reg = try self.genExpr(literal_field.value, hoisted_allocs);
                     const copied = try self.newTmp();
                     try self.genCopyValueInto(copied, source_reg, field_ty.?);
-                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                    // REG2-D3: settle the copy with the consume marker
+                    // in the store (a plain release would free the
+                    // allocation the target now references).
+                    const move_copied = try std.fmt.allocPrint(self.allocator, "^{s}", .{copied});
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_copied, layout.ty_str }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(literal_field.value, hoisted_allocs);
                     self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
@@ -14773,7 +14831,12 @@ pub const Codegen = struct {
                 const source_reg = try self.genExpr(value, hoisted_allocs);
                 const copied = try self.newTmp();
                 try self.genCopyValueInto(copied, source_reg, plan.field_ty);
-                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                // REG2-D3: settle the copy register with the consume
+                // marker in the store itself, or the nested allocation
+                // stays Active at function exit. (A plain release would
+                // free the allocation the target now references.)
+                const move_copied = try std.fmt.allocPrint(self.allocator, "^{s}", .{copied});
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_copied, layout.ty_str }) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(value)) try self.emitRelease(source_reg);
             } else if (transfer.isDirect()) {
                 const val_reg = try self.genExpr(value, hoisted_allocs);
@@ -15011,6 +15074,19 @@ pub const Codegen = struct {
         }
     }
 
+    /// REG2-D3: a match scrutinee produced by a call / if / nested match
+    /// is a codegen-owned temporary: no named binding exists for the
+    /// checker's statement cleanup lists to release, so the match itself
+    /// must retire the scrutinee shell once every fall-through arm has
+    /// merged. Named scrutinees (and place/move/borrow forms) stay owned
+    /// by the existing checker cleanup discipline.
+    fn matchScrutineeIsOwnedTemp(mat: *const ast.MatchExpr) bool {
+        return switch (mat.val.*) {
+            .call_expr, .match_expr, .if_expr => true,
+            else => false,
+        };
+    }
+
     fn genMatchExpr(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (mat.cases.len == 0) return CodegenError.CodegenError;
         const val_reg = try self.genExpr(mat.val, hoisted_allocs);
@@ -15161,6 +15237,8 @@ pub const Codegen = struct {
         self.outPrint("    panic(1)\n\n", .{}) catch return CodegenError.CodegenError;
         if (has_fallthrough_case) {
             self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+            // REG2-D3: retire an owned-temp scrutinee shell at the merge.
+            if (matchScrutineeIsOwnedTemp(mat)) try self.emitRelease(val_reg);
         }
         if (result_slot) |slot| {
             const reg = try self.newTmp();
@@ -15316,6 +15394,8 @@ pub const Codegen = struct {
         self.outPrint("    panic(1)\n\n", .{}) catch return CodegenError.CodegenError;
         if (has_fallthrough_case) {
             self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+            // REG2-D3: retire an owned-temp scrutinee shell at the merge.
+            if (matchScrutineeIsOwnedTemp(mat)) try self.emitRelease(val_reg);
         }
         if (result_slot) |slot| {
             const reg = try self.newTmp();

@@ -6643,6 +6643,16 @@ pub fn typeHasNamedDeriveBase(ty: *const ast.Type, primitive_ok: bool) ?bool {
 
 /// Shared pure base for recursive Copy-derive typing.
 pub fn typeHasCopyDeriveBase(ty: *const ast.Type) ?bool {
+    // FB-010 (six-house verdict B*): tuples defer to the caller's
+    // element-wise recursion. The named-derive base below has no
+    // tuple arm and decides `false` for them, which used to
+    // short-circuit the recursive tuple branches of the Copy
+    // predicates (typeIsCopy's was unreachable dead code). Returning
+    // null here keeps the Copy predicates in agreement by
+    // construction. Arrays deliberately keep the base decision;
+    // the named-derive base itself and the non-Copy derives are
+    // untouched.
+    if (ty.* == .tuple) return null;
     const primitive_ok = if (ty.* == .primitive) primitiveIsCopyValue(ty.primitive) else false;
     return typeHasNamedDeriveBase(ty, primitive_ok);
 }
@@ -9474,6 +9484,10 @@ test "typeHasCopyDeriveBase classifies pure leaves" {
     try std.testing.expect(!typeHasCopyDeriveBase(&void_ty).?);
     try std.testing.expect(!typeHasCopyDeriveBase(&vec_ty).?);
     try std.testing.expect(typeHasCopyDeriveBase(&foo_ty) == null);
+    // FB-010 (verdict B*): tuples defer to element-wise recursion.
+    var elems = [_]*ast.Type{ &i32_ty, &i32_ty };
+    var tuple_ty = ast.Type{ .tuple = .{ .elems = elems[0..] } };
+    try std.testing.expect(typeHasCopyDeriveBase(&tuple_ty) == null);
 
     var fields = [_]ast.Field{.{ .name = "x", .ty = &i32_ty }};
     var copy_derives = [_][]const u8{"Copy"};

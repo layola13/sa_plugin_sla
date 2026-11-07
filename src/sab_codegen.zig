@@ -1941,6 +1941,38 @@ pub const Codegen = struct {
         };
     }
 
+    /// DEF-TUPLE-COPY-EMIT: mirror of the checker's `typeIsCopy`
+    /// (type_checker.zig) — the caliber that decides whether a
+    /// let/destructure/assignment site consumes its source binding.
+    /// It deliberately differs from `typeIsCopyValue` (the call-arg
+    /// caliber): no `.array` arm (an array is never Copy here, so a
+    /// tuple containing an array is never Copy) and fn_ptr stays
+    /// non-Copy via the shared derive base. Emitter sites that spare
+    /// a source binding must use exactly this caliber, or the two
+    /// sides disagree about whether the source stays live.
+    fn typeIsCopyBinding(self: *Codegen, ty: *const ast.Type) bool {
+        // Goroutine syntax batch: mirror the checker's Chan rule.
+        if (ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "Chan")) return true;
+        if (lowering_rules.typeHasCopyDeriveBase(ty)) |decision| return decision;
+        return switch (ty.*) {
+            .user_defined => blk: {
+                const decl = self.structDeclForType(ty) orelse break :blk false;
+                if (!lowering_rules.typeHasCopyDeriveStructGate(decl)) break :blk false;
+                for (decl.fields) |field| {
+                    if (!self.typeIsCopyBinding(field.ty)) break :blk false;
+                }
+                break :blk true;
+            },
+            .tuple => |tuple| blk: {
+                for (tuple.elems) |elem| {
+                    if (!self.typeIsCopyBinding(elem)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
     fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
         // Nested std collections are only shallow-copy when not the top-level
         // call-arg owner (depth > 0), matching SA-text via shared base facts.
@@ -8420,6 +8452,16 @@ pub const Codegen = struct {
             try self.pushTypedLocal(name, dst, false, let_ty);
             return;
         }
+        // DEF-TUPLE-COPY-EMIT: same materialization for an all-Copy
+        // tuple (checker caliber `typeIsCopyBinding`): the checker
+        // spares the source, so an aliasing `assign` would move the
+        // source register and hand the same allocation to two owners.
+        if (value_expr.* == .identifier and self.isLocalReg(src) and let_ty.* == .tuple and self.typeIsCopyBinding(let_ty)) {
+            const copied = try self.genTupleCopyValue(src, let_ty);
+            try self.emitAssignReg(dst, copied);
+            try self.pushTypedLocal(name, dst, false, let_ty);
+            return;
+        }
         if (!self.isLocalReg(src) and lowering_rules.letTemporaryValueBecomesBindingOwner(
             self.typeIsCopyValue(let_ty),
             lowering_rules.isBorrowLikeType(let_ty),
@@ -12376,7 +12418,19 @@ pub const Codegen = struct {
         const raw_value = try self.genExpr(assign.value);
         // DEF-5 clone_on_extract: `u = b.field` through a borrow assigns
         // a deep clone so both phi arms hold owned values.
-        const value = (try self.cloneBorrowedHandleFieldValue(assign.value, raw_value)) orelse raw_value;
+        var value = (try self.cloneBorrowedHandleFieldValue(assign.value, raw_value)) orelse raw_value;
+        // DEF-TUPLE-COPY-EMIT: assigning from an identifier of an
+        // all-Copy tuple type must materialize a copy (checker
+        // caliber `typeIsCopyBinding`), mirroring the SA-text
+        // assignment site; a plain register assign would move the
+        // source register the checker keeps live.
+        if (assign.value.* == .identifier) {
+            if (self.localType(name)) |target_ty| {
+                if (target_ty.* == .tuple and self.typeIsCopyBinding(target_ty)) {
+                    value = try self.genTupleCopyValue(value, target_ty);
+                }
+            }
+        }
         try self.assignToIdentifier(name, value, node);
         const target_ty = self.localType(name) orelse (try self.exprTypeOrFallback(assign.target)) orelse return Error.MissingType;
         if (assign.value.* == .identifier) {
@@ -22761,6 +22815,46 @@ pub const Codegen = struct {
             } else {
                 try self.emitStore(dst, layout.offset, field_reg, layout.ty);
                 try self.emitConsumedMarker(field_reg);
+            }
+        }
+        return dst;
+    }
+
+    /// DEF-TUPLE-COPY-EMIT: element-wise materializing copy of a
+    /// tuple value into a fresh allocation, the tuple analog of
+    /// `genCopyValue` for @derive(copy) structs (SA-text twin:
+    /// `genTupleCopyValueInto`). Only reached for tuples the
+    /// checker counts as Copy (see `typeIsCopyBinding`), so
+    /// elements are scalars, borrows, Copy structs, or nested
+    /// Copy tuples; the array arm mirrors `genCopyValue` for
+    /// structural parity and is unreachable under that caliber.
+    fn genTupleCopyValue(self: *Codegen, source: u32, ty: *const ast.Type) anyerror!u32 {
+        if (ty.* != .tuple) return Error.UnsupportedSabDirectFeature;
+        const tuple = ty.tuple;
+        const dst = try self.intern(try self.newTmp());
+        try self.emitAlloc(dst, tupleSize(tuple));
+        try self.markObjectPtrReg(dst);
+        for (tuple.elems, 0..) |elem_ty, i| {
+            const layout = tupleFieldLayout(tuple, i) orelse return Error.UnsupportedSabDirectFeature;
+            if (elem_ty.* == .array) {
+                try self.copyArrayValueInto(dst, layout.offset, source, layout.offset, elem_ty.array, true);
+                continue;
+            }
+            const elem_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(elem_reg, source, layout.offset, layout.ty);
+            if (elem_ty.* == .tuple) {
+                const copied_elem = try self.genTupleCopyValue(elem_reg, elem_ty);
+                try self.emitStore(dst, layout.offset, copied_elem, layout.ty);
+                try self.emitConsumedMarker(copied_elem);
+                try self.emitRelease(elem_reg);
+            } else if (self.structDeclForType(elem_ty) != null) {
+                const copied_elem = try self.genCopyValue(elem_reg, elem_ty);
+                try self.emitStore(dst, layout.offset, copied_elem, layout.ty);
+                try self.emitConsumedMarker(copied_elem);
+                try self.emitRelease(elem_reg);
+            } else {
+                try self.emitStore(dst, layout.offset, elem_reg, layout.ty);
+                try self.emitConsumedMarker(elem_reg);
             }
         }
         return dst;

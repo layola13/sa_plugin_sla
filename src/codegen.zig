@@ -4772,6 +4772,38 @@ pub const Codegen = struct {
         };
     }
 
+    /// DEF-TUPLE-COPY-EMIT: mirror of the checker's `typeIsCopy`
+    /// (type_checker.zig) — the caliber that decides whether a
+    /// let/destructure/assignment site consumes its source binding.
+    /// It deliberately differs from `typeIsCopyValue` (the call-arg
+    /// caliber): no `.array` arm (an array is never Copy here, so a
+    /// tuple containing an array is never Copy) and fn_ptr stays
+    /// non-Copy via the shared derive base. Emitter sites that spare
+    /// a source binding must use exactly this caliber, or the two
+    /// sides disagree about whether the source stays live.
+    fn typeIsCopyBinding(self: *Codegen, ty: *const ast.Type) bool {
+        // Goroutine syntax batch: mirror the checker's Chan rule.
+        if (ty.* == .user_defined and std.mem.eql(u8, ty.user_defined.name, "Chan")) return true;
+        if (lowering_rules.typeHasCopyDeriveBase(ty)) |decision| return decision;
+        return switch (ty.*) {
+            .user_defined => blk: {
+                const decl = self.structDeclForType(ty) orelse break :blk false;
+                if (!lowering_rules.typeHasCopyDeriveStructGate(decl)) break :blk false;
+                for (decl.fields) |field| {
+                    if (!self.typeIsCopyBinding(field.ty)) break :blk false;
+                }
+                break :blk true;
+            },
+            .tuple => |tuple| blk: {
+                for (tuple.elems) |elem| {
+                    if (!self.typeIsCopyBinding(elem)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
     fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
         if (lowering_rules.shallowCopyCallArgValueBase(ty, depth)) |decision| return decision;
         return switch (ty.*) {
@@ -5268,6 +5300,48 @@ pub const Codegen = struct {
             } else {
                 self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, field_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                 try self.emitRelease(field_reg);
+            }
+        }
+    }
+
+    /// DEF-TUPLE-COPY-EMIT: element-wise materializing copy of a
+    /// tuple value into a fresh allocation, the tuple analog of
+    /// `genCopyValueInto` for @derive(copy) structs. The checker
+    /// spares the source binding of an all-Copy tuple at let,
+    /// destructure and assignment sites, so the emitter must not
+    /// alias the source register there: a bare `dst = src` is an
+    /// SA-level move and any later read of the source traps
+    /// UseAfterMove. Nested tuples recurse; nested struct elements
+    /// go through `genCopyValueInto`, exactly like struct fields of
+    /// struct copies.
+    fn genTupleCopyValueInto(self: *Codegen, target: []const u8, source_reg: []const u8, ty: *const ast.Type) CodegenError!void {
+        if (ty.* != .tuple) return CodegenError.CodegenError;
+        const tuple = ty.tuple;
+        self.outPrint("    {s} = alloc {}\n", .{ target, tupleSize(tuple) }) catch return CodegenError.CodegenError;
+        for (tuple.elems, 0..) |elem_ty, i| {
+            const layout = tupleFieldLayout(tuple, i) orelse return CodegenError.CodegenError;
+            const elem_reg = try self.newTmp();
+            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ elem_reg, source_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            if (elem_ty.* == .tuple or self.structDeclForType(elem_ty) != null) {
+                const copied_elem = try self.newTmp();
+                if (elem_ty.* == .tuple) {
+                    try self.genTupleCopyValueInto(copied_elem, elem_reg, elem_ty);
+                } else {
+                    try self.genCopyValueInto(copied_elem, elem_reg, elem_ty);
+                }
+                // Settle the copy with the consume marker in the
+                // store itself (a plain release would free the
+                // allocation the target now references), and the
+                // loaded source element register with a plain
+                // release — the REG2-D3 pairing the struct copy
+                // path uses for the same stores. Without the marker
+                // the copied cell temp stayed Active to function
+                // exit (MemoryLeak under the @test-form exit scan).
+                const move_elem = try std.fmt.allocPrint(self.allocator, "^{s}", .{copied_elem});
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_elem, layout.ty_str }) catch return CodegenError.CodegenError;
+                try self.emitRelease(elem_reg);
+            } else {
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, elem_reg, layout.ty_str }) catch return CodegenError.CodegenError;
             }
         }
     }
@@ -13782,6 +13856,14 @@ pub const Codegen = struct {
                 } else if (let.value.* == .identifier and self.typeIsCopyStruct(let_ty)) {
                     const source_reg = try self.genExpr(let.value, hoisted_allocs);
                     try self.genCopyValueInto(let.name, source_reg, let_ty);
+                } else if (let.value.* == .identifier and let_ty.* == .tuple and self.typeIsCopyBinding(let_ty)) {
+                    // DEF-TUPLE-COPY-EMIT: an all-Copy tuple bound from
+                    // an identifier gets the same materializing copy
+                    // as a Copy struct above; the general path below
+                    // would alias the source register (an SA-level
+                    // move) while the checker keeps the source live.
+                    const source_reg = try self.genExpr(let.value, hoisted_allocs);
+                    try self.genTupleCopyValueInto(let.name, source_reg, let_ty);
                 } else if (lowering_rules.planDynCoercion(self.tc, let.value)) |plan| {
                     const val_reg = try self.genDynCoercionExpr(let.value, plan, hoisted_allocs);
                     self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
@@ -14078,7 +14160,16 @@ pub const Codegen = struct {
                     }
                 }
                 if (!let.is_slice) {
-                    try self.emitRelease(value_reg);
+                    // DEF-TUPLE-COPY-EMIT: when the destructured root
+                    // is an identifier of a Copy tuple (checker
+                    // caliber `typeIsCopyBinding`), the checker does
+                    // not consume the root, so the emitter must not
+                    // retire its register either — releasing it made
+                    // every later read of the root trap UseAfterMove.
+                    // Fresh temps and moved (non-Copy) roots keep the
+                    // release settlement.
+                    const copy_root = let.value.* == .identifier and value_ty.* == .tuple and self.typeIsCopyBinding(value_ty);
+                    if (!copy_root) try self.emitRelease(value_reg);
                 } else if (callArgNeedsRelease(let.value)) {
                     try self.emitRelease(value_reg);
                 }
@@ -14111,6 +14202,12 @@ pub const Codegen = struct {
                 } else if (c.value.* == .identifier and self.typeIsCopyStruct(const_ty)) {
                     const source_reg = try self.genExpr(c.value, hoisted_allocs);
                     try self.genCopyValueInto(c.name, source_reg, const_ty);
+                } else if (c.value.* == .identifier and const_ty.* == .tuple and self.typeIsCopyBinding(const_ty)) {
+                    // DEF-TUPLE-COPY-EMIT: const twin of the let site
+                    // above — materialize a copy of an all-Copy tuple
+                    // instead of aliasing the source register.
+                    const source_reg = try self.genExpr(c.value, hoisted_allocs);
+                    try self.genTupleCopyValueInto(c.name, source_reg, const_ty);
                 } else if (lowering_rules.planDynCoercion(self.tc, c.value)) |plan| {
                     const val_reg = try self.genDynCoercionExpr(c.value, plan, hoisted_allocs);
                     self.outPrint("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
@@ -14285,6 +14382,18 @@ pub const Codegen = struct {
                         try self.emitRelease(assign.target.identifier);
                         const source_reg = try self.genExpr(assign.value, hoisted_allocs);
                         try self.genCopyValueInto(target_name, source_reg, target_ty);
+                        _ = self.consumed_bindings.remove(target_name);
+                        return;
+                    }
+                    if (assign.value.* == .identifier and target_ty.* == .tuple and self.typeIsCopyBinding(target_ty)) {
+                        // DEF-TUPLE-COPY-EMIT: tuple twin of the Copy
+                        // struct assignment above — materialize a copy
+                        // of the all-Copy tuple instead of moving the
+                        // source register the checker keeps live.
+                        const target_name = self.resolveBindingName(assign.target.identifier);
+                        try self.emitRelease(assign.target.identifier);
+                        const source_reg = try self.genExpr(assign.value, hoisted_allocs);
+                        try self.genTupleCopyValueInto(target_name, source_reg, target_ty);
                         _ = self.consumed_bindings.remove(target_name);
                         return;
                     }
@@ -15080,7 +15189,21 @@ pub const Codegen = struct {
             // `return (o, 1);` emitted VEC_FREE for `o` right after the
             // store and the caller received a dangling Vec (corrupted
             // contents, double-free under the loop-reassign idiom).
-            if (!self.typeIsCopyValue(tuple.elems[i])) {
+            if (lowering_rules.rootIdentifier(elem) == null and lowering_rules.isHeapHandleType(tuple.elems[i])) {
+                // DEF-TUPLE-COPY-EMIT (nested-construction fallout):
+                // a fresh owning element temp — a nested tuple
+                // literal is the canonical case, an aggregate call
+                // result is another — has no binding for the exit
+                // cleanup to settle: markMovedExprBinding below only
+                // records bookkeeping, and under the @test-form exit
+                // scan the temp stayed Active to function exit
+                // (MemoryLeak; plain-fn form masks it by accepting
+                // the bare store). The store just transferred the
+                // cell to the aggregate, so retire the temp inline
+                // with a forget. Identifier and place elements keep
+                // the MOVEVEC-1 bookkeeping path below, unchanged.
+                try self.emitForgetMovedValue(val_reg);
+            } else if (!self.typeIsCopyValue(tuple.elems[i])) {
                 try self.markMovedExprBinding(elem, val_reg);
             }
         }

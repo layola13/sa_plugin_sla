@@ -7287,7 +7287,13 @@ pub const TypeChecker = struct {
                 if (rootIdentifier(let.value)) |name| {
                     const sym = scope.lookup(name) orelse return TypeError.UndefinedVariable;
                     if (sym.state == .consumed) return TypeError.UseAfterMove;
-                    try self.consumeBinding(scope, name, sym, "destructuring move");
+                    // FB-010: mirror the plain-let implicit-move exemption.
+                    // A Copy or borrow-like root is not consumed by moving
+                    // out of it, destructuring included; the two adjacent
+                    // move sites must use the same exemption caliber.
+                    if (!self.typeIsCopy(sym.ty) and !isBorrowLikeType(sym.ty)) {
+                        try self.consumeBinding(scope, name, sym, "destructuring move");
+                    }
                 }
             },
             .const_stmt => |c| {

@@ -216,6 +216,16 @@ pub const Codegen = struct {
     global_scalar_consts: std.StringHashMap(*const ast.Node),
     hashmap_key_slots: std.StringHashMap([]const u8),
     thread_spawn_helpers: std.AutoHashMap(*const ast.Node, ThreadSpawnHelper),
+    /// REG3-DEF-2: per-type deep-clone helper functions for user struct
+    /// types that transitively contain themselves (e.g. a struct with a
+    /// Vec<self> field). Inline clone generation for such a type recurses
+    /// forever at compile time, so clones of it are routed through a
+    /// generated @sla_clone_<key> function instead; helpers are queued on
+    /// first use and emitted at the end of generate(). Keys are owned
+    /// slices also held, in queue order, by clone_helper_keys.
+    clone_helper_types: std.StringHashMap(*const ast.Type),
+    clone_helper_done: std.StringHashMap(void),
+    clone_helper_keys: std.array_list.Managed([]const u8),
     thread_capture_regs: std.StringHashMap([]const u8),
     inline_thread_handles: std.StringHashMap(void),
     consumed_bindings: std.StringHashMap(void),
@@ -329,6 +339,9 @@ pub const Codegen = struct {
             .global_scalar_consts = std.StringHashMap(*const ast.Node).init(allocator),
             .hashmap_key_slots = std.StringHashMap([]const u8).init(allocator),
             .thread_spawn_helpers = std.AutoHashMap(*const ast.Node, ThreadSpawnHelper).init(allocator),
+            .clone_helper_types = std.StringHashMap(*const ast.Type).init(allocator),
+            .clone_helper_done = std.StringHashMap(void).init(allocator),
+            .clone_helper_keys = std.array_list.Managed([]const u8).init(allocator),
             .thread_capture_regs = std.StringHashMap([]const u8).init(allocator),
             .inline_thread_handles = std.StringHashMap(void).init(allocator),
             .consumed_bindings = std.StringHashMap(void).init(allocator),
@@ -410,6 +423,12 @@ pub const Codegen = struct {
             self.allocator.free(helper.captures);
         }
         self.thread_spawn_helpers.deinit();
+        for (self.clone_helper_keys.items) |key| {
+            self.allocator.free(key);
+        }
+        self.clone_helper_keys.deinit();
+        self.clone_helper_types.deinit();
+        self.clone_helper_done.deinit();
         self.thread_capture_regs.deinit();
         self.inline_thread_handles.deinit();
         self.consumed_bindings.deinit();
@@ -8827,6 +8846,8 @@ pub const Codegen = struct {
             }
         }
 
+        try self.emitCloneHelpers();
+
         self.pruneUnusedThreadRuntimeImport();
         return self.out.toOwnedSlice() catch return CodegenError.OutOfMemory;
     }
@@ -11549,6 +11570,220 @@ pub const Codegen = struct {
     /// clone routine: the copy is refused with a named diagnostic
     /// recorded on the checker (printed by the compile pipeline next
     /// to the generic codegen error).
+
+    /// REG3-DEF-2: symbol-safe key identifying a user struct type for
+    /// its per-type clone helper (@sla_clone_<key>). Built from the
+    /// type's name plus, recursively, its generic arguments, so distinct
+    /// instantiations of a generic struct get distinct helpers.
+    fn cloneTypeKey(self: *Codegen, ty: *const ast.Type) CodegenError![]const u8 {
+        var buf = std.array_list.Managed(u8).init(self.allocator);
+        errdefer buf.deinit();
+        try self.appendCloneTypeKey(&buf, ty);
+        const raw = buf.toOwnedSlice() catch return CodegenError.OutOfMemory;
+        for (raw) |*ch| {
+            const c = ch.*;
+            if (!(std.ascii.isAlphanumeric(c) or c == '_')) ch.* = '_';
+        }
+        return raw;
+    }
+
+    fn appendCloneTypeKey(self: *Codegen, buf: *std.array_list.Managed(u8), ty: *const ast.Type) CodegenError!void {
+        const peeled = lowering_rules.peelBorrowPointerType(ty);
+        if (vecElementType(peeled)) |elem| {
+            buf.appendSlice("Vec_") catch return CodegenError.OutOfMemory;
+            return self.appendCloneTypeKey(buf, elem);
+        }
+        if (lowering_rules.growVecElementType(peeled)) |elem| {
+            buf.appendSlice("GrowVec_") catch return CodegenError.OutOfMemory;
+            return self.appendCloneTypeKey(buf, elem);
+        }
+        if (lowering_rules.boxInnerType(peeled)) |inner| {
+            buf.appendSlice("Box_") catch return CodegenError.OutOfMemory;
+            return self.appendCloneTypeKey(buf, inner);
+        }
+        if (lowering_rules.rcInnerType(peeled)) |inner| {
+            buf.appendSlice("Rc_") catch return CodegenError.OutOfMemory;
+            return self.appendCloneTypeKey(buf, inner);
+        }
+        if (lowering_rules.arcInnerType(peeled)) |inner| {
+            buf.appendSlice("Arc_") catch return CodegenError.OutOfMemory;
+            return self.appendCloneTypeKey(buf, inner);
+        }
+        switch (peeled.*) {
+            .user_defined => |ud| {
+                buf.appendSlice(ud.name) catch return CodegenError.OutOfMemory;
+                for (ud.generics) |g| {
+                    buf.appendSlice("__") catch return CodegenError.OutOfMemory;
+                    try self.appendCloneTypeKey(buf, g);
+                }
+            },
+            .array => |arr| {
+                buf.appendSlice("Arr_") catch return CodegenError.OutOfMemory;
+                try self.appendCloneTypeKey(buf, arr.elem);
+            },
+            .tuple => |tuple| {
+                buf.appendSlice("Tup") catch return CodegenError.OutOfMemory;
+                for (tuple.elems) |elem| {
+                    buf.appendSlice("_") catch return CodegenError.OutOfMemory;
+                    try self.appendCloneTypeKey(buf, elem);
+                }
+            },
+            else => {
+                buf.appendSlice(typeString(peeled)) catch return CodegenError.OutOfMemory;
+            },
+        }
+    }
+
+    /// REG3-DEF-2: does the type graph reachable from `ty` (through
+    /// Vec/GrowVec/Box/Rc/Arc elements, array/tuple elements and struct
+    /// fields) contain the struct type keyed `root_key`? The visited set
+    /// bounds the walk, mirroring the cycle handling of the checker's
+    /// planValueDrop.
+    fn cloneGraphReaches(self: *Codegen, root_key: []const u8, ty: *const ast.Type, visited: *std.StringHashMap(void)) CodegenError!bool {
+        if (vecElementType(ty)) |elem| return self.cloneGraphReaches(root_key, elem, visited);
+        if (lowering_rules.growVecElementType(ty)) |elem| return self.cloneGraphReaches(root_key, elem, visited);
+        if (lowering_rules.boxInnerType(ty)) |inner| return self.cloneGraphReaches(root_key, inner, visited);
+        if (lowering_rules.rcInnerType(ty)) |inner| return self.cloneGraphReaches(root_key, inner, visited);
+        if (lowering_rules.arcInnerType(ty)) |inner| return self.cloneGraphReaches(root_key, inner, visited);
+        switch (ty.*) {
+            .user_defined => {
+                const key = try self.cloneTypeKey(ty);
+                defer self.allocator.free(key);
+                if (std.mem.eql(u8, key, root_key)) return true;
+                if (visited.contains(key)) return false;
+                const owned = self.allocator.dupe(u8, key) catch return CodegenError.OutOfMemory;
+                visited.put(owned, {}) catch return CodegenError.OutOfMemory;
+                const decl = self.structDeclForType(ty) orelse return false;
+                for (decl.fields) |field| {
+                    if (try self.cloneGraphReaches(root_key, field.ty, visited)) return true;
+                }
+                return false;
+            },
+            .array => |arr| return self.cloneGraphReaches(root_key, arr.elem, visited),
+            .tuple => |tuple| {
+                for (tuple.elems) |elem| {
+                    if (try self.cloneGraphReaches(root_key, elem, visited)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    /// REG3-DEF-2: is `ty` a user struct whose deep clone transitively
+    /// reaches the struct itself? Inline clone generation never
+    /// terminates for such a type (the registry witness is RedisValue:
+    /// items: Vec<RedisValue>).
+    fn typeHasRecursiveClone(self: *Codegen, ty: *const ast.Type) CodegenError!bool {
+        const peeled = lowering_rules.peelBorrowPointerType(ty);
+        if (peeled.* != .user_defined) return false;
+        if (lowering_rules.isStringType(peeled)) return false;
+        const decl = self.structDeclForType(peeled) orelse return false;
+        const key = try self.cloneTypeKey(peeled);
+        defer self.allocator.free(key);
+        var visited = std.StringHashMap(void).init(self.allocator);
+        defer {
+            var it = visited.keyIterator();
+            while (it.next()) |k| self.allocator.free(k.*);
+            visited.deinit();
+        }
+        for (decl.fields) |field| {
+            if (try self.cloneGraphReaches(key, field.ty, &visited)) return true;
+        }
+        return false;
+    }
+
+    /// REG3-DEF-2: materialize a deep clone of a recursive struct value
+    /// through its per-type clone helper. The helper is queued on first
+    /// use and emitted by emitCloneHelpers at the end of generate(); it
+    /// takes the source by borrow and returns a fresh, independently
+    /// owned clone, so the emitted code recurses at runtime exactly as
+    /// far as the value tree is deep.
+    fn genRecursiveCloneCall(self: *Codegen, source_reg: []const u8, ty: *const ast.Type) CodegenError![]const u8 {
+        const key = try self.cloneTypeKey(ty);
+        const gop = self.clone_helper_types.getOrPut(key) catch return CodegenError.OutOfMemory;
+        if (gop.found_existing) {
+            self.allocator.free(key);
+        } else {
+            gop.value_ptr.* = ty;
+            self.clone_helper_keys.append(key) catch return CodegenError.OutOfMemory;
+        }
+        const dst = try self.newTmp();
+        self.outPrint("    {s} = call @sla_clone_{s}(&{s})\n", .{ dst, gop.key_ptr.*, source_reg }) catch return CodegenError.CodegenError;
+        return dst;
+    }
+
+    /// REG3-DEF-2: emit the queued per-type recursive clone helpers.
+    /// Runs at the end of generate(), at a function boundary; a helper
+    /// body is produced by the same record-copy routine used inline for
+    /// non-recursive types, and any recursive field type inside the body
+    /// dispatches back through genDeepCloneValue, which emits a call to
+    /// that type's helper (queuing it), so emission terminates.
+    fn emitCloneHelpers(self: *Codegen) CodegenError!void {
+        var idx: usize = 0;
+        while (idx < self.clone_helper_keys.items.len) : (idx += 1) {
+            const key = self.clone_helper_keys.items[idx];
+            if (self.clone_helper_done.contains(key)) continue;
+            self.clone_helper_done.put(key, {}) catch return CodegenError.OutOfMemory;
+            const ty = self.clone_helper_types.get(key).?;
+            // Function-boundary hygiene: the record-copy subtree consults
+            // per-function binding state (release planning), so start
+            // each helper from the same cleared state genFuncDeclNamed
+            // establishes for a source function.
+            self.store_moved_bindings.clearRetainingCapacity();
+            self.addressable_bindings.clearRetainingCapacity();
+            self.assigned_bindings.clearRetainingCapacity();
+            self.assigned_value_slots.clearRetainingCapacity();
+            self.repeated_let_bindings.clearRetainingCapacity();
+            self.stack_alloc_bindings.clearRetainingCapacity();
+            self.stack_alloc_ptr_bindings.clearRetainingCapacity();
+            self.inline_thread_handles.clearRetainingCapacity();
+            self.consumed_bindings.clearRetainingCapacity();
+            self.mpsc_sender_bindings.clearRetainingCapacity();
+            self.mpsc_sender_channels.clearRetainingCapacity();
+            self.mpsc_receiver_bindings.clearRetainingCapacity();
+            self.string_buf_bindings.clearRetainingCapacity();
+            self.inferred_string_slice_locals.clearRetainingCapacity();
+            self.vec_buf_bindings.clearRetainingCapacity();
+            self.hashmap_bindings.clearRetainingCapacity();
+            self.btree_map_bindings.clearRetainingCapacity();
+            self.hashset_bindings.clearRetainingCapacity();
+            self.btree_set_bindings.clearRetainingCapacity();
+            self.borrow_param_bindings.clearRetainingCapacity();
+            self.borrow_source_temps.clearRetainingCapacity();
+            self.refcell_borrow_handles.clearRetainingCapacity();
+            self.result_slot_refcell_handles.clearRetainingCapacity();
+            self.result_slot_refcell_slots.clearRetainingCapacity();
+            self.mutex_guard_handles.clearRetainingCapacity();
+            self.mutex_lock_results.clearRetainingCapacity();
+            self.rwlock_guard_handles.clearRetainingCapacity();
+            self.rwlock_lock_results.clearRetainingCapacity();
+            self.file_bindings.clearRetainingCapacity();
+            self.file_open_results.clearRetainingCapacity();
+            self.metadata_bindings.clearRetainingCapacity();
+            self.metadata_open_results.clearRetainingCapacity();
+            self.task_future_objects.clearRetainingCapacity();
+            self.future_state_vtables.clearRetainingCapacity();
+            self.future_readiness.clearRetainingCapacity();
+            self.executor_task_counts.clearRetainingCapacity();
+            self.local_binding_types.clearRetainingCapacity();
+            self.clearBindingAliases();
+            self.let_binding_aliases.clearRetainingCapacity();
+            self.clearHashMapKeySlots();
+            // The helper's source parameter is a borrow: register it as
+            // one (mirroring genFuncDeclNamed) so the record-copy
+            // subtree reads its fields with borrow semantics, and retire
+            // the register before the return -- a borrow parameter is
+            // released register-only at function exit, never dropped.
+            self.borrow_param_bindings.put("sla_src", {}) catch return CodegenError.OutOfMemory;
+            self.outPrint("@sla_clone_{s}(&sla_src: ptr) -> ptr:\n", .{key}) catch return CodegenError.CodegenError;
+            self.outPrint("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
+            const cloned = try self.genShallowCopyCallArgValue("sla_src", ty);
+            try self.emitRelease("sla_src");
+            self.outPrint("    return {s}\n\n", .{cloned}) catch return CodegenError.CodegenError;
+        }
+    }
+
     fn genDeepCloneValue(self: *Codegen, source_reg: []const u8, ty: *const ast.Type) CodegenError!?[]const u8 {
         if (lowering_rules.isStringType(ty)) {
             const cloned = try self.newTmp();
@@ -11577,6 +11812,13 @@ pub const Codegen = struct {
         if (ty.* == .array) return try self.genArrayCloneValue(source_reg, ty.array);
         if (ty.* == .tuple) return try self.genTupleCloneValue(source_reg, ty.tuple);
         if (self.structDeclForType(ty) != null and self.typeIsShallowCopyCallArgValue(ty, 0) and lowering_rules.shallowCopyCallArgFieldShouldRecurse(true, ty)) {
+            // REG3-DEF-2: a struct type that transitively contains itself
+            // cannot be clone-generated inline (generation recurses
+            // forever at compile time); route the clone through the
+            // per-type helper emitted at the end of generate().
+            if (try self.typeHasRecursiveClone(ty)) {
+                return try self.genRecursiveCloneCall(source_reg, ty);
+            }
             return try self.genShallowCopyCallArgValue(source_reg, ty);
         }
         return null;
@@ -12757,23 +12999,46 @@ pub const Codegen = struct {
         for (output_writebacks.items, 0..) |writeback, wi| {
             const temp = output_writeback_temps.items[wi];
             const arg_ty = output_writeback_tys.items[wi];
+            // REG3-DEF-2: writebacks exist only for assigned outputs,
+            // and an assigned output takes ownership of whatever
+            // value the expansion left in the temp. When that value
+            // is an element-load result (SLICE_GET on a Vec<Struct>),
+            // the temp holds the parent's element pointer itself --
+            // an alias, not an owned value -- and handing it to the
+            // binding makes the binding's drop free the parent's
+            // buffers. Clone-on-extract: when the type has deep-
+            // clone machinery, the binding takes a fresh clone and
+            // the raw temp is retired without a drop below,
+            // mirroring cloneBorrowedHandleFieldValue for field
+            // reads.
+            var value = temp;
+            if (try self.genDeepCloneValue(temp, arg_ty)) |cloned| {
+                value = cloned;
+            }
             switch (writeback) {
                 .rebind => |name| {
                     try self.emitRelease(name);
-                    self.outPrint("    {s} = {s}\n", .{ name, temp }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = {s}\n", .{ name, value }) catch return CodegenError.CodegenError;
                     _ = self.consumed_bindings.remove(name);
                 },
                 .store_ptr_back => |name| {
-                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ name, temp, typeString(arg_ty) }) catch return CodegenError.CodegenError;
-                    try self.emitRelease(temp);
+                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ name, value, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(value);
                 },
                 .copy_into_slot => |name| {
                     const size_reg = try self.newTmp();
                     try self.emitIntConst(size_reg, @intCast(typeSize(arg_ty)));
-                    self.outPrint("    call @sa_mem_copy(&{s}, &{s}, {s})\n", .{ name, temp, size_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    call @sa_mem_copy(&{s}, &{s}, {s})\n", .{ name, value, size_reg }) catch return CodegenError.CodegenError;
                     try self.emitRelease(size_reg);
-                    try self.emitRelease(temp);
+                    try self.emitRelease(value);
                 },
+            }
+            if (!std.mem.eql(u8, value, temp)) {
+                // REG3-DEF-2: the raw expansion temp's value stayed
+                // with its original owner (e.g. the parent Vec's
+                // element); the binding took the clone above, so
+                // retire the temp register without dropping it.
+                try self.emitRelease(temp);
             }
         }
 

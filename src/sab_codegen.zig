@@ -440,6 +440,17 @@ pub const Codegen = struct {
     active_macro_try_cleanup: ?[]const []const u8 = null,
     current_expr_later_nodes: std.array_list.Managed(*const ast.Node),
     future_task_helpers_emitted: bool = false,
+    /// REG3-DEF-2 (SA-text parity): per-type deep-clone helper functions
+    /// for user struct types that transitively contain themselves.
+    /// Inline clone generation for such a type recurses forever at
+    /// compile time, so clones of it are routed through a generated
+    /// sla_clone_<key> function instead; helpers are queued on first
+    /// use and emitted by emitCloneHelpers before module encoding.
+    /// Keys are owned slices also held, in queue order, by
+    /// clone_helper_keys.
+    clone_helper_types: std.StringHashMap(*const ast.Type),
+    clone_helper_done: std.StringHashMap(void),
+    clone_helper_keys: std.array_list.Managed([]const u8),
     // When appending a decoded std-macro fragment, fragment-internal temp/local
     // registers (named `tmp_N`, `__...` by the snippet flattener) share the
     // `tmp_N` namespace across independently-flattened fragments and with main
@@ -475,6 +486,9 @@ pub const Codegen = struct {
             .std_macro_templates = std.array_list.Managed(StdMacroTemplate).init(allocator),
             .std_macro_template_ids = std.StringHashMap(usize).init(allocator),
             .escaped_closure_entries = std.AutoHashMap(*const ast.Node, EscapedClosureEntry).init(allocator),
+            .clone_helper_types = std.StringHashMap(*const ast.Type).init(allocator),
+            .clone_helper_done = std.StringHashMap(void).init(allocator),
+            .clone_helper_keys = std.array_list.Managed([]const u8).init(allocator),
             .refcell_borrow_values = std.AutoHashMap(u32, RefCellBorrowValue).init(allocator),
             .mutex_guard_values = std.AutoHashMap(u32, MutexGuardValue).init(allocator),
             .rwlock_guard_values = std.AutoHashMap(u32, RwLockGuardValue).init(allocator),
@@ -512,6 +526,12 @@ pub const Codegen = struct {
     pub fn deinit(self: *Codegen) void {
         self.symbols.deinit();
         self.symbol_ids.deinit();
+        for (self.clone_helper_keys.items) |key| {
+            self.allocator.free(key);
+        }
+        self.clone_helper_keys.deinit();
+        self.clone_helper_types.deinit();
+        self.clone_helper_done.deinit();
         self.const_decls.deinit();
         self.fn_ptr_vtables.deinit();
         self.closure_bindings.deinit();
@@ -682,6 +702,7 @@ pub const Codegen = struct {
         sabProfileStage(profile, "top-level decls", stage_start);
         stage_start = sio.nanoTimestamp();
         try self.emitEscapedClosureEntries();
+        try self.emitCloneHelpers();
         sabProfileStage(profile, "escaped closures", stage_start);
         stage_start = sio.nanoTimestamp();
         try self.emitReferencedContractExternDecls();
@@ -7660,6 +7681,177 @@ pub const Codegen = struct {
     /// plain-copyable. Map/set closures are refused with a named
     /// diagnostic recorded on the checker (printed by the compile
     /// pipeline next to the generic SAB error).
+
+    /// REG3-DEF-2 (SA-text parity): symbol-safe key identifying a user
+    /// struct type for its per-type clone helper (sla_clone_<key>).
+    fn cloneTypeKey(self: *Codegen, ty: *const ast.Type) anyerror![]const u8 {
+        var buf = std.array_list.Managed(u8).init(self.allocator);
+        errdefer buf.deinit();
+        try self.appendCloneTypeKey(&buf, ty);
+        const raw = try buf.toOwnedSlice();
+        for (raw) |*ch| {
+            const c = ch.*;
+            if (!(std.ascii.isAlphanumeric(c) or c == '_')) ch.* = '_';
+        }
+        return raw;
+    }
+
+    fn appendCloneTypeKey(self: *Codegen, buf: *std.array_list.Managed(u8), ty: *const ast.Type) anyerror!void {
+        const peeled = lowering_rules.peelBorrowPointerType(ty);
+        if (lowering_rules.vecElementType(peeled)) |elem| {
+            try buf.appendSlice("Vec_");
+            return self.appendCloneTypeKey(buf, elem);
+        }
+        if (lowering_rules.growVecElementType(peeled)) |elem| {
+            try buf.appendSlice("GrowVec_");
+            return self.appendCloneTypeKey(buf, elem);
+        }
+        if (lowering_rules.boxInnerType(peeled)) |inner| {
+            try buf.appendSlice("Box_");
+            return self.appendCloneTypeKey(buf, inner);
+        }
+        if (lowering_rules.rcInnerType(peeled)) |inner| {
+            try buf.appendSlice("Rc_");
+            return self.appendCloneTypeKey(buf, inner);
+        }
+        if (lowering_rules.arcInnerType(peeled)) |inner| {
+            try buf.appendSlice("Arc_");
+            return self.appendCloneTypeKey(buf, inner);
+        }
+        switch (peeled.*) {
+            .user_defined => |ud| {
+                try buf.appendSlice(ud.name);
+                for (ud.generics) |g| {
+                    try buf.appendSlice("__");
+                    try self.appendCloneTypeKey(buf, g);
+                }
+            },
+            .array => |arr| {
+                try buf.appendSlice("Arr_");
+                try self.appendCloneTypeKey(buf, arr.elem);
+            },
+            .tuple => |tuple| {
+                try buf.appendSlice("Tup");
+                for (tuple.elems) |elem| {
+                    try buf.appendSlice("_");
+                    try self.appendCloneTypeKey(buf, elem);
+                }
+            },
+            else => {
+                try buf.appendSlice(concreteTypeName(peeled) orelse "prim");
+            },
+        }
+    }
+
+    /// REG3-DEF-2 (SA-text parity): does the type graph reachable from
+    /// `ty` contain the struct type keyed `root_key`? The visited set
+    /// bounds the walk.
+    fn cloneGraphReaches(self: *Codegen, root_key: []const u8, ty: *const ast.Type, visited: *std.StringHashMap(void)) anyerror!bool {
+        if (lowering_rules.vecElementType(ty)) |elem| return self.cloneGraphReaches(root_key, elem, visited);
+        if (lowering_rules.growVecElementType(ty)) |elem| return self.cloneGraphReaches(root_key, elem, visited);
+        if (lowering_rules.boxInnerType(ty)) |inner| return self.cloneGraphReaches(root_key, inner, visited);
+        if (lowering_rules.rcInnerType(ty)) |inner| return self.cloneGraphReaches(root_key, inner, visited);
+        if (lowering_rules.arcInnerType(ty)) |inner| return self.cloneGraphReaches(root_key, inner, visited);
+        switch (ty.*) {
+            .user_defined => {
+                const key = try self.cloneTypeKey(ty);
+                defer self.allocator.free(key);
+                if (std.mem.eql(u8, key, root_key)) return true;
+                if (visited.contains(key)) return false;
+                const owned = try self.allocator.dupe(u8, key);
+                try visited.put(owned, {});
+                const decl = self.structDeclForType(ty) orelse return false;
+                for (decl.fields) |field| {
+                    if (try self.cloneGraphReaches(root_key, field.ty, visited)) return true;
+                }
+                return false;
+            },
+            .array => |arr| return self.cloneGraphReaches(root_key, arr.elem, visited),
+            .tuple => |tuple| {
+                for (tuple.elems) |elem| {
+                    if (try self.cloneGraphReaches(root_key, elem, visited)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    /// REG3-DEF-2 (SA-text parity): is `ty` a user struct whose deep
+    /// clone transitively reaches the struct itself?
+    fn typeHasRecursiveClone(self: *Codegen, ty: *const ast.Type) anyerror!bool {
+        const peeled = lowering_rules.peelBorrowPointerType(ty);
+        if (peeled.* != .user_defined) return false;
+        if (lowering_rules.isStringType(peeled)) return false;
+        const decl = self.structDeclForType(peeled) orelse return false;
+        const key = try self.cloneTypeKey(peeled);
+        defer self.allocator.free(key);
+        var visited = std.StringHashMap(void).init(self.allocator);
+        defer {
+            var it = visited.keyIterator();
+            while (it.next()) |k| self.allocator.free(k.*);
+            visited.deinit();
+        }
+        for (decl.fields) |field| {
+            if (try self.cloneGraphReaches(key, field.ty, &visited)) return true;
+        }
+        return false;
+    }
+
+    /// REG3-DEF-2 (SA-text parity): materialize a deep clone of a
+    /// recursive struct value through its per-type clone helper. The
+    /// helper is queued on first use and emitted by emitCloneHelpers
+    /// before module encoding; it takes the source by borrow and
+    /// returns a fresh, independently owned clone.
+    fn genRecursiveCloneCall(self: *Codegen, source: u32, ty: *const ast.Type) anyerror!u32 {
+        const key = try self.cloneTypeKey(ty);
+        const gop = try self.clone_helper_types.getOrPut(key);
+        if (gop.found_existing) {
+            self.allocator.free(key);
+        } else {
+            gop.value_ptr.* = ty;
+            try self.clone_helper_keys.append(key);
+        }
+        const dst = try self.intern(try self.newTmp());
+        try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sla_clone_{s}(&{s})", .{ gop.key_ptr.*, self.symbols.items[source] }));
+        return dst;
+    }
+
+    /// REG3-DEF-2 (SA-text parity): emit the queued per-type recursive
+    /// clone helpers. Follows the emitFutureTaskHelpers pattern for
+    /// generated functions: the body is produced by the same record-copy
+    /// routine used inline for non-recursive types, and any recursive
+    /// field type inside the body dispatches back through
+    /// genDeepCloneValue, which emits a call to that type's helper
+    /// (queuing it), so emission terminates.
+    fn emitCloneHelpers(self: *Codegen) !void {
+        var idx: usize = 0;
+        while (idx < self.clone_helper_keys.items.len) : (idx += 1) {
+            const key = self.clone_helper_keys.items[idx];
+            if (self.clone_helper_done.contains(key)) continue;
+            try self.clone_helper_done.put(key, {});
+            const ty = self.clone_helper_types.get(key).?;
+            const name = try std.fmt.allocPrint(self.allocator, "sla_clone_{s}", .{key});
+            const old_locals = self.locals.items.len;
+            defer self.popLocalsTo(old_locals);
+            self.beginFunction();
+            const specs = try self.allocator.alloc(sig.ParamSpec, 1);
+            const ids = try self.allocator.alloc(u32, 1);
+            ids[0] = try self.intern("sla_src");
+            specs[0] = .{ .name = "sla_src", .ty = .ptr, .cap = .borrow };
+            try self.pushRawParamLocal("sla_src", ids[0], .borrow);
+            const fsig = try self.appendGeneratedFuncSig(name, .normal, specs, ids, .ptr, false);
+            const sig_idx = self.function_sigs.items.len;
+            try self.function_sigs.append(fsig);
+            try self.appendDeclInst(fsig);
+            try self.emitLabel("L_ENTRY");
+            const cloned = try self.genShallowCopyCallArgValue(ids[0], ty);
+            try self.releaseOpenLocals(cloned);
+            try self.emitReturn(cloned);
+            try self.finishFunctionBody(sig_idx);
+        }
+    }
+
     fn genDeepCloneValue(self: *Codegen, source: u32, ty: *const ast.Type) anyerror!?u32 {
         if (lowering_rules.isStringType(ty)) return try self.genStringCloneValue(source);
         if (lowering_rules.vecElementType(ty)) |elem_ty| return try self.genVecCloneValueDeep(source, elem_ty);
@@ -7674,6 +7866,14 @@ pub const Codegen = struct {
         if (ty.* == .array) return try self.genArrayCloneValue(source, ty.array);
         if (ty.* == .tuple) return try self.genTupleCloneValue(source, ty.tuple);
         if (self.structDeclForType(ty) != null and self.typeIsShallowCopyCallArgValue(ty, 0) and lowering_rules.shallowCopyCallArgFieldShouldRecurse(true, ty)) {
+            // REG3-DEF-2 (SA-text parity): a struct type that
+            // transitively contains itself cannot be clone-generated
+            // inline (generation recurses forever at compile time);
+            // route the clone through the per-type helper emitted by
+            // emitCloneHelpers before module encoding.
+            if (try self.typeHasRecursiveClone(ty)) {
+                return try self.genRecursiveCloneCall(source, ty);
+            }
             return try self.genShallowCopyCallArgValue(source, ty);
         }
         return null;
@@ -17648,9 +17848,9 @@ pub const Codegen = struct {
         defer release_regs.deinit();
         var restores = std.array_list.Managed(struct { slot: u32, value: u32 }).init(self.allocator);
         defer restores.deinit();
-        var output_rebindings = std.array_list.Managed(struct { name: []const u8, reg: u32, ty: *const ast.Type }).init(self.allocator);
+        var output_rebindings = std.array_list.Managed(struct { name: []const u8, reg: u32, ty: *const ast.Type, assigned: bool }).init(self.allocator);
         defer output_rebindings.deinit();
-        var output_stores = std.array_list.Managed(struct { slot: u32, value: u32, ty: sig.PrimType, forget: bool }).init(self.allocator);
+        var output_stores = std.array_list.Managed(struct { slot: u32, value: u32, ty: sig.PrimType, forget: bool, ast_ty: ?*const ast.Type }).init(self.allocator);
         defer output_stores.deinit();
 
         if (dst) |reg| try arg_names.append(self.symbols.items[reg]);
@@ -17679,11 +17879,11 @@ pub const Codegen = struct {
             }
             if (lowered_arg.output_bind_name) |name| {
                 const reg = try self.intern(lowered_arg.operand);
-                try output_rebindings.append(.{ .name = name, .reg = reg, .ty = lowered_arg.output_bind_ty orelse return Error.MissingType });
+                try output_rebindings.append(.{ .name = name, .reg = reg, .ty = lowered_arg.output_bind_ty orelse return Error.MissingType, .assigned = plan.callArgIsAssignedOutput(i) });
             }
             if (lowered_arg.output_store_slot) |slot| {
                 const value = try self.intern(lowered_arg.operand);
-                try output_stores.append(.{ .slot = slot, .value = value, .ty = lowered_arg.output_store_ty orelse return Error.MissingType, .forget = plan.callArgIsAssignedOutput(i) });
+                try output_stores.append(.{ .slot = slot, .value = value, .ty = lowered_arg.output_store_ty orelse return Error.MissingType, .forget = plan.callArgIsAssignedOutput(i), .ast_ty = try self.importedMacroArgType(arg, ctx) });
             }
         }
 
@@ -17704,13 +17904,44 @@ pub const Codegen = struct {
             try self.markConsumed(restore.value);
         }
         for (output_rebindings.items) |binding| {
+            // REG3-DEF-2 (SA-text parity): an assigned output takes
+            // ownership of the value the expansion left in the
+            // binding's register. For an element load (SLICE_GET on
+            // a Vec<Struct>) that value is the parent's element
+            // pointer itself -- an alias -- and the binding's drop
+            // would free the parent's buffers. Clone-on-extract:
+            // when the type has deep-clone machinery, bind the name
+            // to a fresh clone instead and forget the raw register
+            // so the stale local entry never drops the aliased
+            // value.
+            if (binding.assigned) {
+                if (try self.genDeepCloneValue(binding.reg, binding.ty)) |cloned| {
+                    try self.emitForgetMovedValue(binding.reg);
+                    try self.pushTypedLocal(binding.name, cloned, false, binding.ty);
+                    continue;
+                }
+            }
             try self.pushTypedLocal(binding.name, binding.reg, false, binding.ty);
         }
         if (direct_result.consumed_dst) |c| {
             try self.markConsumed(c);
         }
         for (output_stores.items) |store| {
-            try self.emitStore(store.slot, 0, store.value, store.ty);
+            // REG3-DEF-2 (SA-text parity): for an assigned output
+            // whose expansion-assigned temp aliases another owner's
+            // value (an element load such as SLICE_GET), store a
+            // deep clone into the slot instead and forget the raw
+            // temp, whose value stays with its original owner.
+            var value = store.value;
+            if (store.forget) {
+                if (store.ast_ty) |ast_ty| {
+                    if (try self.genDeepCloneValue(store.value, ast_ty)) |cloned| {
+                        try self.emitForgetMovedValue(store.value);
+                        value = cloned;
+                    }
+                }
+            }
+            try self.emitStore(store.slot, 0, value, store.ty);
             // MACRO-OUT (imported_macro_assigned_outputs): an
             // assigned-output temp that was just stored back into the
             // consumer's slot must be forgotten (move-out), not
@@ -17720,9 +17951,9 @@ pub const Codegen = struct {
             // with a dangling pointer (panic 43211/43212). Mirrors
             // SA-text genImportedMacroCall's slot-transferred retire.
             if (store.forget) {
-                try self.emitForgetMovedValue(store.value);
+                try self.emitForgetMovedValue(value);
             } else {
-                try self.emitRelease(store.value);
+                try self.emitRelease(value);
             }
         }
         try self.releaseNonLocalTemps(release_regs.items);

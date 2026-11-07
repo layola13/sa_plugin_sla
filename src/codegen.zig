@@ -4317,6 +4317,23 @@ pub const Codegen = struct {
         return !p.is_borrow and isOwnedRefcountedHandleType(p.ty);
     }
 
+    /// DEF-EE3: a by-value Box parameter that stays in its ingress
+    /// register hits the same raw-release hazard as the refcounted
+    /// case: the smart-pointer binding drop frees the box cell
+    /// through a private `add` alias and the generic `!name` tail
+    /// then raw-frees the ingress register a second time (glibc
+    /// double free, signal 6). Adopt the handle into a body-local
+    /// register so the drop composes like a let binding's.
+    /// Parameters re-materialized into a stack slot below already
+    /// pass through a plain copy and are exempt.
+    fn paramNeedsBoxAlias(self: *Codegen, p: ast.Param) bool {
+        if (p.is_borrow) return false;
+        if (boxInnerType(p.ty) == null) return false;
+        if (!p.is_move and (self.bindingNeedsAddressableStorage(p.name, p.ty) or
+            self.bindingNeedsAssignedValueSlot(p.name, p.ty))) return false;
+        return true;
+    }
+
     fn escapedStringByteLen(value: []const u8) usize {
         var len: usize = 0;
         var i: usize = 0;
@@ -9177,7 +9194,7 @@ pub const Codegen = struct {
             if (printed_params > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
             printed_params += 1;
             const prefix: []const u8 = self.abiParamPrefix(p);
-            if (paramNeedsRefcountAlias(p)) {
+            if (paramNeedsRefcountAlias(p) or self.paramNeedsBoxAlias(p)) {
                 const arg_name = std.fmt.allocPrint(self.allocator, "{s}__sla_arg", .{p.name}) catch return CodegenError.OutOfMemory;
                 defer self.allocator.free(arg_name);
                 self.outPrint("{s}{s}: {s}", .{ prefix, arg_name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
@@ -9232,7 +9249,7 @@ pub const Codegen = struct {
             }
             if (p.ty.* == .primitive and p.ty.primitive == .va_list) continue;
             const refcount_aliased = paramNeedsRefcountAlias(p);
-            if (refcount_aliased) {
+            if (refcount_aliased or self.paramNeedsBoxAlias(p)) {
                 // Adopt the handle into a body-local register (the
                 // signature carries it as `{name}__sla_arg`): the raw
                 // argument register is an opaque owned pointer to the
@@ -9244,6 +9261,10 @@ pub const Codegen = struct {
                 // the normal binding release path, exactly as a
                 // source-level `let local = param;` behaves, and the
                 // raw argument register is never released.
+                // DEF-EE3: Box parameters take the same adoption --
+                // their binding drop frees the cell through a private
+                // alias, so a raw release of the ingress register on
+                // top of it frees the same cell a second time.
                 const arg_name = std.fmt.allocPrint(self.allocator, "{s}__sla_arg", .{p.name}) catch return CodegenError.OutOfMemory;
                 defer self.allocator.free(arg_name);
                 self.outPrint("    {s} = {s}\n", .{ p.name, arg_name }) catch return CodegenError.CodegenError;

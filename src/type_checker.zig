@@ -66,6 +66,11 @@ pub const Symbol = struct {
     // on every place rooted at the binding (design section 3: the
     // label lives at place-key level, beside the drop taint).
     arena_domain: u32 = 0,
+    // True when this binding's storage outlives the current function
+    // frame: a borrow or pointer parameter (the pointee belongs to the
+    // caller). Only such roots (and globals) may be borrowed out of a
+    // function through its return value; see checkReturnedBorrowEscape.
+    storage_external: bool = false,
 };
 
 pub const InjectedScopeBinding = struct {
@@ -2502,6 +2507,59 @@ pub const TypeChecker = struct {
         return false;
     }
 
+    /// Storage classification for return-borrow escape purposes: a
+    /// borrow or pointer type points at storage owned by someone else
+    /// (the caller, for a parameter), never at this frame.
+    fn typeHasExternalStorage(ty: *const ast.Type) bool {
+        return isBorrowLikeType(ty) or ty.* == .pointer or isPrimitiveType(ty, .raw_ptr);
+    }
+
+    fn markExternalStorage(scope: *Scope, name: []const u8, ty: *ast.Type) void {
+        if (!typeHasExternalStorage(ty)) return;
+        if (scope.symbols.getPtr(name)) |sym| sym.storage_external = true;
+    }
+
+    /// Ultimate root binding of a returned borrow value: the place the
+    /// borrow points into, following alias bindings through their
+    /// recorded borrow sources. Null when the value is not a resolvable
+    /// place borrow (a call result, a literal, ...); such shapes carry
+    /// no place the checker can blame and are left alone.
+    fn returnedBorrowRootName(self: *TypeChecker, scope: *Scope, value: *const ast.Node) ?[]const u8 {
+        if (self.borrowPlaceOfValue(scope, value)) |place| return place.root;
+        const name = placeRootName(value) orelse return null;
+        var root = name;
+        var guard: usize = 0;
+        while (guard < 64) : (guard += 1) {
+            const sym = scope.lookup(root) orelse break;
+            const src = sym.borrow_source orelse break;
+            root = src;
+        }
+        return root;
+    }
+
+    /// Reject a returned borrow whose root storage dies with this
+    /// frame. The borrow machinery tracks live borrows and exit
+    /// cleanups, but nothing ever validated the root of a borrow that
+    /// leaves through the return value, so `return &local_vec[0]` (and
+    /// the same shape for every other container) checked cleanly and
+    /// produced a dangling reference. Roots that outlive the frame --
+    /// borrow/pointer parameters and globals -- stay legal.
+    fn checkReturnedBorrowEscape(self: *TypeChecker, scope: *Scope, value: *const ast.Node) TypeError!void {
+        const root = self.returnedBorrowRootName(scope, value) orelse return;
+        var curr: ?*Scope = scope;
+        while (curr) |frame| {
+            if (frame.symbols.getPtr(root)) |sym| {
+                if (self.global_scope) |gs| {
+                    if (frame == gs) return;
+                }
+                if (sym.storage_external) return;
+                self.setError("BorrowConflict: cannot return a borrow of `{s}`: its storage is owned by this function and is released when the function returns, so the reference would dangle - return an owned value (or a clone) instead", .{root});
+                return TypeError.InvalidBorrow;
+            }
+            curr = frame.parent;
+        }
+    }
+
     fn recordAwaitCleanup(self: *TypeChecker, await_node: *const ast.Node, future_expr: *const ast.Node, scope: *Scope) TypeError!void {
         var cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
         var current: ?*Scope = scope;
@@ -4097,7 +4155,7 @@ pub const TypeChecker = struct {
                     try self.chan_calls.put(case.call, .{ .kind = .send, .payload_ty = payload_ty });
                 },
             }
-            try self.checkBlock(case.body, case_scope, ret_ty, null, current_loop_scope);
+            _ = try self.checkBlock(case.body, case_scope, ret_ty, null, current_loop_scope);
         }
         if (sel.timeout_expr) |timeout_expr| {
             const timeout_ty = try self.checkExpr(timeout_expr, scope);
@@ -4109,12 +4167,12 @@ pub const TypeChecker = struct {
         if (sel.default_body) |default_body| {
             const default_scope = try Scope.init(self.allocator, scope);
             try self.scope_pool.append(default_scope);
-            try self.checkBlock(default_body, default_scope, ret_ty, null, current_loop_scope);
+            _ = try self.checkBlock(default_body, default_scope, ret_ty, null, current_loop_scope);
         }
         if (sel.timeout_body) |timeout_body| {
             const timeout_scope = try Scope.init(self.allocator, scope);
             try self.scope_pool.append(timeout_scope);
-            try self.checkBlock(timeout_body, timeout_scope, ret_ty, null, current_loop_scope);
+            _ = try self.checkBlock(timeout_body, timeout_scope, ret_ty, null, current_loop_scope);
         }
     }
 
@@ -4893,6 +4951,7 @@ pub const TypeChecker = struct {
         for (lit.params, contextual_params) |p, ctx_ty| {
             if (p.ty.* != .infer and !self.typesEqual(p.ty, ctx_ty)) return TypeError.TypeMismatch;
             try self.defineSymbol(closure_scope, p.name, ctx_ty, true);
+            markExternalStorage(closure_scope, p.name, ctx_ty);
             try param_types.append(ctx_ty);
         }
 
@@ -6559,7 +6618,7 @@ pub const TypeChecker = struct {
             try self.defineSymbol(scope, param, param_ty, false);
         }
 
-        try self.checkBlock(macro_decl.body, scope, void_ty, null, null);
+        _ = try self.checkBlock(macro_decl.body, scope, void_ty, null, null);
     }
 
     fn macroParamConsumption(self: *TypeChecker, macro_decl: *const ast.MacroDecl, param_index: usize) TypeError!control_flow_rules.MacroParamConsumption {
@@ -6800,7 +6859,7 @@ pub const TypeChecker = struct {
 
         try self.defineSymbol(scope, "return_ty_sentinel", ret_ty, true);
 
-        try self.checkBlock(test_decl.body, scope, ret_ty, null, null);
+        _ = try self.checkBlock(test_decl.body, scope, ret_ty, null, null);
 
         // DEF deep-drop batch: place-taint pass over the checked body.
         try self.computeDropTaint(test_decl.body);
@@ -6840,6 +6899,7 @@ pub const TypeChecker = struct {
         for (func.params) |p| {
             const local_ty = if (p.is_borrow) try self.makeBorrowType(p.ty) else p.ty;
             try self.defineSymbol(scope, p.name, local_ty, false);
+            markExternalStorage(scope, p.name, local_ty);
         }
 
         // F2-A arena batch (C1): `@arena fn` — the whole body is one
@@ -6850,7 +6910,7 @@ pub const TypeChecker = struct {
         if (func.is_arena) try self.pushArenaFrame();
         defer if (func.is_arena) self.popArenaFrame();
 
-        try self.checkBlock(func.body, scope, func.ret_ty, null, null);
+        const body_scope = try self.checkBlock(func.body, scope, func.ret_ty, null, null);
 
         if (func.is_arena and !isPrimitiveType(func.ret_ty, .void_type) and func.body.len > 0) {
             const last = func.body[func.body.len - 1];
@@ -6869,6 +6929,11 @@ pub const TypeChecker = struct {
                 if (!self.valueAssignableTo(func.ret_ty, tail_ty)) {
                     self.setError("TypeMismatch in function tail expression: expected {s}, actual {s}", .{ typeDesc(func.ret_ty), typeDesc(tail_ty) });
                     return TypeError.TypeMismatch;
+                }
+                // A tail expression is a return for escape purposes
+                // (same rule as an explicit return statement).
+                if (func.ret_ty.* == .borrow) {
+                    try self.checkReturnedBorrowEscape(body_scope, last.expr_stmt);
                 }
             }
         }
@@ -6891,7 +6956,7 @@ pub const TypeChecker = struct {
         ret_ty: *ast.Type,
         loop_node: ?*ast.Node,
         current_loop_scope: ?*Scope,
-    ) !void {
+    ) !*Scope {
         _ = loop_node;
         var scope = try Scope.init(self.allocator, parent_scope);
         try self.scope_pool.append(scope);
@@ -6934,6 +6999,7 @@ pub const TypeChecker = struct {
         } else {
             cleanup_list.deinit();
         }
+        return scope;
     }
 
     fn blockTerminates(body: []const *ast.Node) bool {
@@ -7157,7 +7223,7 @@ pub const TypeChecker = struct {
             },
             .let_else_stmt => |let| {
                 const value_ty = try self.checkExpr(let.value, scope);
-                try self.checkBlock(let.else_block, scope, ret_ty, null, current_loop_scope);
+                _ = try self.checkBlock(let.else_block, scope, ret_ty, null, current_loop_scope);
                 if (!blockTerminates(let.else_block)) {
                     self.setError("let else block must diverge", .{});
                     return TypeError.TypeMismatch;
@@ -7388,6 +7454,27 @@ pub const TypeChecker = struct {
                         self.setError("TypeMismatch in return: expected {s}, actual {s}", .{ typeDesc(ret_ty), typeDesc(val_ty) });
                         return TypeError.TypeMismatch;
                     }
+                    // A void expression carries no value, so returning it
+                    // is meaningless in any function; in a void function it
+                    // previously slipped past this check (void is
+                    // assignable to void) and died in the LLVM backend
+                    // with an internal error. Reject it here, where the
+                    // diagnostic belongs.
+                    if (isPrimitiveType(val_ty, .void_type)) {
+                        self.setError("TypeMismatch in return: expression has type void, so there is no value to return - call it as a statement and use a bare return instead", .{});
+                        return TypeError.TypeMismatch;
+                    }
+                    // A returned borrow must be rooted at storage that
+                    // outlives this frame (a borrow/pointer parameter or
+                    // a global); a borrow of frame-owned storage dangles
+                    // as soon as the exit cleanup releases the root.
+                    // Borrow-typed returns only: a raw `ptr` return is
+                    // the unsafe escape hatch (the whole ptr idiom
+                    // manufactures pointers from addresses on purpose)
+                    // and stays unchecked here.
+                    if (ret_ty.* == .borrow) {
+                        try self.checkReturnedBorrowEscape(scope, val);
+                    }
                     // F2-A C1: escape route 1 (return).
                     try self.checkArenaReturnFlow(val, scope);
                 } else {
@@ -7455,7 +7542,7 @@ pub const TypeChecker = struct {
                     self.current_loop_scope = prev_loop_scope;
                     self.current_loop_body_terminates = prev_loop_body_terminates;
                 }
-                try self.checkBlock(f.body, loop_scope, ret_ty, stmt, loop_scope);
+                _ = try self.checkBlock(f.body, loop_scope, ret_ty, stmt, loop_scope);
                 self.restoreUninitializedFromSaved(scope, &saved_states);
             },
             .while_stmt => |*w| {
@@ -7485,7 +7572,7 @@ pub const TypeChecker = struct {
                     self.current_loop_scope = prev_loop_scope;
                     self.current_loop_body_terminates = prev_loop_body_terminates;
                 }
-                try self.checkBlock(w.body, loop_scope, ret_ty, stmt, loop_scope);
+                _ = try self.checkBlock(w.body, loop_scope, ret_ty, stmt, loop_scope);
                 self.restoreUninitializedFromSaved(scope, &saved_states);
             },
             .break_stmt, .continue_stmt => {
@@ -7532,7 +7619,7 @@ pub const TypeChecker = struct {
             .block_stmt => |blk| {
                 const inner_scope = try Scope.init(self.allocator, scope);
                 try self.scope_pool.append(inner_scope);
-                try self.checkBlock(blk.body, inner_scope, ret_ty, stmt, current_loop_scope);
+                _ = try self.checkBlock(blk.body, inner_scope, ret_ty, stmt, current_loop_scope);
             },
             .arena_stmt => |a| {
                 // F2-A arena batch (C1): an arena block is a fresh
@@ -7544,7 +7631,7 @@ pub const TypeChecker = struct {
                 defer self.popArenaFrame();
                 const inner_scope = try Scope.init(self.allocator, scope);
                 try self.scope_pool.append(inner_scope);
-                try self.checkBlock(a.body, inner_scope, ret_ty, stmt, current_loop_scope);
+                _ = try self.checkBlock(a.body, inner_scope, ret_ty, stmt, current_loop_scope);
             },
             else => return TypeError.CompileError,
         }
@@ -8170,6 +8257,7 @@ pub const TypeChecker = struct {
                 var param_types = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (lit.params) |p| {
                     try self.defineSymbol(closure_scope, p.name, p.ty, true);
+                    markExternalStorage(closure_scope, p.name, p.ty);
                     try param_types.append(p.ty);
                 }
 
@@ -10087,14 +10175,14 @@ pub const TypeChecker = struct {
                         try self.definePatternBindings(chain_scope, cond.pattern, value_ty, "if let", true);
                     }
 
-                    try self.checkBlock(ife.then_block, chain_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                    _ = try self.checkBlock(ife.then_block, chain_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
 
                     var then_states = try self.saveScopeStates(scope);
                     defer then_states.deinit();
                     self.restoreScopeStates(scope, &saved_states);
 
                     if (ife.else_block) |eb| {
-                        try self.checkBlock(eb, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                        _ = try self.checkBlock(eb, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
                     }
 
                     const merge_action = control_flow_rules.planBranchStateMerge(
@@ -10188,7 +10276,7 @@ pub const TypeChecker = struct {
                 }
 
                 // Check then_block
-                try self.checkBlock(ife.then_block, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                _ = try self.checkBlock(ife.then_block, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
 
                 // Collect states after then_block
                 var then_states = std.StringHashMap(ValueState).init(self.allocator);
@@ -10216,7 +10304,7 @@ pub const TypeChecker = struct {
 
                 // Check else_block
                 if (ife.else_block) |eb| {
-                    try self.checkBlock(eb, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                    _ = try self.checkBlock(eb, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
                 }
 
                 const merge_action = control_flow_rules.planBranchStateMerge(
@@ -10304,7 +10392,7 @@ pub const TypeChecker = struct {
 
                 for (swe.cases) |case| {
                     self.restoreScopeStates(scope, &saved_states);
-                    try self.checkBlock(case.body, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                    _ = try self.checkBlock(case.body, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
                     if (!blockTerminates(case.body)) {
                         var states = try self.saveScopeStates(scope);
                         errdefer states.deinit();
@@ -10374,7 +10462,7 @@ pub const TypeChecker = struct {
                             }
                         }
 
-                        try self.checkBlock(case.body, pattern_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                        _ = try self.checkBlock(case.body, pattern_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
                         const terminated = blockTerminates(case.body);
                         if (!terminated) {
                             var states = try self.saveScopeStates(scope);
@@ -10439,7 +10527,7 @@ pub const TypeChecker = struct {
                             else => return TypeError.TypeMismatch,
                         }
                     }
-                    try self.checkBlock(case.body, pattern_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                    _ = try self.checkBlock(case.body, pattern_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
 
                     const terminated = blockTerminates(case.body);
                     if (!terminated) {
@@ -10474,7 +10562,7 @@ pub const TypeChecker = struct {
             .unsafe_expr => |ue| {
                 self.unsafe_depth += 1;
                 defer self.unsafe_depth -= 1;
-                try self.checkBlock(ue.body, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                _ = try self.checkBlock(ue.body, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
                 if (blockTerminates(ue.body)) {
                     const ty = try self.allocator.create(ast.Type);
                     ty.* = .{ .primitive = .void_type };

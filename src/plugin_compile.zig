@@ -725,9 +725,9 @@ fn runSlaFrontend(
     const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
         if (err == error.GenericOverloadConflict) {
             if (mono.genericOverloadConflictName()) |name| {
-                try stderr.print("Monomorphization Error: generic function `{s}` shares its name with another function declaration; generic templates do not participate in overloading, so a name with a generic template must stand alone\n", .{name});
+                try stderr.print("Monomorphization Error: generic function `{s}` shares its name with another function declaration; generic templates do not participate in overloading, so a name with a generic template must stand alone (error.GenericOverloadConflict)\n", .{name});
             } else {
-                try stderr.print("Monomorphization Error: generic function name conflicts with another function declaration (generic templates do not participate in overloading)\n", .{});
+                try stderr.print("Monomorphization Error: generic function name conflicts with another function declaration (generic templates do not participate in overloading) (error.GenericOverloadConflict)\n", .{});
             }
             return null;
         }

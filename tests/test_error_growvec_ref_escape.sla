@@ -1,3 +1,4 @@
+// expect: BorrowConflict
 @import "sa_std/growvec.sa"
 
 // F1 borrow discipline: an element reference must not escape the

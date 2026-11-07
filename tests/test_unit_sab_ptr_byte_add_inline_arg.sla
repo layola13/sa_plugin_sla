@@ -1,0 +1,100 @@
+// Regression: W1-DEF-SAB-PTRBYTEADD-MOVE.
+// An imported-macro call (PTR_BYTE_ADD) wrapping a borrow of a stack
+// array, passed INLINE as a call argument: the macro result register
+// must still be live at the call on the SAB backend. Before the fix
+// the SAB arm
+// trapped UseAfterMove for the double-use, single-use-then-read,
+// single-use-no-reuse and argv-record shapes; the text arm passed.
+// The bound-variable shape (variant F) passed on both arms throughout
+// and stays as the control.
+@import "sla_std/wrap/fs.sla"
+@import "sla_std/wrap/process.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+fn byteadd_reg_take_ptr(p: ptr) -> i32 {
+    if p == PTR_NULL() { return 1; };
+    return 0;
+}
+
+@test "sab ptr byte add inline arg local fn"() {
+    let buf = [0u8; 64];
+    let rc = byteadd_reg_take_ptr(PTR_BYTE_ADD(&buf, 0));
+    if rc != 0 { panic(51451); };
+    if buf[0] != 0 { panic(51452); };
+    let x = [0u8; 64];
+    let y = [0u8; 32];
+    let rc2 = byteadd_reg_take_ptr(PTR_BYTE_ADD(&x, 0));
+    if rc2 != 0 { panic(51453); };
+    let rc3 = byteadd_reg_take_ptr(PTR_BYTE_ADD(&y, 0));
+    if rc3 != 0 { panic(51454); };
+}
+
+@test "sab ptr byte add inline arg double use"() {
+    sla_fs_mkdir_p(STR_PTR("byteadd_reg"), STR_LEN("byteadd_reg"));
+    let wrc = sla_fs_write_file(STR_PTR("byteadd_reg/a.txt"), STR_LEN("byteadd_reg/a.txt"), STR_PTR("hello"), STR_LEN("hello"));
+    if wrc != 0 { panic(51400); };
+    let fd = sla_fs_file_open(STR_PTR("byteadd_reg/a.txt"), STR_LEN("byteadd_reg/a.txt"), 1);
+    if fd <= 0 { panic(51401); };
+    let buf = [0u8; 64];
+    let rc = sla_fs_file_read_exact(fd as u64, PTR_BYTE_ADD(&buf, 0), 5);
+    if rc != 0 { panic(51402); };
+    if buf[0] != 104 { panic(51403); };
+    let rc2 = sla_fs_file_read_exact(fd as u64, PTR_BYTE_ADD(&buf, 0), 1);
+    if rc2 == 0 { panic(51404); };
+    sla_fs_file_close(fd as u64);
+}
+
+@test "sab ptr byte add inline arg single use then read"() {
+    sla_fs_mkdir_p(STR_PTR("byteadd_reg"), STR_LEN("byteadd_reg"));
+    let wrc = sla_fs_write_file(STR_PTR("byteadd_reg/b.txt"), STR_LEN("byteadd_reg/b.txt"), STR_PTR("hello"), STR_LEN("hello"));
+    if wrc != 0 { panic(51410); };
+    let fd = sla_fs_file_open(STR_PTR("byteadd_reg/b.txt"), STR_LEN("byteadd_reg/b.txt"), 1);
+    if fd <= 0 { panic(51411); };
+    let buf = [0u8; 64];
+    let rc = sla_fs_file_read_exact(fd as u64, PTR_BYTE_ADD(&buf, 0), 5);
+    if rc != 0 { panic(51412); };
+    if buf[0] != 104 { panic(51413); };
+    sla_fs_file_close(fd as u64);
+}
+
+@test "sab ptr byte add inline arg no reuse"() {
+    sla_fs_mkdir_p(STR_PTR("byteadd_reg"), STR_LEN("byteadd_reg"));
+    let wrc = sla_fs_write_file(STR_PTR("byteadd_reg/c.txt"), STR_LEN("byteadd_reg/c.txt"), STR_PTR("hello"), STR_LEN("hello"));
+    if wrc != 0 { panic(51420); };
+    let fd = sla_fs_file_open(STR_PTR("byteadd_reg/c.txt"), STR_LEN("byteadd_reg/c.txt"), 1);
+    if fd <= 0 { panic(51421); };
+    let buf = [0u8; 64];
+    let rc = sla_fs_file_read_exact(fd as u64, PTR_BYTE_ADD(&buf, 0), 5);
+    if rc != 0 { panic(51422); };
+    sla_fs_file_close(fd as u64);
+}
+
+@test "sab ptr byte add inline arg argv record"() {
+    let rec = [0u64; 2];
+    let a0: u64 = 0;
+    PTR_ADDR(a0, STR_PTR("/bin/true"));
+    rec[0] = a0;
+    rec[1] = STR_LEN("/bin/true");
+    let cell = [0u64; 4];
+    let rc = sla_std_process_spawn(PTR_BYTE_ADD(&rec, 0), 1, &cell[0]);
+    if rc != 0 { panic(51431); };
+    let code = [0u64; 4];
+    let rc2 = sla_std_process_wait(cell[0], &code[0]);
+    if rc2 != 0 { panic(51432); };
+    sla_std_process_close(cell[0]);
+}
+
+@test "sab ptr byte add bound var control"() {
+    sla_fs_mkdir_p(STR_PTR("byteadd_reg"), STR_LEN("byteadd_reg"));
+    let wrc = sla_fs_write_file(STR_PTR("byteadd_reg/f.txt"), STR_LEN("byteadd_reg/f.txt"), STR_PTR("hello"), STR_LEN("hello"));
+    if wrc != 0 { panic(51440); };
+    let fd = sla_fs_file_open(STR_PTR("byteadd_reg/f.txt"), STR_LEN("byteadd_reg/f.txt"), 1);
+    if fd <= 0 { panic(51441); };
+    let buf = [0u8; 64];
+    let bp: ptr = PTR_BYTE_ADD(&buf, 0);
+    let rc = sla_fs_file_read_exact(fd as u64, bp, 5);
+    if rc != 0 { panic(51442); };
+    if buf[0] != 104 { panic(51443); };
+    sla_fs_file_close(fd as u64);
+}

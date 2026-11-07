@@ -11454,8 +11454,9 @@ pub const Codegen = struct {
                 return sentinel;
             }
             if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| {
-                const reg = try self.genImportedMacroCall(call, plan, ctx);
-                if ((try self.macroExprType(expr, ctx))) |ty| {
+                const result_ty = try self.macroExprType(expr, ctx);
+                const reg = try self.genImportedMacroCall(call, plan, ctx, result_ty);
+                if (result_ty) |ty| {
                     if (typeIsPointerScalarValue(ty)) try self.markNonOwningReg(reg);
                 }
                 return reg;
@@ -18347,7 +18348,7 @@ pub const Codegen = struct {
         return dst;
     }
 
-    fn genImportedMacroCall(self: *Codegen, call: ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, ctx: ?*MacroExpansionContext) anyerror!u32 {
+    fn genImportedMacroCall(self: *Codegen, call: ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, ctx: ?*MacroExpansionContext, result_ty: ?*const ast.Type) anyerror!u32 {
         const import_path = plan.import_path orelse return Error.UnsupportedSabDirectFeature;
         const dst = if (plan.expression_output) blk: {
             const reg = try self.intern(try self.newTmp());
@@ -18365,6 +18366,14 @@ pub const Codegen = struct {
         defer output_rebindings.deinit();
         var output_stores = std.array_list.Managed(struct { slot: u32, value: u32, ty: sig.PrimType, forget: bool, ast_ty: ?*const ast.Type }).init(self.allocator);
         defer output_stores.deinit();
+        // W1-DEF-SAB-PTRBYTEADD-MOVE: set when a borrow-expression
+        // argument contributed a temp that this call releases at its
+        // end (the explicit borrow the SAB lowering forms for `&place`,
+        // or an address temp). A pointer result derived from that
+        // borrow is an interior child of it, and the host verifier
+        // consumes interior children when the parent borrow is
+        // released — retiring the result before its first real use.
+        var result_alias_risk = false;
 
         if (dst) |reg| try arg_names.append(self.symbols.items[reg]);
         for (call.args, 0..) |arg, i| {
@@ -18382,6 +18391,9 @@ pub const Codegen = struct {
                 return err;
             };
             try arg_names.append(lowered_arg.operand);
+            if (arg.* == .borrow_expr and (lowered_arg.release_reg != null or lowered_arg.release_regs.len != 0)) {
+                result_alias_risk = true;
+            }
             if (self.plannedCallArgReleaseReg(lowered_arg.release_reg)) |reg| try release_regs.append(reg);
             if (lowered_arg.release_regs.len != 0) {
                 try release_regs.appendSlice(lowered_arg.release_regs);
@@ -18487,8 +18499,31 @@ pub const Codegen = struct {
                 try self.emitRelease(value);
             }
         }
+        // W1-DEF-SAB-PTRBYTEADD-MOVE: with a borrow-derived pointer
+        // result at risk (see result_alias_risk above), re-materialize
+        // the result through a stack slot BEFORE the argument borrows
+        // are released — the same store/load shape the legal
+        // bound-variable form takes. The loaded register is parented
+        // to the slot, which outlives every later use of the result;
+        // the store itself consumes the interior child while its
+        // parent borrow is still live, which the verifier accepts.
+        var effective_dst = dst;
+        if (dst) |reg| {
+            if (result_alias_risk) {
+                if (result_ty) |ty| {
+                    if (typeIsPointerScalarValue(ty)) {
+                        const slot = try self.intern(try self.newTmp());
+                        try self.emitStackAlloc(slot, 8);
+                        try self.emitStore(slot, 0, reg, .ptr);
+                        const fresh = try self.intern(try self.newTmp());
+                        try self.emitLoad(fresh, slot, 0, .ptr);
+                        effective_dst = fresh;
+                    }
+                }
+            }
+        }
         try self.releaseNonLocalTemps(release_regs.items);
-        if (dst) |reg| return reg;
+        if (effective_dst) |reg| return reg;
 
         const sentinel = try self.intern(try self.newTmp());
         try self.emitAssignImm(sentinel, 0);
@@ -18584,8 +18619,9 @@ pub const Codegen = struct {
             }
             if (try self.genOnceGetOrInitCall(call)) |reg| return reg;
             if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| {
-                const reg = try self.genImportedMacroCall(call, plan, null);
-                if ((try self.exprTypeOrFallback(expr))) |ty| {
+                const result_ty = try self.exprTypeOrFallback(expr);
+                const reg = try self.genImportedMacroCall(call, plan, null, result_ty);
+                if (result_ty) |ty| {
                     if (typeIsPointerScalarValue(ty)) try self.markNonOwningReg(reg);
                 }
                 return reg;

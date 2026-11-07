@@ -2069,6 +2069,25 @@ pub const Codegen = struct {
         _ = self.consumed_bindings.remove(mutex_reg);
     }
 
+    /// The RWLOCK_RELEASE_* macros expand to calls of
+    /// @__rwlock_release_read / @__rwlock_release_write, and those
+    /// functions consume their lock argument. A guard handle that
+    /// stores the receiver register verbatim (the direct
+    /// RwLock::new shape) therefore kills the lock at the first
+    /// guard cleanup -- and function-exit cleanup may even retire
+    /// the lock binding before the last guard release runs -- so
+    /// every later guard release or re-lock trips UseAfterMove.
+    /// The handle instead stores a fresh copy of the lock pointer,
+    /// taken at acquisition time; the copy is the release's to
+    /// consume. Temporary receiver registers are already
+    /// single-use and pass through unchanged.
+    fn rwlockReleaseRegister(self: *Codegen, lock_reg: []const u8) CodegenError![]const u8 {
+        if (isTemporaryRegisterName(lock_reg)) return lock_reg;
+        const dup = try self.newTmp();
+        self.outPrint("    {s} = add {s}, 0\n", .{ dup, lock_reg }) catch return CodegenError.CodegenError;
+        return dup;
+    }
+
     fn releaseTemporaryHandleRegister(self: *Codegen, handle_reg: []const u8) CodegenError!void {
         if (!isTemporaryRegisterName(handle_reg)) return;
         if (self.consumed_bindings.contains(handle_reg)) return;
@@ -18844,10 +18863,38 @@ pub const Codegen = struct {
                                 try self.emitRelease(guard_reg);
                                 self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
                                 self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.rwlock_lock_results.put(result_reg, .{ .lock_reg = recv_reg, .is_write = is_write }) catch return CodegenError.OutOfMemory;
+                                self.rwlock_lock_results.put(result_reg, .{ .lock_reg = try self.rwlockReleaseRegister(recv_reg), .is_write = is_write }) catch return CodegenError.OutOfMemory;
                                 try self.emitRelease(ok_reg);
                                 try self.emitRelease(lock_guard_reg);
                                 return result_reg;
+                            }
+                        }
+                        if (lowering_rules.isAsPtrCall(call)) {
+                            // P1 as_ptr (text half): the checker now
+                            // types Box/Rc/Arc `.as_ptr()`, and the SAB
+                            // backend lowers it through the std
+                            // surface, but the text backend had no
+                            // branch and fell into the "assume macro
+                            // expansion" fallback, emitting a bogus
+                            // `EXPAND as_ptr <recv>`. Emit the real
+                            // std macros (BOX_AS_PTR lives in mem.sa,
+                            // RC_AS_PTR in rc.sa, ARC_AS_PTR in
+                            // arc.sa; all take (out, receiver)).
+                            const sp_macro: ?[]const u8 = if (boxInnerType(ty) != null)
+                                "BOX_AS_PTR"
+                            else if (rcInnerType(ty) != null)
+                                "RC_AS_PTR"
+                            else if (arcInnerType(ty) != null)
+                                "ARC_AS_PTR"
+                            else
+                                null;
+                            if (sp_macro) |macro_name| {
+                                if (call.args.len != 1) return CodegenError.CodegenError;
+                                const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const reg = try self.newTmp();
+                                self.outPrint("    EXPAND {s} {s}, {s}\n", .{ macro_name, reg, recv_reg }) catch return CodegenError.CodegenError;
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
+                                return reg;
                             }
                         }
                         if (isFileType(ty)) {

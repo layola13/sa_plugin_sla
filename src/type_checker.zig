@@ -9431,6 +9431,19 @@ pub const TypeChecker = struct {
                         return try self.makeU64Type();
                     }
 
+                    // P1 as_ptr: Box/Rc/Arc `.as_ptr()` is declared in
+                    // std_surface.sla_meta (BOX_AS_PTR / RC_AS_PTR /
+                    // ARC_AS_PTR) and both codegens lower it, but the
+                    // checker had no branch for the call and fell
+                    // through to "Undefined call: as_ptr".
+                    if (lowering_rules.isAsPtrCall(call)) {
+                        const sp_inner = boxInnerType(recv_ty) orelse rcInnerType(recv_ty) orelse arcInnerType(recv_ty);
+                        if (sp_inner) |inner_ty| {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return try self.makePointerType(inner_ty);
+                        }
+                    }
+
                     if (atomicPtrInnerType(recv_ty)) |inner_ty| {
                         if (lowering_rules.isLoadCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;

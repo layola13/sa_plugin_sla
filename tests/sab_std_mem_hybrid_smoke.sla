@@ -1,0 +1,73 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/hashmap.sa"
+@import "sa_std/btree_map.sa"
+@import "sa_std/core/option.sa"
+
+// Regression corpus for DEF-WASM32-MEMSA-SAB-POISON (2026-11-08).
+//
+// The triple-batch landed form of sa_std/core/mem.sa is a hybrid: it
+// still carries `// @target` conditional blocks (the pure conditional
+// form was reverted because client compiles read mem.sa verbatim
+// through host import expansion). On the SAB route, loading the std
+// surface against that hybrid file failed with
+// error.UnsupportedSabDirectFeature for every program whose SAB
+// lowering touches the map surface (combined-gate discrimination:
+// X2/P1 red, P2 -- mem.sa swapped back to stock bytes -- green).
+// Fix form: build.zig mirrors the whole sa_std tree into the build
+// cache with every conditional file materialized per target, so the
+// SAB std surface is assembled from the materialized tree and mem.sa
+// reaches the loader as exactly one variant. mem.sa itself is NOT
+// modified by the fix.
+//
+// This file is the in-repo carrier of the gate's "sla sab backend
+// lowers map clear" probe (body identical to the pre-existing corpus
+// file tests/test_unit_map_clear.sla in the plugin tree; output
+// verified via build-exe: `0,3,0,8`).
+// Run: after installing the candidate plugin against a sci tree at
+// the pre-fix head, `sa sla test <this file> --test-backend sab`
+// fails with UnsupportedSabDirectFeature; against the fixed sci
+// tree it passes, and `--test-backend text` passes on both.
+fn main() -> i32 {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.clear();
+    println("{}", len(m));
+    m.insert("c", 3);
+    println("{}", m.get("c").copied().unwrap_or_default());
+    let b = BTreeMap::new();
+    b.insert("x", 7);
+    b.clear();
+    println("{}", len(b));
+    b.insert("y", 8);
+    println("{}", b.get("y").copied().unwrap_or_default());
+    return 0;
+}
+
+@test "unit map clear"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.clear();
+    if len(m) != 0 {
+        panic(16001);
+    };
+    if m.get("a").copied().unwrap_or_default() != 0 {
+        panic(16002);
+    };
+    m.insert("c", 3);
+    if m.get("c").copied().unwrap_or_default() != 3 {
+        panic(16003);
+    };
+    let b = BTreeMap::new();
+    b.insert("x", 7);
+    b.clear();
+    if len(b) != 0 {
+        panic(16004);
+    };
+    b.insert("y", 8);
+    if b.get("y").copied().unwrap_or_default() != 8 {
+        panic(16005);
+    };
+}

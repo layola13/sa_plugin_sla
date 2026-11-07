@@ -6,6 +6,7 @@ const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
 const defer_desugar = @import("defer_desugar.zig");
 const source_expand = @import("source_expand.zig");
+const decl_materialize = @import("decl_materialize.zig");
 const sci_bridge = @import("sci_bridge");
 const plugin_api = @import("plugin_api");
 
@@ -70,6 +71,9 @@ fn buildWasmCompileOptions() plugin_compile_options.SlaCompileOptions {
     // the native lowering untouched.
     var options = buildExeCompileOptions();
     options.goroutine_coop = true;
+    // Conditional declarations materialize to the wasm32 variant, so the
+    // SAB handed to `sa build-wasm` carries wasm32-width extern decls.
+    options.decl_target = .wasm32;
     return options;
 }
 
@@ -478,11 +482,21 @@ pub fn runSlaCommandImpl(
         const profile = plugin_compile_options.slaProfileEnabled(allocator);
         var stage_start = sio.nanoTimestamp();
 
-        const content = sio.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
+        const raw_content = sio.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
             try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
             return 1;
         };
         plugin_compile_options.slaProfileStage(stderr, profile, "check read source", stage_start);
+
+        // `sla check` validates the native materialization of
+        // target-conditional declarations (C-upper); target builds
+        // materialize their own variant at compile time.
+        stage_start = sio.nanoTimestamp();
+        const content = decl_materialize.materialize(allocator, raw_content, .native) catch |err| {
+            try stderr.print("Target Declaration Error: failed to materialize target-conditional declarations in {s}: {}\n", .{ file, err });
+            return 1;
+        };
+        plugin_compile_options.slaProfileStage(stderr, profile, "check decl materialize", stage_start);
 
         stage_start = sio.nanoTimestamp();
         const expanded_content = source_expand.expandForModulePath(allocator, file, content) catch |err| {

@@ -188,6 +188,10 @@ fn optionsDigest(kind: FreshnessKind, options: SlaCompileOptions, output_file: ?
     hasher.update(&.{@intFromBool(options.prune_for_test_codegen)});
     hasher.update(&.{@intFromBool(options.load_reachable_imported_bodies_from_registry)});
     hasher.update(&.{@intFromBool(options.goroutine_coop)});
+    // Materialized declarations differ per target, so a cached artifact
+    // must never be served across decl_target values.
+    hasher.update("target:");
+    hasher.update(options.decl_target.targetName());
     if (options.prune_for_entry_function) |entry| {
         hasher.update("entry:");
         hasher.update(entry);

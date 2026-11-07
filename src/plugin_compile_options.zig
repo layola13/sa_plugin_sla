@@ -1,8 +1,16 @@
 const std = @import("std");
 const sio = @import("sio");
+const decl_materialize = @import("decl_materialize.zig");
+
+pub const DeclTarget = decl_materialize.DeclTarget;
 
 pub const SlaCompileOptions = struct {
     test_filter: ?[]const u8 = null,
+    /// Target for conditional-declaration materialization (C-upper):
+    /// `// @target-begin` blocks in SLA sources are reduced to this
+    /// target's variant in the front-end, before parsing and before the
+    /// SAB / SA-text split. Native everywhere except `build-wasm`.
+    decl_target: DeclTarget = .native,
     /// Cooperative CPS/state-machine goroutine lowering (build-wasm
     /// only). Off everywhere else, so native/test/check outputs are
     /// byte-identical to the standard pipeline.

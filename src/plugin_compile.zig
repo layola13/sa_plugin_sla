@@ -11,6 +11,7 @@ const sab_audit = @import("sab_audit.zig");
 const codegen_mod = @import("codegen.zig");
 const sab_codegen_mod = @import("sab_codegen.zig");
 const source_expand = @import("source_expand.zig");
+const decl_materialize = @import("decl_materialize.zig");
 const sla_workspace = @import("workspace.zig");
 const lowering_rules = @import("lowering_rules.zig");
 
@@ -45,7 +46,7 @@ const testMatchesFilter = plugin_reachability.testMatchesFilter;
 const expandSlaImports = plugin_import_expand.expandSlaImports;
 const expandSlaImportsWithModuleTable = plugin_import_expand.expandSlaImportsWithModuleTable;
 const expandSlaImportsWithModuleTableUsingContractTypeChecker = plugin_import_expand.expandSlaImportsWithModuleTableUsingContractTypeChecker;
-const loadImportedContractsFromResolvedImports = plugin_import_expand.loadImportedContractsFromResolvedImports;
+const loadImportedContractsFromResolvedImportsForTarget = plugin_import_expand.loadImportedContractsFromResolvedImportsForTarget;
 const registerImportedFunctionAliasesFromResolvedImports = plugin_import_expand.registerImportedFunctionAliasesFromResolvedImports;
 const isProjectShortcutRetainedHelperName = plugin_project_shortcuts.isProjectShortcutRetainedHelperName;
 const rewriteProjectSnapshotTestShortcuts = plugin_project_shortcuts.rewriteProjectSnapshotTestShortcuts;
@@ -81,8 +82,14 @@ pub fn testFilterSelectsNoTests(
     const pattern = filter orelse return null;
     if (pattern.len == 0) return null;
 
-    const content = sio.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
+    const raw_content = sio.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
         try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
+        return null;
+    };
+    // Test filtering runs on the native materialization, matching the
+    // native-only `sla test` pipeline it serves.
+    const content = decl_materialize.materialize(allocator, raw_content, .native) catch |err| {
+        try stderr.print("Target Declaration Error: failed to materialize target-conditional declarations in {s}: {}\n", .{ file, err });
         return null;
     };
     const expanded_content = source_expand.expandForModulePath(allocator, file, content) catch |err| {
@@ -647,11 +654,22 @@ fn runSlaFrontend(
     closure_out: ?*std.array_list.Managed([]const u8),
 ) !?*ast.Node {
     var stage_start = sio.nanoTimestamp();
-    const content = sio.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
+    const raw_content = sio.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
         try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
         return null;
     };
     slaProfileStage(stderr, profile, "read source", stage_start);
+
+    // Target-conditional declarations (C-upper) materialize here, on the
+    // shared trunk, before tuple expansion and parsing: both the SAB and
+    // the SA-text tail consume the same selected variant, and neither the
+    // parser nor the checker ever sees a conditional block.
+    stage_start = sio.nanoTimestamp();
+    const content = decl_materialize.materialize(allocator, raw_content, options.decl_target) catch |err| {
+        try stderr.print("Target Declaration Error: failed to materialize target-conditional declarations in {s}: {}\n", .{ file, err });
+        return null;
+    };
+    slaProfileStage(stderr, profile, "decl materialize", stage_start);
 
     stage_start = sio.nanoTimestamp();
     const expanded_content = source_expand.expandForModulePath(allocator, file, content) catch |err| {
@@ -686,6 +704,7 @@ fn runSlaFrontend(
         })
     else
         SlaModuleTable.init(allocator);
+    import_modules.decl_target = options.decl_target;
     defer import_modules.deinit();
     var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);
     defer root_import_groups.deinit();
@@ -696,6 +715,7 @@ fn runSlaFrontend(
         .test_filter = options.test_filter,
         .imported_bodies_decl_only = options.load_reachable_imported_bodies_from_registry,
         .load_reachable_imported_bodies_from_registry = options.load_reachable_imported_bodies_from_registry,
+        .decl_target = options.decl_target,
     }, &import_modules, &root_import_groups, &contract_imports, if (options.prune_for_test_codegen) tc else null) catch |err| {
         try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
         return null;
@@ -746,7 +766,7 @@ fn runSlaFrontend(
 
     stage_start = sio.nanoTimestamp();
     if (!options.prune_for_test_codegen) {
-        loadImportedContractsFromResolvedImports(tc, allocator, contract_imports.items) catch |err| {
+        loadImportedContractsFromResolvedImportsForTarget(tc, allocator, contract_imports.items, options.decl_target) catch |err| {
             try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
             return null;
         };

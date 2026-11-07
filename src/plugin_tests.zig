@@ -1557,7 +1557,7 @@ test "sla test codegen keeps imported macro direct callee" {
     const prog = try parser.parseProgram();
     var macro_tc = type_checker_mod.TypeChecker.init(allocator);
     defer macro_tc.deinit();
-    try loadImportedContracts(&macro_tc, allocator, prog, "main.sla");
+    try loadImportedContracts(&macro_tc, allocator, prog, "main.sla", .native);
     const imported_macro = macro_tc.imported_macros.get("TEST_IMPORTED_PAIR_SUM");
     try std.testing.expect(imported_macro != null);
     try std.testing.expectEqual(@as(usize, 1), imported_macro.?.direct_callees.len);
@@ -3348,7 +3348,7 @@ test "sla load imported macros parses already expanded source" {
 
     var macro_tc = type_checker_mod.TypeChecker.init(allocator);
     defer macro_tc.deinit();
-    try loadImportedContracts(&macro_tc, allocator, prog, "main.sla");
+    try loadImportedContracts(&macro_tc, allocator, prog, "main.sla", .native);
 
     try std.testing.expect(macro_tc.imported_macros.get("EXPANDED_IMPORTED_MACRO") != null);
 }
@@ -10814,3 +10814,139 @@ test "sla replace nulls source place after transfer in sa codegen" {
     }
 }
 
+
+test "sla check accepts a conditional-declaration corpus file (native target)" {
+    // tests/decl_target/pair1_conditional.sla carries a libc size_t
+    // extern in conditional form; without front-end materialization
+    // the parser would see both variants and reject the duplicate
+    // declaration.
+    try expectSlaCheckOk("tests/decl_target/pair1_conditional.sla");
+}
+
+test "sla conditional declarations materialize per target on text and SAB paths" {
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    const source =
+        \\extern "C" {
+        \\// @target-begin
+        \\// @target native
+        \\    fn width_probe(len: u64) -> u64;
+        \\// @target wasm32
+        \\    fn width_probe(len: u32) -> u32;
+        \\// @target-end
+        \\}
+        \\
+        \\fn main() -> i32 {
+        \\// @target-begin
+        \\// @target native
+        \\    let n: u64 = 5;
+        \\    let r = width_probe(n);
+        \\    if r == 5 { return 16418; };
+        \\// @target wasm32
+        \\    let n: u32 = 5;
+        \\    let r = width_probe(n);
+        \\    if r == 5 { return 34; };
+        \\// @target-end
+        \\    return 0;
+        \\}
+    ;
+    try tdir.writeFile(.{ .sub_path = "width_cond.sla", .data = source });
+
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // SA text path, native target: the u64 variant and the native flag
+    // constant are selected.
+    {
+        var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+        defer stderr_buf.deinit();
+        var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+        const sa_code = (try compileSlaToSaStringWithOptions(allocator, "width_cond.sla", null, stderr_fw.writer(), defaultSlaCompileOptions())) orelse {
+            try stderr_fw.writer().flush();
+            std.debug.print("{s}", .{stderr_buf.items});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "16418") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "@target") == null);
+    }
+
+    // SA text path, wasm32 target: the u32 variant and the wasi flag
+    // constant are selected instead.
+    {
+        var opts = defaultSlaCompileOptions();
+        opts.decl_target = .wasm32;
+        var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+        defer stderr_buf.deinit();
+        var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+        const sa_code = (try compileSlaToSaStringWithOptions(allocator, "width_cond.sla", null, stderr_fw.writer(), opts)) orelse {
+            try stderr_fw.writer().flush();
+            std.debug.print("{s}", .{stderr_buf.items});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "16418") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "@target") == null);
+    }
+
+    // SAB path, wasm32 target: materialization happens before the
+    // SAB/text split, so the direct SAB lowering succeeds as well.
+    {
+        var opts = defaultSlaCompileOptions();
+        opts.decl_target = .wasm32;
+        var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+        defer stderr_buf.deinit();
+        var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, "width_cond.sla", "width_cond.sab", stderr_fw.writer(), opts)) orelse {
+            try stderr_fw.writer().flush();
+            std.debug.print("{s}", .{stderr_buf.items});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expect(std.mem.startsWith(u8, sab_bytes, sci_bridge.sab.magic));
+    }
+}
+
+test "sla conditional declarations fail loudly when the target variant is missing" {
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    const source =
+        \\extern "C" {
+        \\// @target-begin
+        \\// @target native
+        \\    fn width_probe(len: u64) -> u64;
+        \\// @target-end
+        \\}
+        \\
+        \\fn main() -> i32 {
+        \\    return 0;
+        \\}
+    ;
+    try tdir.writeFile(.{ .sub_path = "width_missing.sla", .data = source });
+
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var opts = defaultSlaCompileOptions();
+    opts.decl_target = .wasm32;
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+    const result = try compileSlaToSaStringWithOptions(allocator, "width_missing.sla", null, stderr_fw.writer(), opts);
+    try std.testing.expect(result == null);
+    try stderr_fw.writer().flush();
+    try std.testing.expect(std.mem.indexOf(u8, stderr_buf.items, "Target Declaration Error") != null);
+}

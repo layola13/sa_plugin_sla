@@ -3,6 +3,7 @@ const sio = @import("sio");
 const ast = @import("ast.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const source_expand = @import("source_expand.zig");
+const decl_materialize = @import("decl_materialize.zig");
 const type_checker_mod = @import("type_checker.zig");
 const plugin_imports = @import("plugin_imports.zig");
 const plugin_module_table = @import("plugin_module_table.zig");
@@ -97,6 +98,7 @@ fn scanExpandedSourceImports(
     import_dir: []const u8,
     exclude_path: ?[]const u8,
     visited: *std.StringHashMap(void),
+    decl_target: decl_materialize.DeclTarget,
 ) anyerror!void {
     if (!expandedSourceMayContainImports(expanded_source)) return;
 
@@ -121,7 +123,7 @@ fn scanExpandedSourceImports(
     }
     if (owned_imports) |imports| {
         for (imports) |child_import| {
-            try loadImportContractsRecursive(tc, allocator, import_dir, child_import, exclude_path, visited);
+            try loadImportContractsRecursive(tc, allocator, import_dir, child_import, exclude_path, visited, decl_target);
         }
         return;
     }
@@ -129,7 +131,7 @@ fn scanExpandedSourceImports(
     var lines = std.mem.splitScalar(u8, expanded_source, '\n');
     while (lines.next()) |line| {
         if (importPathFromLine(line)) |child_import| {
-            try loadImportContractsRecursive(tc, allocator, import_dir, child_import, exclude_path, visited);
+            try loadImportContractsRecursive(tc, allocator, import_dir, child_import, exclude_path, visited, decl_target);
         }
     }
 }
@@ -1056,7 +1058,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
         var imported_macro_contract_imports = std.array_list.Managed(ResolvedImport).init(allocator);
         defer imported_macro_contract_imports.deinit();
         _ = try appendRootResolvedContractImports(&imported_macro_contract_imports, &imported_macro_contract_paths, root_import_groups.items);
-        try loadImportedContractsFromResolvedImports(imported_macro_tc, allocator, imported_macro_contract_imports.items);
+        try loadImportedContractsFromResolvedImportsForTarget(imported_macro_tc, allocator, imported_macro_contract_imports.items, options.decl_target);
     }
     const imported_macros = if (options.prune_for_test_codegen) &imported_macro_tc.imported_macros else null;
 
@@ -1155,7 +1157,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
                 &referenced_types,
             );
             if (imported_macro_contract_imports.items.len == 0) break;
-            try loadImportedContractsFromResolvedImports(imported_macro_tc, allocator, imported_macro_contract_imports.items);
+            try loadImportedContractsFromResolvedImportsForTarget(imported_macro_tc, allocator, imported_macro_contract_imports.items, options.decl_target);
             if (reachability_session) |*session| {
                 _ = try session.refreshImportedMacros(ordered_modules.items);
                 try advanceReachabilitySessionWithLazyModuleDiscovery(
@@ -1274,6 +1276,7 @@ pub fn expandSlaImports(
         })
     else
         SlaModuleTable.init(allocator);
+    modules.decl_target = options.decl_target;
     defer modules.deinit();
     var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);
     defer root_import_groups.deinit();
@@ -1366,6 +1369,7 @@ fn loadImportContractsRecursive(
     import_path: []const u8,
     exclude_path: ?[]const u8,
     visited: *std.StringHashMap(void),
+    decl_target: decl_materialize.DeclTarget,
 ) !void {
     const resolved_imports = try resolveImportFiles(allocator, base_dir, import_path, exclude_path);
     for (resolved_imports) |resolved| {
@@ -1373,8 +1377,9 @@ fn loadImportContractsRecursive(
         try visited.put(resolved.path, {});
 
         const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
-        const expanded_source = try source_expand.expandForModulePath(allocator, resolved.path, resolved.source);
-        try scanExpandedSourceImports(tc, allocator, expanded_source, import_dir, resolved.path, visited);
+        const expanded_raw = try source_expand.expandForModulePath(allocator, resolved.path, resolved.source);
+        const expanded_source = try decl_materialize.materialize(allocator, expanded_raw, decl_target);
+        try scanExpandedSourceImports(tc, allocator, expanded_source, import_dir, resolved.path, visited, decl_target);
 
         if (std.mem.endsWith(u8, resolved.path, ".sai")) {
             try tc.loadContracts(expanded_source, "");
@@ -1391,15 +1396,17 @@ fn loadResolvedImportContractsRecursive(
     resolved: ResolvedImport,
     base_dir: []const u8,
     visited: *std.StringHashMap(void),
+    decl_target: decl_materialize.DeclTarget,
 ) !void {
     if (visited.contains(resolved.path)) return;
     try visited.put(resolved.path, {});
 
     const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
-    const expanded_source = try source_expand.expandForModulePath(allocator, resolved.path, resolved.source);
+    const expanded_raw = try source_expand.expandForModulePath(allocator, resolved.path, resolved.source);
+    const expanded_source = try decl_materialize.materialize(allocator, expanded_raw, decl_target);
     const profile = plugin_compile_options.slaProfileEnabled(allocator);
     const t0 = if (profile) sio.nanoTimestamp() else 0;
-    try scanExpandedSourceImports(tc, allocator, expanded_source, import_dir, resolved.path, visited);
+    try scanExpandedSourceImports(tc, allocator, expanded_source, import_dir, resolved.path, visited, decl_target);
     const t1 = if (profile) sio.nanoTimestamp() else 0;
     if (std.mem.endsWith(u8, resolved.path, ".sai")) {
         try tc.loadContracts(expanded_source, "");
@@ -1426,6 +1433,15 @@ pub fn loadImportedContractsFromResolvedImports(
     allocator: std.mem.Allocator,
     imports: []const ResolvedImport,
 ) !void {
+    return loadImportedContractsFromResolvedImportsForTarget(tc, allocator, imports, .native);
+}
+
+pub fn loadImportedContractsFromResolvedImportsForTarget(
+    tc: *type_checker_mod.TypeChecker,
+    allocator: std.mem.Allocator,
+    imports: []const ResolvedImport,
+    decl_target: decl_materialize.DeclTarget,
+) !void {
     var visited = std.StringHashMap(void).init(allocator);
     defer visited.deinit();
     const profile = plugin_compile_options.slaProfileEnabled(allocator);
@@ -1439,7 +1455,7 @@ pub fn loadImportedContractsFromResolvedImports(
         if (profile and plugin_compile_options.slaProfileContractsEnabled(allocator)) {
             std.debug.print("[sla-profile] load contract {s}\n", .{std.fs.path.basename(resolved.path)});
         }
-        try loadResolvedImportContractsRecursive(tc, allocator, resolved, base_dir, &visited);
+        try loadResolvedImportContractsRecursive(tc, allocator, resolved, base_dir, &visited, decl_target);
         loaded += 1;
     }
     if (profile) {
@@ -1455,6 +1471,7 @@ pub fn loadImportedContracts(
     allocator: std.mem.Allocator,
     program: *ast.Node,
     source_file: []const u8,
+    decl_target: decl_materialize.DeclTarget,
 ) !void {
     if (program.* != .program) return error.InvalidProgram;
 
@@ -1465,7 +1482,7 @@ pub fn loadImportedContracts(
     const source_abs = sio.cwd().realpathAlloc(allocator, source_file) catch source_file;
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
-            try loadImportContractsRecursive(tc, allocator, source_dir, decl.import_decl.path, source_abs, &visited);
+            try loadImportContractsRecursive(tc, allocator, source_dir, decl.import_decl.path, source_abs, &visited, decl_target);
         }
     }
 }

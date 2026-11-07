@@ -1,0 +1,21 @@
+// Golden pair 1: a libc size_t extern in conditional form, plus a
+// conditional body line whose flag constant differs per target
+// (16418 = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE in the Linux
+// native numbering; 34 = MAP_PRIVATE | MAP_ANONYMOUS in wasi-libc's).
+extern "C" {
+// @target-begin
+// @target native
+    fn mmap(addr: *u8, len: u64, prot: i32, flags: i32, fd: i32, offset: u64) -> *u8;
+// @target wasm32
+    fn mmap(addr: *u8, len: u32, prot: i32, flags: i32, fd: i32, offset: u64) -> *u8;
+// @target-end
+}
+
+fn reserve_flags() -> i32 {
+// @target-begin
+// @target native
+    return 16418;
+// @target wasm32
+    return 34;
+// @target-end
+}

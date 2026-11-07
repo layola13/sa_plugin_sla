@@ -1,0 +1,9 @@
+// Negative 1: the block declares only the native variant.
+// Materializing for wasm32 must fail with MissingTargetVariant;
+// materializing for native succeeds.
+extern "C" {
+// @target-begin
+// @target native
+    fn munmap(addr: *u8, len: u64) -> i32;
+// @target-end
+}

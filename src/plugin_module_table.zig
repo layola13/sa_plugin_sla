@@ -3,6 +3,7 @@ const sio = @import("sio");
 const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const source_expand = @import("source_expand.zig");
+const decl_materialize = @import("decl_materialize.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const host_paths = @import("host_paths.zig");
 const plugin_imports = @import("plugin_imports.zig");
@@ -326,6 +327,10 @@ pub const SlaImportExpansionOptions = struct {
     /// imported module's declarations (typically decl-only). Used by `sla check`
     /// where correctness does not require selective import pruning.
     include_all_imported_decls: bool = false,
+    /// Target for conditional-declaration materialization during import
+    /// expansion (C-upper); forwarded to the module table and to contract
+    /// loading so imported sources reduce to the same variant as the root.
+    decl_target: decl_materialize.DeclTarget = .native,
 };
 
 pub const SlaResolvedImportGroup = struct {
@@ -348,6 +353,10 @@ pub const SlaModuleTable = struct {
     expanded_source_cache_hits: usize,
     parse_options: parser_mod.Parser.Options,
     capture_body_spans: bool = true,
+    /// Target for conditional-declaration materialization of imported
+    /// modules (C-upper). Set by the front-end from SlaCompileOptions;
+    /// native by default so non-frontend users keep prior behavior.
+    decl_target: decl_materialize.DeclTarget = .native,
 
     pub fn init(allocator: std.mem.Allocator) SlaModuleTable {
         return initWithParserOptions(allocator, .{
@@ -480,11 +489,15 @@ pub const SlaModuleTable = struct {
             self.allocator.free(raw);
             break :blk normed;
         };
-        const expanded_source = if (self.import_type_scan_cache.get(cache_lookup_path) orelse self.import_type_scan_cache.get(resolved.path)) |surface| blk: {
+        const expanded_source_raw = if (self.import_type_scan_cache.get(cache_lookup_path) orelse self.import_type_scan_cache.get(resolved.path)) |surface| blk: {
             if (!surface.complete) break :blk try source_expand.expandForModulePath(self.allocator, resolved.path, resolved.source);
             self.expanded_source_cache_hits += 1;
             break :blk surface.expanded_source;
         } else try source_expand.expandForModulePath(self.allocator, resolved.path, resolved.source);
+        // Materialize at the consumption point so both the prescan-cache
+        // surface and the freshly expanded source are reduced to this
+        // table's target before parsing (C-upper).
+        const expanded_source = try decl_materialize.materialize(self.allocator, expanded_source_raw, self.decl_target);
         const expand_ns = if (profile) sio.nanoTimestamp() - expand_start else 0;
         const parse_start = if (profile) sio.nanoTimestamp() else 0;
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, expanded_source, base_dir, self.parse_options);

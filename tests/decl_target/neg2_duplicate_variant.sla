@@ -1,0 +1,12 @@
+// Negative 2: the native section appears twice in one block.
+// Materializing for any target must fail with DuplicateTargetVariant.
+extern "C" {
+// @target-begin
+// @target native
+    fn munmap(addr: *u8, len: u64) -> i32;
+// @target native
+    fn munmap(addr: *u8, len: u64) -> i32;
+// @target wasm32
+    fn munmap(addr: *u8, len: u32) -> i32;
+// @target-end
+}

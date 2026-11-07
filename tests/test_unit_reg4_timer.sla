@@ -1,0 +1,72 @@
+@import "sa_std/timer.sla"
+
+// Registry shard 4 coverage: timer_* free functions from
+// sa_std/timer.sla (SAB registry class=declared, never probed,
+// zero corpus references at census 2026-11-06).
+// Entries: timer_now_ns, timer_deadline_from_ms, timer_after_ms,
+// timer_check, timer_cancel, timer_is_cancelled, timer_clone,
+// timer_remaining_ms.
+// timer_check codes: 0 = pending, 1 = fired, 2 = cancelled.
+
+@test "reg4 timer now_ns positive and monotone"() {
+    let a: u64 = timer_now_ns();
+    let b: u64 = timer_now_ns();
+    if a == 0 { panic(41301); };
+    if b < a { panic(41302); };
+}
+
+@test "reg4 timer deadline from ms brackets now"() {
+    let before: u64 = timer_now_ns();
+    let d: u64 = timer_deadline_from_ms(0);
+    let after: u64 = timer_now_ns();
+    if d < before { panic(41311); };
+    if d > after { panic(41312); };
+}
+
+@test "reg4 timer deadline from ms adds the interval"() {
+    let before: u64 = timer_now_ns();
+    let d: u64 = timer_deadline_from_ms(2000);
+    let after: u64 = timer_now_ns();
+    if d < before + 2000000000 { panic(41313); };
+    if d > after + 2000000000 { panic(41314); };
+}
+
+@test "reg4 timer after zero ms fires immediately"() {
+    let t = timer_after_ms(0);
+    if timer_check(&t) != 1 { panic(41321); };
+    if timer_remaining_ms(&t) != 0 { panic(41322); };
+    if timer_is_cancelled(&t) { panic(41323); };
+}
+
+@test "reg4 timer far future stays pending"() {
+    let t = timer_after_ms(3600000);
+    if timer_check(&t) != 0 { panic(41331); };
+    let r: u64 = timer_remaining_ms(&t);
+    if r > 3600000 { panic(41332); };
+    if r < 3599000 { panic(41333); };
+    if timer_is_cancelled(&t) { panic(41334); };
+}
+
+@test "reg4 timer cancel wins over pending and fired"() {
+    let t = timer_after_ms(3600000);
+    timer_cancel(&t);
+    if timer_is_cancelled(&t) != true { panic(41341); };
+    if timer_check(&t) != 2 { panic(41342); };
+    let f = timer_after_ms(0);
+    timer_cancel(&f);
+    if timer_check(&f) != 2 { panic(41343); };
+}
+
+@test "reg4 timer clone shares deadline and flag"() {
+    let t = timer_after_ms(3600000);
+    let c = timer_clone(&t);
+    if timer_check(&c) != 0 { panic(41351); };
+    // Cancelling the original must cancel the clone (shared Arc flag).
+    timer_cancel(&t);
+    if timer_is_cancelled(&c) != true { panic(41352); };
+    if timer_check(&c) != 2 { panic(41353); };
+    // A clone of an already-fired timer is fired at the same deadline.
+    let f = timer_after_ms(0);
+    let fc = timer_clone(&f);
+    if timer_check(&fc) != 1 { panic(41354); };
+}

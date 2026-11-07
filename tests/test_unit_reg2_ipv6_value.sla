@@ -1,0 +1,135 @@
+@import "sa_std/ip.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Coverage shard 2: ipv6 value/parse/format entries from sa_std/ip.sla
+// (registry "declared, never probed"). Format expectations are the
+// RFC 5952 canonical form the file header documents: longest zero run
+// of length >= 2 compressed (first on ties), lowercase hex, mixed
+// notation for IPv4-mapped addresses.
+// Round 2 note: expected/input strings are bound to locals or passed
+// as (ptr, len) because the round-1 form (string literal passed by
+// move to a by-value String helper parameter) traps StackEscape 1025
+// on the text backend; round-1 file preserved as repro in ../repro/.
+
+fn expect_str(got: String, want: ptr, want_len: u64, code: i32) {
+    if len(got) != want_len { panic(code); };
+    let gp: ptr = STR_PTR(got);
+    let i: u64 = 0;
+    while i < want_len {
+        if PTR_BYTE_AT(gp, i) != PTR_BYTE_AT(want, i) { panic(code); };
+        i = i + 1;
+    }
+}
+
+fn expect_none6(text: String, code: i32) {
+    match ipv6_parse(text) {
+        Some(v) => { panic(code); },
+        None => {},
+    };
+}
+
+@test "reg2 ipv6_from_segments"() {
+    let a = ipv6_from_segments(8193, 3512, 0, 0, 0, 0, 0, 1); // 2001:db8::1
+    if a.hi != 2306139568115548160 { panic(24301); };
+    if a.lo != 1 { panic(24302); };
+    let z = ipv6_from_segments(0, 0, 0, 0, 0, 0, 0, 0);
+    if z.hi != 0 || z.lo != 0 { panic(24303); };
+}
+
+@test "reg2 ipv6_segment"() {
+    let a = ipv6_from_segments(8193, 3512, 1, 2, 3, 4, 5, 6);
+    if ipv6_segment(a, 0) != 8193 { panic(24304); };
+    if ipv6_segment(a, 1) != 3512 { panic(24305); };
+    if ipv6_segment(a, 2) != 1 { panic(24306); };
+    if ipv6_segment(a, 3) != 2 { panic(24307); };
+    if ipv6_segment(a, 4) != 3 { panic(24308); };
+    if ipv6_segment(a, 5) != 4 { panic(24309); };
+    if ipv6_segment(a, 6) != 5 { panic(24310); };
+    if ipv6_segment(a, 7) != 6 { panic(24311); };
+}
+
+@test "reg2 ipv6_parse valid"() {
+    match ipv6_parse("::1") {
+        Some(v) => { if v.hi != 0 || v.lo != 1 { panic(24312); }; },
+        None => { panic(24313); },
+    };
+    match ipv6_parse("::") {
+        Some(v) => { if v.hi != 0 || v.lo != 0 { panic(24314); }; },
+        None => { panic(24315); },
+    };
+    match ipv6_parse("2001:db8::1") {
+        Some(v) => {
+            if ipv6_segment(v, 0) != 8193 { panic(24316); };
+            if ipv6_segment(v, 1) != 3512 { panic(24317); };
+            if ipv6_segment(v, 7) != 1 { panic(24318); };
+        },
+        None => { panic(24319); },
+    };
+    match ipv6_parse("1:2:3:4:5:6:7:8") {
+        Some(v) => {
+            if ipv6_segment(v, 0) != 1 { panic(24320); };
+            if ipv6_segment(v, 7) != 8 { panic(24321); };
+        },
+        None => { panic(24322); },
+    };
+    match ipv6_parse("::ffff:192.168.0.1") {
+        Some(v) => {
+            if ipv6_segment(v, 5) != 65535 { panic(24323); };
+            if ipv6_segment(v, 6) != 49320 { panic(24324); };
+            if ipv6_segment(v, 7) != 1 { panic(24325); };
+        },
+        None => { panic(24326); },
+    };
+}
+
+// "reg2 ipv6_parse invalid" lives in
+// test_unit_reg2_ipv6_parse_invalid.sla (split out in round 3: its
+// direct-literal helper calls trap StackEscape on the text backend
+// and would abort this file's run before the other entries measure).
+
+@test "reg2 ipv6_to_string"() {
+    let w1 = "::1";
+    expect_str(ipv6_to_string(ipv6_from_segments(0, 0, 0, 0, 0, 0, 0, 1)), STR_PTR(w1), STR_LEN(w1) as u64, 24334);
+    let w2 = "::";
+    expect_str(ipv6_to_string(ipv6_from_segments(0, 0, 0, 0, 0, 0, 0, 0)), STR_PTR(w2), STR_LEN(w2) as u64, 24335);
+    let w3 = "2001:db8::1";
+    expect_str(ipv6_to_string(ipv6_from_segments(8193, 3512, 0, 0, 0, 0, 0, 1)), STR_PTR(w3), STR_LEN(w3) as u64, 24336);
+    let w4 = "::ffff:192.168.0.1";
+    expect_str(ipv6_to_string(ipv6_from_segments(0, 0, 0, 0, 0, 65535, 49320, 1)), STR_PTR(w4), STR_LEN(w4) as u64, 24337);
+    // Longest zero run wins: the 3-run at idx 4..6, not the 2-run at 1..2.
+    let w5 = "2001:0:0:1::1";
+    expect_str(ipv6_to_string(ipv6_from_segments(8193, 0, 0, 1, 0, 0, 0, 1)), STR_PTR(w5), STR_LEN(w5) as u64, 24338);
+    // A single zero segment is never compressed.
+    let w6 = "2001:db8:0:1:2:3:4:5";
+    expect_str(ipv6_to_string(ipv6_from_segments(8193, 3512, 0, 1, 2, 3, 4, 5)), STR_PTR(w6), STR_LEN(w6) as u64, 24339);
+}
+
+@test "reg2 ipv6_to_expanded_string"() {
+    let w1 = "0000:0000:0000:0000:0000:0000:0000:0001";
+    expect_str(ipv6_to_expanded_string(ipv6_from_segments(0, 0, 0, 0, 0, 0, 0, 1)), STR_PTR(w1), STR_LEN(w1) as u64, 24340);
+    let w2 = "2001:0db8:0000:0000:0000:0000:0000:0001";
+    expect_str(ipv6_to_expanded_string(ipv6_from_segments(8193, 3512, 0, 0, 0, 0, 0, 1)), STR_PTR(w2), STR_LEN(w2) as u64, 24341);
+}
+
+@test "reg2 ipv6_to_ipv4"() {
+    match ipv6_to_ipv4(ipv6_from_segments(0, 0, 0, 0, 0, 65535, 49320, 1)) {
+        Some(v) => { if v != 3232235521 { panic(24342); }; },
+        None => { panic(24343); },
+    };
+    match ipv6_to_ipv4(ipv6_from_segments(8193, 3512, 0, 0, 0, 0, 0, 1)) {
+        Some(v) => { panic(24344); },
+        None => {},
+    };
+    match ipv6_to_ipv4(ipv6_from_segments(0, 0, 0, 0, 0, 0, 0, 1)) {
+        Some(v) => { panic(24345); },
+        None => {},
+    };
+}
+
+@test "reg2 ipv6_multicast_scope"() {
+    if ipv6_multicast_scope(ipv6_from_segments(65281, 0, 0, 0, 0, 0, 0, 1)) != 1 { panic(24346); }; // ff01
+    if ipv6_multicast_scope(ipv6_from_segments(65282, 0, 0, 0, 0, 0, 0, 1)) != 2 { panic(24347); }; // ff02
+    if ipv6_multicast_scope(ipv6_from_segments(65285, 0, 0, 0, 0, 0, 0, 1)) != 5 { panic(24348); }; // ff05
+    if ipv6_multicast_scope(ipv6_from_segments(65294, 0, 0, 0, 0, 0, 0, 1)) != 14 { panic(24349); }; // ff0e
+}

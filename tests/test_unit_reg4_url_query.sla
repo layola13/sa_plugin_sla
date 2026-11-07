@@ -1,0 +1,133 @@
+@import "sa_std/url.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Registry shard 4 coverage: url query-string handling from
+// sa_std/url.sla (SAB registry class=declared, never probed,
+// zero corpus references at census 2026-11-06).
+// Entries: url_query_count, url_query_get, url_query_get_nth,
+// url_query_pair_at, url_query_pair_at_pn, url_query_pair_spans,
+// url_query_append_pair, url_query_encode_pair.
+
+fn s4_eq(a: String, b: String) -> bool {
+    let pa: ptr = STR_PTR(a);
+    let pb: ptr = STR_PTR(b);
+    if len(a) != len(b) { return false; };
+    let i: u64 = 0;
+    while i < len(a) {
+        if PTR_BYTE_AT(pa, i) != PTR_BYTE_AT(pb, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+fn o4_some(o: Option<String>) -> String {
+    // Match-assign extraction (the match-return form is under
+    // investigation -- see min_query_get in RESULT.md).
+    let out: String = format("");
+    match o {
+        Some(v) => { out = v; },
+        None => { panic(42990); },
+    };
+    return out;
+}
+
+@test "reg4 url query count"() {
+    if url_query_count(format("")) != 0 { panic(42901); };
+    if url_query_count(format("a=1")) != 1 { panic(42902); };
+    if url_query_count(format("a=1&b=2")) != 2 { panic(42903); };
+    if url_query_count(format("a=1&&b=2")) != 2 { panic(42904); };
+    if url_query_count(format("&")) != 0 { panic(42905); };
+    if url_query_count(format("a&b&c")) != 3 { panic(42906); };
+}
+
+@test "reg4 url query get and get nth"() {
+    if !s4_eq(o4_some(url_query_get(format("a=1&b=2&a=3"), format("a"))), format("1")) { panic(42911); };
+    if !s4_eq(o4_some(url_query_get(format("a=1&b=2&a=3"), format("b"))), format("2")) { panic(42912); };
+    if url_query_get(format("a=1"), format("zz")).is_some() { panic(42913); };
+    if !s4_eq(o4_some(url_query_get_nth(format("a=1&a=2"), format("a"), 1)), format("2")) { panic(42914); };
+    if url_query_get_nth(format("a=1&a=2"), format("a"), 2).is_some() { panic(42915); };
+}
+
+@test "reg4 url query get valueless key yields empty"() {
+    if !s4_eq(o4_some(url_query_get(format("flag&x=1"), format("flag"))), format("")) { panic(42921); };
+}
+
+@test "reg4 url query get decodes keys and values"() {
+    if !s4_eq(o4_some(url_query_get(format("a%20b=c+d"), format("a b"))), format("c d")) { panic(42931); };
+}
+
+@test "reg4 url query pair at"() {
+    let p0 = url_query_pair_at(format("k1=v1&k2=v2"), 0);
+    match p0 {
+        Some(pr) => {
+            if !s4_eq(pr.key, format("k1")) { panic(42941); };
+            if !s4_eq(pr.value, format("v1")) { panic(42942); };
+            if pr.has_value != true { panic(42943); };
+        },
+        None => { panic(42944); },
+    };
+    let p1 = url_query_pair_at(format("k1=v1&k2=v2"), 1);
+    match p1 {
+        Some(pr) => {
+            if !s4_eq(pr.key, format("k2")) { panic(42945); };
+            if !s4_eq(pr.value, format("v2")) { panic(42946); };
+        },
+        None => { panic(42947); },
+    };
+    if url_query_pair_at(format("k1=v1"), 5).is_some() { panic(42948); };
+    let pf = url_query_pair_at(format("flag&x=1"), 0);
+    match pf {
+        Some(pr) => {
+            if !s4_eq(pr.key, format("flag")) { panic(42949); };
+            if pr.has_value != false { panic(42950); };
+        },
+        None => { panic(42951); },
+    }
+}
+
+@test "reg4 url query pair at pn matches pair at"() {
+    let q = format("k1=v1&k2=v2");
+    let n: u64 = len(q);
+    let pr = url_query_pair_at_pn(STR_PTR(q), n, 1);
+    match pr {
+        Some(pr2) => {
+            if !s4_eq(pr2.key, format("k2")) { panic(42952); };
+            if !s4_eq(pr2.value, format("v2")) { panic(42953); };
+            if pr2.has_value != true { panic(42954); };
+        },
+        None => { panic(42955); },
+    }
+}
+
+@test "reg4 url query pair spans indices"() {
+    let q = format("ab=12&c=3");
+    let n: u64 = len(q);
+    let s0 = url_query_pair_spans(STR_PTR(q), n, 0);
+    if s0.found != true { panic(42961); };
+    if s0.key_start != 0 { panic(42962); };
+    if s0.key_end != 2 { panic(42963); };
+    if s0.val_start != 3 { panic(42964); };
+    if s0.val_end != 5 { panic(42965); };
+    if s0.has_value != true { panic(42966); };
+    let s1 = url_query_pair_spans(STR_PTR(q), n, 1);
+    if s1.found != true { panic(42967); };
+    if s1.key_start != 6 { panic(42968); };
+    if s1.key_end != 7 { panic(42969); };
+    if s1.val_start != 8 { panic(42970); };
+    if s1.val_end != 9 { panic(42971); };
+    let s2 = url_query_pair_spans(STR_PTR(q), n, 2);
+    if s2.found != false { panic(42972); };
+}
+
+@test "reg4 url query encode pair"() {
+    if !s4_eq(url_query_encode_pair(format("a b"), format("x+y"), true), format("a+b=x%2By")) { panic(42981); };
+    if !s4_eq(url_query_encode_pair(format("k"), format(""), false), format("k")) { panic(42982); };
+    if !s4_eq(url_query_encode_pair(format("k"), format(""), true), format("k=")) { panic(42983); };
+}
+
+@test "reg4 url query append pair"() {
+    if !s4_eq(url_query_append_pair(format(""), format("k"), format("v"), true), format("k=v")) { panic(42991); };
+    if !s4_eq(url_query_append_pair(format("a=1"), format("b"), format("2"), true), format("a=1&b=2")) { panic(42992); };
+    if !s4_eq(url_query_append_pair(format("a=1"), format("flag"), format(""), false), format("a=1&flag")) { panic(42993); };
+}

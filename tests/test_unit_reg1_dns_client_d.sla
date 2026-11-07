@@ -28,7 +28,7 @@ fn reg1_bytes(s: String) -> Vec<u8> {
     let r = dns_resolve_first(srv, 53);
     match r {
         Ok(h) => {
-            let fr: i32 = sa_net_addr_free(h);
+            let _ = sa_net_addr_free(h);
         },
         Err(e) => { panic(62211); },
     };
@@ -36,7 +36,7 @@ fn reg1_bytes(s: String) -> Vec<u8> {
     let r2 = dns_resolve_first(srv2, 53);
     match r2 {
         Ok(h) => {
-            let fr2: i32 = sa_net_addr_free(h);
+            let _ = sa_net_addr_free(h);
         },
         Err(e) => { panic(62212); },
     };

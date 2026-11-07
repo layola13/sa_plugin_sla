@@ -5,6 +5,10 @@
 // Regenerate: python3 gen_wrap.py --sai <sa_std>/tls_server.sai --out-dir out
 @import "sa_std/tls_server.sai"
 
+struct TlsServerBuffer {
+    raw: u64,
+}
+
 fn sla_std_tls_server_supported(&out_supported: u64) -> i32 {
     return sa_std_tls_server_supported(out_supported);
 }
@@ -63,6 +67,10 @@ fn sla_std_tls_server_negotiated_json(ssl: u64, &out_handle: u64) -> i32 {
 
 fn sla_std_tls_server_peer_cert_chain_json(ssl: u64, &out_handle: u64) -> i32 {
     return sa_std_tls_server_peer_cert_chain_json(ssl, out_handle);
+}
+
+fn sla_std_tls_server_buffer_data(&buffer: TlsServerBuffer) -> &[u8][buffer] {
+    return __slice_view(sa_std_tls_server_buffer_data(buffer.raw), sa_std_tls_server_buffer_len(buffer.raw));
 }
 
 fn sla_std_tls_server_buffer_len(buffer: u64) -> u64 {

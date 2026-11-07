@@ -326,7 +326,7 @@ pub const Monomorphizer = struct {
                     var new_params = std.array_list.Managed(ast.Param).init(self.allocator);
                     for (method.params) |p| {
                         const new_ty = try self.specializeType(p.ty);
-                        try new_params.append(.{ .name = p.name, .ty = new_ty, .is_borrow = p.is_borrow, .is_move = p.is_move });
+                        try new_params.append(.{ .name = p.name, .ty = new_ty, .is_borrow = p.is_borrow, .is_move = p.is_move, .is_fallible_sugar = p.is_fallible_sugar });
                     }
                     const new_ret = try self.specializeType(method.ret_ty);
                     try new_methods.append(.{ .name = method.name, .params = try new_params.toOwnedSlice(), .ret_ty = new_ret });
@@ -353,7 +353,7 @@ pub const Monomorphizer = struct {
                 var new_params = std.array_list.Managed(ast.Param).init(self.allocator);
                 for (f.params) |p| {
                     const new_ty = try self.specializeType(p.ty);
-                    try new_params.append(.{ .name = p.name, .ty = new_ty, .is_borrow = p.is_borrow, .is_move = p.is_move });
+                    try new_params.append(.{ .name = p.name, .ty = new_ty, .is_borrow = p.is_borrow, .is_move = p.is_move, .is_fallible_sugar = p.is_fallible_sugar });
                 }
                 const new_ret = try self.specializeType(f.ret_ty);
                 const new_body = try self.specializeBlock(f.body);
@@ -375,6 +375,8 @@ pub const Monomorphizer = struct {
                         .is_async = f.is_async,
                         .is_variadic = f.is_variadic,
                         .operator = f.operator,
+                        .ret_fallible_sugar = f.ret_fallible_sugar,
+                        .ret_borrow_origin = f.ret_borrow_origin,
                     },
                 };
                 return res;
@@ -768,7 +770,7 @@ pub const Monomorphizer = struct {
             .closure_literal => |lit| {
                 var new_params = std.array_list.Managed(ast.Param).init(self.allocator);
                 for (lit.params) |p| {
-                    try new_params.append(.{ .name = p.name, .ty = try self.specializeType(p.ty), .is_borrow = p.is_borrow, .is_move = p.is_move });
+                    try new_params.append(.{ .name = p.name, .ty = try self.specializeType(p.ty), .is_borrow = p.is_borrow, .is_move = p.is_move, .is_fallible_sugar = p.is_fallible_sugar });
                 }
                 const new_body = try self.specializeNode(lit.body);
                 const res = try self.allocator.create(ast.Node);
@@ -1440,6 +1442,7 @@ pub const Monomorphizer = struct {
                 .ty = fully_spec_ty,
                 .is_borrow = p.is_borrow,
                 .is_move = p.is_move,
+                .is_fallible_sugar = p.is_fallible_sugar,
             });
         }
 
@@ -1467,6 +1470,8 @@ pub const Monomorphizer = struct {
                 .is_async = template.is_async,
                 .is_variadic = template.is_variadic,
                 .operator = template.operator,
+                .ret_fallible_sugar = template.ret_fallible_sugar,
+                .ret_borrow_origin = template.ret_borrow_origin,
             },
         };
         try self.new_decls.append(node);
@@ -1582,6 +1587,7 @@ pub const Monomorphizer = struct {
                         .ty = try self.substituteType(p.ty, params, args),
                         .is_borrow = p.is_borrow,
                         .is_move = p.is_move,
+                        .is_fallible_sugar = p.is_fallible_sugar,
                     });
                 }
                 const res = try self.allocator.create(ast.Node);
@@ -1601,6 +1607,8 @@ pub const Monomorphizer = struct {
                         .is_async = f.is_async,
                         .is_variadic = f.is_variadic,
                         .operator = f.operator,
+                        .ret_fallible_sugar = f.ret_fallible_sugar,
+                        .ret_borrow_origin = f.ret_borrow_origin,
                     },
                 };
                 return res;
@@ -1932,7 +1940,7 @@ pub const Monomorphizer = struct {
             .closure_literal => |lit| {
                 var spec_params = std.array_list.Managed(ast.Param).init(self.allocator);
                 for (lit.params) |p| {
-                    try spec_params.append(.{ .name = p.name, .ty = try self.substituteType(p.ty, params, args), .is_borrow = p.is_borrow, .is_move = p.is_move });
+                    try spec_params.append(.{ .name = p.name, .ty = try self.substituteType(p.ty, params, args), .is_borrow = p.is_borrow, .is_move = p.is_move, .is_fallible_sugar = p.is_fallible_sugar });
                 }
                 const spec_body = try self.substituteNode(lit.body, params, args);
                 const res = try self.allocator.create(ast.Node);

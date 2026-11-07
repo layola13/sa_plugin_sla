@@ -5,6 +5,10 @@
 // Regenerate: python3 gen_wrap.py --sai <sa_std>/multipart.sai --out-dir out
 @import "sa_std/multipart.sai"
 
+struct MultipartBuffer {
+    raw: u64,
+}
+
 fn sla_std_multipart_parse(body: ptr, body_len: u64, content_type: ptr, content_type_len: u64, &out_handle: u64) -> i32 {
     return sa_std_multipart_parse(body, body_len, content_type, content_type_len, out_handle);
 }
@@ -63,6 +67,10 @@ fn sla_std_multipart_builder_content_type(handle: u64, &out: u8, cap: u64, &out_
 
 fn sla_std_multipart_builder_finish(handle: u64, &out_handle: u64) -> i32 {
     return sa_std_multipart_builder_finish(handle, out_handle);
+}
+
+fn sla_std_multipart_buffer_data(&buffer: MultipartBuffer) -> &[u8][buffer] {
+    return __slice_view(sa_std_multipart_buffer_data(buffer.raw), sa_std_multipart_buffer_len(buffer.raw));
 }
 
 fn sla_std_multipart_buffer_len(buffer: u64) -> u64 {

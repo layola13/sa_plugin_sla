@@ -159,6 +159,16 @@ pub const FuncDecl = struct {
     /// `...` marker. Only legal on extern declarations and on exported
     /// extern "C" definitions (whose final Param is the VaList binding).
     is_variadic: bool = false,
+    /// A_min (fallible `T!` batch): the return type was spelled with the
+    /// `T!` sugar (desugared at parse time to `Result<T, i32>`). Values
+    /// produced by calling this function are must-consume.
+    ret_fallible_sugar: bool = false,
+    /// E_res (borrow-return batch): for a borrow return with an origin
+    /// annotation (`-> &[u8][param]` or `-> &ptr[param]`), the name of
+    /// the parameter the returned view borrows from; null otherwise.
+    /// The view is non-escaping in v1: it may only flow back out
+    /// through a return whose annotation names the same origin.
+    ret_borrow_origin: ?[]const u8 = null,
 };
 
 pub const Param = struct {
@@ -166,6 +176,10 @@ pub const Param = struct {
     ty: *Type,
     is_borrow: bool = false,
     is_move: bool = false,
+    /// A_min: set when the parameter type was written with the fallible
+    /// `T!` sugar. The sugar is return-position only; the checker
+    /// rejects sugared parameters with FallibleSugarParam.
+    is_fallible_sugar: bool = false,
 };
 
 pub const MacroDecl = struct {

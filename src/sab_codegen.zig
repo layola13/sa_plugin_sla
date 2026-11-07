@@ -12701,6 +12701,12 @@ pub const Codegen = struct {
                 }
                 if (lowering_rules.planDynCoercion(self.tc, expr)) |plan| break :blk try self.genDynCoercionExpr(expr, plan);
                 if (self.tc.fn_ptr_calls.contains(expr)) break :blk try self.genFnPtrCall(expr, call);
+                // E_res: __slice_view(data, len) materializes a
+                // Slice<u8> value from a borrow extern's data pointer
+                // and its length sibling.
+                if (std.mem.eql(u8, call.func_name, "__slice_view") and call.associated_target == null) {
+                    break :blk try self.genSliceViewCall(call);
+                }
                 break :blk try self.genCall(expr, call);
             },
             .field_expr => |field| try self.genField(field),
@@ -12731,6 +12737,26 @@ pub const Codegen = struct {
             },
             else => Error.UnsupportedSabDirectFeature,
         };
+    }
+
+    /// E_res: emit a __slice_view(data, len) production: stack-alloc
+    /// a Slice cell and SLICE_NEW it from the two argument registers.
+    fn genSliceViewCall(self: *Codegen, call: ast.CallExpr) anyerror!u32 {
+        if (call.args.len != 2) return Error.UnsupportedSabDirectFeature;
+        const data_reg = try self.genExpr(call.args[0]);
+        const len_reg = try self.genExpr(call.args[1]);
+        const dst = try self.intern(try self.newTmp());
+        // `alloc`, not stack_alloc: the view escapes via the wrapper's
+        // return slot (StackEscape otherwise) -- cf. std slice macros.
+        try self.emitAlloc(dst, lowering_rules.SliceAbi.size);
+        try self.emitStdMacroFragment("sa_std/core/slice.sa", "SLICE_NEW", &.{
+            self.symbols.items[dst],
+            self.symbols.items[data_reg],
+            self.symbols.items[len_reg],
+        });
+        try self.emitRelease(len_reg);
+        if (!self.isLocalReg(data_reg)) try self.emitRelease(data_reg);
+        return dst;
     }
 
     fn genTry(self: *Codegen, expr: *const ast.Node, try_expr: ast.TryExpr) anyerror!u32 {
@@ -18893,7 +18919,7 @@ pub const Codegen = struct {
                 try self.emitCallBody(dst_reg, body);
                 break :dst_blk dst_reg;
             } else try self.emitPlannedCallBody(lowering.result, body);
-            break :blk try self.emitFallibleExternPayloadBody(ext, body, dst_override);
+            break :blk try self.emitFallibleExternResultBody(ext, body, dst_override);
         } else if (dst_override) |dst_reg| blk: {
             if (lowering.result.returns_void) return Error.UnsupportedSabDirectFeature;
             try self.emitCallBody(dst_reg, body);
@@ -18943,7 +18969,13 @@ pub const Codegen = struct {
         return sentinel;
     }
 
-    fn emitFallibleExternPayloadBody(
+    /// A_min (fallible `T!` batch): a fallible extern call materializes
+    /// its cell into a `Result<T, i32>` value, mirroring the SA-text
+    /// backend: the status word at offset 0 selects the variant, the
+    /// payload is loaded only on the Ok arm, and the status itself
+    /// becomes the Err payload. Branch/temp discipline mirrors the
+    /// direct-SAB File::open emission (genFileOpenCall).
+    fn emitFallibleExternResultBody(
         self: *Codegen,
         ext: contract_parser.ExternalFunction,
         body: []const u8,
@@ -18951,10 +18983,50 @@ pub const Codegen = struct {
     ) !u32 {
         const fallible_reg = try self.intern(try self.newTmp());
         try self.emitCallBody(fallible_reg, body);
-        const payload_reg = dst_override orelse try self.intern(try self.newTmp());
+        const status_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(status_reg, fallible_reg, 0, .i32);
+        const result_reg = dst_override orelse try self.intern(try self.newTmp());
+        const ok_reg = try self.intern(try self.newTmp());
+        try self.emitOp(ok_reg, .eq, .{ .reg = status_reg }, .{ .imm_i64 = 0 });
+        const ok_label = try self.newLabel("L_FALLIBLE_OK");
+        const err_label = try self.newLabel("L_FALLIBLE_ERR");
+        const end_label = try self.newLabel("L_FALLIBLE_END");
+        try self.emitBranch(ok_reg, ok_label, err_label);
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        try self.emitLabel(ok_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.markConsumed(ok_reg);
+        const payload_reg = try self.intern(try self.newTmp());
         try self.emitLoad(payload_reg, fallible_reg, lowering_rules.abiFalliblePayloadOffset(ext.ret_ty), abiPrimType(ext.ret_ty));
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[payload_reg],
+        });
+        // The store inside RESULT_NEW_OK moves the payload value into
+        // the Result allocation; retire the source register.
+        try self.markConsumed(payload_reg);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.emitLabel(err_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_ERR", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[status_reg],
+        });
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(status_reg)) try self.emitRelease(status_reg);
         try self.emitRelease(fallible_reg);
-        return payload_reg;
+        return result_reg;
     }
 
     const SabLoweredCallArg = struct {

@@ -47,6 +47,10 @@ pub const Parser = struct {
     lex: lexer.Lexer,
     tok: lexer.Token,
     last_expected: ?[]const u8,
+    /// A_min (fallible `T!` batch): set by parseType when the type just
+    /// parsed consumed a trailing `!` sugar suffix. parseFuncDecl reads
+    /// (and clears) it around parameter and return type parsing.
+    type_bang_used: bool = false,
     known_types: std.array_list.Managed([]const u8),
     known_enums: std.array_list.Managed([]const u8),
     known_modules: std.array_list.Managed([]const u8),
@@ -1312,6 +1316,7 @@ pub const Parser = struct {
             try self.expect(.colon);
             var p_ty: *ast.Type = undefined;
             var param_is_va_list = false;
+            var param_fallible_sugar = false;
             if (self.peek() == .range) {
                 _ = self.match(.range);
                 try self.expect(.dot);
@@ -1319,7 +1324,13 @@ pub const Parser = struct {
                 p_ty.* = .{ .primitive = .va_list };
                 param_is_va_list = true;
             } else {
+                self.type_bang_used = false;
                 p_ty = try self.parseType();
+                // A_min: the `T!` sugar is return-position only. The
+                // parser records it on the Param; the checker rejects
+                // it (FallibleSugarParam) so the diagnostic is a type
+                // error with a precise message, not a parse failure.
+                param_fallible_sugar = self.type_bang_used;
                 if (p_ty.* == .primitive and p_ty.primitive == .va_list) param_is_va_list = true;
             }
             if (param_is_va_list) {
@@ -1346,7 +1357,7 @@ pub const Parser = struct {
                 self.last_expected = "r_paren (default parameter values such as `= 1` are not supported; define f_default() + f_full(...) instead, see demos/basic/47_default_args)";
                 return ParserError.SyntaxError;
             }
-            try params.append(.{ .name = p_name, .ty = p_ty, .is_borrow = is_borrow, .is_move = is_move });
+            try params.append(.{ .name = p_name, .ty = p_ty, .is_borrow = is_borrow, .is_move = is_move, .is_fallible_sugar = param_fallible_sugar });
             if (!self.match(.comma)) break;
         }
 
@@ -1358,11 +1369,26 @@ pub const Parser = struct {
         }
 
         var ret_ty: *ast.Type = undefined;
+        var ret_fallible_sugar = false;
         if (self.match(.arrow)) {
+            self.type_bang_used = false;
             ret_ty = try self.parseType();
+            ret_fallible_sugar = self.type_bang_used;
         } else {
             ret_ty = try self.allocator.create(ast.Type);
             ret_ty.* = .{ .primitive = .void_type };
+        }
+
+        // E_res (borrow-return batch): an origin annotation may follow
+        // a borrow return type -- `-> &[u8][param]` / `-> &ptr[param]`.
+        // A `[` here is unambiguous: after a complete return type only
+        // the body (or `;` for declarations) may follow.
+        var ret_borrow_origin: ?[]const u8 = null;
+        if (ret_ty.* == .borrow and self.match(.l_bracket)) {
+            const origin_tok = self.tok;
+            try self.expect(.identifier);
+            ret_borrow_origin = self.lexeme(origin_tok.loc);
+            try self.expect(.r_bracket);
         }
 
         const body_result = if (is_decl_only)
@@ -1386,6 +1412,8 @@ pub const Parser = struct {
                 .is_inline = is_inline,
                 .is_async = is_async,
                 .is_variadic = is_variadic,
+                .ret_fallible_sugar = ret_fallible_sugar,
+                .ret_borrow_origin = ret_borrow_origin,
             },
         };
         try self.rememberFunctionBodySpan(node, body_result.span);
@@ -4054,7 +4082,24 @@ pub const Parser = struct {
     }
 
     fn parseType(self: *Parser) ParserError!*ast.Type {
-        return try self.parseTypeAtom();
+        const base = try self.parseTypeAtom();
+        // A_min (fallible `T!` batch): a trailing `!` in type position
+        // is the fallible sugar; it desugars definitionally to the
+        // existing `Result<T, i32>` type (no new type constructor, no
+        // new value representation). `!=` lexes as one token, so a bare
+        // `.bang` here is unambiguous.
+        if (self.match(.bang)) {
+            self.type_bang_used = true;
+            const err_ty = try self.allocator.create(ast.Type);
+            err_ty.* = .{ .primitive = .i32 };
+            const generics = try self.allocator.alloc(*ast.Type, 2);
+            generics[0] = base;
+            generics[1] = err_ty;
+            const ty = try self.allocator.create(ast.Type);
+            ty.* = .{ .user_defined = .{ .name = "Result", .generics = generics } };
+            return ty;
+        }
+        return base;
     }
 
     fn parseFunctionType(self: *Parser, abi: ?[]const u8) ParserError!*ast.Type {

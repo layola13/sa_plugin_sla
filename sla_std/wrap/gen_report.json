@@ -153,6 +153,7 @@
         "sa_std_dtls_server_write",
         "sa_std_dtls_server_close",
         "sa_std_dtls_status_json",
+        "sa_std_dtls_buffer_data",
         "sa_std_dtls_buffer_len",
         "sa_std_dtls_buffer_free"
       ],
@@ -164,13 +165,7 @@
         "sa_std_dtls_server_close",
         "sa_std_dtls_status_json"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_std_dtls_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_std_dtls_buffer_data(buffer: u64) -> &ptr"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_std_dtls_server_ctx_free",
@@ -181,6 +176,11 @@
           "extern": "sa_std_dtls_server_accept",
           "reason": "param `ctx: u64`: needs a live ctx handle",
           "signature": "@extern sa_std_dtls_server_accept(ctx: u64, fd: i32, &out_ssl: ptr) -> i32"
+        },
+        {
+          "extern": "sa_std_dtls_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live DtlsBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_std_dtls_buffer_data(buffer: u64) -> &ptr"
         },
         {
           "extern": "sa_std_dtls_buffer_len",
@@ -247,10 +247,14 @@
         "sa_json_array_push_bool",
         "sa_json_array_push_null",
         "sa_json_array_push_node",
+        "sa_json_string_ptr",
         "sa_json_string_len",
         "sa_json_value_count",
+        "sa_json_free",
         "sa_json_stringify",
+        "sa_json_buffer_data",
         "sa_json_buffer_len",
+        "sa_json_buffer_free",
         "sa_json_scanner_new",
         "sa_json_scanner_feed",
         "sa_json_scanner_end_input",
@@ -258,7 +262,9 @@
         "sa_json_scanner_free",
         "sa_json_stream_new",
         "sa_json_stream_next",
+        "sa_json_stream_get_slice_ptr",
         "sa_json_stream_get_slice_len",
+        "sa_json_stream_free",
         "sa_json_writer_new",
         "sa_json_writer_begin_object",
         "sa_json_writer_end_object",
@@ -309,38 +315,7 @@
         "sa_json_writer_finish_buffer",
         "sa_json_writer_free"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_json_string_ptr",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_json_string_ptr(node: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_json_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_json_free(^node: u64) -> i32!"
-        },
-        {
-          "extern": "sa_json_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_json_buffer_data(buffer: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_json_buffer_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_json_buffer_free(^buffer: u64) -> i32!"
-        },
-        {
-          "extern": "sa_json_stream_get_slice_ptr",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_json_stream_get_slice_ptr(stream: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_json_stream_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_json_stream_free(^stream: u64) -> i32!"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_json_kind",
@@ -463,6 +438,11 @@
           "signature": "@extern sa_json_array_push_node(node: u64, child: u64) -> i32"
         },
         {
+          "extern": "sa_json_string_ptr",
+          "reason": "handle-family member (E_res borrow): needs a live JsonNode handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_json_string_ptr(node: u64) -> &ptr"
+        },
+        {
           "extern": "sa_json_string_len",
           "reason": "param `node: u64`: needs a live node handle",
           "signature": "@extern sa_json_string_len(node: u64) -> u64"
@@ -473,9 +453,19 @@
           "signature": "@extern sa_json_value_count(node: u64, &out_count: ptr) -> i32"
         },
         {
+          "extern": "sa_json_free",
+          "reason": "handle-family member (E_res free): needs a live JsonNode handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_json_free(^node: u64) -> i32!"
+        },
+        {
           "extern": "sa_json_stringify",
           "reason": "param `node: u64`: needs a live node handle",
           "signature": "@extern sa_json_stringify(node: u64, &out_handle: ptr) -> i32"
+        },
+        {
+          "extern": "sa_json_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live JsonBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_json_buffer_data(buffer: u64) -> &ptr"
         },
         {
           "extern": "sa_json_buffer_len",
@@ -483,14 +473,29 @@
           "signature": "@extern sa_json_buffer_len(buffer: u64) -> u64"
         },
         {
+          "extern": "sa_json_buffer_free",
+          "reason": "handle-family member (E_res free): needs a live JsonBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_json_buffer_free(^buffer: u64) -> i32!"
+        },
+        {
           "extern": "sa_json_stream_next",
           "reason": "param `stream: u64`: needs a live stream handle",
           "signature": "@extern sa_json_stream_next(stream: u64) -> u32"
         },
         {
+          "extern": "sa_json_stream_get_slice_ptr",
+          "reason": "handle-family member (E_res borrow): needs a live JsonStream handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_json_stream_get_slice_ptr(stream: u64) -> &ptr"
+        },
+        {
           "extern": "sa_json_stream_get_slice_len",
           "reason": "param `stream: u64`: needs a live stream handle",
           "signature": "@extern sa_json_stream_get_slice_len(stream: u64) -> u64"
+        },
+        {
+          "extern": "sa_json_stream_free",
+          "reason": "handle-family member (E_res free): needs a live JsonStream handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_json_stream_free(^stream: u64) -> i32!"
         },
         {
           "extern": "sa_json_writer_field_node",
@@ -673,6 +678,7 @@
         "sa_env_xdg_cache_home_dir",
         "sa_env_xdg_data_dirs",
         "sa_env_xdg_config_dirs",
+        "sa_env_buffer_data",
         "sa_env_buffer_len",
         "sa_env_buffer_free"
       ],
@@ -697,14 +703,13 @@
         "sa_env_xdg_data_dirs",
         "sa_env_xdg_config_dirs"
       ],
-      "unwrappable": [
+      "unwrappable": [],
+      "needs_state": [
         {
           "extern": "sa_env_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
+          "reason": "handle-family member (E_res borrow): needs a live EnvBuffer handle; covered by the hand-written E_res corpus",
           "signature": "@extern sa_env_buffer_data(buffer: u64) -> &ptr"
-        }
-      ],
-      "needs_state": [
+        },
         {
           "extern": "sa_env_buffer_len",
           "reason": "param `buffer: u64`: needs a live buffer handle",
@@ -733,6 +738,7 @@
         "sa_fmt_f64_into",
         "sa_fmt_bool_into",
         "sa_fmt_bytes_into",
+        "sa_fmt_buffer_data",
         "sa_fmt_buffer_len",
         "sa_fmt_buffer_write_to",
         "sa_fmt_buffer_free",
@@ -744,13 +750,7 @@
         "sa_fmt_f64",
         "sa_fmt_bytes"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_fmt_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fmt_buffer_data(buffer: u64) -> &ptr"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_fmt_bool",
@@ -781,6 +781,11 @@
           "extern": "sa_fmt_bytes_into",
           "reason": "param `out: ptr`: lone input pointer with no len/cap partner -- pointee not constructible",
           "signature": "@extern sa_fmt_bytes_into(&buf: ptr, len: u64, out: ptr, out_cap: u64, &out_len: ptr) -> i32"
+        },
+        {
+          "extern": "sa_fmt_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live FmtBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_fmt_buffer_data(buffer: u64) -> &ptr"
         },
         {
           "extern": "sa_fmt_buffer_len",
@@ -849,19 +854,30 @@
         "sa_std_fs_metadata_free",
         "sa_std_fs_canonicalize",
         "sa_std_close",
+        "sa_fs_read_file",
+        "sa_fs_read_to_string",
         "sa_fs_write_file",
+        "sa_fs_read_buffer_data",
         "sa_fs_read_buffer_len",
         "sa_fs_read_buffer_free",
+        "sa_fs_read_file_base64",
         "sa_fs_write_file_base64",
+        "sa_fs_read_dir_json",
+        "sa_fs_dir_buffer_data",
         "sa_fs_dir_buffer_len",
         "sa_fs_dir_buffer_free",
+        "sa_fs_read_dir_entries",
         "sa_fs_dir_entries_len",
         "sa_fs_dir_entries_free",
+        "sa_fs_dir_entry_name_ptr",
         "sa_fs_dir_entry_name_len",
+        "sa_fs_dir_entry_file_name_ptr",
         "sa_fs_dir_entry_file_name_len",
         "sa_fs_dir_entry_kind",
         "sa_fs_dir_entry_ino",
         "sa_fs_dir_entry_free",
+        "sa_fs_metadata",
+        "sa_fs_metadata_json",
         "sa_fs_metadata_is_file",
         "sa_fs_metadata_is_directory",
         "sa_fs_metadata_is_symlink",
@@ -899,6 +915,7 @@
         "sa_fs_metadata_st_ctime_nsec",
         "sa_fs_metadata_st_blksize",
         "sa_fs_metadata_st_blocks",
+        "sa_fs_metadata_free",
         "sa_fs_remove_file",
         "sa_fs_rename",
         "sa_fs_make_dir",
@@ -954,6 +971,8 @@
         "sa_fs_dir_entry_kind",
         "sa_fs_dir_entry_ino",
         "sa_fs_dir_entry_free",
+        "sa_fs_metadata",
+        "sa_fs_metadata_json",
         "sa_fs_remove_file",
         "sa_fs_rename",
         "sa_fs_make_dir",
@@ -976,68 +995,7 @@
         "sa_std_fs_read_link",
         "sa_fs_watch_create"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_fs_read_file",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_read_file(&path: ptr, path_len: u64, max_bytes: u64) -> u64!"
-        },
-        {
-          "extern": "sa_fs_read_to_string",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_read_to_string(&path: ptr, path_len: u64, max_bytes: u64) -> u64!"
-        },
-        {
-          "extern": "sa_fs_read_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_read_buffer_data(buffer: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_fs_read_file_base64",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_read_file_base64(&path: ptr, path_len: u64, max_bytes: u64) -> u64!"
-        },
-        {
-          "extern": "sa_fs_read_dir_json",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_read_dir_json(&path: ptr, path_len: u64, max_entries: u64) -> u64!"
-        },
-        {
-          "extern": "sa_fs_dir_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_dir_buffer_data(buffer: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_fs_read_dir_entries",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_read_dir_entries(&path: ptr, path_len: u64, max_entries: u64) -> u64!"
-        },
-        {
-          "extern": "sa_fs_dir_entry_name_ptr",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_dir_entry_name_ptr(entry: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_fs_dir_entry_file_name_ptr",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_dir_entry_file_name_ptr(entry: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_fs_metadata",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_metadata(&path: ptr, path_len: u64) -> u64!"
-        },
-        {
-          "extern": "sa_fs_metadata_json",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_metadata_json(&path: ptr, path_len: u64) -> u64!"
-        },
-        {
-          "extern": "sa_fs_metadata_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_fs_metadata_free(metadata: u64) -> i32!"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_fs_file_close",
@@ -1140,6 +1098,21 @@
           "signature": "@extern sa_std_close(handle: u64) -> i32"
         },
         {
+          "extern": "sa_fs_read_file",
+          "reason": "handle-family member (E_res producer): needs a live FsReadBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_fs_read_file(&path: ptr, path_len: u64, max_bytes: u64) -> u64!"
+        },
+        {
+          "extern": "sa_fs_read_to_string",
+          "reason": "handle-family member (E_res producer): needs a live FsReadBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_fs_read_to_string(&path: ptr, path_len: u64, max_bytes: u64) -> u64!"
+        },
+        {
+          "extern": "sa_fs_read_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live FsReadBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_fs_read_buffer_data(buffer: u64) -> &ptr"
+        },
+        {
           "extern": "sa_fs_read_buffer_len",
           "reason": "param `buffer: u64`: needs a live buffer handle",
           "signature": "@extern sa_fs_read_buffer_len(buffer: u64) -> u64"
@@ -1148,6 +1121,21 @@
           "extern": "sa_fs_read_buffer_free",
           "reason": "param `^buffer: u64`: needs a live buffer handle",
           "signature": "@extern sa_fs_read_buffer_free(^buffer: u64) -> i32"
+        },
+        {
+          "extern": "sa_fs_read_file_base64",
+          "reason": "handle-family member (E_res producer): needs a live FsReadBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_fs_read_file_base64(&path: ptr, path_len: u64, max_bytes: u64) -> u64!"
+        },
+        {
+          "extern": "sa_fs_read_dir_json",
+          "reason": "handle-family member (E_res producer): needs a live FsDirBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_fs_read_dir_json(&path: ptr, path_len: u64, max_entries: u64) -> u64!"
+        },
+        {
+          "extern": "sa_fs_dir_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live FsDirBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_fs_dir_buffer_data(buffer: u64) -> &ptr"
         },
         {
           "extern": "sa_fs_dir_buffer_len",
@@ -1160,6 +1148,11 @@
           "signature": "@extern sa_fs_dir_buffer_free(^buffer: u64) -> i32"
         },
         {
+          "extern": "sa_fs_read_dir_entries",
+          "reason": "handle-family member (E_res producer): needs a live FsDirEntries handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_fs_read_dir_entries(&path: ptr, path_len: u64, max_entries: u64) -> u64!"
+        },
+        {
           "extern": "sa_fs_dir_entries_len",
           "reason": "param `entries: u64`: needs a live entries handle",
           "signature": "@extern sa_fs_dir_entries_len(entries: u64) -> u64"
@@ -1168,6 +1161,16 @@
           "extern": "sa_fs_dir_entries_free",
           "reason": "param `^entries: u64`: needs a live entries handle",
           "signature": "@extern sa_fs_dir_entries_free(^entries: u64) -> i32"
+        },
+        {
+          "extern": "sa_fs_dir_entry_name_ptr",
+          "reason": "handle-family member (E_res borrow): needs a live FsDirEntry handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_fs_dir_entry_name_ptr(entry: u64) -> &ptr"
+        },
+        {
+          "extern": "sa_fs_dir_entry_file_name_ptr",
+          "reason": "handle-family member (E_res borrow): needs a live FsDirEntry handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_fs_dir_entry_file_name_ptr(entry: u64) -> &ptr"
         },
         {
           "extern": "sa_fs_metadata_is_file",
@@ -1355,6 +1358,11 @@
           "signature": "@extern sa_fs_metadata_st_blocks(metadata: u64) -> u64"
         },
         {
+          "extern": "sa_fs_metadata_free",
+          "reason": "param `metadata: u64`: needs a live metadata handle",
+          "signature": "@extern sa_fs_metadata_free(metadata: u64) -> i32!"
+        },
+        {
           "extern": "sa_fs_fchown",
           "reason": "param `file: u64`: needs a live file handle",
           "signature": "@extern sa_fs_fchown(file: u64, uid: u32, gid: u32, has_uid: u32, has_gid: u32) -> i32"
@@ -1470,6 +1478,7 @@
         "sa_std_http2_get_packed_settings",
         "sa_std_http2_get_unpacked_settings_json",
         "sa_std_http2_perform_server_handshake",
+        "sa_std_http2_buffer_data",
         "sa_std_http2_buffer_len",
         "sa_std_http2_buffer_free"
       ],
@@ -1486,14 +1495,13 @@
         "sa_std_http2_get_unpacked_settings_json",
         "sa_std_http2_perform_server_handshake"
       ],
-      "unwrappable": [
+      "unwrappable": [],
+      "needs_state": [
         {
           "extern": "sa_std_http2_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
+          "reason": "handle-family member (E_res borrow): needs a live Http2Buffer handle; covered by the hand-written E_res corpus",
           "signature": "@extern sa_std_http2_buffer_data(buffer: u64) -> &ptr"
-        }
-      ],
-      "needs_state": [
+        },
         {
           "extern": "sa_std_http2_buffer_len",
           "reason": "param `buffer: u64`: needs a live buffer handle",
@@ -2445,6 +2453,7 @@
         "sa_io_stdin",
         "sa_io_stdout",
         "sa_io_stderr",
+        "sa_std_println",
         "sa_io_read_line",
         "sa_io_read",
         "sa_io_read_exact",
@@ -2452,6 +2461,7 @@
         "sa_io_write_all",
         "sa_io_flush",
         "sa_io_close",
+        "sa_io_buffer_data",
         "sa_io_buffer_len",
         "sa_io_buffer_free",
         "sa_print_bytes"
@@ -2460,21 +2470,11 @@
         "sa_io_stdin",
         "sa_io_stdout",
         "sa_io_stderr",
+        "sa_std_println",
         "sa_io_buffer_len",
         "sa_print_bytes"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_std_println",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_std_println(&msg: ptr, len: u64) -> i32!"
-        },
-        {
-          "extern": "sa_io_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_io_buffer_data(&buffer: ptr) -> &ptr"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_io_read_line",
@@ -2510,6 +2510,11 @@
           "extern": "sa_io_close",
           "reason": "param `handle: u64`: needs a live handle handle",
           "signature": "@extern sa_io_close(handle: u64) -> i32"
+        },
+        {
+          "extern": "sa_io_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live IoBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_io_buffer_data(&buffer: ptr) -> &ptr"
         },
         {
           "extern": "sa_io_buffer_free",
@@ -2595,6 +2600,7 @@
         "sa_std_multipart_builder_boundary",
         "sa_std_multipart_builder_content_type",
         "sa_std_multipart_builder_finish",
+        "sa_std_multipart_buffer_data",
         "sa_std_multipart_buffer_len",
         "sa_std_multipart_buffer_free"
       ],
@@ -2602,13 +2608,7 @@
         "sa_std_multipart_parse",
         "sa_std_multipart_builder_new"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_std_multipart_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_std_multipart_buffer_data(buffer: u64) -> &ptr"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_std_multipart_free",
@@ -2674,6 +2674,11 @@
           "extern": "sa_std_multipart_builder_finish",
           "reason": "param `handle: u64`: needs a live handle handle",
           "signature": "@extern sa_std_multipart_builder_finish(handle: u64, &out_handle: ptr) -> i32"
+        },
+        {
+          "extern": "sa_std_multipart_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live MultipartBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_std_multipart_buffer_data(buffer: u64) -> &ptr"
         },
         {
           "extern": "sa_std_multipart_buffer_len",
@@ -3004,6 +3009,8 @@
         "sa_std_net_unix_datagram_peer_cred",
         "sa_std_net_raw_socket",
         "sa_std_net_tcp_stream_send_file",
+        "sa_net_tcp_connect",
+        "sa_net_tcp_stream_read",
         "sa_net_tcp_stream_peek",
         "sa_net_tcp_stream_set_read_timeout",
         "sa_net_tcp_stream_set_write_timeout",
@@ -3011,9 +3018,16 @@
         "sa_net_tcp_stream_set_nodelay",
         "sa_net_tcp_stream_set_ttl",
         "sa_net_tcp_stream_write",
+        "sa_net_tcp_stream_write_all",
+        "sa_net_tcp_stream_read_exact",
         "sa_net_tcp_stream_flush",
         "sa_net_tcp_stream_peer_addr",
         "sa_net_tcp_stream_shutdown",
+        "sa_net_tcp_stream_close",
+        "sa_net_tcp_listener_bind",
+        "sa_net_tcp_listener_accept",
+        "sa_net_tcp_listener_local_addr",
+        "sa_net_tcp_listener_close",
         "sa_net_udp_bind",
         "sa_net_udp_connect",
         "sa_net_udp_local_addr",
@@ -3035,15 +3049,20 @@
         "sa_net_udp_join_multicast_v6",
         "sa_net_udp_leave_multicast_v6",
         "sa_net_udp_close",
+        "sa_net_addr_host",
         "sa_net_addr_host_len",
         "sa_net_addr_port",
         "sa_net_addr_family",
         "sa_net_addr_scope_id",
         "sa_std_net_addr_format",
+        "sa_net_addr_free",
         "sa_net_unix_addr_kind",
         "sa_net_unix_addr_is_unnamed",
+        "sa_net_unix_addr_path_ptr",
         "sa_net_unix_addr_path_len",
+        "sa_net_unix_addr_abstract_ptr",
         "sa_net_unix_addr_abstract_len",
+        "sa_net_unix_addr_free",
         "sa_net_ipv4_parse_ascii",
         "sa_net_socket_addr_v4_parse_ascii",
         "sa_net_ipv6_parse_ascii",
@@ -3103,6 +3122,8 @@
         "sa_std_net_udp_bind",
         "sa_std_net_udp_from_raw_fd",
         "sa_std_net_raw_socket",
+        "sa_net_tcp_connect",
+        "sa_net_tcp_listener_bind",
         "sa_net_udp_bind",
         "sa_net_addr_host_len",
         "sa_net_addr_port",
@@ -3122,78 +3143,7 @@
         "sa_net_socket_addr_v4_format_ascii",
         "sa_net_socket_addr_v6_format_ascii"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_net_tcp_connect",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_tcp_connect(&host: ptr, host_len: u64, port: u32) -> u64!"
-        },
-        {
-          "extern": "sa_net_tcp_stream_read",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_tcp_stream_read(stream: u64, &buf: ptr, cap: u64) -> u64!"
-        },
-        {
-          "extern": "sa_net_tcp_stream_write_all",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_tcp_stream_write_all(stream: u64, &buf: ptr, len: u64) -> i32!"
-        },
-        {
-          "extern": "sa_net_tcp_stream_read_exact",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_tcp_stream_read_exact(stream: u64, &buf: ptr, len: u64) -> i32!"
-        },
-        {
-          "extern": "sa_net_tcp_stream_close",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_tcp_stream_close(stream: u64) -> i32!"
-        },
-        {
-          "extern": "sa_net_tcp_listener_bind",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_tcp_listener_bind(&host: ptr, host_len: u64, port: u16) -> u64!"
-        },
-        {
-          "extern": "sa_net_tcp_listener_accept",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_tcp_listener_accept(listener: u64) -> u64!"
-        },
-        {
-          "extern": "sa_net_tcp_listener_local_addr",
-          "reason": "return type `u64!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_tcp_listener_local_addr(listener: u64) -> u64!"
-        },
-        {
-          "extern": "sa_net_tcp_listener_close",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_tcp_listener_close(listener: u64) -> i32!"
-        },
-        {
-          "extern": "sa_net_addr_host",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_addr_host(addr: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_net_addr_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_addr_free(addr: u64) -> i32!"
-        },
-        {
-          "extern": "sa_net_unix_addr_path_ptr",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_unix_addr_path_ptr(addr: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_net_unix_addr_abstract_ptr",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_unix_addr_abstract_ptr(addr: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_net_unix_addr_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_net_unix_addr_free(addr: u64) -> i32!"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_std_net_tcp_accept",
@@ -3801,6 +3751,11 @@
           "signature": "@extern sa_std_net_tcp_stream_send_file(stream: u64, file: u64, offset: u64, count: u64, &out_sent: ptr, &out_next_offset: ptr) -> i32"
         },
         {
+          "extern": "sa_net_tcp_stream_read",
+          "reason": "param `stream: u64`: needs a live stream handle",
+          "signature": "@extern sa_net_tcp_stream_read(stream: u64, &buf: ptr, cap: u64) -> u64!"
+        },
+        {
           "extern": "sa_net_tcp_stream_peek",
           "reason": "param `stream: u64`: needs a live stream handle",
           "signature": "@extern sa_net_tcp_stream_peek(stream: u64, &buf: ptr, cap: u64) -> i32"
@@ -3836,6 +3791,16 @@
           "signature": "@extern sa_net_tcp_stream_write(stream: u64, &buf: ptr, len: u64) -> i32"
         },
         {
+          "extern": "sa_net_tcp_stream_write_all",
+          "reason": "param `stream: u64`: needs a live stream handle",
+          "signature": "@extern sa_net_tcp_stream_write_all(stream: u64, &buf: ptr, len: u64) -> i32!"
+        },
+        {
+          "extern": "sa_net_tcp_stream_read_exact",
+          "reason": "param `stream: u64`: needs a live stream handle",
+          "signature": "@extern sa_net_tcp_stream_read_exact(stream: u64, &buf: ptr, len: u64) -> i32!"
+        },
+        {
           "extern": "sa_net_tcp_stream_flush",
           "reason": "param `stream: u64`: needs a live stream handle",
           "signature": "@extern sa_net_tcp_stream_flush(stream: u64) -> i32"
@@ -3849,6 +3814,26 @@
           "extern": "sa_net_tcp_stream_shutdown",
           "reason": "param `stream: u64`: needs a live stream handle",
           "signature": "@extern sa_net_tcp_stream_shutdown(stream: u64, how: u32) -> i32"
+        },
+        {
+          "extern": "sa_net_tcp_stream_close",
+          "reason": "param `stream: u64`: needs a live stream handle",
+          "signature": "@extern sa_net_tcp_stream_close(stream: u64) -> i32!"
+        },
+        {
+          "extern": "sa_net_tcp_listener_accept",
+          "reason": "param `listener: u64`: needs a live listener handle",
+          "signature": "@extern sa_net_tcp_listener_accept(listener: u64) -> u64!"
+        },
+        {
+          "extern": "sa_net_tcp_listener_local_addr",
+          "reason": "handle-family member (E_res producer): needs a live NetAddr handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_net_tcp_listener_local_addr(listener: u64) -> u64!"
+        },
+        {
+          "extern": "sa_net_tcp_listener_close",
+          "reason": "param `listener: u64`: needs a live listener handle",
+          "signature": "@extern sa_net_tcp_listener_close(listener: u64) -> i32!"
         },
         {
           "extern": "sa_net_udp_connect",
@@ -3949,6 +3934,31 @@
           "extern": "sa_net_udp_close",
           "reason": "param `socket: u64`: needs a live socket handle",
           "signature": "@extern sa_net_udp_close(socket: u64) -> i32"
+        },
+        {
+          "extern": "sa_net_addr_host",
+          "reason": "handle-family member (E_res borrow): needs a live NetAddr handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_net_addr_host(addr: u64) -> &ptr"
+        },
+        {
+          "extern": "sa_net_addr_free",
+          "reason": "handle-family member (E_res free): needs a live NetAddr handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_net_addr_free(addr: u64) -> i32!"
+        },
+        {
+          "extern": "sa_net_unix_addr_path_ptr",
+          "reason": "handle-family member (E_res borrow): needs a live NetAddr handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_net_unix_addr_path_ptr(addr: u64) -> &ptr"
+        },
+        {
+          "extern": "sa_net_unix_addr_abstract_ptr",
+          "reason": "handle-family member (E_res borrow): needs a live NetAddr handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_net_unix_addr_abstract_ptr(addr: u64) -> &ptr"
+        },
+        {
+          "extern": "sa_net_unix_addr_free",
+          "reason": "handle-family member (E_res free): needs a live NetAddr handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_net_unix_addr_free(addr: u64) -> i32!"
         }
       ]
     }
@@ -4467,6 +4477,7 @@
         "sa_std_http3_submit_response",
         "sa_std_http3_response_status",
         "sa_std_http3_stream_read",
+        "sa_std_quic_buffer_data",
         "sa_std_quic_buffer_len",
         "sa_std_quic_buffer_free"
       ],
@@ -4484,13 +4495,7 @@
         "sa_std_quic_server_accept",
         "sa_std_http3_session_create"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_std_quic_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_std_quic_buffer_data(buffer: u64) -> &ptr"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_std_quic_conn_poll",
@@ -4563,6 +4568,11 @@
           "signature": "@extern sa_std_http3_stream_read(session: u64, stream_id: i64, &out: ptr, out_cap: u64, &out_read: ptr, &out_fin: ptr) -> i32"
         },
         {
+          "extern": "sa_std_quic_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live QuicBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_std_quic_buffer_data(buffer: u64) -> &ptr"
+        },
+        {
           "extern": "sa_std_quic_buffer_len",
           "reason": "param `buffer: u64`: needs a live buffer handle",
           "signature": "@extern sa_std_quic_buffer_len(buffer: u64) -> u64"
@@ -4581,6 +4591,7 @@
     "registry": {
       "wrapped": [
         "sa_std_ssh_supported",
+        "sa_std_ssh_buffer_data",
         "sa_std_ssh_buffer_len",
         "sa_std_ssh_buffer_free",
         "sa_std_ssh_client_connect",
@@ -4611,14 +4622,13 @@
         "sa_std_ssh_client_connect",
         "sa_std_ssh_server_listen"
       ],
-      "unwrappable": [
+      "unwrappable": [],
+      "needs_state": [
         {
           "extern": "sa_std_ssh_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
+          "reason": "handle-family member (E_res borrow): needs a live SshBuffer handle; covered by the hand-written E_res corpus",
           "signature": "@extern sa_std_ssh_buffer_data(buffer: u64) -> &ptr"
-        }
-      ],
-      "needs_state": [
+        },
         {
           "extern": "sa_std_ssh_buffer_len",
           "reason": "param `buffer: u64`: needs a live buffer handle",
@@ -5097,20 +5107,16 @@
       "wrapped": [
         "sa_assert_eq_i64",
         "sa_assert_eq_i64_at",
-        "sa_test_debug_i64"
+        "sa_test_debug_i64",
+        "sa_test_fallible_i32_value"
       ],
       "smoke": [
         "sa_assert_eq_i64",
         "sa_assert_eq_i64_at",
-        "sa_test_debug_i64"
+        "sa_test_debug_i64",
+        "sa_test_fallible_i32_value"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_test_fallible_i32_value",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_test_fallible_i32_value(value: i32) -> i32!"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": []
     }
   },
@@ -5121,18 +5127,26 @@
       "wrapped": [
         "sa_regex_compile",
         "sa_regex_match",
+        "sa_regex_group_ptr",
         "sa_regex_group_len",
         "sa_regex_group_start",
         "sa_regex_group_count",
+        "sa_regex_free",
+        "sa_regex_match_free",
         "sa_regex_match_all",
         "sa_regex_match_list_count",
         "sa_regex_match_list_at",
+        "sa_regex_match_list_free",
         "sa_regex_replace",
         "sa_regex_replace_all",
+        "sa_regex_buffer_data",
         "sa_regex_buffer_len",
+        "sa_regex_buffer_free",
         "sa_regex_split",
         "sa_regex_split_count",
-        "sa_regex_split_len"
+        "sa_regex_split_ptr",
+        "sa_regex_split_len",
+        "sa_regex_split_free"
       ],
       "smoke": [
         "sa_regex_compile",
@@ -5140,6 +5154,7 @@
         "sa_regex_group_len",
         "sa_regex_group_start",
         "sa_regex_group_count",
+        "sa_regex_free",
         "sa_regex_match_all",
         "sa_regex_match_list_count",
         "sa_regex_match_list_at",
@@ -5149,53 +5164,47 @@
         "sa_regex_split_count",
         "sa_regex_split_len"
       ],
-      "unwrappable": [
+      "unwrappable": [],
+      "needs_state": [
         {
           "extern": "sa_regex_group_ptr",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
+          "reason": "handle-family member (E_res borrow): needs a live RegexMatch handle; covered by the hand-written E_res corpus",
           "signature": "@extern sa_regex_group_ptr(match: u64, group_idx: u32) -> &ptr"
         },
         {
-          "extern": "sa_regex_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_regex_free(^regex: u64) -> i32!"
-        },
-        {
           "extern": "sa_regex_match_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
+          "reason": "handle-family member (E_res member): needs a live RegexMatch handle; covered by the hand-written E_res corpus",
           "signature": "@extern sa_regex_match_free(^match: u64) -> i32!"
         },
         {
           "extern": "sa_regex_match_list_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
+          "reason": "handle-family member (E_res free): needs a live RegexSplitList handle; covered by the hand-written E_res corpus",
           "signature": "@extern sa_regex_match_list_free(^list: u64) -> i32!"
         },
         {
           "extern": "sa_regex_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
+          "reason": "handle-family member (E_res borrow): needs a live RegexBuffer handle; covered by the hand-written E_res corpus",
           "signature": "@extern sa_regex_buffer_data(buffer: u64) -> &ptr"
         },
-        {
-          "extern": "sa_regex_buffer_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_regex_buffer_free(^buffer: u64) -> i32!"
-        },
-        {
-          "extern": "sa_regex_split_ptr",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_regex_split_ptr(list: u64, index: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_regex_split_free",
-          "reason": "return type `i32!`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_regex_split_free(^list: u64) -> i32!"
-        }
-      ],
-      "needs_state": [
         {
           "extern": "sa_regex_buffer_len",
           "reason": "param `buffer: u64`: needs a live buffer handle",
           "signature": "@extern sa_regex_buffer_len(buffer: u64) -> u64"
+        },
+        {
+          "extern": "sa_regex_buffer_free",
+          "reason": "handle-family member (E_res free): needs a live RegexBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_regex_buffer_free(^buffer: u64) -> i32!"
+        },
+        {
+          "extern": "sa_regex_split_ptr",
+          "reason": "handle-family member (E_res borrow): needs a live RegexSplitList handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_regex_split_ptr(list: u64, index: u64) -> &ptr"
+        },
+        {
+          "extern": "sa_regex_split_free",
+          "reason": "handle-family member (E_res free): needs a live RegexSplitList handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_regex_split_free(^list: u64) -> i32!"
         }
       ]
     }
@@ -5347,6 +5356,7 @@
         "sa_std_tls_client_connect_config",
         "sa_std_tls_client_start_tls",
         "sa_std_tls_client_peer_cert_json",
+        "sa_std_tls_client_buffer_data",
         "sa_std_tls_client_buffer_len",
         "sa_std_tls_client_buffer_free",
         "sa_std_tls_shaped_supported",
@@ -5361,6 +5371,7 @@
         "sa_std_tls_shaped_start_tls",
         "sa_std_tls_shaped_session_blob",
         "sa_std_tls_shaped_peer_cert_chain_json",
+        "sa_std_tls_shaped_buffer_data",
         "sa_std_tls_shaped_buffer_len",
         "sa_std_tls_shaped_buffer_free"
       ],
@@ -5382,18 +5393,7 @@
         "sa_std_tls_shaped_connect",
         "sa_std_tls_shaped_start_tls"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_std_tls_client_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_std_tls_client_buffer_data(buffer: u64) -> &ptr"
-        },
-        {
-          "extern": "sa_std_tls_shaped_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_std_tls_shaped_buffer_data(buffer: u64) -> &ptr"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_std_tls_client_read",
@@ -5414,6 +5414,11 @@
           "extern": "sa_std_tls_client_peer_cert_json",
           "reason": "param `handle: u64`: needs a live handle handle",
           "signature": "@extern sa_std_tls_client_peer_cert_json(handle: u64, &out_handle: ptr) -> i32"
+        },
+        {
+          "extern": "sa_std_tls_client_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live TlsClientBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_std_tls_client_buffer_data(buffer: u64) -> &ptr"
         },
         {
           "extern": "sa_std_tls_client_buffer_len",
@@ -5471,6 +5476,11 @@
           "signature": "@extern sa_std_tls_shaped_peer_cert_chain_json(handle: u64, &out_handle: ptr) -> i32"
         },
         {
+          "extern": "sa_std_tls_shaped_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live TlsShapedBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_std_tls_shaped_buffer_data(buffer: u64) -> &ptr"
+        },
+        {
           "extern": "sa_std_tls_shaped_buffer_len",
           "reason": "param `buffer: u64`: needs a live buffer handle",
           "signature": "@extern sa_std_tls_shaped_buffer_len(buffer: u64) -> u64"
@@ -5503,6 +5513,7 @@
         "sa_std_tls_server_session_verify_result",
         "sa_std_tls_server_negotiated_json",
         "sa_std_tls_server_peer_cert_chain_json",
+        "sa_std_tls_server_buffer_data",
         "sa_std_tls_server_buffer_len",
         "sa_std_tls_server_buffer_free"
       ],
@@ -5518,13 +5529,7 @@
         "sa_std_tls_server_negotiated_json",
         "sa_std_tls_server_peer_cert_chain_json"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_std_tls_server_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_std_tls_server_buffer_data(buffer: u64) -> &ptr"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_std_tls_server_ctx_free",
@@ -5550,6 +5555,11 @@
           "extern": "sa_std_tls_server_ctx_set_version_bounds",
           "reason": "param `ctx: u64`: needs a live ctx handle",
           "signature": "@extern sa_std_tls_server_ctx_set_version_bounds(ctx: u64, min_version: u32, max_version: u32) -> i32"
+        },
+        {
+          "extern": "sa_std_tls_server_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live TlsServerBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_std_tls_server_buffer_data(buffer: u64) -> &ptr"
         },
         {
           "extern": "sa_std_tls_server_buffer_len",
@@ -5807,6 +5817,7 @@
         "sa_std_ws_client_recv",
         "sa_std_ws_client_close",
         "sa_std_ws_client_status_json",
+        "sa_std_ws_client_buffer_data",
         "sa_std_ws_client_buffer_len",
         "sa_std_ws_client_buffer_free"
       ],
@@ -5816,13 +5827,7 @@
         "sa_std_ws_client_add_ca_file",
         "sa_std_ws_client_status_json"
       ],
-      "unwrappable": [
-        {
-          "extern": "sa_std_ws_client_buffer_data",
-          "reason": "return type `&ptr`: fallible/borrow return has no established SLA wrapper form",
-          "signature": "@extern sa_std_ws_client_buffer_data(buffer: u64) -> &ptr"
-        }
-      ],
+      "unwrappable": [],
       "needs_state": [
         {
           "extern": "sa_std_ws_client_send_text",
@@ -5848,6 +5853,11 @@
           "extern": "sa_std_ws_client_close",
           "reason": "param `handle: u64`: needs a live handle handle",
           "signature": "@extern sa_std_ws_client_close(handle: u64, code: u16, &reason: ptr, reason_len: u64) -> i32"
+        },
+        {
+          "extern": "sa_std_ws_client_buffer_data",
+          "reason": "handle-family member (E_res borrow): needs a live WsClientBuffer handle; covered by the hand-written E_res corpus",
+          "signature": "@extern sa_std_ws_client_buffer_data(buffer: u64) -> &ptr"
         },
         {
           "extern": "sa_std_ws_client_buffer_len",

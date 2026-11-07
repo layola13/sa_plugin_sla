@@ -5,6 +5,18 @@
 // Regenerate: python3 gen_wrap.py --sai <sa_std>/encoding/json.sai --out-dir out
 @import "sa_std/encoding/json.sai"
 
+struct JsonNode {
+    raw: u64,
+}
+
+struct JsonBuffer {
+    raw: u64,
+}
+
+struct JsonStream {
+    raw: u64,
+}
+
 fn sla_json_parse(json_bytes: ptr, len: u64) -> u64 {
     return sa_json_parse(json_bytes, len);
 }
@@ -105,6 +117,10 @@ fn sla_json_array_push_node(node: u64, child: u64) -> i32 {
     return sa_json_array_push_node(node, child);
 }
 
+fn sla_json_string_ptr(&node: JsonNode) -> &[u8][node] {
+    return __slice_view(sa_json_string_ptr(node.raw), sa_json_string_len(node.raw));
+}
+
 fn sla_json_string_len(node: u64) -> u64 {
     return sa_json_string_len(node);
 }
@@ -113,12 +129,24 @@ fn sla_json_value_count(node: u64, &out_count: u64) -> i32 {
     return sa_json_value_count(node, out_count);
 }
 
+fn sla_json_free(^node: JsonNode) -> i32! {
+    return sa_json_free(node.raw);
+}
+
 fn sla_json_stringify(node: u64, &out_handle: u64) -> i32 {
     return sa_json_stringify(node, out_handle);
 }
 
+fn sla_json_buffer_data(&buffer: JsonBuffer) -> &[u8][buffer] {
+    return __slice_view(sa_json_buffer_data(buffer.raw), sa_json_buffer_len(buffer.raw));
+}
+
 fn sla_json_buffer_len(buffer: u64) -> u64 {
     return sa_json_buffer_len(buffer);
+}
+
+fn sla_json_buffer_free(^buffer: JsonBuffer) -> i32! {
+    return sa_json_buffer_free(buffer.raw);
 }
 
 fn sla_json_scanner_new(&out_handle: u64) -> i32 {
@@ -149,8 +177,16 @@ fn sla_json_stream_next(stream: u64) -> u32 {
     return sa_json_stream_next(stream);
 }
 
+fn sla_json_stream_get_slice_ptr(&stream: JsonStream) -> &[u8][stream] {
+    return __slice_view(sa_json_stream_get_slice_ptr(stream.raw), sa_json_stream_get_slice_len(stream.raw));
+}
+
 fn sla_json_stream_get_slice_len(stream: u64) -> u64 {
     return sa_json_stream_get_slice_len(stream);
+}
+
+fn sla_json_stream_free(^stream: JsonStream) -> i32! {
+    return sa_json_stream_free(stream.raw);
 }
 
 fn sla_json_writer_new(whitespace: u32, emit_null_optional_fields: u8, emit_strings_as_arrays: u8, escape_unicode: u8, emit_nonportable_numbers_as_strings: u8, &out_handle: u64) -> i32 {

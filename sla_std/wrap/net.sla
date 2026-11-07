@@ -5,6 +5,10 @@
 // Regenerate: python3 gen_wrap.py --sai <sa_std>/net.sai --out-dir out
 @import "sa_std/net.sai"
 
+struct NetAddr {
+    raw: u64,
+}
+
 fn sla_std_last_error() -> i32 {
     return sa_std_last_error();
 }
@@ -685,6 +689,14 @@ fn sla_std_net_tcp_stream_send_file(stream: u64, file: u64, offset: u64, count: 
     return sa_std_net_tcp_stream_send_file(stream, file, offset, count, out_sent, out_next_offset);
 }
 
+fn sla_net_tcp_connect(host: ptr, host_len: u64, port: u32) -> u64! {
+    return sa_net_tcp_connect(host, host_len, port);
+}
+
+fn sla_net_tcp_stream_read(stream: u64, &buf: u8, cap: u64) -> u64! {
+    return sa_net_tcp_stream_read(stream, buf, cap);
+}
+
 fn sla_net_tcp_stream_peek(stream: u64, &buf: u8, cap: u64) -> i32 {
     return sa_net_tcp_stream_peek(stream, buf, cap);
 }
@@ -713,6 +725,14 @@ fn sla_net_tcp_stream_write(stream: u64, buf: ptr, len: u64) -> i32 {
     return sa_net_tcp_stream_write(stream, buf, len);
 }
 
+fn sla_net_tcp_stream_write_all(stream: u64, buf: ptr, len: u64) -> i32! {
+    return sa_net_tcp_stream_write_all(stream, buf, len);
+}
+
+fn sla_net_tcp_stream_read_exact(stream: u64, buf: ptr, len: u64) -> i32! {
+    return sa_net_tcp_stream_read_exact(stream, buf, len);
+}
+
 fn sla_net_tcp_stream_flush(stream: u64) -> i32 {
     return sa_net_tcp_stream_flush(stream);
 }
@@ -723,6 +743,34 @@ fn sla_net_tcp_stream_peer_addr(stream: u64) -> i32 {
 
 fn sla_net_tcp_stream_shutdown(stream: u64, how: u32) -> i32 {
     return sa_net_tcp_stream_shutdown(stream, how);
+}
+
+fn sla_net_tcp_stream_close(stream: u64) -> i32! {
+    return sa_net_tcp_stream_close(stream);
+}
+
+fn sla_net_tcp_listener_bind(host: ptr, host_len: u64, port: u16) -> u64! {
+    return sa_net_tcp_listener_bind(host, host_len, port);
+}
+
+fn sla_net_tcp_listener_accept(listener: u64) -> u64! {
+    return sa_net_tcp_listener_accept(listener);
+}
+
+fn sla_net_tcp_listener_local_addr(listener: u64) -> NetAddr! {
+    let r = sa_net_tcp_listener_local_addr(listener);
+    match r {
+        Ok(h) => {
+            return Ok(NetAddr { raw: h });
+        },
+        Err(e) => {
+            return Err(e);
+        },
+    };
+}
+
+fn sla_net_tcp_listener_close(listener: u64) -> i32! {
+    return sa_net_tcp_listener_close(listener);
 }
 
 fn sla_net_udp_bind(host: ptr, host_len: u64, port: u16) -> i32 {
@@ -809,6 +857,10 @@ fn sla_net_udp_close(socket: u64) -> i32 {
     return sa_net_udp_close(socket);
 }
 
+fn sla_net_addr_host(&addr: NetAddr) -> &[u8][addr] {
+    return __slice_view(sa_net_addr_host(addr.raw), sa_net_addr_host_len(addr.raw));
+}
+
 fn sla_net_addr_host_len(addr: u64) -> u64 {
     return sa_net_addr_host_len(addr);
 }
@@ -829,6 +881,10 @@ fn sla_std_net_addr_format(addr: u64, &out: u64, out_cap: u64, &out_len: u64) ->
     return sa_std_net_addr_format(addr, out, out_cap, out_len);
 }
 
+fn sla_net_addr_free(^addr: NetAddr) -> i32! {
+    return sa_net_addr_free(addr.raw);
+}
+
 fn sla_net_unix_addr_kind(addr: u64) -> u32 {
     return sa_net_unix_addr_kind(addr);
 }
@@ -837,12 +893,24 @@ fn sla_net_unix_addr_is_unnamed(addr: u64) -> u8 {
     return sa_net_unix_addr_is_unnamed(addr);
 }
 
+fn sla_net_unix_addr_path_ptr(&addr: NetAddr) -> &[u8][addr] {
+    return __slice_view(sa_net_unix_addr_path_ptr(addr.raw), sa_net_unix_addr_path_len(addr.raw));
+}
+
 fn sla_net_unix_addr_path_len(addr: u64) -> u64 {
     return sa_net_unix_addr_path_len(addr);
 }
 
+fn sla_net_unix_addr_abstract_ptr(&addr: NetAddr) -> &[u8][addr] {
+    return __slice_view(sa_net_unix_addr_abstract_ptr(addr.raw), sa_net_unix_addr_abstract_len(addr.raw));
+}
+
 fn sla_net_unix_addr_abstract_len(addr: u64) -> u64 {
     return sa_net_unix_addr_abstract_len(addr);
+}
+
+fn sla_net_unix_addr_free(^addr: NetAddr) -> i32! {
+    return sa_net_unix_addr_free(addr.raw);
 }
 
 fn sla_net_ipv4_parse_ascii(text: ptr, text_len: u64, &out_addr: u64) -> i32 {

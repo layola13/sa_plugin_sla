@@ -3,20 +3,39 @@
 @import "sa_std/ptr.sa"
 @import "sa_std/string.sa"
 
+// A_min migration: direct fallible (`T!`) extern calls now produce
+// `Result<T, i32>` on every surface. The payload-only sentinel idiom
+// this file used before (read the payload, compare against a null
+// sentinel) was rewritten to match on the status word. Test names and
+// assertion intent are preserved.
+//
+// One assertion changed meaning, deliberately: "fallible i32 extern
+// payload uses SA ABI offset" used to call metadata on
+// "tests/test_unit_basic.sla" — a path the test runner cannot resolve
+// (its cwd is not the package dir, see the hermetic note in the first
+// test) — and assert the free status was 0. On the payload-only
+// reading that passed *because* a failed call's payload is zeroed:
+// metadata failed (payload 0), metadata_free(0) failed too (payload
+// 0 again), and 0 == 0 looked like success. That conflation is the
+// defect A_min removes. The migrated test asserts the true contract:
+// an unresolvable path yields a nonzero (Err) status, and a hermetic
+// file yields the full Ok chain with free payload 0.
+
 fn fallible_extern_read_len(path_ptr: ptr, path_len: u64) -> u64 {
-    let buffer = sa_fs_read_file(path_ptr, path_len, 4096);
-    switch buffer {
-        0 => {
+    match sa_fs_read_file(path_ptr, path_len, 4096) {
+        Ok(buffer) => {
+            let data_len = sa_fs_read_buffer_len(buffer);
+            let free_status = sa_fs_read_buffer_free(buffer);
+            if free_status != 0 {
+                return 0;
+            };
+            return data_len;
+        },
+        Err(status) => {
             return 0;
         },
-        default => {},
     };
-    let data_len = sa_fs_read_buffer_len(buffer);
-    let free_status = sa_fs_read_buffer_free(buffer);
-    if free_status != 0 {
-        return 0;
-    };
-    return data_len;
+    return 0;
 }
 
 fn nonzero_status_u64(value: u64) -> u64 {
@@ -30,13 +49,40 @@ fn nonzero_status_u64(value: u64) -> u64 {
 }
 
 fn fallible_extern_metadata_free_status(path_ptr: ptr, path_len: u64) -> i32 {
-    let metadata = sa_fs_metadata(path_ptr, path_len);
-    return sa_fs_metadata_free(metadata);
+    let metadata: u64 = 0;
+    let have_metadata: bool = false;
+    match sa_fs_metadata(path_ptr, path_len) {
+        Ok(m) => {
+            metadata = m;
+            have_metadata = true;
+        },
+        Err(status) => {
+            return status;
+        },
+    };
+    if have_metadata {
+        match sa_fs_metadata_free(metadata) {
+            Ok(payload) => {
+                return payload;
+            },
+            Err(status) => {
+                return status;
+            },
+        };
+    };
+    return 0;
 }
 
 fn fallible_extern_json_free_status(node: ptr, owned: bool) -> i32 {
     if owned {
-        return sa_json_free(node);
+        match sa_json_free(node) {
+            Ok(payload) => {
+                return payload;
+            },
+            Err(status) => {
+                return status;
+            },
+        };
     };
     return 0;
 }
@@ -62,8 +108,24 @@ fn fallible_extern_json_free_status(node: ptr, owned: bool) -> i32 {
 }
 
 @test "fallible i32 extern payload uses SA ABI offset"() {
-    let status = fallible_extern_metadata_free_status("tests/test_unit_basic.sla", 25);
-    if status != 0 {
+    // Err discrimination: an unresolvable path must surface a nonzero
+    // status (under the payload-only reading this returned 0 — the
+    // zeroed payload of the failed metadata call fed into free(0),
+    // whose zeroed payload then read as success).
+    let miss = "missing_fallible_meta_9f3/none.sla";
+    let status = fallible_extern_metadata_free_status(STR_PTR(miss), STR_LEN(miss) as u64);
+    if status == 0 {
+        panic(43017);
+    };
+    // Ok chain, hermetic: write a probe file to the runner cwd, then
+    // metadata + free must both succeed with payload 0.
+    let path = "fallible_extern_meta_tmp.sla";
+    let content = "meta";
+    if sa_fs_write_file(STR_PTR(path), STR_LEN(path) as u64, STR_PTR(content), STR_LEN(content) as u64) != 0 {
+        panic(43018);
+    };
+    let ok_status = fallible_extern_metadata_free_status(STR_PTR(path), STR_LEN(path) as u64);
+    if ok_status != 0 {
         panic(43012);
     };
 }
@@ -83,7 +145,16 @@ fn fallible_extern_json_free_status(node: ptr, owned: bool) -> i32 {
     if status != 0 {
         panic(43015);
     };
-    let root_status = sa_json_free(root);
+    let root_status: i32 = 0;
+    let rf = sa_json_free(root);
+    match rf {
+        Ok(payload) => {
+            root_status = payload;
+        },
+        Err(free_status) => {
+            root_status = free_status;
+        },
+    };
     if root_status != 0 {
         panic(43016);
     };

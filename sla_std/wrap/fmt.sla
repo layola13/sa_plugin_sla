@@ -5,6 +5,10 @@
 // Regenerate: python3 gen_wrap.py --sai <sa_std>/fmt.sai --out-dir out
 @import "sa_std/fmt.sai"
 
+struct FmtBuffer {
+    raw: u64,
+}
+
 fn sla_fmt_i64(value: i64, base: u32) -> u64 {
     return sa_fmt_i64(value, base);
 }
@@ -43,6 +47,10 @@ fn sla_fmt_bool_into(value: i1, out: ptr, out_cap: u64, &out_len: u64) -> i32 {
 
 fn sla_fmt_bytes_into(buf: ptr, len: u64, out: ptr, out_cap: u64, &out_len: u64) -> i32 {
     return sa_fmt_bytes_into(buf, len, out, out_cap, out_len);
+}
+
+fn sla_fmt_buffer_data(&buffer: FmtBuffer) -> &[u8][buffer] {
+    return __slice_view(sa_fmt_buffer_data(buffer.raw), sa_fmt_buffer_len(buffer.raw));
 }
 
 fn sla_fmt_buffer_len(buffer: u64) -> u64 {

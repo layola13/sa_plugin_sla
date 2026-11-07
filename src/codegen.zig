@@ -3201,6 +3201,90 @@ pub const Codegen = struct {
         return payload_reg;
     }
 
+    /// A_min (fallible `T!` batch): a fallible extern call materializes
+    /// its cell into a `Result<T, i32>` value. The status word at offset
+    /// 0 selects the variant; the payload is loaded only on the Ok arm
+    /// (on the Err arm it is not a value), and the status itself becomes
+    /// the Err payload. Branch/temp discipline mirrors File::open's
+    /// RESULT_NEW_OK / RESULT_NEW_ERR emission above.
+    fn genFallibleExternResultCall(
+        self: *Codegen,
+        call: *const ast.CallExpr,
+        ext: contract_parser.ExternalFunction,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError![]const u8 {
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
+        defer arg_regs.deinit();
+        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
+        defer arg_release_regs.deinit();
+        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
+        defer arg_consume_regs.deinit();
+
+        for (call.args, 0..) |arg, i| {
+            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+            defer self.popExprLaterNodesTo(sibling_mark);
+            const planned_param = if (i < ext.params.len) try self.externPtrParamAsAstParam(ext.params[i]) else null;
+            const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
+                .param = planned_param,
+                .arg_index = i,
+            });
+            const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
+                .borrow => try self.abiPrefixedArg('&', lowered_arg.reg),
+                .move => try self.abiPrefixedArg('^', lowered_arg.reg),
+                .raw => try self.abiRawPrefixedArg(lowered_arg.reg),
+                .none => lowered_arg.reg,
+            } else lowered_arg.reg;
+            arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+            try self.appendExternLoweredCallArgCleanups(
+                &arg_release_regs,
+                &arg_consume_regs,
+                lowered_arg,
+                if (i < ext.params.len) ext.params[i] else null,
+                arg_reg,
+            );
+        }
+
+        const fallible_reg = try self.newTmp();
+        const result_reg = try self.newTmp();
+        const lowered_call = try self.loweredFuncSymbol(call.func_name);
+        defer self.allocator.free(lowered_call);
+        self.outPrint("    {s} = call @{s}(", .{ fallible_reg, lowered_call }) catch return CodegenError.CodegenError;
+        for (arg_regs.items, 0..) |arg_reg, i| {
+            if (i > 0) self.outPrint(", ", .{}) catch return CodegenError.CodegenError;
+            self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+        }
+        self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
+        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
+
+        const status_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as i32\n", .{ status_reg, fallible_reg }) catch return CodegenError.CodegenError;
+        const ok_reg = try self.newTmp();
+        self.outPrint("    {s} = eq {s}, 0\n", .{ ok_reg, status_reg }) catch return CodegenError.CodegenError;
+        const ok_label = try self.newLabel("L_FALLIBLE_OK");
+        const err_label = try self.newLabel("L_FALLIBLE_ERR");
+        const end_label = try self.newLabel("L_FALLIBLE_END");
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+        const payload_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+{} as {s}\n", .{
+            payload_reg,
+            fallible_reg,
+            lowering_rules.abiFalliblePayloadOffset(ext.ret_ty),
+            abiRawPayloadTypeString(ext.ret_ty),
+        }) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, payload_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n    !{s}\n", .{ status_reg, payload_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, status_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{status_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+        try self.emitRelease(ok_reg);
+        try self.emitRelease(fallible_reg);
+        return result_reg;
+    }
+
     fn genExternPayloadCall(
         self: *Codegen,
         call: *const ast.CallExpr,
@@ -13237,6 +13321,23 @@ pub const Codegen = struct {
         return reg;
     }
 
+    /// E_res: emit a __slice_view(data, len) production: stack-alloc
+    /// a Slice cell and SLICE_NEW it from the two argument registers.
+    fn genSliceViewCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
+        const data_reg = try self.genExpr(call.args[0], hoisted_allocs);
+        const len_reg = try self.genExpr(call.args[1], hoisted_allocs);
+        const reg = try self.newTmp();
+        // The cell must be `alloc`, not `stack_alloc`: a view is
+        // returned from the annotated wrapper, and stack allocations
+        // cannot escape a frame (StackEscape).  This matches the
+        // std slice macros, which `alloc` their result cells.
+        self.outPrint("    {s} = alloc Slice_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ reg, data_reg, len_reg }) catch return CodegenError.CodegenError;
+        try self.emitRelease(len_reg);
+        if (exprResultNeedsRelease(call.args[0])) try self.emitRelease(data_reg);
+        return reg;
+    }
+
     fn genArrayBorrowToSliceInto(self: *Codegen, target: []const u8, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!?[]const u8 {
         if (arg.* != .borrow_expr) return CodegenError.CodegenError;
         const inner = arg.borrow_expr.expr;
@@ -19582,8 +19683,15 @@ pub const Codegen = struct {
                     }
                 }
 
+                // E_res: __slice_view(data, len) materializes a
+                // Slice<u8> value from a borrow extern's data pointer
+                // and its length sibling.
+                if (std.mem.eql(u8, call.func_name, "__slice_view") and call.associated_target == null) {
+                    return try self.genSliceViewCall(&call, hoisted_allocs);
+                }
+
                 if (self.tc.extern_funcs.get(call.func_name)) |ext| {
-                    if (ext.return_fallible) return try self.genFallibleExternPayloadCall(&call, ext, hoisted_allocs);
+                    if (ext.return_fallible) return try self.genFallibleExternResultCall(&call, ext, hoisted_allocs);
                     return try self.genExternPayloadCall(&call, ext, hoisted_allocs);
                 }
 

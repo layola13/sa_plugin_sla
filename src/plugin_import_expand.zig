@@ -1304,8 +1304,8 @@ pub fn registerImportedFunctionAliasesFromResolvedImports(
                 }
                 const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ namespace, name });
                 try tc.registerFunctionAliasWithMetadata(alias, name, namespace, module.path);
-                try tc.registerImportedFunctionSignature(name, signature.params, signature.ret_ty, signature.is_async, signature.is_variadic);
-                try tc.registerImportedFunctionSignature(alias, signature.params, signature.ret_ty, signature.is_async, signature.is_variadic);
+                try tc.registerImportedFunctionSignature(name, signature.params, signature.ret_ty, signature.is_async, signature.is_variadic, signature.ret_fallible_sugar, signature.ret_borrow_origin);
+                try tc.registerImportedFunctionSignature(alias, signature.params, signature.ret_ty, signature.is_async, signature.is_variadic, signature.ret_fallible_sugar, signature.ret_borrow_origin);
             }
             // Overload sets: every member registers under its canonical
             // member key (computed from the plain defining-module name) in
@@ -1332,7 +1332,7 @@ pub fn registerImportedFunctionAliasesFromResolvedImports(
                         try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
                     else
                         try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                    try tc.registerImportedFunctionSignature(symbol, method.func_decl.params, method.func_decl.ret_ty, method.func_decl.is_async, method.func_decl.is_variadic);
+                    try tc.registerImportedFunctionSignature(symbol, method.func_decl.params, method.func_decl.ret_ty, method.func_decl.is_async, method.func_decl.is_variadic, method.func_decl.ret_fallible_sugar, method.func_decl.ret_borrow_origin);
                 }
             }
         }

@@ -5,8 +5,16 @@
 // Regenerate: python3 gen_wrap.py --sai <sa_std>/ssh.sai --out-dir out
 @import "sa_std/ssh.sai"
 
+struct SshBuffer {
+    raw: u64,
+}
+
 fn sla_std_ssh_supported(&out_flags: u64) -> i32 {
     return sa_std_ssh_supported(out_flags);
+}
+
+fn sla_std_ssh_buffer_data(&buffer: SshBuffer) -> &[u8][buffer] {
+    return __slice_view(sa_std_ssh_buffer_data(buffer.raw), sa_std_ssh_buffer_len(buffer.raw));
 }
 
 fn sla_std_ssh_buffer_len(buffer: u64) -> u64 {

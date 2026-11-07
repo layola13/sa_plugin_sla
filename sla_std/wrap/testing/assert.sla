@@ -16,3 +16,7 @@ fn sla_assert_eq_i64_at(actual: i64, expected: i64, code: i32, file: ptr, file_l
 fn sla_test_debug_i64(name: ptr, name_len: u64, value: i64) -> void {
     sa_test_debug_i64(name, name_len, value);
 }
+
+fn sla_test_fallible_i32_value(value: i32) -> i32! {
+    return sa_test_fallible_i32_value(value);
+}

@@ -54,7 +54,7 @@ fn main() -> i32 {
     let n: i64 = 0;
     if sa_json_object_get_i64(row, STR_PTR("n"), STR_LEN("n"), &n) != 0 { return 10; };
     if n != 2 { return 11; };
-    sa_json_free(rows);
+    let _ = sa_json_free(rows);
 
     // s1 payload: outer JSON row -> payload string -> nested JSON parse.
     let q2 = "SELECT payload FROM sessions WHERE id = 's1'";
@@ -90,10 +90,10 @@ fn main() -> i32 {
     let m2_len: u64 = 0;
     if sa_json_object_get_string(payload2, STR_PTR("model"), STR_LEN("model"), &m2_ptr, &m2_len) != 0 { return 24; };
     if !bytes_is(m2_ptr, m2_len, STR_PTR("gpt-cxu"), STR_LEN("gpt-cxu")) { return 25; };
-    sa_json_buffer_free(buf);
-    sa_json_free(payload2);
-    sa_json_free(payload);
-    sa_json_free(rows2);
+    let _ = sa_json_buffer_free(buf);
+    let _ = sa_json_free(payload2);
+    let _ = sa_json_free(payload);
+    let _ = sa_json_free(rows2);
 
     if sa_node_plugin_sqlite_close(db) != 0 { return 26; };
     println("d3 store ok");

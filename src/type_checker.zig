@@ -20,6 +20,14 @@ pub const TypeError = error{
     InvalidArgsCount,
     AmbiguousCall,
     CompileError,
+    FallibleResultDiscarded,
+    FalliblePayloadUnsupported,
+    FallibleSugarParam,
+    BorrowAnnotationInvalid,
+    BorrowOriginNotABinding,
+    BorrowEscape,
+    BorrowUseAfterInvalidation,
+    BorrowOriginMerge,
     OutOfMemory,
 };
 
@@ -186,6 +194,10 @@ pub const TypeChecker = struct {
         ret_ty: *ast.Type,
         is_async: bool = false,
         is_variadic: bool = false,
+        /// A_min (fallible `T!` batch): see ast.FuncDecl.
+        ret_fallible_sugar: bool = false,
+        /// E_res (borrow-return batch): see ast.FuncDecl.
+        ret_borrow_origin: ?[]const u8 = null,
     };
 
     pub const FunctionAliasMetadata = struct {
@@ -292,6 +304,24 @@ pub const TypeChecker = struct {
     using_modules_input: []const []const u8,
     // Maps expressions to their validated types for use in Codegen layout offsets
     expr_types: std.AutoHashMap(*const ast.Node, *ast.Type),
+    // E_res (borrow-return batch): per-function view bookkeeping.
+    // view_origin_of maps a view binding to the root binding its view
+    // borrows from; expr_view_origin does the same for an unbound
+    // view-producing expression (a __slice_view production or a call
+    // to an origin-annotated function). invalidated_origins holds
+    // origin roots killed by an intervening move/free/may-invalidate
+    // call; a later read of a view on a dead origin is an error.
+    // Names are function-local (the maps are cleared per function);
+    // shadowing a name inside one function is tracked by name, the
+    // conservative direction.
+    view_origin_of: std.StringHashMap([]const u8),
+    view_def_depth: std.StringHashMap(usize),
+    expr_view_origin: std.AutoHashMap(*const ast.Node, []const u8),
+    invalidated_origins: std.StringHashMap(void),
+    current_ret_borrow_origin: ?[]const u8 = null,
+    slice_production_depth: usize = 0,
+    closure_depth: usize = 0,
+    probe_invalidated_snapshot: ?std.StringHashMap(void) = null,
     dyn_call_traits: std.AutoHashMap(*const ast.Node, []const u8),
     dyn_borrow_args: std.AutoHashMap(*const ast.Node, []const u8),
     dyn_box_coercions: std.AutoHashMap(*const ast.Node, []const u8),
@@ -399,6 +429,10 @@ pub const TypeChecker = struct {
             .overloads = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
             .using_modules_input = options.using_modules,
             .expr_types = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
+            .view_origin_of = std.StringHashMap([]const u8).init(allocator),
+            .view_def_depth = std.StringHashMap(usize).init(allocator),
+            .expr_view_origin = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
+            .invalidated_origins = std.StringHashMap(void).init(allocator),
             .dyn_call_traits = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .dyn_borrow_args = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .dyn_box_coercions = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
@@ -3257,12 +3291,14 @@ pub const TypeChecker = struct {
         }
     }
 
-    pub fn registerImportedFunctionSignature(self: *TypeChecker, name: []const u8, params: []const ast.Param, ret_ty: *ast.Type, is_async: bool, is_variadic: bool) !void {
+    pub fn registerImportedFunctionSignature(self: *TypeChecker, name: []const u8, params: []const ast.Param, ret_ty: *ast.Type, is_async: bool, is_variadic: bool, ret_fallible_sugar: bool, ret_borrow_origin: ?[]const u8) !void {
         try self.imported_function_signatures.put(name, .{
             .params = params,
             .ret_ty = ret_ty,
             .is_async = is_async,
             .is_variadic = is_variadic,
+            .ret_fallible_sugar = ret_fallible_sugar,
+            .ret_borrow_origin = ret_borrow_origin,
         });
     }
 
@@ -3302,6 +3338,11 @@ pub const TypeChecker = struct {
     /// them back afterwards; the final validation re-checks (and consumes)
     /// from the restored state.
     fn snapshotOverloadProbeStates(self: *TypeChecker, scope: *Scope) !std.array_list.Managed(SymbolMark) {
+        // E_res: snapshot the invalidated-origin set alongside the
+        // symbol states; restoreOverloadProbeStates puts it back.
+        if (self.probe_invalidated_snapshot == null) {
+            self.probe_invalidated_snapshot = try self.invalidated_origins.clone();
+        }
         var marks = std.array_list.Managed(SymbolMark).init(self.allocator);
         var current: ?*Scope = scope;
         while (current) |frame| {
@@ -3322,7 +3363,12 @@ pub const TypeChecker = struct {
     }
 
     fn restoreOverloadProbeStates(self: *TypeChecker, marks: std.array_list.Managed(SymbolMark)) void {
-        _ = self;
+        // E_res: probing must not invalidate views for real.
+        if (self.probe_invalidated_snapshot) |snapshot| {
+            self.invalidated_origins.deinit();
+            self.invalidated_origins = snapshot;
+            self.probe_invalidated_snapshot = null;
+        }
         for (marks.items) |mark| {
             if (mark.scope.symbols.getPtr(mark.name)) |sym| {
                 sym.state = mark.state;
@@ -3595,6 +3641,157 @@ pub const TypeChecker = struct {
     /// are rejected for by-value pointer parameters (no trampoline
     /// address), move arguments are consumed per the contract, and the
     /// return type comes from the ABI return spelling.
+    /// A_min (fallible `T!` batch): whether a call expression produces a
+    /// must-consume fallible Result: a direct fallible extern call, or a
+    /// call to a function whose return type was spelled with the `T!`
+    /// sugar (local or imported).
+    fn isFallibleProvenanceCall(self: *TypeChecker, call: ast.CallExpr) bool {
+        if (self.extern_funcs.get(call.func_name)) |ext| {
+            if (ext.return_fallible) return true;
+        }
+        if (self.funcs.get(call.func_name)) |func| {
+            if (func.ret_fallible_sugar) return true;
+        }
+        if (self.imported_function_signatures.get(call.func_name)) |sig| {
+            if (sig.ret_fallible_sugar) return true;
+        }
+        return false;
+    }
+
+    // ---- E_res (borrow-return batch) helpers ----
+
+    /// The origin root of a view-producing expression, when it has one:
+    /// a recorded production (a __slice_view call or an annotated call)
+    /// or a view binding. Anything else is not a view.
+    fn viewOriginOfExpr(self: *TypeChecker, expr: *const ast.Node) ?[]const u8 {
+        if (self.expr_view_origin.get(expr)) |origin| return origin;
+        if (expr.* == .identifier) {
+            if (self.view_origin_of.get(expr.identifier)) |origin| return origin;
+        }
+        return null;
+    }
+
+    fn isViewExpr(self: *TypeChecker, expr: *const ast.Node) bool {
+        return self.viewOriginOfExpr(expr) != null;
+    }
+
+    /// Origin of a __slice_view(p, n) production: the owner place the
+    /// data pointer borrows from. `p` is either a place (root it) or a
+    /// call whose first argument is the owner place (the generated
+    /// wrapper shape: __slice_view(sa_X_data(owner.raw), sa_X_len(..))).
+    fn sliceViewOriginOf(_: *TypeChecker, p: *const ast.Node) ?[]const u8 {
+        if (p.* == .call_expr) {
+            if (p.call_expr.args.len == 0) return null;
+            return placeRootName(p.call_expr.args[0]);
+        }
+        return placeRootName(p);
+    }
+
+    /// Invalidation pass for one fully-checked call: any argument whose
+    /// place root is the origin of a live view kills that origin,
+    /// unless the argument feeds the origin parameter of an
+    /// origin-annotated callee (the forwarding shape). Extern frees,
+    /// moves, and unknown-effect calls all land here: a root passed to
+    /// ANY other call may be invalidated by it (the .sai ^/& markers
+    /// decide ownership consumption, but an unknown callee must be
+    /// assumed able to free or mutate through a copied handle id), so
+    /// the conservative default is may-invalidate.
+    fn noteCallInvalidation(self: *TypeChecker, call: ast.CallExpr) TypeError!void {
+        if (self.view_origin_of.count() == 0) return;
+        var origin_param_index: ?usize = null;
+        if (self.funcs.get(call.func_name)) |func| {
+            if (func.ret_borrow_origin) |origin_name| {
+                for (func.params, 0..) |param, i| {
+                    if (std.mem.eql(u8, param.name, origin_name)) origin_param_index = i;
+                }
+            }
+        } else if (self.imported_function_signatures.get(call.func_name)) |sig| {
+            if (sig.ret_borrow_origin) |origin_name| {
+                for (sig.params, 0..) |param, i| {
+                    if (std.mem.eql(u8, param.name, origin_name)) origin_param_index = i;
+                }
+            }
+        }
+        for (call.args, 0..) |arg, i| {
+            if (origin_param_index != null and origin_param_index.? == i) continue;
+            const root = placeRootName(arg) orelse continue;
+            var it = self.view_origin_of.valueIterator();
+            while (it.next()) |origin| {
+                if (std.mem.eql(u8, origin.*, root)) {
+                    try self.invalidated_origins.put(root, {});
+                    break;
+                }
+            }
+        }
+    }
+
+    /// E_res: the origin argument of an annotated call must be a
+    /// place rooted at a binding. Checked BEFORE the general argument
+    /// pass at the call sites: a temporary fed to the origin parameter
+    /// would otherwise surface as a plain TypeMismatch from the borrow
+    /// parameter check, hiding the dedicated diagnostic.
+    fn validateOriginArgForm(self: *TypeChecker, call: ast.CallExpr, params: []const ast.Param, origin_name: []const u8) TypeError!void {
+        for (params, 0..) |param, i| {
+            if (!std.mem.eql(u8, param.name, origin_name)) continue;
+            if (i >= call.args.len) return; // arity is the general pass's error
+            if (placeRootName(call.args[i]) == null) {
+                self.setError("BorrowOriginNotABinding: the origin argument of `{s}` must be a binding or a place rooted at one, so the returned view has a trackable owner", .{call.func_name});
+                return TypeError.BorrowOriginNotABinding;
+            }
+            return;
+        }
+    }
+
+    /// The result of calling an origin-annotated function: the value
+    /// is the borrow's inner type (Slice<u8> or ptr), and the
+    /// expression is recorded as a view of the origin argument's root.
+    fn annotatedCallResult(self: *TypeChecker, expr: *ast.Node, call: ast.CallExpr, params: []const ast.Param, origin_name: []const u8, ret_ty: *ast.Type) TypeError!*ast.Type {
+        var idx: ?usize = null;
+        for (params, 0..) |param, i| {
+            if (std.mem.eql(u8, param.name, origin_name)) idx = i;
+        }
+        const i = idx orelse return TypeError.BorrowAnnotationInvalid;
+        if (i >= call.args.len) return TypeError.InvalidArgsCount;
+        const root = placeRootName(call.args[i]) orelse {
+            self.setError("BorrowOriginNotABinding: the origin argument of `{s}` must be a binding or a place rooted at one, so the returned view has a trackable owner", .{call.func_name});
+            return TypeError.BorrowOriginNotABinding;
+        };
+        try self.expr_view_origin.put(expr, root);
+        if (ret_ty.* == .borrow) return ret_ty.borrow;
+        return ret_ty;
+    }
+
+    /// E_res annotation contract: the annotation must name one of the
+    /// function's own parameters, and the return type must be a borrow
+    /// of Slice<u8> (slice form) or of the raw pointer type (bare
+    /// form). Anything else is rejected loudly at the declaration.
+    fn validateBorrowAnnotation(self: *TypeChecker, fd: *const ast.FuncDecl) TypeError!void {
+        const origin = fd.ret_borrow_origin orelse return;
+        if (fd.is_async) {
+            self.setError("BorrowAnnotationInvalid: `{s}` is async; borrow-return annotations are not supported on async functions in v1", .{fd.name});
+            return TypeError.BorrowAnnotationInvalid;
+        }
+        var found = false;
+        for (fd.params) |param| {
+            if (std.mem.eql(u8, param.name, origin)) found = true;
+        }
+        if (!found) {
+            self.setError("BorrowAnnotationInvalid: `{s}` annotates its borrow return with [{s}], which is not one of its parameters", .{ fd.name, origin });
+            return TypeError.BorrowAnnotationInvalid;
+        }
+        if (fd.ret_ty.* != .borrow) {
+            self.setError("BorrowAnnotationInvalid: `{s}` has an origin annotation but its return type is not a borrow", .{fd.name});
+            return TypeError.BorrowAnnotationInvalid;
+        }
+        const inner = fd.ret_ty.borrow;
+        const is_slice_form = inner.* == .user_defined and std.mem.eql(u8, inner.user_defined.name, "Slice") and inner.user_defined.generics.len == 1 and inner.user_defined.generics[0].* == .primitive and inner.user_defined.generics[0].primitive == .u8;
+        const is_bare_form = inner.* == .primitive and inner.primitive == .raw_ptr;
+        if (!is_slice_form and !is_bare_form) {
+            self.setError("BorrowAnnotationInvalid: `{s}` must return &[u8][{s}] or &ptr[{s}] in v1, not a borrow of another type", .{ fd.name, origin, origin });
+            return TypeError.BorrowAnnotationInvalid;
+        }
+    }
+
     fn checkExternContractCall(self: *TypeChecker, ext: contract_parser.ExternalFunction, call: ast.CallExpr, scope: *Scope) TypeError!*ast.Type {
         if (ext.is_variadic) {
             if (call.args.len < ext.params.len) {
@@ -3636,6 +3833,20 @@ pub const TypeChecker = struct {
         }
         const ret = try self.allocator.create(ast.Type);
         setTypeFromAbiReturn(self.allocator, ret, ext.ret_ty);
+        if (ext.return_fallible) {
+            // A_min (fallible `T!` batch): the call is typed by the
+            // contract's fallible marker, not by the bare payload: the
+            // value is a `Result<T, i32>` (status word -> Err channel,
+            // payload -> Ok channel), materialized by both backends.
+            // Payload types outside the fallible ABI scalar set are
+            // rejected loudly here (the ABI helpers would otherwise
+            // silently treat them as pointer-width).
+            if (!lowering_rules.abiFalliblePayloadSupported(ext.ret_ty)) {
+                self.setError("fallible extern `{s}` has payload type `{s}` outside the fallible ABI scalar set; the status/payload cell cannot carry it", .{ ext.name, ext.ret_ty });
+                return TypeError.FalliblePayloadUnsupported;
+            }
+            return try self.makeResultType(ret, try self.makeI32Type());
+        }
         return ret;
     }
 
@@ -4278,6 +4489,11 @@ pub const TypeChecker = struct {
         // overlapping borrows are reported as borrow conflicts).
         try self.checkCallArgPlaceOverlaps(params, args[0..fixed_count], scope, call_name, self.funcs.get(call_name), 0);
         for (params, args[0..fixed_count], 0..) |param, arg, i| {
+            // E_res: moving a view into a ^ parameter escapes it.
+            if (param.is_move and self.isViewExpr(arg)) {
+                self.setError("BorrowEscape: a borrow view may not be moved into parameter `{s}` of `{s}` (v1 borrows are non-escaping)", .{ param.name, call_name });
+                return TypeError.BorrowEscape;
+            }
             if (param.is_move and arg.* != .move_expr) return TypeError.TypeMismatch;
             if (param.is_borrow) {
                 if (dynTraitName(param.ty)) |trait_name| {
@@ -4974,6 +5190,8 @@ pub const TypeChecker = struct {
         const previous_arena_generation = self.arena_generation;
         self.arena_generation += 1;
         defer self.arena_generation = previous_arena_generation;
+        self.closure_depth += 1;
+        defer self.closure_depth -= 1;
         const ret_ty = try self.checkExpr(lit.body, closure_scope);
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .closure = .{ .params = try param_types.toOwnedSlice(), .ret = ret_ty } };
@@ -6223,6 +6441,15 @@ pub const TypeChecker = struct {
     /// one variadic definition's frame. It may appear in exactly one
     /// position: the trailing parameter of an exported extern "C"
     /// variadic definition. Everywhere else is a loud error.
+    fn validateFallibleSugarPlacement(self: *TypeChecker, func: *const ast.FuncDecl) TypeError!void {
+        for (func.params) |param| {
+            if (param.is_fallible_sugar) {
+                self.setError("the fallible `T!` sugar is only allowed in return position (parameter `{s}` of `{s}`); callers pass the bare payload, not a fallible cell", .{ param.name, func.name });
+                return TypeError.FallibleSugarParam;
+            }
+        }
+    }
+
     fn validateVaListPlacement(self: *TypeChecker, fd: *const ast.FuncDecl) TypeError!void {
         if (typeContainsVaList(fd.ret_ty)) {
             self.setError("VaList may not be used as a return type (function `{s}`)", .{fd.name});
@@ -6377,6 +6604,22 @@ pub const TypeChecker = struct {
             if (decl.* == .trait_decl) {
                 for (decl.trait_decl.supertraits) |supertrait| {
                     if (!self.traits.contains(supertrait)) return TypeError.UndefinedVariable;
+                }
+            }
+        }
+
+        // A_min: the fallible `T!` sugar is return-position only.
+        // E_res: borrow-return annotations are validated in the same pass.
+        for (program.program.decls) |decl| {
+            if (decl.* == .func_decl) {
+                try self.validateFallibleSugarPlacement(&decl.func_decl);
+                try self.validateBorrowAnnotation(&decl.func_decl);
+            } else if (decl.* == .impl_decl) {
+                for (decl.impl_decl.methods) |method| {
+                    if (method.* == .func_decl) {
+                        try self.validateFallibleSugarPlacement(&method.func_decl);
+                        try self.validateBorrowAnnotation(&method.func_decl);
+                    }
                 }
             }
         }
@@ -6614,6 +6857,14 @@ pub const TypeChecker = struct {
     }
 
     fn checkMacro(self: *TypeChecker, macro_decl: *ast.MacroDecl) !void {
+        // E_res: same per-body reset as checkFunc/checkTest -- a
+        // macro body is a body root and carries no borrow origin.
+        const previous_borrow_origin = self.current_ret_borrow_origin;
+        self.current_ret_borrow_origin = null;
+        defer self.current_ret_borrow_origin = previous_borrow_origin;
+        self.view_origin_of.clearRetainingCapacity();
+        self.view_def_depth.clearRetainingCapacity();
+        self.invalidated_origins.clearRetainingCapacity();
         const scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
 
@@ -6863,6 +7114,17 @@ pub const TypeChecker = struct {
         const previous_fn_is_variadic_def = self.current_fn_is_variadic_def;
         self.current_fn_is_variadic_def = false;
         defer self.current_fn_is_variadic_def = previous_fn_is_variadic_def;
+        // E_res: view bookkeeping is per body.  checkFunc resets
+        // it at entry; a test body is a body root too, and without
+        // the same reset the name-keyed invalidation set leaks
+        // across bodies in one file (an origin killed by an earlier
+        // test condemns a later test's fresh same-named view).
+        const previous_borrow_origin = self.current_ret_borrow_origin;
+        self.current_ret_borrow_origin = null;
+        defer self.current_ret_borrow_origin = previous_borrow_origin;
+        self.view_origin_of.clearRetainingCapacity();
+        self.view_def_depth.clearRetainingCapacity();
+        self.invalidated_origins.clearRetainingCapacity();
         var scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
 
@@ -6889,6 +7151,14 @@ pub const TypeChecker = struct {
         const previous_name = self.current_function_name;
         self.current_function_name = func.name;
         defer self.current_function_name = previous_name;
+
+        // E_res: view bookkeeping is per function body.
+        const previous_borrow_origin = self.current_ret_borrow_origin;
+        self.current_ret_borrow_origin = func.ret_borrow_origin;
+        defer self.current_ret_borrow_origin = previous_borrow_origin;
+        self.view_origin_of.clearRetainingCapacity();
+        self.view_def_depth.clearRetainingCapacity();
+        self.invalidated_origins.clearRetainingCapacity();
 
         const previous_fn_is_async = self.current_fn_is_async;
         self.current_fn_is_async = func.is_async;
@@ -7215,11 +7485,28 @@ pub const TypeChecker = struct {
                                 return TypeError.InvalidBorrow;
                             }
                             try self.consumeBinding(scope, let.value.identifier, source, "implicit let move");
+                            // E_res: moving an owner kills its views.
+                            {
+                                var vit = self.view_origin_of.valueIterator();
+                                while (vit.next()) |origin| {
+                                    if (std.mem.eql(u8, origin.*, let.value.identifier)) {
+                                        try self.invalidated_origins.put(let.value.identifier, {});
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
                 if (!isDiscardName(let.name)) {
                     try self.defineSymbol(scope, let.name, declared_ty, false);
+                    // E_res: a binding initialized from a view
+                    // production (or from another view binding) is
+                    // itself a view of the same origin.
+                    if (self.viewOriginOfExpr(let.value)) |vorigin| {
+                        try self.view_origin_of.put(let.name, vorigin);
+                        try self.view_def_depth.put(let.name, self.closure_depth);
+                    }
                     if (isBorrowLikeType(declared_ty)) {
                         if (directBorrowSource(let.value)) |source| {
                             scope.lookupLocal(let.name).?.borrow_source = source;
@@ -7371,6 +7658,25 @@ pub const TypeChecker = struct {
                 };
                 self.assign_rhs_target_name = prev_assign_target;
                 self.assign_rhs_value = prev_assign_value;
+                // E_res: storing a view into a field/element escapes
+                // it; rebinding a view binding to a different origin
+                // merges two origins, which v1 forbids.
+                if (self.viewOriginOfExpr(assign.value)) |vorigin| {
+                    if (assign.target.* != .identifier) {
+                        self.setError("BorrowEscape: a borrow view may not be stored into a field or element (v1 borrows are non-escaping)", .{});
+                        return TypeError.BorrowEscape;
+                    }
+                    const tname = assign.target.identifier;
+                    if (self.view_origin_of.get(tname)) |existing| {
+                        if (!std.mem.eql(u8, existing, vorigin)) {
+                            self.setError("BorrowOriginMerge: `{s}` already holds a view of `{s}` and may not be rebound to a view of `{s}` (views of different origins may not merge)", .{ tname, existing, vorigin });
+                            return TypeError.BorrowOriginMerge;
+                        }
+                    } else {
+                        try self.view_origin_of.put(tname, vorigin);
+                        try self.view_def_depth.put(tname, self.closure_depth);
+                    }
+                }
                 if (!self.valueAssignableTo(target_ty, val_ty)) {
                     const target_name = if (assign.target.* == .identifier) assign.target.identifier else "<expr>";
                     if (self.current_function_name) |fn_name| {
@@ -7465,7 +7771,18 @@ pub const TypeChecker = struct {
                         return err;
                     };
                     self.return_value_depth = prev_return_value_depth;
-                    if (!self.valueAssignableTo(ret_ty, val_ty)) {
+                    // E_res: a view may leave the function only through
+                    // an origin-annotated return naming the same root.
+                    if (self.viewOriginOfExpr(val)) |view_origin| {
+                        const expected = self.current_ret_borrow_origin orelse {
+                            self.setError("BorrowEscape: returning a borrow view from `{s}`, which has no origin annotation; v1 borrows are non-escaping and may only be returned through a `-> &[u8][param]` / `-> &ptr[param]` annotation", .{self.current_function_name orelse "?"});
+                            return TypeError.BorrowEscape;
+                        };
+                        if (!std.mem.eql(u8, view_origin, expected)) {
+                            self.setError("BorrowEscape: the returned view borrows from `{s}`, but the return annotation of `{s}` names `{s}`", .{ view_origin, self.current_function_name orelse "?", expected });
+                            return TypeError.BorrowEscape;
+                        }
+                    } else if (!self.valueAssignableTo(ret_ty, val_ty)) {
                         self.setError("TypeMismatch in return: expected {s}, actual {s}", .{ typeDesc(ret_ty), typeDesc(val_ty) });
                         return TypeError.TypeMismatch;
                     }
@@ -7624,7 +7941,19 @@ pub const TypeChecker = struct {
                 try self.consumeBinding(scope, rel.var_name, sym, "explicit release");
             },
             .expr_stmt => |expr| {
-                _ = try self.checkExpr(expr, scope);
+                const stmt_ty = try self.checkExpr(expr, scope);
+                // A_min must-consume: a fallible Result produced by an
+                // expression statement is discarded by the statement
+                // itself, status word included. Legal consumption is a
+                // match, a return, a binding that is itself consumed,
+                // or an explicit `let _ =` discard.
+                if (expr.* == .call_expr and stmt_ty.* == .user_defined and
+                    std.mem.eql(u8, stmt_ty.user_defined.name, "Result") and
+                    self.isFallibleProvenanceCall(expr.call_expr))
+                {
+                    self.setError("fallible result of `{s}` must be consumed: match it, return it, bind it, or discard it explicitly with `let _ =`; a bare statement discards the status word", .{expr.call_expr.func_name});
+                    return TypeError.FallibleResultDiscarded;
+                }
             },
             .select_stmt => |sel| {
                 try self.checkSelectStmt(sel, scope, ret_ty, current_loop_scope);
@@ -7663,6 +7992,12 @@ pub const TypeChecker = struct {
             return err;
         };
         self.expr_types.put(expr, ty) catch return TypeError.OutOfMemory;
+        // E_res: a completed call may have invalidated live views
+        // (skipped inside a __slice_view production, whose inner
+        // data/len calls borrow the owner they are materializing).
+        if (expr.* == .call_expr and self.slice_production_depth == 0) {
+            try self.noteCallInvalidation(expr.call_expr);
+        }
         return ty;
     }
 
@@ -7720,6 +8055,20 @@ pub const TypeChecker = struct {
                     if (sym.state == .uninitialized) {
                         self.setError("UseBeforeInit: var `{s}` is read before assignment", .{name});
                         return TypeError.UseBeforeInit;
+                    }
+                    // E_res: reads of a view whose origin was
+                    // invalidated by an intervening move, free, or
+                    // may-invalidate call are rejected; so is capturing
+                    // a view inside a closure (v1 non-escaping rule).
+                    if (self.view_origin_of.get(name)) |view_origin| {
+                        if (self.invalidated_origins.contains(view_origin)) {
+                            self.setError("BorrowUseAfterInvalidation: view `{s}` borrows from `{s}`, which was moved, freed, or passed to a call that may invalidate it; the view may not be used after that point", .{ name, view_origin });
+                            return TypeError.BorrowUseAfterInvalidation;
+                        }
+                        if (self.closure_depth > (self.view_def_depth.get(name) orelse 0)) {
+                            self.setError("BorrowEscape: view `{s}` may not be captured by a closure (v1 borrows are non-escaping)", .{name});
+                            return TypeError.BorrowEscape;
+                        }
                     }
                     return sym.ty;
                 }
@@ -7935,6 +8284,12 @@ pub const TypeChecker = struct {
                 return @constCast(lowering_rules.pointerOrBorrowPointee(inner_ty) orelse return TypeError.DereferenceNonPointer);
             },
             .cast_expr => |cast| {
+                // E_res: casting a view (above all to a raw pointer)
+                // escapes it.
+                if (self.isViewExpr(cast.expr)) {
+                    self.setError("BorrowEscape: a borrow view may not be cast (v1 borrows are non-escaping and may not be converted to a raw pointer)", .{});
+                    return TypeError.BorrowEscape;
+                }
                 const src_ty = try self.checkExpr(cast.expr, scope);
                 if (isPointerCarrierCastType(src_ty) and isPointerCarrierCastType(cast.ty)) {
                     return cast.ty;
@@ -8068,6 +8423,11 @@ pub const TypeChecker = struct {
                         return TypeError.FieldNotFound;
                     };
                     const value_ty = try self.checkExpr(literal_field.value, scope);
+                    // E_res: a view stored into a struct field escapes.
+                    if (self.isViewExpr(literal_field.value)) {
+                        self.setError("BorrowEscape: a borrow view may not be stored into struct field `{s}.{s}` (v1 borrows are non-escaping)", .{ ud.name, literal_field.name });
+                        return TypeError.BorrowEscape;
+                    }
                     if (!self.typesEqual(field_ty, value_ty)) {
                         self.setError("TypeMismatch in struct literal field {s}.{s}: expected {s}, actual {s}", .{ ud.name, literal_field.name, typeDesc(field_ty), typeDesc(value_ty) });
                         return TypeError.TypeMismatch;
@@ -8161,8 +8521,17 @@ pub const TypeChecker = struct {
                 }
 
                 const elem_ty = try self.checkExpr(lit.elements[0], scope);
+                // E_res: a view stored into an array element escapes.
+                if (self.isViewExpr(lit.elements[0])) {
+                    self.setError("BorrowEscape: a borrow view may not be stored into an array element (v1 borrows are non-escaping)", .{});
+                    return TypeError.BorrowEscape;
+                }
                 for (lit.elements[1..]) |elem| {
                     const curr_ty = try self.checkExpr(elem, scope);
+                    if (self.isViewExpr(elem)) {
+                        self.setError("BorrowEscape: a borrow view may not be stored into an array element (v1 borrows are non-escaping)", .{});
+                        return TypeError.BorrowEscape;
+                    }
                     if (!self.typesEqual(elem_ty, curr_ty)) {
                         self.setError("TypeMismatch in array literal: element tag={s}, actual tag={s}", .{ @tagName(elem_ty.*), @tagName(curr_ty.*) });
                         return TypeError.TypeMismatch;
@@ -8175,6 +8544,11 @@ pub const TypeChecker = struct {
             },
             .repeat_array_literal => |lit| {
                 const elem_ty = try self.checkExpr(lit.value, scope);
+                // E_res: a view stored into an array element escapes.
+                if (self.isViewExpr(lit.value)) {
+                    self.setError("BorrowEscape: a borrow view may not be stored into an array element (v1 borrows are non-escaping)", .{});
+                    return TypeError.BorrowEscape;
+                }
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .array = .{ .elem = elem_ty, .len = lit.len } };
                 return ty;
@@ -8292,7 +8666,9 @@ pub const TypeChecker = struct {
                 const previous_arena_generation = self.arena_generation;
                 self.arena_generation += 1;
                 defer self.arena_generation = previous_arena_generation;
-                const ret_ty = try self.checkExpr(lit.body, closure_scope);
+                self.closure_depth += 1;
+        defer self.closure_depth -= 1;
+        const ret_ty = try self.checkExpr(lit.body, closure_scope);
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .closure = .{ .params = try param_types.toOwnedSlice(), .ret = ret_ty } };
                 return ty;
@@ -9074,6 +9450,9 @@ pub const TypeChecker = struct {
                 }
 
                 if (self.funcs.get(resolved_func_name)) |func| {
+                    if (func.ret_borrow_origin) |origin_name| {
+                        try self.validateOriginArgForm(call, func.params, origin_name);
+                    }
                     try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, false);
                     if (!std.mem.eql(u8, resolved_func_name, call.func_name) or
                         self.resolveFunctionAliasMetadata(call.func_name) != null or
@@ -9084,10 +9463,16 @@ pub const TypeChecker = struct {
                     if (func.is_async) {
                         return try self.makeFutureType(func.ret_ty);
                     }
+                    if (func.ret_borrow_origin) |origin_name| {
+                        return try self.annotatedCallResult(expr, call, func.params, origin_name, func.ret_ty);
+                    }
                     return func.ret_ty;
                 }
 
                 if (self.imported_function_signatures.get(resolved_func_name)) |signature| {
+                    if (signature.ret_borrow_origin) |origin_name| {
+                        try self.validateOriginArgForm(call, signature.params, origin_name);
+                    }
                     try self.checkCallArgsAgainstSignature(signature.params, call.args, scope, call.func_name, false, signature.is_variadic);
                     if (!std.mem.eql(u8, resolved_func_name, call.func_name) or
                         self.resolveFunctionAliasMetadata(call.func_name) != null or
@@ -9096,6 +9481,9 @@ pub const TypeChecker = struct {
                         try self.recordResolvedCallSymbol(expr, call.func_name, resolved_func_name);
                     }
                     if (signature.is_async) return try self.makeFutureType(signature.ret_ty);
+                    if (signature.ret_borrow_origin) |origin_name| {
+                        return try self.annotatedCallResult(expr, call, signature.params, origin_name, signature.ret_ty);
+                    }
                     return signature.ret_ty;
                 }
 
@@ -9107,6 +9495,11 @@ pub const TypeChecker = struct {
                     if (decl.fields.len != call.args.len) return TypeError.InvalidArgsCount;
                     for (decl.fields, call.args) |field, arg| {
                         const arg_ty = try self.checkExpr(arg, scope);
+                        // E_res: a view stored into a struct field escapes.
+                        if (self.isViewExpr(arg)) {
+                            self.setError("BorrowEscape: a borrow view may not be stored into struct field `{s}.{s}` (v1 borrows are non-escaping)", .{ decl.name, field.name });
+                            return TypeError.BorrowEscape;
+                        }
                         if (!self.typesEqual(field.ty, unwrapBorrowForCallArg(arg, arg_ty))) return TypeError.TypeMismatch;
                     }
                     const ret = try self.allocator.create(ast.Type);
@@ -9965,6 +10358,38 @@ pub const TypeChecker = struct {
                         return elem_ty;
                     }
                     return TypeError.TypeMismatch;
+                }
+
+                // E_res: __slice_view(data_ptr, len) materializes a
+                // non-escaping Slice<u8> view of an owner's buffer.
+                // The data pointer is the result of a borrow-return
+                // extern (`_data`/`_ptr`); the view's origin is the
+                // owner place behind that call (or behind a plain
+                // place argument). Both arguments are checked inside
+                // the production, so the inner data/len calls do not
+                // invalidate the view they create.
+                if (std.mem.eql(u8, call.func_name, "__slice_view") and call.associated_target == null) {
+                    if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                    self.slice_production_depth += 1;
+                    const p_ty = try self.checkExpr(call.args[0], scope);
+                    const n_ty = try self.checkExpr(call.args[1], scope);
+                    self.slice_production_depth -= 1;
+                    if (!(p_ty.* == .pointer or p_ty.* == .borrow or (p_ty.* == .primitive and p_ty.primitive == .raw_ptr))) {
+                        self.setError("__slice_view: the data argument must be a raw pointer (the result of a `_data`/`_ptr` borrow extern), got {s}", .{typeDesc(p_ty)});
+                        return TypeError.TypeMismatch;
+                    }
+                    if (!isNumericType(n_ty)) {
+                        self.setError("__slice_view: the length argument must be an integer, got {s}", .{typeDesc(n_ty)});
+                        return TypeError.TypeMismatch;
+                    }
+                    const origin = self.sliceViewOriginOf(call.args[0]) orelse {
+                        self.setError("BorrowOriginNotABinding: __slice_view's data argument must borrow from an identifiable owner binding", .{});
+                        return TypeError.BorrowOriginNotABinding;
+                    };
+                    try self.expr_view_origin.put(expr, origin);
+                    const elem = try self.allocator.create(ast.Type);
+                    elem.* = .{ .primitive = .u8 };
+                    return try self.makeSliceType(elem);
                 }
 
                 // 2. Check FFI functions (validation shared with the
@@ -10947,7 +11372,7 @@ test "type checker resolves imported function signature without function body" {
 
     var ret_ty = ast.Type{ .primitive = .i32 };
     try tc.registerFunctionAliasWithMetadata("dep__imported_a", "imported_a", "dep", "/tmp/dep.sla");
-    try tc.registerImportedFunctionSignature("imported_a", &.{}, &ret_ty, false, false);
+    try tc.registerImportedFunctionSignature("imported_a", &.{}, &ret_ty, false, false, false, null);
 
     var call_node = ast.Node{ .call_expr = .{
         .func_name = "dep__imported_a",

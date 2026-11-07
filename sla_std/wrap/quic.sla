@@ -5,6 +5,10 @@
 // Regenerate: python3 gen_wrap.py --sai <sa_std>/quic.sai --out-dir out
 @import "sa_std/quic.sai"
 
+struct QuicBuffer {
+    raw: u64,
+}
+
 fn sla_std_quic_supported(&out_supported: u64) -> i32 {
     return sa_std_quic_supported(out_supported);
 }
@@ -107,6 +111,10 @@ fn sla_std_http3_response_status(session: u64, stream_id: i64, &out_status: u64)
 
 fn sla_std_http3_stream_read(session: u64, stream_id: i64, &out: u64, out_cap: u64, &out_read: u64, &out_fin: u64) -> i32 {
     return sa_std_http3_stream_read(session, stream_id, out, out_cap, out_read, out_fin);
+}
+
+fn sla_std_quic_buffer_data(&buffer: QuicBuffer) -> &[u8][buffer] {
+    return __slice_view(sa_std_quic_buffer_data(buffer.raw), sa_std_quic_buffer_len(buffer.raw));
 }
 
 fn sla_std_quic_buffer_len(buffer: u64) -> u64 {

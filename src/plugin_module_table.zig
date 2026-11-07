@@ -32,6 +32,9 @@ pub const SlaModuleExports = struct {
         no_mangle: bool,
         is_async: bool,
         is_variadic: bool = false,
+        /// A_min (fallible `T!` batch): see ast.FuncDecl.
+        ret_fallible_sugar: bool = false,
+        ret_borrow_origin: ?[]const u8 = null,
         module_path: []const u8,
     };
 
@@ -151,6 +154,8 @@ pub const SlaModuleExports = struct {
             .no_mangle = fd.no_mangle,
             .is_async = fd.is_async,
             .is_variadic = fd.is_variadic,
+            .ret_fallible_sugar = fd.ret_fallible_sugar,
+            .ret_borrow_origin = fd.ret_borrow_origin,
             .module_path = self.module_path,
         });
     }

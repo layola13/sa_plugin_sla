@@ -3948,6 +3948,31 @@ pub fn abiFalliblePayloadOffset(raw: []const u8) usize {
     return (4 + payload_align - 1) & ~(payload_align - 1);
 }
 
+/// A_min (fallible `T!` batch): the payload scalar set the fallible ABI
+/// can carry. `abiRawPayloadTypeString` silently maps anything else to
+/// "ptr"; a fallible extern whose payload names a type outside this set
+/// must be rejected loudly at the contract boundary instead of being
+/// silently treated as pointer-width.
+pub fn abiFalliblePayloadSupported(raw: []const u8) bool {
+    var name = std.mem.trim(u8, raw, " \t\r");
+    if (name.len > 0 and (name[0] == '&' or name[0] == '^' or name[0] == '*')) {
+        name = std.mem.trim(u8, name[1..], " \t\r");
+    }
+    if (std.mem.endsWith(u8, name, "!")) {
+        name = std.mem.trim(u8, name[0 .. name.len - 1], " \t\r");
+    }
+    const supported = [_][]const u8{
+        "ptr", "bool",
+        "i8",  "i16",  "i32",  "i64",  "int",   "isize",
+        "u8",  "u16",  "u32",  "u64",  "usize",
+        "f32", "f64",  "float",
+    };
+    for (supported) |s| {
+        if (std.mem.eql(u8, name, s)) return true;
+    }
+    return false;
+}
+
 pub fn abiPassesAsPointer(ty: *const ast.Type) bool {
     return switch (ty.*) {
         .pointer, .borrow, .fn_ptr, .user_defined, .tuple, .array, .future => true,

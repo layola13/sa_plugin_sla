@@ -1,0 +1,68 @@
+@import "sa_std/vec.sa"
+@import "sa_std/string.sa"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/box.sa"
+@import "sa_std/core/trait_object.sa"
+
+// DEF-ROSETTA32-DOUBLE-FREE (demos/rosetta/32_trait_object_vector):
+// on the SAB backend, genVecLiteralCall's ownership-transfer branch
+// skipped all consumption bookkeeping for a *local* element source,
+// so a named local stored into a vec! literal was dropped at scope
+// exit AND again by the Vec's element drop (double free / dangling
+// handle). The push method arm had the same hole closed under
+// DEF-SAB-BORROW-RESIDUAL via markConsumed; the literal arm was
+// missed. These tests pin the literal form for the three element
+// shapes that reproduced: Box<dyn Trait>, String, Vec<i32>.
+
+trait Score {
+    fn score(&self) -> i32;
+}
+
+struct AddOne(i32);
+struct AddTwo(i32);
+
+impl Score for AddOne {
+    fn score(&self) -> i32 {
+        self.0 + 1
+    }
+}
+
+impl Score for AddTwo {
+    fn score(&self) -> i32 {
+        self.0 + 2
+    }
+}
+
+@test "vec literal of box dyn locals moves"() {
+    let left: Box<dyn Score> = Box::new(AddOne(4));
+    let right: Box<dyn Score> = Box::new(AddTwo(5));
+    let values: Vec<Box<dyn Score> > = vec(left, right);
+    let total: i32 = values.iter().map(|v: Box<dyn Score>| v.score()).sum();
+    if total != 12 { panic(3201); };
+}
+
+@test "vec literal of box dyn single local moves"() {
+    let left: Box<dyn Score> = Box::new(AddOne(4));
+    let values: Vec<Box<dyn Score> > = vec(left);
+    if len(values) != 1 { panic(3202); };
+    if values[0].score() != 5 { panic(3203); };
+}
+
+@test "vec literal of string locals moves"() {
+    let s1: String = format("aa");
+    let s2: String = format("bbb");
+    let values: Vec<String> = vec(s1, s2);
+    if len(values) != 2 { panic(3204); };
+    if len(values[0]) != 2 { panic(3205); };
+    if len(values[1]) != 3 { panic(3206); };
+}
+
+@test "vec literal of vec locals moves"() {
+    let inner1: Vec<i32> = vec(1, 2);
+    let inner2: Vec<i32> = vec(3);
+    let values: Vec<Vec<i32> > = vec(inner1, inner2);
+    if len(values) != 2 { panic(3207); };
+    if len(values[0]) != 2 { panic(3208); };
+    if len(values[1]) != 1 { panic(3209); };
+    if values[0][1] != 2 { panic(3210); };
+}

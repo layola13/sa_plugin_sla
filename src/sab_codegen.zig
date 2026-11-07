@@ -15507,7 +15507,20 @@ pub const Codegen = struct {
                 try self.emitConsumedMarker(cr);
                 try self.markConsumed(cr);
             } else if (elem_transfers_ownership) {
-                if (!self.isLocalReg(arg_reg)) try self.emitMove(arg_reg);
+                if (!self.isLocalReg(arg_reg)) {
+                    try self.emitMove(arg_reg);
+                } else {
+                    // DEF-ROSETTA32-DOUBLE-FREE: mirror of the
+                    // DEF-SAB-BORROW-RESIDUAL rule in genVecPushCall --
+                    // the literal's VEC_PUSH stores the local element's
+                    // handle word itself, so the Vec owns the cell from
+                    // here and the local's exit drop must skip it.
+                    // Without markConsumed the source local was dropped
+                    // at scope exit AND by the Vec's element drop
+                    // (double free: demos/rosetta/32 vec! of Box<dyn>
+                    // locals; same hole for String/Vec locals).
+                    try self.markConsumed(arg_reg);
+                }
             } else if (lowering_rules.isHeapHandleType(elem_ty)) {
                 // DEF-ZRANGE: same rule as genVecPushCall -- the literal's
                 // VEC_PUSH stores the heap-handle element's handle word,

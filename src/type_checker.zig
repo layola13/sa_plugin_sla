@@ -317,6 +317,13 @@ pub const TypeChecker = struct {
     current_function_namespace: ?[]const u8,
     current_loop_scope: ?*Scope,
     current_loop_body_terminates: bool,
+    // REG-LOOP-CONSUME: depth of `return` value expressions currently
+    // being checked. A consumption inside a return value leaves the
+    // function together with that value; it cannot stay dead across a
+    // loop back-edge, so the loop guard in consumeBinding does not
+    // apply to it (the same principle as the REG-BR-6 self-assignment
+    // tail form below, whose consumption is healed in-statement).
+    return_value_depth: u32 = 0,
     // REG-BR-6: while checking an assignment statement's right-hand
     // side, the target identifier and value node, so the call-argument
     // consumption hook can recognize the self-assignment tail form
@@ -450,7 +457,7 @@ pub const TypeChecker = struct {
 
     fn consumeBinding(self: *TypeChecker, scope: *Scope, name: []const u8, sym: *Symbol, operation: []const u8) TypeError!void {
         if (self.current_loop_scope) |loop_scope| {
-            if (!self.current_loop_body_terminates and !bindingIsLocalToLoop(scope, loop_scope, name)) {
+            if (!self.current_loop_body_terminates and self.return_value_depth == 0 and !bindingIsLocalToLoop(scope, loop_scope, name)) {
                 self.setError("LoopConditionalConsume: binding `{s}` declared before the loop cannot be consumed by {s} inside the loop body", .{ name, operation });
                 return TypeError.CompileError;
             }
@@ -7366,7 +7373,17 @@ pub const TypeChecker = struct {
             },
             .return_stmt => |ret| {
                 if (ret.value) |val| {
-                    const val_ty = try self.checkExpr(val, scope);
+                    // REG-LOOP-CONSUME: consumptions inside the return
+                    // value leave the function with it and can never be
+                    // loop-carried; consumeBinding's loop guard keys off
+                    // this depth (see the field declaration).
+                    const prev_return_value_depth = self.return_value_depth;
+                    self.return_value_depth += 1;
+                    const val_ty = self.checkExpr(val, scope) catch |err| {
+                        self.return_value_depth = prev_return_value_depth;
+                        return err;
+                    };
+                    self.return_value_depth = prev_return_value_depth;
                     if (!self.valueAssignableTo(ret_ty, val_ty)) {
                         self.setError("TypeMismatch in return: expected {s}, actual {s}", .{ typeDesc(ret_ty), typeDesc(val_ty) });
                         return TypeError.TypeMismatch;

@@ -4,7 +4,7 @@ array_count	sab	fail	check	Undefined call	1
 array_find	text	fail	check	Undefined call	1
 array_find	sab	fail	check	Undefined call	1
 array_iter	text	fail	codegen	UndefinedMacro	1
-array_iter	sab	fail	codegen	UnknownRegister	1
+array_iter	sab	ok	-	-	0
 array_sum	text	ok	-	-	0
 array_sum	sab	ok	-	-	0
 btree_get	text	ok	-	-	0
@@ -13,26 +13,26 @@ btree_insert	text	ok	-	-	0
 btree_insert	sab	ok	-	-	0
 btree_keys_method	text	fail	check	Undefined call	1
 btree_keys_method	sab	fail	check	Undefined call	1
-btree_remove_macro	text	fail	run	panic:40302	1
-btree_remove_macro	sab	fail	codegen	UnknownRegister	1
+btree_remove_macro	text	fail	run	UnknownRegister	1
+btree_remove_macro	sab	fail	run	UnknownRegister	1
 btree_remove_method	text	fail	check	TypeMismatch	1
 btree_remove_method	sab	fail	check	TypeMismatch	1
 builtin_panic	text	ok	-	-	0
 builtin_panic	sab	ok	-	-	0
-map_contains_macro	text	fail	run	panic:40107	1
-map_contains_macro	sab	fail	codegen	UnknownRegister	1
+map_contains_macro	text	fail	run	UnknownRegister	1
+map_contains_macro	sab	fail	codegen	MemoryLeak	1
 map_contains_method	text	fail	check	Undefined call	1
 map_contains_method	sab	fail	check	Undefined call	1
-map_del_macro	text	fail	run	panic:40103	1
-map_del_macro	sab	fail	codegen	UnknownRegister	1
+map_del_macro	text	fail	run	UnknownRegister	1
+map_del_macro	sab	fail	run	UnknownRegister	1
 map_del_method	text	fail	check	Undefined call	1
 map_del_method	sab	fail	check	Undefined call	1
 map_get	text	ok	-	-	0
 map_get	sab	ok	-	-	0
 map_insert	text	ok	-	-	0
 map_insert	sab	ok	-	-	0
-map_keys_index	text	fail	codegen	CodegenError	1
-map_keys_index	sab	fail	codegen	UnsupportedSabDirectFeature	1
+map_keys_index	text	fail	codegen	UnknownRegister	1
+map_keys_index	sab	fail	codegen	UnknownRegister	1
 map_keys_macro	text	ok	-	-	0
 map_keys_macro	sab	fail	codegen	UnknownRegister	1
 map_keys_method	text	fail	check	Undefined call	1
@@ -59,8 +59,8 @@ set_keys_macro	text	ok	-	-	0
 set_keys_macro	sab	fail	codegen	UnknownRegister	1
 set_len	text	ok	-	-	0
 set_len	sab	ok	-	-	0
-set_remove_macro	text	fail	run	panic:40202	1
-set_remove_macro	sab	fail	codegen	UnknownRegister	1
+set_remove_macro	text	fail	run	UnknownRegister	1
+set_remove_macro	sab	fail	run	UnknownRegister	1
 set_remove_method	text	fail	check	TypeMismatch	1
 set_remove_method	sab	fail	check	TypeMismatch	1
 set_union_method	text	fail	unknown	error.UnexpectedToken	1
@@ -68,7 +68,7 @@ set_union_method	sab	fail	unknown	error.UnexpectedToken	1
 using_ext	text	ok	-	-	0
 using_ext	sab	ok	-	-	0
 vec_collect	text	ok	-	-	0
-vec_collect	sab	fail	codegen	UnknownRegister	1
+vec_collect	sab	ok	-	-	0
 vec_collect_vec_target	text	fail	check	TypeMismatch	1
 vec_collect_vec_target	sab	fail	check	TypeMismatch	1
 vec_count	text	fail	check	Undefined call	1
@@ -76,13 +76,13 @@ vec_count	sab	fail	check	Undefined call	1
 vec_find	text	fail	check	Undefined call	1
 vec_find	sab	fail	check	Undefined call	1
 vec_fold	text	fail	codegen	UndefinedMacro	1
-vec_fold	sab	fail	codegen	UnsupportedSabDirectFeature	1
+vec_fold	sab	ok	-	-	0
 vec_iter	text	fail	codegen	UndefinedMacro	1
-vec_iter	sab	fail	codegen	UnknownRegister	1
+vec_iter	sab	ok	-	-	0
 vec_len	text	ok	-	-	0
 vec_len	sab	ok	-	-	0
 vec_map	text	fail	codegen	UndefinedMacro	1
-vec_map	sab	fail	codegen	UnsupportedSabDirectFeature	1
+vec_map	sab	ok	-	-	0
 vec_max	text	fail	check	Undefined call	1
 vec_max	sab	fail	check	Undefined call	1
 vec_push	text	ok	-	-	0
@@ -91,7 +91,7 @@ vec_rev	text	fail	check	Undefined call	1
 vec_rev	sab	fail	check	Undefined call	1
 vec_skip	text	fail	check	Undefined call	1
 vec_skip	sab	fail	check	Undefined call	1
-vec_sum	text	fail	codegen	CodegenError	1
-vec_sum	sab	fail	codegen	UnknownRegister	1
+vec_sum	text	fail	codegen	UnknownRegister	1
+vec_sum	sab	ok	-	-	0
 vec_take	text	fail	check	Undefined call	1
 vec_take	sab	fail	check	Undefined call	1

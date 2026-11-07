@@ -323,6 +323,18 @@ pub const Codegen = struct {
     const_decls: std.array_list.Managed(const_decl.ConstDecl),
     fn_ptr_vtables: std.StringHashMap(void),
     closure_bindings: std.StringHashMap(*const ast.ClosureLiteral),
+    // Names bound by `let` to an iter()/into_iter() call, mapped to
+    // the underlying collection expression. Adapter calls (sum /
+    // map / fold / collect) on such a held iterator resolve their
+    // source through this table, mirroring the SA-text backend where
+    // iter() is the identity on the collection value.
+    iter_source_bindings: std.StringHashMap(*ast.Node),
+    // Imported macros whose direct callees were already pulled via
+    // ensureStdDeps (genImportedMacroCall). The dep set is a property
+    // of the macro, not of the call site; without this memo every
+    // macro call site re-scans the pending-dep list, which is
+    // quadratic on macro-dense modules (reg1 dns codec: >600 s).
+    imported_macro_deps_seen: std.StringHashMap(void),
     closure_param_regs: std.StringHashMap(u32),
     borrowed_bindings: std.StringHashMap(void),
     assigned_bindings: std.StringHashMap(void),
@@ -472,6 +484,8 @@ pub const Codegen = struct {
             .const_decls = std.array_list.Managed(const_decl.ConstDecl).init(allocator),
             .fn_ptr_vtables = std.StringHashMap(void).init(allocator),
             .closure_bindings = std.StringHashMap(*const ast.ClosureLiteral).init(allocator),
+            .iter_source_bindings = std.StringHashMap(*ast.Node).init(allocator),
+            .imported_macro_deps_seen = std.StringHashMap(void).init(allocator),
             .closure_param_regs = std.StringHashMap(u32).init(allocator),
             .borrowed_bindings = std.StringHashMap(void).init(allocator),
             .assigned_bindings = std.StringHashMap(void).init(allocator),
@@ -535,6 +549,12 @@ pub const Codegen = struct {
         self.const_decls.deinit();
         self.fn_ptr_vtables.deinit();
         self.closure_bindings.deinit();
+        self.iter_source_bindings.deinit();
+        {
+            var seen_it = self.imported_macro_deps_seen.keyIterator();
+            while (seen_it.next()) |key| self.allocator.free(key.*);
+        }
+        self.imported_macro_deps_seen.deinit();
         self.closure_param_regs.deinit();
         self.borrowed_bindings.deinit();
         self.assigned_bindings.deinit();
@@ -2602,6 +2622,7 @@ pub const Codegen = struct {
         self.loop_continue_labels.clearRetainingCapacity();
         self.loop_break_labels.clearRetainingCapacity();
         self.closure_bindings.clearRetainingCapacity();
+        self.iter_source_bindings.clearRetainingCapacity();
         self.closure_param_regs.clearRetainingCapacity();
         self.borrowed_bindings.clearRetainingCapacity();
         self.clearRefCellBorrowValues();
@@ -4769,6 +4790,29 @@ pub const Codegen = struct {
     }
 
     fn emitLoad(self: *Codegen, dst: u32, base: u32, offset: usize, ty: sig.PrimType) !void {
+        // SAB ops are width-less 64-bit register ops, and every other
+        // producer of a signed narrow value (arithmetic, parameters,
+        // constants) leaves it sign-extended in its register -- but a
+        // typed load leaves the loaded bits zero-extended, so a later
+        // width-less comparison against a sign-extended constant sees
+        // a different value than the SA-text backend (whose ops carry
+        // the i8/i16/i32 width). The SAB cast ops (sext/zext) lower to
+        // plain assigns on the LLVM/C emitters, so canonicalize with
+        // real shifts: shl puts the sign bit at bit 63, ashr replicates
+        // it across the high bits.
+        if (ty == .i8 or ty == .i16 or ty == .i32) {
+            const raw = try self.intern(try self.newTmp());
+            try self.recordReg(raw);
+            var item = self.makeInst(.load);
+            item.operands[0] = .{ .reg = raw };
+            item.operands[1] = .{ .reg = base };
+            item.operands[2] = .{ .imm_u64 = @intCast(offset) };
+            item.operands[3] = .{ .ty = @intFromEnum(ty) };
+            try self.appendInst(item);
+            try self.emitShiftCanonicalize(dst, raw, ty);
+            try self.emitRelease(raw);
+            return;
+        }
         try self.recordReg(dst);
         var item = self.makeInst(.load);
         item.operands[0] = .{ .reg = dst };
@@ -4776,6 +4820,43 @@ pub const Codegen = struct {
         item.operands[2] = .{ .imm_u64 = @intCast(offset) };
         item.operands[3] = .{ .ty = @intFromEnum(ty) };
         try self.appendInst(item);
+    }
+
+    /// Canonicalize a register holding a zero-extended signed narrow
+    /// integer (i8/i16/i32) into sign-extended 64-bit form, writing
+    /// the result into `dst`: shl by (64 - bits) moves the sign bit to
+    /// bit 63, ashr by the same amount replicates it. Used for typed
+    /// loads; fragment outputs go through emitSextNarrow below.
+    fn emitShiftCanonicalize(self: *Codegen, dst: u32, src: u32, src_ty: sig.PrimType) !void {
+        const shift: i64 = switch (src_ty) {
+            .i8 => 56,
+            .i16 => 48,
+            .i32 => 32,
+            else => return,
+        };
+        const shifted = try self.intern(try self.newTmp());
+        try self.emitOp(shifted, .shl, .{ .reg = src }, .{ .imm_i64 = shift });
+        try self.emitOp(dst, .ashr, .{ .reg = shifted }, .{ .imm_i64 = shift });
+        try self.emitRelease(shifted);
+    }
+
+    /// Canonicalize a register holding a signed narrow integer (i8/
+    /// i16/i32) loaded by a std fragment (whose typed loads bypass
+    /// emitLoad) into a fresh canonical register.
+    fn emitSextNarrow(self: *Codegen, src: u32, src_ty: sig.PrimType) !u32 {
+        const dst = try self.intern(try self.newTmp());
+        try self.emitShiftCanonicalize(dst, src, src_ty);
+        return dst;
+    }
+
+    fn signedNarrowPrim(ty: *const ast.Type) ?sig.PrimType {
+        if (ty.* != .primitive) return null;
+        return switch (ty.primitive) {
+            .i8 => .i8,
+            .i16 => .i16,
+            .i32 => .i32,
+            else => null,
+        };
     }
 
     fn emitTake(self: *Codegen, dst: u32, base: u32, offset: usize, ty: sig.PrimType) !void {
@@ -8259,6 +8340,18 @@ pub const Codegen = struct {
             try self.pushLocal(name, src, false);
             return;
         }
+        if (value_expr.* == .call_expr and lowering_rules.isIterOrIntoIterCall(value_expr.call_expr) and value_expr.call_expr.args.len == 1) {
+            // Held iterator: `src` is the non-owning alias produced by
+            // genIterIdentityCall. Bind the name straight to it like a
+            // borrow -- an `assign` here would consume the alias and,
+            // worse, register a second owning binding for the source
+            // collection's allocation. Adapter calls on the name are
+            // resolved from iter_source_bindings provenance, and scope
+            // cleanup skips non-owning registers, so the source
+            // binding's own drop stays the single release.
+            try self.pushLocal(name, src, false);
+            return;
+        }
         const let_ty = if (explicit_ty) |ty| ty else (try self.exprTypeOrFallback(value_expr)) orelse return Error.MissingType;
         if (self.stack_alloc_emitted.contains(src)) {
             // Expression emitters that home their value in a stack slot (today
@@ -8347,6 +8440,14 @@ pub const Codegen = struct {
 
     fn genLet(self: *Codegen, let: ast.LetStmt) anyerror!void {
         _ = self.future_readiness_by_name.remove(let.name);
+        // Held-iterator provenance: `let it = v.iter();` records the
+        // underlying collection so adapter calls on `it` (sum / map /
+        // fold / collect) lower like the chained form.
+        if (let.value.* == .call_expr and lowering_rules.isIterOrIntoIterCall(let.value.call_expr) and let.value.call_expr.args.len == 1) {
+            try self.iter_source_bindings.put(let.name, let.value.call_expr.args[0]);
+        } else {
+            _ = self.iter_source_bindings.remove(let.name);
+        }
         if (lowering_rules.isStackAllocNode(let.value)) {
             const dst = try self.bindingReg(let.name);
             try self.emitStackAlloc(dst, try self.stackAllocSize(let.value.call_expr));
@@ -15490,11 +15591,7 @@ pub const Codegen = struct {
         _ = expr;
         if (!std.mem.eql(u8, call.func_name, "collect") or call.args.len != 1) return null;
         if (call.generics.len != 1 or !lowering_rules.isStringType(call.generics[0])) return null;
-        const iter_expr = call.args[0];
-        if (iter_expr.* != .call_expr) return null;
-        const iter_call = &iter_expr.call_expr;
-        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
-        const source = iter_call.args[0];
+        const source = self.iterAdapterSourceNode(call.args[0]) orelse return null;
         const source_ty = self.tc.expr_types.get(source) orelse return null;
         const arr = lowering_rules.arrayType(source_ty) orelse return null;
         if (arr.elem.* != .primitive or arr.elem.primitive != .u8) return null;
@@ -15520,32 +15617,108 @@ pub const Codegen = struct {
         return buf;
     }
 
-    fn arrayIterSumSource(call: ast.CallExpr) ?*ast.Node {
-        if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
-        const iter_expr = call.args[0];
-        if (iter_expr.* != .call_expr) return null;
-        const iter_call = &iter_expr.call_expr;
-        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
-        return iter_call.args[0];
+    /// `iter()/into_iter()` over a `Vec<u8>` collected into a `String`:
+    /// the Vec form of genArrayIterCollectStringCall (counted loop
+    /// over the vec buffer, byte-by-byte String buffer build).
+    fn genVecIterCollectStringCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!std.mem.eql(u8, call.func_name, "collect") or call.args.len != 1) return null;
+        if (call.generics.len != 1 or !lowering_rules.isStringType(call.generics[0])) return null;
+        const source = self.iterAdapterSourceNode(call.args[0]) orelse return null;
+        const source_ty = self.tc.expr_types.get(source) orelse return null;
+        const elem_ty = lowering_rules.vecElementType(source_ty) orelse return null;
+        if (elem_ty.* != .primitive or elem_ty.primitive != .u8) return null;
+        try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_with_capacity", "sa_vec_push", "sa_vec_len" });
+        const vec_reg = try self.genExpr(@constCast(source));
+        const data_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
+            self.symbols.items[data_reg],
+            self.symbols.items[vec_reg],
+        });
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_LEN", &.{
+            self.symbols.items[len_reg],
+            self.symbols.items[vec_reg],
+        });
+        const buf = try self.intern(try self.newTmp());
+        try self.recordReg(buf);
+        try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_NEW", &.{self.symbols.items[buf]});
+
+        const loop_start = try self.newLabel("L_VEC_COLLECT_LOOP");
+        const loop_body = try self.newLabel("L_VEC_COLLECT_BODY");
+        const loop_end = try self.newLabel("L_VEC_COLLECT_END");
+        const idx = try self.intern(try self.newTmp());
+        try self.emitAssignImm(idx, 0);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_start);
+        const cmp = try self.intern(try self.newTmp());
+        try self.emitOp(cmp, .slt, .{ .reg = idx }, .{ .reg = len_reg });
+        try self.emitBranch(cmp, loop_body, loop_end);
+        try self.emitLabel(loop_body);
+        const byte_offset = try self.intern(try self.newTmp());
+        try self.emitOp(byte_offset, .mul, .{ .reg = idx }, .{ .imm_u64 = 8 });
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr, data_reg, .{ .reg = byte_offset });
+        const item = try self.intern(try self.newTmp());
+        try self.emitLoad(item, elem_ptr, 0, .u8);
+        try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_PUSH_BYTE", &.{
+            self.symbols.items[buf],
+            self.symbols.items[item],
+        });
+        try self.emitOp(idx, .add, .{ .reg = idx }, .{ .imm_i64 = 1 });
+        try self.emitRelease(byte_offset);
+        try self.emitRelease(elem_ptr);
+        try self.emitRelease(item);
+        try self.emitRelease(cmp);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_end);
+        try self.emitRelease(data_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(idx);
+        if (!self.isLocalReg(vec_reg)) try self.emitRelease(vec_reg);
+        return buf;
     }
 
-    fn arrayCopiedIterSumSource(call: ast.CallExpr) ?*ast.Node {
-        if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
-        const iter_expr = call.args[0];
-        if (iter_expr.* != .call_expr) return null;
-        const copied_call = &iter_expr.call_expr;
-        if (!lowering_rules.isCopiedCall(copied_call.*) or copied_call.args.len != 1) return null;
-        const inner_expr = copied_call.args[0];
-        if (inner_expr.* != .call_expr) return null;
-        const iter_call = &inner_expr.call_expr;
-        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
-        return iter_call.args[0];
+    /// Resolve the collection expression behind an iterator
+    /// receiver: either a direct iter()/into_iter() call (chained
+    /// form) or an identifier bound by `let` to such a call (held
+    /// form, via iter_source_bindings).
+    fn iterAdapterSourceNode(self: *Codegen, recv: *ast.Node) ?*ast.Node {
+        if (recv.* == .call_expr and lowering_rules.isIterOrIntoIterCall(recv.call_expr) and recv.call_expr.args.len == 1) {
+            return recv.call_expr.args[0];
+        }
+        if (recv.* == .identifier) {
+            return self.iter_source_bindings.get(recv.identifier);
+        }
+        return null;
+    }
+
+    /// `iter()` / `into_iter()` evaluated as a value: the iterator
+    /// IS the collection value (mirrors the SA-text backend, whose
+    /// isIterOrIntoIterCall branch returns the receiver register).
+    /// Adapter calls on the resulting binding resolve their source
+    /// through iter_source_bindings.
+    fn genIterIdentityCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!lowering_rules.isIterOrIntoIterCall(call) or call.args.len != 1) return null;
+        const src = try self.genExpr(@constCast(call.args[0]));
+        // The iterator IS the collection value (mirrors the SA-text
+        // identity), but the source register must not be handed out
+        // directly: a let's `assign` of a pointer-backed value consumes
+        // the source in the verifier, and the source binding would be
+        // used-after-move by every adapter call and double-released at
+        // scope exit. Hand out a non-owning ptr_add alias instead --
+        // the same pattern genMpscChannelDestructure uses for the
+        // sender end of a channel.
+        const alias = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(alias, src, .{ .imm_u64 = 0 });
+        try self.markNonOwningReg(alias);
+        return alias;
     }
 
     fn genIterSumCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
 
-        if (arrayIterSumSource(call)) |source| {
+        if (self.iterAdapterSourceNode(call.args[0])) |source| {
             const source_ty = self.tc.expr_types.get(source) orelse {
                 return null;
             };
@@ -15555,15 +15728,23 @@ pub const Codegen = struct {
             if (lowering_rules.sliceElementType(source_ty)) |elem_ty| {
                 return try self.genSliceIterSum(source, elem_ty);
             }
+            if (lowering_rules.vecElementType(source_ty)) |elem_ty| {
+                return try self.genVecIterSum(source, elem_ty);
+            }
         }
 
-        if (arrayCopiedIterSumSource(call)) |source| {
-            const source_ty = self.tc.expr_types.get(source) orelse return null;
-            if (lowering_rules.arrayType(source_ty)) |arr| {
-                return try self.genArrayIterSum(source, arr);
-            }
-            if (lowering_rules.sliceElementType(source_ty)) |elem_ty| {
-                return try self.genSliceIterSum(source, elem_ty);
+        if (call.args[0].* == .call_expr and lowering_rules.isCopiedCall(call.args[0].call_expr) and call.args[0].call_expr.args.len == 1) {
+            if (self.iterAdapterSourceNode(call.args[0].call_expr.args[0])) |source| {
+                const source_ty = self.tc.expr_types.get(source) orelse return null;
+                if (lowering_rules.arrayType(source_ty)) |arr| {
+                    return try self.genArrayIterSum(source, arr);
+                }
+                if (lowering_rules.sliceElementType(source_ty)) |elem_ty| {
+                    return try self.genSliceIterSum(source, elem_ty);
+                }
+                if (lowering_rules.vecElementType(source_ty)) |elem_ty| {
+                    return try self.genVecIterSum(source, elem_ty);
+                }
             }
         }
 
@@ -15571,36 +15752,33 @@ pub const Codegen = struct {
         // per-element map + add, mirroring SA-text genArrayIterMapSum.
         if (call.args[0].* == .call_expr) {
             const inner = &call.args[0].call_expr;
-            if (lowering_rules.isMapCall(inner.*) and inner.args.len == 2 and inner.args[0].* == .call_expr) {
-                const iter_call = &inner.args[0].call_expr;
-                if (lowering_rules.isIterOrIntoIterCall(iter_call.*) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
-                    const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return null;
+            if (lowering_rules.isMapCall(inner.*) and inner.args.len == 2 and inner.args[1].* == .closure_literal) {
+                if (self.iterAdapterSourceNode(inner.args[0])) |iter_source| {
+                    const source_ty = self.tc.expr_types.get(iter_source) orelse return null;
                     if (lowering_rules.arrayType(source_ty)) |arr| {
-                        return try self.genArrayIterMapSum(iter_call.args[0], arr, &inner.args[1].closure_literal);
+                        return try self.genArrayIterMapSum(iter_source, arr, &inner.args[1].closure_literal);
                     }
                 }
             }
             // `sum(filter(iter/into_iter(array), |x| ...))`: unrolled
             // per-element predicate + conditional add, mirroring SA-text
             // genArrayIterFilterSum.
-            if (std.mem.eql(u8, inner.func_name, "filter") and inner.args.len == 2 and inner.args[0].* == .call_expr) {
-                const iter_call = &inner.args[0].call_expr;
-                if (lowering_rules.isIterOrIntoIterCall(iter_call.*) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
-                    const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return null;
+            if (std.mem.eql(u8, inner.func_name, "filter") and inner.args.len == 2 and inner.args[1].* == .closure_literal) {
+                if (self.iterAdapterSourceNode(inner.args[0])) |iter_source| {
+                    const source_ty = self.tc.expr_types.get(iter_source) orelse return null;
                     if (lowering_rules.arrayType(source_ty)) |arr| {
-                        return try self.genArrayIterFilterSum(iter_call.args[0], arr, &inner.args[1].closure_literal);
+                        return try self.genArrayIterFilterSum(iter_source, arr, &inner.args[1].closure_literal);
                     }
                 }
             }
             // `sum(map(iter/into_iter(vec), |x| ...))`: counted loop over
             // the vec buffer with per-element closure inline, mirroring
             // SA-text genVecIterSum.
-            if (lowering_rules.isMapCall(inner.*) and inner.args.len == 2 and inner.args[0].* == .call_expr) {
-                const iter_call = &inner.args[0].call_expr;
-                if (lowering_rules.isIterOrIntoIterCall(iter_call.*) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
-                    const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return null;
+            if (lowering_rules.isMapCall(inner.*) and inner.args.len == 2 and inner.args[1].* == .closure_literal) {
+                if (self.iterAdapterSourceNode(inner.args[0])) |iter_source| {
+                    const source_ty = self.tc.expr_types.get(iter_source) orelse return null;
                     if (lowering_rules.vecElementType(source_ty)) |elem_ty| {
-                        return try self.genVecIterMapSum(iter_call.args[0], elem_ty, &inner.args[1].closure_literal);
+                        return try self.genVecIterMapSum(iter_source, elem_ty, &inner.args[1].closure_literal);
                     }
                 }
             }
@@ -15614,14 +15792,92 @@ pub const Codegen = struct {
     /// closure over an accumulator slot).
     fn genIterFoldCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (!std.mem.eql(u8, call.func_name, "fold") or call.args.len != 3) return null;
-        if (call.args[0].* != .call_expr or call.args[2].* != .closure_literal) return null;
-        const iter_call = &call.args[0].call_expr;
-        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
-        const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return null;
+        if (call.args[2].* != .closure_literal) return null;
+        const source = self.iterAdapterSourceNode(call.args[0]) orelse return null;
+        const source_ty = self.tc.expr_types.get(source) orelse return null;
         if (lowering_rules.arrayType(source_ty)) |arr| {
-            return try self.genArrayIterFold(iter_call.args[0], call.args[1], arr, &call.args[2].closure_literal);
+            return try self.genArrayIterFold(source, call.args[1], arr, &call.args[2].closure_literal);
+        }
+        if (lowering_rules.vecElementType(source_ty)) |elem_ty| {
+            return try self.genVecIterFold(source, call.args[1], elem_ty, &call.args[2].closure_literal);
         }
         return null;
+    }
+
+    /// `fold(iter/into_iter(vec), init, |acc, x| ...)`: counted loop
+    /// over the vec buffer with the accumulator in a stack slot (the
+    /// register-carried form the array fold avoids for the same
+    /// back-edge reason), mirroring SA-text genVecIterFold.
+    fn genVecIterFold(self: *Codegen, source: *ast.Node, init_expr: *ast.Node, elem_ty: *const ast.Type, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        if (closure.params.len != 2) return Error.UnsupportedSabDirectFeature;
+        // The accumulator's storage type comes from the init
+        // expression's checked type: unannotated closure params can
+        // carry an unresolved `.infer` placeholder in the AST even
+        // after checking, while the init argument is always typed.
+        // Fall back to the element type (the acc == elem case).
+        const acc_prim = blk: {
+            if (self.tc.expr_types.get(init_expr)) |init_ty| {
+                if (storagePrimType(init_ty)) |prim| break :blk prim else |_| {}
+            }
+            break :blk try storagePrimType(elem_ty);
+        };
+        const elem_prim = try storagePrimType(elem_ty);
+        const vec_reg = try self.genExpr(@constCast(source));
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
+        const data_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
+            self.symbols.items[data_reg],
+            self.symbols.items[vec_reg],
+        });
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_LEN", &.{
+            self.symbols.items[len_reg],
+            self.symbols.items[vec_reg],
+        });
+        const init_reg = try self.genExpr(@constCast(init_expr));
+        const acc_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(acc_slot, sig.primTypeBytes(acc_prim));
+        try self.emitStore(acc_slot, 0, init_reg, acc_prim);
+        if (lowering_rules.callArgNeedsRelease(init_expr)) try self.emitRelease(init_reg);
+
+        const loop_start = try self.newLabel("L_VEC_FOLD_LOOP");
+        const loop_body = try self.newLabel("L_VEC_FOLD_BODY");
+        const loop_end = try self.newLabel("L_VEC_FOLD_END");
+        const idx = try self.intern(try self.newTmp());
+        try self.emitAssignImm(idx, 0);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_start);
+        const cmp = try self.intern(try self.newTmp());
+        try self.emitOp(cmp, .slt, .{ .reg = idx }, .{ .reg = len_reg });
+        try self.emitBranch(cmp, loop_body, loop_end);
+        try self.emitLabel(loop_body);
+        const byte_offset = try self.intern(try self.newTmp());
+        const slot_size = lowering_rules.vecElementSlotSize(elem_ty);
+        try self.emitOp(byte_offset, .mul, .{ .reg = idx }, .{ .imm_u64 = @intCast(slot_size) });
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr, data_reg, .{ .reg = byte_offset });
+        const item = try self.intern(try self.newTmp());
+        try self.emitLoad(item, elem_ptr, 0, elem_prim);
+        const acc = try self.intern(try self.newTmp());
+        try self.emitLoad(acc, acc_slot, 0, acc_prim);
+        const next_acc = try self.genInlineClosureBinary(closure, acc, item);
+        try self.emitStore(acc_slot, 0, next_acc, acc_prim);
+        try self.emitOp(idx, .add, .{ .reg = idx }, .{ .imm_i64 = 1 });
+        try self.emitRelease(byte_offset);
+        try self.emitRelease(elem_ptr);
+        try self.emitRelease(item);
+        try self.emitRelease(acc);
+        if (next_acc != acc and next_acc != item) try self.emitRelease(next_acc);
+        try self.emitRelease(cmp);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_end);
+        try self.emitRelease(data_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(idx);
+        if (!self.isLocalReg(vec_reg)) try self.emitRelease(vec_reg);
+        const result = try self.intern(try self.newTmp());
+        try self.emitLoad(result, acc_slot, 0, acc_prim);
+        return result;
     }
 
     fn genArrayIterSum(self: *Codegen, source: *ast.Node, arr: ast.ArrayType) anyerror!u32 {        if (arr.len == 0) {
@@ -15769,6 +16025,88 @@ pub const Codegen = struct {
         return result;
     }
 
+    /// `map(iter/into_iter(vec), |x| ...)` in value position: build a
+    /// fresh Vec by pushing each mapped element, mirroring the
+    /// SA-text genVecIterMap shape (the fused sum form is
+    /// genVecIterMapSum below).
+    fn genVecIterMapCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        if (!lowering_rules.isMapCall(call) or call.args.len != 2) return null;
+        if (call.args[1].* != .closure_literal) return null;
+        const closure = &call.args[1].closure_literal;
+        const iter_source = self.iterAdapterSourceNode(call.args[0]) orelse return null;
+        const source_ty = self.tc.expr_types.get(iter_source) orelse return null;
+        const src_elem_ty = lowering_rules.vecElementType(source_ty) orelse return null;
+        const result_ty = self.tc.expr_types.get(expr) orelse return null;
+        const out_elem_ty = lowering_rules.vecElementType(result_ty) orelse return null;
+        if (lowering_rules.vecElementSlotSize(src_elem_ty) != 8) return null;
+        if (lowering_rules.vecElementSlotSize(out_elem_ty) != 8) return null;
+        _ = self.tc.expr_types.get(closure.body) orelse return null;
+
+        const vec_reg = try self.genExpr(@constCast(iter_source));
+        try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_len", "sa_vec_new", "sa_vec_push", "sa_mem_copy" });
+        const data_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
+            self.symbols.items[data_reg],
+            self.symbols.items[vec_reg],
+        });
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_LEN", &.{
+            self.symbols.items[len_reg],
+            self.symbols.items[vec_reg],
+        });
+        const out_reg = try self.intern(try self.newTmp());
+        try self.recordReg(out_reg);
+        try self.emitCallBody(out_reg, "@sa_vec_new()");
+
+        const loop_start = try self.newLabel("L_VEC_MAP_LOOP");
+        const loop_body = try self.newLabel("L_VEC_MAP_BODY");
+        const loop_end = try self.newLabel("L_VEC_MAP_END");
+        const idx = try self.intern(try self.newTmp());
+        try self.emitAssignImm(idx, 0);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_start);
+        const cmp = try self.intern(try self.newTmp());
+        try self.emitOp(cmp, .slt, .{ .reg = idx }, .{ .reg = len_reg });
+        try self.emitBranch(cmp, loop_body, loop_end);
+        try self.emitLabel(loop_body);
+        const byte_offset = try self.intern(try self.newTmp());
+        try self.emitOp(byte_offset, .mul, .{ .reg = idx }, .{ .imm_u64 = 8 });
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr, data_reg, .{ .reg = byte_offset });
+        const item = try self.intern(try self.newTmp());
+        try self.emitLoad(item, elem_ptr, 0, try storagePrimType(src_elem_ty));
+        const mapped = try self.genInlineClosureUnary(closure, item);
+        const copy_reg = try self.pushArgCopyMaterialization(mapped, out_elem_ty);
+        const stored_reg = copy_reg orelse mapped;
+        try self.emitCallBody(out_reg, try std.fmt.allocPrint(self.allocator, "@sa_vec_push(^{s}, {s}, 8)", .{
+            self.symbols.items[out_reg],
+            self.symbols.items[stored_reg],
+        }));
+        if (copy_reg) |cr| {
+            try self.emitConsumedMarker(cr);
+            try self.markConsumed(cr);
+        } else if (lowering_rules.isHeapHandleType(out_elem_ty)) {
+            if (!self.isLocalReg(mapped)) {
+                try self.emitConsumedMarker(mapped);
+            }
+            try self.markConsumed(mapped);
+        } else if (!self.isLocalReg(mapped)) {
+            try self.emitRelease(mapped);
+        }
+        try self.emitOp(idx, .add, .{ .reg = idx }, .{ .imm_i64 = 1 });
+        try self.emitRelease(byte_offset);
+        try self.emitRelease(elem_ptr);
+        try self.emitRelease(item);
+        try self.emitRelease(cmp);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_end);
+        try self.emitRelease(data_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(idx);
+        if (!self.isLocalReg(vec_reg)) try self.emitRelease(vec_reg);
+        return out_reg;
+    }
+
     /// `sum(map(iter/into_iter(vec), |x| ...))`: counted loop over the vec
     /// buffer with per-element closure inline, mirroring SA-text
     /// genVecIterSum. The dynamic-dispatch closure body (`v.score()`) flows
@@ -15815,6 +16153,58 @@ pub const Codegen = struct {
         try self.emitRelease(elem_ptr);
         try self.emitRelease(item);
         if (mapped != item) try self.emitRelease(mapped);
+        try self.emitRelease(cmp);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_end);
+        try self.emitRelease(data_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(idx);
+        if (!self.isLocalReg(vec_reg)) try self.emitRelease(vec_reg);
+        return acc;
+    }
+
+    /// `sum(iter/into_iter(vec))` with no adapter: counted loop over
+    /// the vec buffer, mirroring SA-text genVecIterSum (the map form
+    /// is genVecIterMapSum below).
+    fn genVecIterSum(self: *Codegen, source: *ast.Node, elem_ty: *const ast.Type) anyerror!u32 {
+        const vec_reg = try self.genExpr(@constCast(source));
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
+        const data_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
+            self.symbols.items[data_reg],
+            self.symbols.items[vec_reg],
+        });
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_LEN", &.{
+            self.symbols.items[len_reg],
+            self.symbols.items[vec_reg],
+        });
+        const acc = try self.intern(try self.newTmp());
+        try self.emitAssignImm(acc, 0);
+
+        const loop_start = try self.newLabel("L_VEC_SUM_LOOP");
+        const loop_body = try self.newLabel("L_VEC_SUM_BODY");
+        const loop_end = try self.newLabel("L_VEC_SUM_END");
+        const idx = try self.intern(try self.newTmp());
+        try self.emitAssignImm(idx, 0);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_start);
+        const cmp = try self.intern(try self.newTmp());
+        try self.emitOp(cmp, .slt, .{ .reg = idx }, .{ .reg = len_reg });
+        try self.emitBranch(cmp, loop_body, loop_end);
+        try self.emitLabel(loop_body);
+        const byte_offset = try self.intern(try self.newTmp());
+        const slot_size = lowering_rules.vecElementSlotSize(elem_ty);
+        try self.emitOp(byte_offset, .mul, .{ .reg = idx }, .{ .imm_u64 = @intCast(slot_size) });
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr, data_reg, .{ .reg = byte_offset });
+        const item = try self.intern(try self.newTmp());
+        try self.emitLoad(item, elem_ptr, 0, try storagePrimType(elem_ty));
+        try self.emitOp(acc, .add, .{ .reg = acc }, .{ .reg = item });
+        try self.emitOp(idx, .add, .{ .reg = idx }, .{ .imm_i64 = 1 });
+        try self.emitRelease(byte_offset);
+        try self.emitRelease(elem_ptr);
+        try self.emitRelease(item);
         try self.emitRelease(cmp);
         try self.emitJmp(loop_start);
         try self.emitLabel(loop_end);
@@ -16845,6 +17235,42 @@ pub const Codegen = struct {
         try self.emitPtrAdd(tx, chan, .{ .imm_u64 = 0 });
         try self.pushTypedLocal(let.names[0], tx, false, value_ty.tuple.elems[0]);
         try self.markNonOwningReg(tx);
+    }
+
+    /// Direct-SAB `mpsc::channel()` in value (tuple) position, e.g.
+    /// `let pair = mpsc::channel();` followed by `pair.0` / `pair.1`
+    /// (the shape `sched_new_pipe` in sa_std/async.sla uses). The
+    /// destructuring form is handled by genMpscChannelDestructure;
+    /// here the (Sender, Receiver) pair is materialized as a heap
+    /// tuple whose two slots both hold the shared ring-buffer
+    /// pointer -- in SAB a Sender/Receiver value IS the chan pointer
+    /// (see genMpscChannelDestructure), so field loads of the tuple
+    /// yield exactly the registers send/recv expect.
+    fn genMpscChannelCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        if (!lowering_rules.isMpscChannelCall(call)) return null;
+        if (call.args.len != 0) return Error.UnsupportedSabDirectFeature;
+        const value_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+        if (value_ty.* != .tuple or value_ty.tuple.elems.len != 2) return Error.UnsupportedSabDirectFeature;
+        if (lowering_rules.senderInnerType(value_ty.tuple.elems[0]) == null) return Error.UnsupportedSabDirectFeature;
+        if (lowering_rules.receiverInnerType(value_ty.tuple.elems[1]) == null) return Error.UnsupportedSabDirectFeature;
+        const chan = try self.intern(try self.newTmp());
+        try self.recordReg(chan);
+        try self.ensureStdDeps("sa_std/core/mem.sa", &.{"sa_mem_set"});
+        try self.emitStdMacroFragmentWithLiteralArgs("sa_std/sync/mpsc.sa", "MPSC_NEW", &.{
+            self.symbols.items[chan],
+            "1024",
+        }, &.{ false, true });
+        const layout0 = tupleFieldLayout(value_ty.tuple, 0) orelse return Error.UnsupportedSabDirectFeature;
+        const layout1 = tupleFieldLayout(value_ty.tuple, 1) orelse return Error.UnsupportedSabDirectFeature;
+        const pair = try self.intern(try self.newTmp());
+        try self.emitAlloc(pair, layout1.offset + sig.primTypeBytes(layout1.ty));
+        try self.emitStore(pair, layout0.offset, chan, .ptr);
+        try self.emitStore(pair, layout1.offset, chan, .ptr);
+        // The ring buffer's ownership moved into the tuple (the
+        // receiver slot owns it from here, as in the destructuring
+        // form); retire the source register without freeing.
+        try self.emitForgetMovedValue(chan);
+        return pair;
     }
 
     /// Direct-SAB `tx.send(value)`, mirroring the SA-text backend
@@ -17894,6 +18320,24 @@ pub const Codegen = struct {
             null;
         const direct_result = try self.emitDirectImportedMacroCall(plan.macro_name, arg_names.items, known_init_func);
         if (!direct_result.emitted) {
+            // The inlined fragment body can call SA std functions
+            // (`%vec = call @sa_vec_reserve_grow(...)` inside
+            // VEC_RESERVE_GROW, `call @sa_map_put(...)` inside MAP_PUT,
+            // ...). The fragment append path carries only the
+            // fragment's own instructions, so those callees never enter
+            // the module's sig table and the SAB verifier traps
+            // UnknownRegister ("callee is not declared"). Pull the
+            // macro's registered direct callees from its defining
+            // module first, mirroring the dep lists the std-surface
+            // rules carry for their fragments.
+            if (!self.imported_macro_deps_seen.contains(plan.macro_name)) {
+                try self.imported_macro_deps_seen.put(try self.allocator.dupe(u8, plan.macro_name), {});
+                if (self.tc.imported_macros.get(plan.macro_name)) |macro| {
+                    if (macro.direct_callees.len != 0) {
+                        try self.ensureStdDeps(import_path, macro.direct_callees);
+                    }
+                }
+            }
             self.emitStdMacroFragment(import_path, plan.macro_name, arg_names.items) catch |err| {
                 self.traceUnsupported("imported macro {s} fragment failed: {s}\n", .{ plan.macro_name, @errorName(err) });
                 return err;
@@ -18062,6 +18506,9 @@ pub const Codegen = struct {
         }
         if (try self.genFutureTaskCall(call)) |reg| return reg;
         if (try self.genArrayIterCollectStringCall(expr, call)) |reg| return reg;
+        if (try self.genVecIterCollectStringCall(expr, call)) |reg| return reg;
+        if (try self.genMpscChannelCall(expr, call)) |reg| return reg;
+        if (try self.genVecIterMapCall(expr, call)) |reg| return reg;
         if (isThreadSpawnCall(call)) return try self.genThreadSpawn(expr, call);
         if (try self.genJoinHandleJoin(expr, call)) |reg| return reg;
         if (try self.genDynMethodCall(expr, call)) |reg| return reg;
@@ -18104,6 +18551,7 @@ pub const Codegen = struct {
         if (try self.genFileOpenCall(expr, call)) |reg| return reg;
         if (try self.genFileAsRawFdCall(expr, call)) |reg| return reg;
         if (try self.genStructConstructorCall(expr, call)) |reg| return reg;
+        if (try self.genIterIdentityCall(call)) |reg| return reg;
         if (try self.genIterSumCall(call)) |reg| return reg;
         if (try self.genIterFoldCall(call)) |reg| return reg;
         if (try self.genArrayFillCall(call)) |reg| return reg;
@@ -20377,6 +20825,13 @@ pub const Codegen = struct {
                 self.symbols.items[index_reg],
             });
             if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+            if (lowering_rules.vecDequeElementType(target_ty)) |elem_ty| {
+                if (signedNarrowPrim(elem_ty)) |prim| {
+                    const canon = try self.emitSextNarrow(dst, prim);
+                    try self.emitRelease(dst);
+                    return canon;
+                }
+            }
             return dst;
         }
 
@@ -20412,6 +20867,17 @@ pub const Codegen = struct {
             .elem_ty = try self.elementLoadType(target_ty),
         });
         try self.releaseNonLocalTemps(&.{ target_reg, index_reg });
+        // The surface fragment's typed load of a signed narrow element
+        // leaves the register zero-extended (see emitLoad); canonicalize
+        // to the sign-extended form every other producer emits.
+        const index_elem_ty = lowering_rules.vecElementType(target_ty) orelse lowering_rules.sliceElementType(target_ty);
+        if (index_elem_ty) |elem_ty| {
+            if (signedNarrowPrim(elem_ty)) |prim| {
+                const canon = try self.emitSextNarrow(dst, prim);
+                try self.emitRelease(dst);
+                return canon;
+            }
+        }
         return dst;
     }
 

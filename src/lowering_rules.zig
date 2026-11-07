@@ -736,6 +736,18 @@ pub fn importedMacroDirectCallConsumesValueArg(macro_name: []const u8, call_arg_
         std.mem.eql(u8, macro_name, "SLA_FS_BUFFER_FREE")) and call_arg_index == 0;
 }
 
+/// Address-exposure macros: the body publishes the operand's address as a
+/// plain integer, so the value escapes to a ptr-typed FFI surface. A fn
+/// value taking this route must be materialized as a fn object (the
+/// FnObject lowering in both backends), and the object register is
+/// retired by escape after the expansion because the published address
+/// outlives it (W2-DEF-SERVE-THREADED-SEGV + A2).
+pub fn isAddressExposureMacro(macro_name: []const u8) bool {
+    return std.mem.eql(u8, macro_name, "PTR_ADDR") or
+        std.mem.eql(u8, macro_name, "PTR_EXPOSE_ADDR") or
+        std.mem.eql(u8, macro_name, "PTR_EXPOSE_PROVENANCE");
+}
+
 pub fn planBorrowedBindingStorage(binding_is_borrowed: bool, ty: *const ast.Type) BorrowedBindingStoragePlan {
     // Value-register scalar bindings need a stack home when their
     // address is taken, so `&local` yields the address OF the local.

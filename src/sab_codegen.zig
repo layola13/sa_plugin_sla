@@ -17932,9 +17932,54 @@ pub const Codegen = struct {
         };
     }
 
+    /// Fn values escaping through an address-exposure macro (PTR_ADDR
+    /// family): the text backend materializes the standard 16-byte fn
+    /// object { env = 0, vtable } on the heap and publishes the object's
+    /// address. The SAB backend must emit the same program: publishing
+    /// the bare vtable address instead hands native consumers a data
+    /// pointer they cannot invoke (W2-DEF-SERVE-THREADED-SEGV, layer A).
+    /// The object register is retired by escape (forget) after the
+    /// expansion -- the published address outlives it, so it must be
+    /// forgotten, never freed.
+    fn genImportedMacroFnObjectArg(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext, arg_ty: *const ast.Type) anyerror!?SabLoweredCallArg {
+        _ = ctx;
+        if (arg.* != .identifier) return null;
+        if (!self.tc.funcs.contains(arg.identifier)) return null;
+        if (arg_ty.* != .fn_ptr) return null;
+
+        const obj = try self.intern(try self.newTmp());
+        try self.emitAlloc(obj, 16);
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero, 0);
+        const zero_ptr = try self.intern(try self.newTmp());
+        try self.recordReg(zero_ptr);
+        var bitcast = self.makeInst(.op);
+        bitcast.op_kind = .bitcast;
+        bitcast.operands[0] = .{ .reg = zero_ptr };
+        bitcast.operands[1] = .{ .reg = zero };
+        bitcast.operands[2] = .{ .ty = @intFromEnum(sig.PrimType.ptr) };
+        try self.appendInst(bitcast);
+        try self.emitRelease(zero);
+        try self.emitStore(obj, 0, zero_ptr, .ptr);
+        try self.emitRelease(zero_ptr);
+        const vt_name = try self.ensureFunctionPointerVTable(arg.identifier);
+        const vt_reg = try self.intern(try self.newTmp());
+        try self.emitBorrowSymbol(vt_reg, vt_name);
+        try self.emitStore(obj, 8, vt_reg, .ptr);
+        try self.emitRelease(vt_reg);
+        return .{
+            .operand = self.symbols.items[obj],
+            .release_reg = null,
+            .forget_reg = obj,
+        };
+    }
+
     fn genImportedMacroArg(self: *Codegen, plan: lowering_rules.ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
         const arg_ty = (try self.importedMacroArgType(arg, ctx)) orelse return Error.MissingType;
         if (try self.genImportedMacroLeadingOutputArg(plan, call_arg_index, arg, ctx, arg_ty)) |output_arg| return output_arg;
+        if (lowering_rules.isAddressExposureMacro(plan.macro_name)) {
+            if (try self.genImportedMacroFnObjectArg(arg, ctx, arg_ty)) |fn_obj| return fn_obj;
+        }
         if (arg.* == .literal and arg.literal == .string_val and
             plan.callArgNeedsAddressableSlot(call_arg_index) and
             std.mem.startsWith(u8, plan.macro_name, "BTREE_"))
@@ -18360,6 +18405,10 @@ pub const Codegen = struct {
         defer arg_names.deinit();
         var release_regs = std.array_list.Managed(u32).init(self.allocator);
         defer release_regs.deinit();
+        var consume_regs = std.array_list.Managed(u32).init(self.allocator);
+        defer consume_regs.deinit();
+        var forget_regs = std.array_list.Managed(u32).init(self.allocator);
+        defer forget_regs.deinit();
         var restores = std.array_list.Managed(struct { slot: u32, value: u32 }).init(self.allocator);
         defer restores.deinit();
         var output_rebindings = std.array_list.Managed(struct { name: []const u8, reg: u32, ty: *const ast.Type, assigned: bool }).init(self.allocator);
@@ -18399,6 +18448,8 @@ pub const Codegen = struct {
                 try release_regs.appendSlice(lowered_arg.release_regs);
                 self.allocator.free(lowered_arg.release_regs);
             }
+            if (lowered_arg.consume_reg) |reg| try consume_regs.append(reg);
+            if (lowered_arg.forget_reg) |reg| try forget_regs.append(reg);
             if (lowered_arg.restore_slot) |slot| {
                 try restores.append(.{ .slot = slot, .value = lowered_arg.restore_value orelse return Error.UnsupportedSabDirectFeature });
             }
@@ -18523,6 +18574,12 @@ pub const Codegen = struct {
             }
         }
         try self.releaseNonLocalTemps(release_regs.items);
+        for (consume_regs.items) |reg| try self.emitMove(reg);
+        // forget_regs in this path are escape retires whose register was
+        // NOT moved by the expansion itself (fn objects published through
+        // PTR_ADDR): they need a real move_ instruction, not the
+        // bookkeeping-only markConsumed used for call-arg mirrors.
+        for (forget_regs.items) |reg| try self.emitMove(reg);
         if (effective_dst) |reg| return reg;
 
         const sentinel = try self.intern(try self.newTmp());

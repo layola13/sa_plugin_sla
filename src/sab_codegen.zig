@@ -362,7 +362,11 @@ pub const Codegen = struct {
     std_import_module_ids: std.StringHashMap(usize),
     std_macro_templates: std.array_list.Managed(StdMacroTemplate),
     std_macro_template_ids: std.StringHashMap(usize),
-    escaped_closure_entries: std.AutoHashMap(*const ast.Node, EscapedClosureEntry),
+    // Insertion-ordered on purpose: emitEscapedClosureEntries emits
+    // wrappers/workers in map iteration order, so a plain hash map
+    // would emit them in AST-pointer hash order and make the SAB
+    // bytes depend on allocator addresses (FB-016).
+    escaped_closure_entries: std.AutoArrayHashMapUnmanaged(*const ast.Node, EscapedClosureEntry),
     refcell_borrow_values: std.AutoHashMap(u32, RefCellBorrowValue),
     mutex_guard_values: std.AutoHashMap(u32, MutexGuardValue),
     rwlock_guard_values: std.AutoHashMap(u32, RwLockGuardValue),
@@ -499,7 +503,7 @@ pub const Codegen = struct {
             .std_import_module_ids = std.StringHashMap(usize).init(allocator),
             .std_macro_templates = std.array_list.Managed(StdMacroTemplate).init(allocator),
             .std_macro_template_ids = std.StringHashMap(usize).init(allocator),
-            .escaped_closure_entries = std.AutoHashMap(*const ast.Node, EscapedClosureEntry).init(allocator),
+            .escaped_closure_entries = .empty,
             .clone_helper_types = std.StringHashMap(*const ast.Type).init(allocator),
             .clone_helper_done = std.StringHashMap(void).init(allocator),
             .clone_helper_keys = std.array_list.Managed([]const u8).init(allocator),
@@ -592,14 +596,13 @@ pub const Codegen = struct {
         }
         self.std_macro_templates.deinit();
         self.std_macro_template_ids.deinit();
-        var escaped_iter = self.escaped_closure_entries.valueIterator();
-        while (escaped_iter.next()) |entry| {
+        for (self.escaped_closure_entries.values()) |*entry| {
             self.allocator.free(entry.worker_name);
             self.allocator.free(entry.spawn_name);
             self.allocator.free(entry.vtable_name);
             if (entry.captures.len != 0) self.allocator.free(entry.captures);
         }
-        self.escaped_closure_entries.deinit();
+        self.escaped_closure_entries.deinit(self.allocator);
         self.clearRefCellBorrowValues();
         self.refcell_borrow_values.deinit();
         self.mutex_guard_values.deinit();
@@ -6854,11 +6857,15 @@ pub const Codegen = struct {
     }
 
     fn emitEscapedClosureEntries(self: *Codegen) !void {
-        if (self.escaped_closure_entries.count() == 0) return;
-        var iter = self.escaped_closure_entries.valueIterator();
-        while (iter.next()) |entry| {
-            try self.emitEscapedSpawnWrapper(entry.*);
-            try self.emitEscapedWorker(entry.*);
+        // Emit in registration (source) order. Worker bodies may
+        // register further escaped closures while they are emitted, so
+        // drain by index and re-read the ordered values each pass
+        // instead of holding an iterator across emission.
+        var idx: usize = 0;
+        while (idx < self.escaped_closure_entries.count()) : (idx += 1) {
+            const entry = self.escaped_closure_entries.values()[idx];
+            try self.emitEscapedSpawnWrapper(entry);
+            try self.emitEscapedWorker(entry);
         }
     }
 
@@ -14853,7 +14860,7 @@ pub const Codegen = struct {
             .inline_join = execution_plan.inline_join,
         };
         try self.appendVTableConst(entry.vtable_name, entry.worker_name);
-        try self.escaped_closure_entries.put(expr, entry);
+        try self.escaped_closure_entries.put(self.allocator, expr, entry);
         return entry;
     }
 

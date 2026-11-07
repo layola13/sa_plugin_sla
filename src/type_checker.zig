@@ -87,7 +87,13 @@ pub const Options = struct {
 pub const Scope = struct {
     allocator: std.mem.Allocator,
     parent: ?*Scope,
-    symbols: std.StringHashMap(Symbol),
+    // Insertion-ordered on purpose: cleanup lists (block exit, return,
+    // break/continue, try, await, macro-try, phi) are built by iterating
+    // this map, and both backends emit releases in list order, so the
+    // iteration order is observable in emitted bytes. Insertion order is
+    // declaration order; a plain hash map would leak hash layout into
+    // the output (FB-020).
+    symbols: std.StringArrayHashMapUnmanaged(Symbol),
     using_modules: std.array_list.Managed([]const u8),
 
     pub fn init(allocator: std.mem.Allocator, parent: ?*Scope) !*Scope {
@@ -95,7 +101,7 @@ pub const Scope = struct {
         self.* = .{
             .allocator = allocator,
             .parent = parent,
-            .symbols = std.StringHashMap(Symbol).init(allocator),
+            .symbols = .empty,
             .using_modules = std.array_list.Managed([]const u8).init(allocator),
         };
         return self;
@@ -103,7 +109,7 @@ pub const Scope = struct {
 
     pub fn deinit(self: *Scope) void {
         self.using_modules.deinit();
-        self.symbols.deinit();
+        self.symbols.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -113,7 +119,7 @@ pub const Scope = struct {
 
     pub fn defineWithState(self: *Scope, name: []const u8, ty: *ast.Type, is_const: bool, state: ValueState) !void {
         if (self.symbols.contains(name)) return TypeError.Redeclaration;
-        try self.symbols.put(name, .{
+        try self.symbols.put(self.allocator, name, .{
             .name = name,
             .ty = ty,
             .is_const = is_const,
@@ -522,8 +528,7 @@ pub const TypeChecker = struct {
         // (UseAfterMove / PhiStateConflict).
         var curr: ?*Scope = scope;
         while (curr) |frame| : (curr = frame.parent) {
-            var iter = frame.symbols.valueIterator();
-            while (iter.next()) |sym| {
+            for (frame.symbols.values()) |*sym| {
                 if (std.mem.eql(u8, sym.name, name)) continue;
                 if (sym.state != .active) continue;
                 if (sym.borrow_source) |bsrc| {
@@ -2564,8 +2569,7 @@ pub const TypeChecker = struct {
         var cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
         var current: ?*Scope = scope;
         while (current) |frame| : (current = frame.parent) {
-            var iter = frame.symbols.valueIterator();
-            while (iter.next()) |sym| {
+            for (frame.symbols.values()) |*sym| {
                 if (sym.state != .active or isInternalSymbol(sym.name)) continue;
                 if (functionExitBindingEscapes(scope, future_expr, sym.name)) continue;
                 // issue013: skip borrowed source that was aliased.
@@ -6872,8 +6876,7 @@ pub const TypeChecker = struct {
         // DEF deep-drop batch: place-taint pass over the checked body.
         try self.computeDropTaint(test_decl.body);
 
-        var iter = scope.symbols.valueIterator();
-        while (iter.next()) |sym| {
+        for (scope.symbols.values()) |*sym| {
             if (sym.state == .active and !isInternalSymbol(sym.name)) {
                 sym.state = .consumed;
             }
@@ -6948,8 +6951,7 @@ pub const TypeChecker = struct {
 
         // Verify that all parameters or locals in the function root scope are consumed (or we auto-release them)
         // For parameters/locals remaining active at function exit, compile-time checklist forces release.
-        var iter = scope.symbols.valueIterator();
-        while (iter.next()) |sym| {
+        for (scope.symbols.values()) |*sym| {
             if (sym.state == .active and isPrimitiveType(func.ret_ty, .void_type) and !isInternalSymbol(sym.name)) {
                 // If it returns void, we can auto-release. If it's a value return, return statement handles cleanups.
                 sym.state = .consumed;
@@ -6977,8 +6979,7 @@ pub const TypeChecker = struct {
         // Raw pointers are non-owning, but they still need lexical liveness end
         // markers so generated SA does not leave pointer locals Active at exit.
         var cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
-        var iter = scope.symbols.valueIterator();
-        while (iter.next()) |sym| {
+        for (scope.symbols.values()) |*sym| {
             if (sym.state == .active and !isInternalSymbol(sym.name)) {
                 // Block-local borrows still need lexical end cleanups so codegen can
                 // release tracked borrow handles such as RefCell shared/mut borrows.
@@ -7496,8 +7497,7 @@ pub const TypeChecker = struct {
                 var cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
                 var curr: ?*Scope = scope;
                 while (curr) |s| {
-                    var iter = s.symbols.valueIterator();
-                    while (iter.next()) |sym| {
+                    for (s.symbols.values()) |*sym| {
                         if (sym.state == .active and !isInternalSymbol(sym.name)) {
                             if (ret.value) |val| {
                                 if (functionExitBindingEscapes(scope, val, sym.name)) continue;
@@ -7592,8 +7592,7 @@ pub const TypeChecker = struct {
                 var cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
                 var curr: ?*Scope = scope;
                 while (curr) |s| {
-                    var iter = s.symbols.valueIterator();
-                    while (iter.next()) |sym| {
+                    for (s.symbols.values()) |*sym| {
                         if (sym.state == .active and !isInternalSymbol(sym.name)) {
                             // issue013: skip borrowed source that was aliased.
                             if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
@@ -10041,8 +10040,7 @@ pub const TypeChecker = struct {
                         errdefer cleanup.deinit();
                         var current: ?*Scope = scope;
                         while (current) |frame| {
-                            var symbols = frame.symbols.valueIterator();
-                            while (symbols.next()) |sym| {
+                            for (frame.symbols.values()) |*sym| {
                                 if (sym.state != .active or isInternalSymbol(sym.name) or propagated_args.contains(sym.name)) continue;
                                 try cleanup.append(sym.name);
                             }
@@ -10642,8 +10640,7 @@ pub const TypeChecker = struct {
                     var try_cleanup = std.array_list.Managed([]const u8).init(self.allocator);
                     var curr: ?*Scope = scope;
                     while (curr) |s| {
-                        var iter = s.symbols.valueIterator();
-                        while (iter.next()) |sym| {
+                        for (s.symbols.values()) |*sym| {
                             if (sym.state == .active and !isInternalSymbol(sym.name)) {
                                 if (exprUsesIdentifierValue(trye.expr, sym.name)) continue;
                                 try try_cleanup.append(sym.name);
@@ -10663,8 +10660,7 @@ pub const TypeChecker = struct {
                     var try_cleanup = std.array_list.Managed([]const u8).init(self.allocator);
                     var curr: ?*Scope = scope;
                     while (curr) |s| {
-                        var iter = s.symbols.valueIterator();
-                        while (iter.next()) |sym| {
+                        for (s.symbols.values()) |*sym| {
                             if (sym.state == .active and !isInternalSymbol(sym.name)) {
                                 if (exprUsesIdentifierValue(trye.expr, sym.name)) continue;
                                 try try_cleanup.append(sym.name);
@@ -10698,8 +10694,7 @@ pub const TypeChecker = struct {
                 var try_cleanup = std.array_list.Managed([]const u8).init(self.allocator);
                 var curr: ?*Scope = scope;
                 while (curr) |s| {
-                    var iter = s.symbols.valueIterator();
-                    while (iter.next()) |sym| {
+                    for (s.symbols.values()) |*sym| {
                         if (sym.state == .active and !isInternalSymbol(sym.name)) {
                             if (exprUsesIdentifierValue(trye.expr, sym.name)) continue;
                             try try_cleanup.append(sym.name);

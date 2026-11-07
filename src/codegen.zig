@@ -215,7 +215,11 @@ pub const Codegen = struct {
     global_const_bindings: std.StringHashMap(void),
     global_scalar_consts: std.StringHashMap(*const ast.Node),
     hashmap_key_slots: std.StringHashMap([]const u8),
-    thread_spawn_helpers: std.AutoHashMap(*const ast.Node, ThreadSpawnHelper),
+    // Insertion-ordered on purpose: emitThreadSpawnHelpers emits the
+    // helpers in map iteration order, so a plain hash map would emit
+    // them in AST-pointer hash order and make the SA text depend on
+    // allocator addresses (FB-016 text-backend twin).
+    thread_spawn_helpers: std.AutoArrayHashMapUnmanaged(*const ast.Node, ThreadSpawnHelper),
     /// REG3-DEF-2: per-type deep-clone helper functions for user struct
     /// types that transitively contain themselves (e.g. a struct with a
     /// Vec<self> field). Inline clone generation for such a type recurses
@@ -338,7 +342,7 @@ pub const Codegen = struct {
             .global_const_bindings = std.StringHashMap(void).init(allocator),
             .global_scalar_consts = std.StringHashMap(*const ast.Node).init(allocator),
             .hashmap_key_slots = std.StringHashMap([]const u8).init(allocator),
-            .thread_spawn_helpers = std.AutoHashMap(*const ast.Node, ThreadSpawnHelper).init(allocator),
+            .thread_spawn_helpers = .empty,
             .clone_helper_types = std.StringHashMap(*const ast.Type).init(allocator),
             .clone_helper_done = std.StringHashMap(void).init(allocator),
             .clone_helper_keys = std.array_list.Managed([]const u8).init(allocator),
@@ -415,14 +419,13 @@ pub const Codegen = struct {
             self.allocator.free(slot.*);
         }
         self.hashmap_key_slots.deinit();
-        var thread_iter = self.thread_spawn_helpers.valueIterator();
-        while (thread_iter.next()) |helper| {
+        for (self.thread_spawn_helpers.values()) |*helper| {
             self.allocator.free(helper.worker_name);
             self.allocator.free(helper.spawn_name);
             self.allocator.free(helper.vtable_name);
             self.allocator.free(helper.captures);
         }
-        self.thread_spawn_helpers.deinit();
+        self.thread_spawn_helpers.deinit(self.allocator);
         for (self.clone_helper_keys.items) |key| {
             self.allocator.free(key);
         }
@@ -8301,7 +8304,7 @@ pub const Codegen = struct {
             .slot_size = slot_size,
             .inline_join = execution_plan.inline_join,
         };
-        try self.thread_spawn_helpers.put(expr, helper);
+        try self.thread_spawn_helpers.put(self.allocator, expr, helper);
         return helper;
     }
 
@@ -8402,15 +8405,19 @@ pub const Codegen = struct {
 
     fn emitThreadSpawnHelpers(self: *Codegen) CodegenError!void {
         if (self.thread_spawn_helpers.count() == 0) return;
-        var iter = self.thread_spawn_helpers.valueIterator();
-        while (iter.next()) |helper| {
+        // Emit in registration (source) order; drain by index in
+        // case worker emission ever registers further helpers.
+        var vtable_idx: usize = 0;
+        while (vtable_idx < self.thread_spawn_helpers.count()) : (vtable_idx += 1) {
+            const helper = self.thread_spawn_helpers.values()[vtable_idx];
             if (helper.inline_join) continue;
             self.outPrint("@const {s} = vtable {{ call = @{s} }}\n", .{ helper.vtable_name, helper.worker_name }) catch return CodegenError.CodegenError;
         }
         self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
 
-        var fn_iter = self.thread_spawn_helpers.valueIterator();
-        while (fn_iter.next()) |helper| {
+        var fn_idx: usize = 0;
+        while (fn_idx < self.thread_spawn_helpers.count()) : (fn_idx += 1) {
+            const helper = self.thread_spawn_helpers.values()[fn_idx];
             if (helper.inline_join) continue;
             self.outPrint("@ffi_wrapper {s}(*slot: ptr):\nL_ENTRY:\n", .{helper.spawn_name}) catch return CodegenError.CodegenError;
             self.outPrint("    worker_vt = &{s}\n", .{helper.vtable_name}) catch return CodegenError.CodegenError;

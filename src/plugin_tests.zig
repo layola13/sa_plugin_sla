@@ -1940,6 +1940,125 @@ test "sla pre-typecheck pruning keeps release-only bindings" {
     }
 }
 
+
+test "sla return cleanup list follows declaration order" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // FB-020: the return-exit cleanup list was built by iterating the
+    // scope symbol hash map, so the emitted release order was hash
+    // order (!b !a !c !d) instead of declaration order.
+    const source =
+        \\fn det_order_values() -> i32 {
+        \\    let a = 2 + 3 * 4;
+        \\    let b = (20 - 8) / 3;
+        \\    let c = 17 % 5;
+        \\    let d = -(2 + 3);
+        \\    return a + b * 10 + c * 100 + d;
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    const body = prog.program.decls[0].func_decl.body;
+    const ret_stmt = body[body.len - 1];
+    try std.testing.expect(ret_stmt.* == .return_stmt);
+    const cleanup = tc.cleanups.get(ret_stmt) orelse return error.TestUnexpectedResult;
+    const expected = [_][]const u8{ "a", "b", "c", "d" };
+    try std.testing.expectEqual(expected.len, cleanup.items.len);
+    for (expected, cleanup.items) |want, got| {
+        try std.testing.expectEqualStrings(want, got);
+    }
+}
+
+test "sla sab escaped closure emission follows registration order" {
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+
+    // FB-016: escaped-closure wrappers/workers were emitted in
+    // AST-pointer hash order; the generated sla_thread_worker_N
+    // signatures must appear in registration (source) order.
+    const source =
+        \\@import "sa_std/thread.sa"
+        \\
+        \\fn detw(v: i32) -> i32 { return v + 1; }
+        \\
+        \\fn main() -> i32 {
+        \\    let a0 = 0;
+        \\    let a1 = 1;
+        \\    let a2 = 2;
+        \\    let a3 = 3;
+        \\    let a4 = 4;
+        \\    let a5 = 5;
+        \\    let a6 = 6;
+        \\    let a7 = 7;
+        \\    let a8 = 8;
+        \\    let a9 = 9;
+        \\    let h0 = thread::spawn(^|| detw(a0));
+        \\    let h1 = thread::spawn(^|| detw(a1));
+        \\    let h2 = thread::spawn(^|| detw(a2));
+        \\    let h3 = thread::spawn(^|| detw(a3));
+        \\    let h4 = thread::spawn(^|| detw(a4));
+        \\    let h5 = thread::spawn(^|| detw(a5));
+        \\    let h6 = thread::spawn(^|| detw(a6));
+        \\    let h7 = thread::spawn(^|| detw(a7));
+        \\    let h8 = thread::spawn(^|| detw(a8));
+        \\    let h9 = thread::spawn(^|| detw(a9));
+        \\    let total = h0.join().unwrap() + h1.join().unwrap() + h2.join().unwrap() + h3.join().unwrap() + h4.join().unwrap() + h5.join().unwrap() + h6.join().unwrap() + h7.join().unwrap() + h8.join().unwrap() + h9.join().unwrap();
+        \\    return total;
+        \\}
+    ;
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
+
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "main.sla",
+        ".sla-cache/sab/main.sab",
+        stderr_fw.writer(),
+        .{
+            .prune_for_entry_function = "main",
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var seen = std.array_list.Managed(i64).init(std.testing.allocator);
+    defer seen.deinit();
+    for (module.function_sigs) |fsig| {
+        const marker = "sla_thread_worker_";
+        const pos = std.mem.indexOf(u8, fsig.name, marker) orelse continue;
+        const num = std.fmt.parseInt(i64, fsig.name[pos + marker.len ..], 10) catch continue;
+        try seen.append(num);
+    }
+    try std.testing.expectEqual(@as(usize, 10), seen.items.len);
+    for (seen.items, 0..) |n, i| {
+        try std.testing.expectEqual(@as(i64, @intCast(i)), n);
+    }
+}
 test "sla typechecker treats extern move args as consumed for cleanup" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

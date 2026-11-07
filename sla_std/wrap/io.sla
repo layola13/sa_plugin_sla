@@ -57,11 +57,11 @@ fn sla_io_buffer_data(&buffer: IoBuffer) -> &[u8][buffer] {
     return __slice_view(sa_io_buffer_data(buffer.raw), sa_io_buffer_len(buffer.raw));
 }
 
-fn sla_io_buffer_len(&buffer: u64) -> u64 {
+fn sla_io_buffer_len(buffer: u64) -> u64 {
     return sa_io_buffer_len(buffer);
 }
 
-fn sla_io_buffer_free(^buffer: ptr) -> i32 {
+fn sla_io_buffer_free(^buffer: u64) -> i32 {
     return sa_io_buffer_free(buffer);
 }
 

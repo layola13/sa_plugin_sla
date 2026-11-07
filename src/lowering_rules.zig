@@ -3112,8 +3112,10 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
         std.mem.eql(u8, macro_name, "SLA_FS_METADATA") or
         // CLASSB-DEF3: ptr.sa read macros whose expansions load a u64
         // (the plain/unaligned/volatile spellings the _READ_U64 suffix
-        // rule does not reach). PTR_READ_U64 itself stays in the
-        // raw_pointer group below, as previously registered.
+        // rule does not reach). PTR_READ_U64 is covered by that suffix
+        // rule; it was previously pinned to raw_pointer, which made
+        // every comparison on its result a checker TypeMismatch
+        // (REG4-CHECKER-PTR-READ).
         std.mem.eql(u8, macro_name, "PTR_READ") or
         std.mem.eql(u8, macro_name, "PTR_READ_UNALIGNED") or
         std.mem.eql(u8, macro_name, "PTR_READ_VOLATILE") or
@@ -3138,7 +3140,6 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
         std.mem.eql(u8, macro_name, "RAW_WAKER_VTABLE_NEW") or
         std.mem.eql(u8, macro_name, "FUTURE_POLL_FN_STATE_NEW") or
         std.mem.eql(u8, macro_name, "FUTURE_POLL_FN_STATE_POLL") or
-        std.mem.eql(u8, macro_name, "PTR_READ_U64") or
         std.mem.eql(u8, macro_name, "WAKER_FROM_RAW") or
         std.mem.eql(u8, macro_name, "CONTEXT_FROM_WAKER") or
         std.mem.eql(u8, macro_name, "ONCE_NEW") or
@@ -7354,6 +7355,7 @@ test "shared imported macro expression result kinds cover compiler helper macros
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.i64, importedMacroExpressionResultKind("SLA_JSON_AS_I64").?);
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.u8, importedMacroExpressionResultKind("SLA_JSON_AS_BOOL").?);
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.u64, importedMacroExpressionResultKind("SLA_FS_READ_TO_STRING").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u64, importedMacroExpressionResultKind("PTR_READ_U64").?);
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.raw_pointer, importedMacroExpressionResultKind("PIN_MUT_GET_MUT").?);
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.raw_pointer, importedMacroExpressionResultKind("FUTURE_READY_POLL_STATE").?);
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.boolean, importedMacroExpressionResultKind("POLL_IS_READY").?);

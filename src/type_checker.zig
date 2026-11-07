@@ -5569,11 +5569,19 @@ pub const TypeChecker = struct {
         return self.enums.get(curr.user_defined.name);
     }
 
-    fn definePatternBindings(self: *TypeChecker, scope: *Scope, pattern: ast.EnumPattern, value_ty: *const ast.Type, comptime context: []const u8, writable: bool) TypeError!void {
+    // FB-013: the last parameter is the bindings' `is_const` flag, passed
+    // verbatim to defineSymbol. It was previously named `writable`, which
+    // states the exact opposite of the slot it feeds: call sites passing
+    // `true` (if-let, while-let) were creating CONST bindings while
+    // let-else's `false` created mutable ones. The name now matches the
+    // slot; call-site values are unchanged. Whether pattern bindings
+    // should be uniformly mutable like plain let bindings is a language
+    // semantics decision tracked separately (see the FB-013 sheet).
+    fn definePatternBindings(self: *TypeChecker, scope: *Scope, pattern: ast.EnumPattern, value_ty: *const ast.Type, comptime context: []const u8, is_const: bool) TypeError!void {
         if (optionInnerType(value_ty) != null or resultOkType(value_ty) != null) {
             const binding_ty = try self.patternBindingType(pattern, value_ty, context);
             if (binding_ty) |ty| {
-                try self.defineSymbol(scope, pattern.bindings[0], ty, writable);
+                try self.defineSymbol(scope, pattern.bindings[0], ty, is_const);
             }
             return;
         }
@@ -5589,7 +5597,7 @@ pub const TypeChecker = struct {
         const variant = findEnumVariant(decl, pattern.variant_name) orelse return TypeError.FieldNotFound;
         if (pattern.bindings.len != variant.fields.len) return TypeError.InvalidArgsCount;
         for (pattern.bindings, variant.fields) |binding, field| {
-            try self.defineSymbol(scope, binding, field.ty, writable);
+            try self.defineSymbol(scope, binding, field.ty, is_const);
         }
     }
 
@@ -7732,7 +7740,15 @@ pub const TypeChecker = struct {
                 self.setError("UndefinedVariable: identifier `{s}` is not defined in this scope", .{name});
                 return TypeError.UndefinedVariable;
             },
-            .generic_func_ref => return TypeError.CompileError,
+            .generic_func_ref => |gfr| {
+                // FB-012: this arm is unreachable in the normal pipeline
+                // (the monomorphizer materializes generic instances before
+                // checking). If a reference leaks through, say so loudly
+                // and name the function instead of returning a bare
+                // CompileError with no diagnostic.
+                self.setError("CompileError: generic function reference `{s}` reached the type checker uninstantiated; generic instances must be materialized by the monomorphizer before checking", .{gfr.func_name});
+                return TypeError.CompileError;
+            },
             .binary_expr => |bin| {
                 const l_ty = try self.checkExpr(bin.left, scope);
                 const r_ty = try self.checkExpr(bin.right, scope);
@@ -10378,7 +10394,6 @@ pub const TypeChecker = struct {
             },
             .switch_expr => |*swe| {
                 const val_ty = try self.checkExpr(swe.val, scope);
-                _ = val_ty;
 
                 var saved_states = try self.saveScopeStates(scope);
                 defer saved_states.deinit();
@@ -10392,6 +10407,26 @@ pub const TypeChecker = struct {
 
                 for (swe.cases) |case| {
                     self.restoreScopeStates(scope, &saved_states);
+                    // FB-011: switch patterns were never checked at all --
+                    // undefined names and ill-typed pattern expressions
+                    // passed silently, unlike match patterns. Check the
+                    // pattern expression and require comparability with
+                    // the scrutinee: exact type equality, the numeric
+                    // family (integer literals against any integer
+                    // scrutinee), or a string literal against a string
+                    // scrutinee. The `default` marker parses as an
+                    // identifier-shaped sentinel, not a value; skip it.
+                    const is_default = case.pattern.* == .identifier and std.mem.eql(u8, case.pattern.identifier, "default");
+                    if (!is_default) {
+                        const pat_ty = try self.checkExpr(case.pattern, scope);
+                        const comparable = self.typesEqual(val_ty, pat_ty) or
+                            (isNumericType(val_ty) and isNumericType(pat_ty)) or
+                            (pat_ty.* == .primitive and pat_ty.primitive == .raw_ptr and isStringType(val_ty));
+                        if (val_ty.* != .infer and !comparable) {
+                            self.setError("switch pattern type mismatch: pattern tag={s}, scrutinee tag={s}", .{ @tagName(pat_ty.*), @tagName(val_ty.*) });
+                            return TypeError.TypeMismatch;
+                        }
+                    }
                     _ = try self.checkBlock(case.body, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
                     if (!blockTerminates(case.body)) {
                         var states = try self.saveScopeStates(scope);
@@ -10410,13 +10445,20 @@ pub const TypeChecker = struct {
                 var val_ty = try self.checkExpr(mat.val, scope);
                 if (val_ty.* == .infer and mat.cases.len != 0) {
                     const first_pattern = mat.cases[0].pattern;
-                    const inferred = if (std.mem.eql(u8, first_pattern.enum_name, "Option") or
-                        std.mem.eql(u8, first_pattern.variant_name, "Some") or
-                        std.mem.eql(u8, first_pattern.variant_name, "None"))
+                    // FB-014: route on the pattern's enum_name exactly.
+                    // parseEnumPattern already normalizes bare Some/None
+                    // patterns to enum_name "Option" and bare Ok/Err to
+                    // "Result", so exact matching preserves every builtin
+                    // shorthand; the old variant-name OR clauses also
+                    // captured user enums that merely have a variant named
+                    // Some/None/Ok/Err (e.g. `Maybe::Some`) and misrouted
+                    // them into the builtin paths. The scrutinee binding
+                    // rewrite below is the match-inference backfill: the
+                    // inferred type is written back so later uses of the
+                    // binding see it.
+                    const inferred = if (std.mem.eql(u8, first_pattern.enum_name, "Option"))
                         try self.makeOptionType(try self.makeInferType())
-                    else if (std.mem.eql(u8, first_pattern.enum_name, "Result") or
-                        std.mem.eql(u8, first_pattern.variant_name, "Ok") or
-                        std.mem.eql(u8, first_pattern.variant_name, "Err"))
+                    else if (std.mem.eql(u8, first_pattern.enum_name, "Result"))
                         try self.makeResultType(try self.makeInferType(), try self.makeInferType())
                     else blk: {
                         const enum_decl = self.enums.get(first_pattern.enum_name) orelse return TypeError.TypeMismatch;

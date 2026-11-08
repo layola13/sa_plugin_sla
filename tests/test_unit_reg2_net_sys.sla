@@ -1,0 +1,356 @@
+@import "sa_std/net_info.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Coverage shard 2: net_info system-reading entries from
+// sa_std/net_info.sla (registry "declared, never probed"). These read
+// the live host (/sys/class/net, /proc/net/route, getifaddrs JSON via
+// the net_info.sai extern). Assertions mix exact pins for the
+// loopback interface (index 1, mtu 65536, 127.0.0.1/8 -- kernel
+// constants) with structural invariants for the rest, since the
+// box's external interface is environment-assigned. Entries marked
+// [env] can turn red from a materially different sandbox network
+// rather than a product defect; the RESULT.md says which are which.
+
+fn vb(p: ptr, n: u64) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    let i: u64 = 0;
+    while i < n {
+        v.push(PTR_BYTE_AT(p, i));
+        i = i + 1;
+    }
+    return v;
+}
+
+fn vec_byte(v: &Vec<u8>, i: u64) -> u8 {
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let b: u8 = 0;
+    SLICE_GET(b, sl, i);
+    return b;
+}
+
+fn expect_vec(v: &Vec<u8>, want: ptr, want_len: u64, code: i32) {
+    if len(v) != want_len { panic(code); };
+    let i: u64 = 0;
+    while i < want_len {
+        if vec_byte(v, i) != PTR_BYTE_AT(want, i) { panic(code); };
+        i = i + 1;
+    }
+}
+
+@test "reg2 ni_read_small_file"() {
+    let path = "/proc/version";
+    match ni_read_small_file(STR_PTR(path), STR_LEN(path) as u64) {
+        Ok(data) => {
+            if len(data) < 20 { panic(25301); };
+            if vec_byte(&data, 0) != 76 { panic(25303); }; // L
+            if vec_byte(&data, 1) != 105 { panic(25304); }; // i
+            if vec_byte(&data, 2) != 110 { panic(25305); }; // n
+            if vec_byte(&data, 3) != 117 { panic(25306); }; // u
+            if vec_byte(&data, 4) != 120 { panic(25307); }; // x
+        },
+        Err(e) => { panic(25308); },
+    };
+    let bad = "/nonexistent-xyz-123";
+    match ni_read_small_file(STR_PTR(bad), STR_LEN(bad) as u64) {
+        Ok(data) => { panic(25309); },
+        Err(e) => {},
+    };
+}
+
+@test "reg2 ni_read_iface_attr"() {
+    let base = "/sys/class/net/lo";
+    let suffix = "/ifindex";
+    match ni_read_iface_attr(STR_PTR(base), STR_LEN(base) as u64, STR_PTR(suffix), STR_LEN(suffix) as u64) {
+        Ok(data) => {
+            if len(data) != 2 { panic(25310); };
+            if vec_byte(&data, 0) != 49 { panic(25311); }; // '1'
+            if vec_byte(&data, 1) != 10 { panic(25312); }; // '\n'
+        },
+        Err(e) => { panic(25313); },
+    };
+    let nope = "/nope-xyz";
+    match ni_read_iface_attr(STR_PTR(base), STR_LEN(base) as u64, STR_PTR(nope), STR_LEN(nope) as u64) {
+        Ok(data) => { panic(25314); },
+        Err(e) => {},
+    };
+}
+
+@test "reg2 ni_read_interface lo"() {
+    let name = vb(STR_PTR("lo"), 2);
+    match ni_read_interface(STR_PTR("lo"), 2, name) {
+        Ok(iface) => {
+            if !net_name_eq(&iface.name, &vb(STR_PTR("lo"), 2)) { panic(25315); };
+            if iface.index != 1 { panic(25316); };
+            if iface.mtu != 65536 { panic(25317); };
+            if !net_iface_is_up(&iface) { panic(25318); };
+            if !net_iface_is_loopback(&iface) { panic(25319); };
+            if !iface.has_mac { panic(25320); };
+            let i: u64 = 0;
+            while i < 6 {
+                if iface.mac[i] != 0 { panic(25321); }; // lo address is 00:00:00:00:00:00
+                i = i + 1;
+            }
+        },
+        Err(e) => { panic(25322); },
+    };
+    let bad = vb(STR_PTR("no-such-iface-xyz"), 17);
+    match ni_read_interface(STR_PTR("no-such-iface-xyz"), 17, bad) {
+        Ok(iface) => { panic(25323); },
+        Err(e) => {},
+    };
+}
+
+@test "reg2 net_interfaces"() {
+    match net_interfaces() {
+        Ok(ifaces) => {
+            if len(ifaces) < 1 { panic(25324); };
+            let lo_name = vb(STR_PTR("lo"), 2);
+            let found_lo: bool = false;
+            let i: u64 = 0;
+            while i < len(ifaces) {
+                if len(ifaces[i].name) == 0 { panic(25325); };
+                if net_name_eq(&ifaces[i].name, &lo_name) {
+                    found_lo = true;
+                    if ifaces[i].index != 1 { panic(25326); };
+                    if !net_iface_is_loopback(&ifaces[i]) { panic(25327); };
+                };
+                i = i + 1;
+            }
+            if !found_lo { panic(25328); };
+        },
+        Err(e) => { panic(25329); },
+    };
+}
+
+@test "reg2 net_interface_addresses"() {
+    match net_interface_addresses() {
+        Ok(addrs) => {
+            if len(addrs) < 1 { panic(25330); };
+            let lo_name = vb(STR_PTR("lo"), 2);
+            let found_lo_v4: bool = false;
+            let i: u64 = 0;
+            while i < len(addrs) {
+                if addrs[i].addr.tag != 4 && addrs[i].addr.tag != 6 { panic(25331); };
+                if net_name_eq(&addrs[i].name, &lo_name) && addrs[i].addr.tag == 4 {
+                    if addrs[i].addr.lo != 2130706433 { panic(25332); }; // 127.0.0.1
+                    if addrs[i].prefix_len != 8 { panic(25333); };
+                    found_lo_v4 = true;
+                };
+                i = i + 1;
+            }
+            if !found_lo_v4 { panic(25334); };
+        },
+        Err(e) => { panic(25335); },
+    };
+}
+
+@test "reg2 net_interface_addresses_of"() {
+    match net_interface_addresses_of(vb(STR_PTR("lo"), 2)) {
+        Ok(addrs) => {
+            if len(addrs) < 1 { panic(25336); };
+            let lo_name = vb(STR_PTR("lo"), 2);
+            let i: u64 = 0;
+            while i < len(addrs) {
+                if !net_name_eq(&addrs[i].name, &lo_name) { panic(25337); };
+                i = i + 1;
+            }
+        },
+        Err(e) => { panic(25338); },
+    };
+    match net_interface_addresses_of(vb(STR_PTR("no-such-xyz"), 11)) {
+        Ok(addrs) => { if len(addrs) != 0 { panic(25339); }; },
+        Err(e) => { panic(25340); },
+    };
+}
+
+@test "reg2 ni_collect_addresses"() {
+    let empty: Vec<u8> = Vec::new();
+    let all_count: u64 = 0;
+    match ni_collect_addresses(&empty, false) {
+        Ok(addrs) => { all_count = len(addrs); },
+        Err(e) => { panic(25341); },
+    };
+    let ref_count: u64 = 0;
+    match net_interface_addresses() {
+        Ok(addrs) => { ref_count = len(addrs); },
+        Err(e) => { panic(25342); },
+    };
+    if all_count != ref_count { panic(25343); };
+    if all_count < 1 { panic(25344); };
+    match ni_collect_addresses(&vb(STR_PTR("lo"), 2), true) {
+        Ok(addrs) => {
+            if len(addrs) < 1 { panic(25345); };
+            let lo_name = vb(STR_PTR("lo"), 2);
+            let i: u64 = 0;
+            while i < len(addrs) {
+                if !net_name_eq(&addrs[i].name, &lo_name) { panic(25346); };
+                i = i + 1;
+            }
+        },
+        Err(e) => { panic(25347); },
+    };
+}
+
+@test "reg2 net_routes_v4"() {
+    match net_routes_v4() {
+        Ok(routes) => {
+            if len(routes) < 1 { panic(25348); };
+            let found_default: bool = false;
+            let i: u64 = 0;
+            while i < len(routes) {
+                if routes[i].prefix.addr.tag != 4 { panic(25349); };
+                if routes[i].prefix.len == 0 && routes[i].has_gateway {
+                    found_default = true;
+                };
+                i = i + 1;
+            }
+            if !found_default { panic(25350); }; // [env] the sandbox has a default route
+        },
+        Err(e) => { panic(25351); },
+    };
+}
+
+@test "reg2 net_routes_v6 and gateway v6 consistency"() {
+    let routes: Vec<NetRoute> = Vec::new();
+    match net_routes_v6() {
+        Ok(r) => { routes = r; },
+        Err(e) => { panic(25352); },
+    };
+    let i: u64 = 0;
+    while i < len(routes) {
+        if routes[i].prefix.addr.tag != 6 { panic(25353); };
+        i = i + 1;
+    }
+    // net_default_gateway_v6 must agree with ni_default_gateway over
+    // the same table: both Ok with the same address, or both Err.
+    match net_default_gateway_v6() {
+        Ok(av) => {
+            match ni_default_gateway(&routes) {
+                Ok(bv) => { if !ip_addr_eq(av, bv) { panic(25354); }; },
+                Err(e) => { panic(25355); },
+            };
+        },
+        Err(e) => {
+            match ni_default_gateway(&routes) {
+                Ok(bv) => { panic(25356); },
+                Err(e2) => {},
+            };
+        },
+    };
+}
+
+fn route(prefix_lo: u64, plen: u32, gw_lo: u64, has_gw: bool, metric: u32) -> NetRoute {
+    // Built from the empty constructor + field assignment: imported
+    // structs are not literal-constructible from another file
+    // (round-1 parse evidence in RESULT.md).
+    let r = net_route_empty();
+    r.iface = vb(STR_PTR("eth0"), 4);
+    r.prefix = ip_prefix_from(ip_addr_from_ipv4(prefix_lo as u32), plen);
+    r.gateway = ip_addr_from_ipv4(gw_lo as u32);
+    r.has_gateway = has_gw;
+    r.metric = metric;
+    return r;
+}
+
+@test "reg2 ni_default_gateway"() {
+    let routes: Vec<NetRoute> = Vec::new();
+    routes.push(route(3232235776, 24, 167772161, true, 10)); // subnet route, not default
+    routes.push(route(0, 0, 3232235777, true, 600)); // default via 192.168.1.1, worse metric
+    routes.push(route(0, 0, 3232235521, true, 100)); // default via 192.168.0.1, best metric
+    match ni_default_gateway(&routes) {
+        Ok(gw) => {
+            if gw.tag != 4 { panic(25357); };
+            if gw.lo != 3232235521 { panic(25358); };
+        },
+        Err(e) => { panic(25359); },
+    };
+    let empty: Vec<NetRoute> = Vec::new();
+    match ni_default_gateway(&empty) {
+        Ok(gw) => { panic(25360); },
+        Err(e) => {},
+    };
+    let nodefault: Vec<NetRoute> = Vec::new();
+    nodefault.push(route(3232235776, 24, 167772161, true, 10));
+    match ni_default_gateway(&nodefault) {
+        Ok(gw) => { panic(25361); },
+        Err(e) => {},
+    };
+}
+
+@test "reg2 net_default_gateway_v4"() {
+    match net_default_gateway_v4() {
+        Ok(gw) => {
+            if gw.tag != 4 { panic(25362); };
+            if gw.lo == 0 { panic(25363); };
+        },
+        Err(e) => { panic(25364); }, // [env] the sandbox has a default route
+    };
+}
+
+fn entry_doc() -> u64 {
+    let j = "{\"name\":\"lo\",\"family\":2,\"address\":\"127.0.0.1\",\"netmask\":\"255.0.0.0\",\"prefix_len\":8,\"scope_id\":0}";
+    return sa_json_parse(STR_PTR(j), STR_LEN(j) as u64);
+}
+
+@test "reg2 ni_json_string_field"() {
+    let doc: u64 = entry_doc();
+    if doc == 0 { panic(25365); };
+    let f = ni_json_string_field(doc, STR_PTR("name"), 4);
+    if !f.ok { panic(25366); };
+    if f.l != 2 { panic(25367); };
+    let bytes = ni_vec_from_ptr(f.p, f.l);
+    expect_vec(&bytes, STR_PTR("lo"), 2, 25368);
+    let missing = ni_json_string_field(doc, STR_PTR("zzz"), 3);
+    if missing.ok { panic(25369); };
+    let _ = sa_json_free(doc);
+}
+
+@test "reg2 ni_json_i64_field"() {
+    let doc: u64 = entry_doc();
+    if doc == 0 { panic(25370); };
+    match ni_json_i64_field(doc, STR_PTR("family"), 6) {
+        Some(v) => { if v != 2 { panic(25371); }; },
+        None => { panic(25372); },
+    };
+    match ni_json_i64_field(doc, STR_PTR("prefix_len"), 10) {
+        Some(v) => { if v != 8 { panic(25373); }; },
+        None => { panic(25374); },
+    };
+    match ni_json_i64_field(doc, STR_PTR("zzz"), 3) {
+        Some(v) => { panic(25375); },
+        None => {},
+    };
+    match ni_json_i64_field(doc, STR_PTR("name"), 4) {
+        Some(v) => { panic(25376); }, // a string field is not an i64
+        None => {},
+    };
+    let _ = sa_json_free(doc);
+}
+
+@test "reg2 ni_parse_entry"() {
+    let doc: u64 = entry_doc();
+    if doc == 0 { panic(25377); };
+    let empty: Vec<u8> = Vec::new();
+    let r = ni_parse_entry(doc, &empty, false);
+    if r.err != 0 { panic(25378); };
+    if r.skip { panic(25379); };
+    expect_vec(&r.entry.name, STR_PTR("lo"), 2, 25380);
+    if r.entry.addr.tag != 4 || r.entry.addr.lo != 2130706433 { panic(25381); };
+    if r.entry.mask.lo != 4278190080 { panic(25382); }; // 255.0.0.0
+    if r.entry.prefix_len != 8 { panic(25383); };
+    if r.entry.has_broadcast { panic(25384); };
+    if r.entry.scope_id != 0 { panic(25385); };
+    // Filtered out by a different name -> skip, no error.
+    let other = ni_parse_entry(doc, &vb(STR_PTR("eth0"), 4), true);
+    if other.err != 0 { panic(25386); };
+    if !other.skip { panic(25387); };
+    // Filtered to its own name -> kept.
+    let own = ni_parse_entry(doc, &vb(STR_PTR("lo"), 2), true);
+    if own.err != 0 || own.skip { panic(25388); };
+    // A null node is an IO-class error entry, not a skip.
+    let bad = ni_parse_entry(0, &empty, false);
+    if bad.err == 0 { panic(25389); };
+    if bad.skip { panic(25390); };
+    let _ = sa_json_free(doc);
+}

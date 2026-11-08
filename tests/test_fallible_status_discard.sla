@@ -1,0 +1,27 @@
+@import "sa_std/encoding/json.sai"
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+
+// netsys-fix2 regression (DEF-FALLIBLE-STATUS-DROP carrier surface):
+// a fallible (`T!`) extern used as a cleanup call at the tail of a
+// @test, with the whole Result deliberately discarded via `let _ =`.
+// The bare-payload spelling `let fr: i32 = sa_json_free(doc);` is the
+// A_min-rejected form (neg_fallible_bare_payload.sla); this file pins
+// the sanctioned discard form on both backends, plus the Result-bound
+// status read for callers that do care about the status word.
+
+@test "fallible cleanup discard via wildcard"() {
+    let doc: u64 = sa_json_parse(STR_PTR("{\"a\":1}"), 7);
+    if doc == 0 { panic(26101); };
+    let _ = sa_json_free(doc);
+}
+
+@test "fallible result binding exposes status"() {
+    let doc: u64 = sa_json_parse(STR_PTR("{\"a\":1}"), 7);
+    if doc == 0 { panic(26102); };
+    let r = sa_json_free(doc);
+    match r {
+        Ok(v) => { if v != 0 { panic(26103); }; },
+        Err(e) => { panic(26104); },
+    };
+}

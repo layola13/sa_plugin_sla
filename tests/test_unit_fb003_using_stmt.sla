@@ -1,0 +1,21 @@
+// FB-003 regression pin (Rust differential feedback, sla-plugin-rust
+// docs/feedback/FB-003): a `using` directive inside a function body is
+// the one statement kind that used to reach genStmt's catch-all
+// `else => {}` arm in the text codegen — silently swallowed, like any
+// future unhandled statement kind would have been. The directive is a
+// name-resolution hint the checker consumes (the SAB codegen already
+// had an explicit no-op arm for it); the text codegen now has an
+// explicit `.using_decl` arm too, and its catch-all fails loudly with
+// CodegenError instead of dropping statements. This file pins the
+// using-in-body shape as supported on both backends.
+mod math {
+    pub fn double(x: i32) -> i32 {
+        return x * 2;
+    }
+}
+
+@test "fb003 using directive inside fn body resolves names"() {
+    using math;
+    let v = 21.double();
+    if v != 42 { panic(74603); };
+}

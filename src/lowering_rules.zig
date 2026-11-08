@@ -6207,8 +6207,9 @@ pub fn intConstantExprValue(expr: *const ast.Node, scalar_consts: anytype) ?i64 
                 .add => std.math.add(i64, left, right) catch null,
                 .sub => std.math.sub(i64, left, right) catch null,
                 .mul => std.math.mul(i64, left, right) catch null,
-                .div => if (right == 0) null else @divTrunc(left, right),
-                .mod => if (right == 0) null else @rem(left, right),
+                .div => std.math.divTrunc(i64, left, right) catch null,
+                // @rem traps only on div-by-zero (guarded) and minInt / -1.
+                .mod => if (right == 0 or (left == std.math.minInt(i64) and right == -1)) null else @rem(left, right),
                 .bit_and => left & right,
                 .bit_or => left | right,
                 .bit_xor => left ^ right,
@@ -6486,7 +6487,14 @@ pub fn shouldAutoBorrowResolvedArg(
 
 pub fn shouldAutoBorrowReceiverArg(param: ast.Param, arg: *const ast.Node, arg_ty: *const ast.Type) bool {
     if (!param.is_borrow or arg.* == .borrow_expr) return false;
-    if (arg_ty.* == .borrow) return true;
+    // FB-009: borrow-typed and non-borrow-typed arguments share the
+    // same outcome here (auto-borrow applies either way). An earlier
+    // shape carried a dead inner branch testing `arg_ty.* == .borrow`
+    // whose both exits returned true; it is collapsed to the single
+    // return it always evaluated to. Behavior is unchanged. (The
+    // statement-receiver sibling below deliberately differs: it
+    // returns `arg_ty.* != .borrow`.)
+    _ = arg_ty;
     return true;
 }
 
@@ -7779,6 +7787,35 @@ test "shared integer constant expression value resolves aliases and arithmetic" 
 
     var unknown = ast.Node{ .identifier = "MISSING" };
     try std.testing.expect(intConstantExprValue(&unknown, scalar_consts) == null);
+}
+
+test "shared integer constant expression value abandons div/rem overflow folds" {
+    var scalar_consts = std.StringHashMap(*const ast.Node).init(std.testing.allocator);
+    defer scalar_consts.deinit();
+
+    // FB-025: minInt / -1 (and the % twin) trap the compiler with SIGFPE
+    // when folded through @divTrunc/@rem; the fold must abandon to null
+    // like the checked add/sub/mul arms, while ordinary folds still work.
+    var min_lit = ast.Node{ .literal = .{ .int_val = std.math.minInt(i64) } };
+    var neg_one = ast.Node{ .literal = .{ .int_val = -1 } };
+    var zero = ast.Node{ .literal = .{ .int_val = 0 } };
+    var seven = ast.Node{ .literal = .{ .int_val = 7 } };
+    var two = ast.Node{ .literal = .{ .int_val = 2 } };
+
+    var div_overflow = ast.Node{ .binary_expr = .{ .left = &min_lit, .op = .div, .right = &neg_one } };
+    try std.testing.expect(intConstantExprValue(&div_overflow, scalar_consts) == null);
+
+    var mod_overflow = ast.Node{ .binary_expr = .{ .left = &min_lit, .op = .mod, .right = &neg_one } };
+    try std.testing.expect(intConstantExprValue(&mod_overflow, scalar_consts) == null);
+
+    var div_zero = ast.Node{ .binary_expr = .{ .left = &seven, .op = .div, .right = &zero } };
+    try std.testing.expect(intConstantExprValue(&div_zero, scalar_consts) == null);
+
+    var div_ok = ast.Node{ .binary_expr = .{ .left = &seven, .op = .div, .right = &two } };
+    try std.testing.expectEqual(@as(?i64, 3), intConstantExprValue(&div_ok, scalar_consts));
+
+    var mod_ok = ast.Node{ .binary_expr = .{ .left = &seven, .op = .mod, .right = &two } };
+    try std.testing.expectEqual(@as(?i64, 1), intConstantExprValue(&mod_ok, scalar_consts));
 }
 
 test "shared lowering rules classify user macro lvalue parameters" {

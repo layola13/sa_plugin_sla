@@ -1,0 +1,21 @@
+// FB-007 regression pin (Rust differential feedback, sla-plugin-rust
+// docs/feedback/FB-007): emitPrintln measured literal format-string
+// segments with the RAW source span (escape sequences counted as
+// backslash + letter) while the emitted @const utf8 data stores the
+// escape-EVALUATED bytes, so the text backend printed past the end of
+// every escape-bearing segment (observed pre-fix stdout for the first
+// println below: "a\nb\tc" followed by two over-read bytes from the
+// adjacent constants, and the "x\ny=" segment swallowing the "!" of
+// the next segment, printing it before the interpolated value). The
+// string-argument path and format() already used the evaluated byte
+// length; segments now do too. Corpus tests cannot assert on stdout,
+// so this file pins the shapes as compile+run clean on both backends;
+// the byte-level before/after evidence (generated .sa lengths and
+// od -c stdout dumps) is recorded in the fix line's RESULT.md.
+@test "fb007 println escape segments stay in bounds"() {
+    println("a\nb\tc");
+    println("x\ny={}!", 42);
+    println("plain");
+    let s = format("q\t{}", 7);
+    if !str_eq(s, "q\t7") { panic(74607); };
+}

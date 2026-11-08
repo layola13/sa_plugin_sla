@@ -3005,7 +3005,7 @@ pub const Codegen = struct {
                         self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
                     }
                     self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-                    try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, null);
+                    try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
                     return;
                 }
             }
@@ -3049,7 +3049,7 @@ pub const Codegen = struct {
                             self.outPrint("{s}", .{ar}) catch return CodegenError.CodegenError;
                         }
                         self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-                        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
+                        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
                         return;
                     }
                 }
@@ -3106,7 +3106,7 @@ pub const Codegen = struct {
                     self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
                 }
                 self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-                try self.emitLoweredCallArgCleanups(ext_release_regs.items, ext_consume_regs.items, call.func_name);
+                try self.emitLoweredCallArgCleanups(ext_release_regs.items, ext_consume_regs.items);
                 return;
             }
         }
@@ -3139,7 +3139,7 @@ pub const Codegen = struct {
             self.outPrint("{s}", .{ar}) catch return CodegenError.CodegenError;
         }
         self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, resolved_func_name);
+        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
     }
 
     fn genFallibleExternPayloadCall(
@@ -3188,7 +3188,7 @@ pub const Codegen = struct {
             self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
         }
         self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
+        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
 
         const payload_reg = try self.newTmp();
         self.outPrint("    {s} = load {s}+{} as {s}\n", .{
@@ -3254,7 +3254,7 @@ pub const Codegen = struct {
             self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
         }
         self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
+        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
 
         const status_reg = try self.newTmp();
         self.outPrint("    {s} = load {s}+0 as i32\n", .{ status_reg, fallible_reg }) catch return CodegenError.CodegenError;
@@ -3331,7 +3331,7 @@ pub const Codegen = struct {
             self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
         }
         self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
+        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
         return reg;
     }
 
@@ -3397,7 +3397,11 @@ pub const Codegen = struct {
             if (i > start) {
                 const label = try self.newStringConst();
                 self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, fmt[start..i] }) catch return CodegenError.CodegenError;
-                self.outPrint("    call @sa_print_bytes(&{s}, {})\n", .{ label, i - start }) catch return CodegenError.CodegenError;
+                // FB-007: the SA utf8 literal stores the segment with
+                // escapes evaluated, so the byte count must be the
+                // escaped byte length (the same caliber the string-arg
+                // path below uses), not the raw source span.
+                self.outPrint("    call @sa_print_bytes(&{s}, {})\n", .{ label, escapedStringByteLen(fmt[start..i]) }) catch return CodegenError.CodegenError;
             }
             if (i >= fmt.len) break;
             if (arg_idx >= call.args.len) break;
@@ -3609,24 +3613,24 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
                             },
                             else => {
-                                const val_reg = try self.genExpr(arg, hoisted_allocs);
-                                const ptr_reg = try self.newTmp();
-                                self.outPrint("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
-                                self.outPrint("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
+                                // FB-006: primitive kinds without a
+                                // formatting arm must fail loudly, not
+                                // print a single byte of the value.
+                                return CodegenError.CodegenError;
                             },
                         },
                         else => {
-                            const val_reg = try self.genExpr(arg, hoisted_allocs);
-                            const ptr_reg = try self.newTmp();
-                            self.outPrint("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
-                            self.outPrint("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
+                            // FB-006: argument types without a formatting
+                            // arm (structs, enums, tuples, ...) must fail
+                            // loudly, not print a single byte of the value.
+                            return CodegenError.CodegenError;
                         },
                     }
                 } else {
-                    const val_reg = try self.genExpr(arg, hoisted_allocs);
-                    const ptr_reg = try self.newTmp();
-                    self.outPrint("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
-                    self.outPrint("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
+                    // FB-006: the checker registered no type for this
+                    // println argument; fail loudly instead of printing
+                    // a single byte of an untyped value.
+                    return CodegenError.CodegenError;
                 }
             }
             i += 2;
@@ -4242,8 +4246,9 @@ pub const Codegen = struct {
                     .add => std.math.add(i64, li, ri) catch return null,
                     .sub => std.math.sub(i64, li, ri) catch return null,
                     .mul => std.math.mul(i64, li, ri) catch return null,
-                    .div => if (ri == 0) (return null) else @divTrunc(li, ri),
-                    .mod => if (ri == 0) (return null) else @rem(li, ri),
+                    .div => std.math.divTrunc(i64, li, ri) catch return null,
+                    // @rem traps only on div-by-zero (guarded) and minInt / -1.
+                    .mod => if (ri == 0 or (li == std.math.minInt(i64) and ri == -1)) (return null) else @rem(li, ri),
                     .bit_and => li & ri,
                     .bit_or => li | ri,
                     .bit_xor => li ^ ri,
@@ -12449,13 +12454,14 @@ pub const Codegen = struct {
         self: *Codegen,
         release_regs: []const ?[]const u8,
         consume_regs: []const []const u8,
-        skip_release_name: ?[]const u8,
     ) CodegenError!void {
+        // FB-004: this used to skip every release when the callee was
+        // named "sum" (a hardcoded name test with no signature or
+        // registry basis), silently leaking the call's argument
+        // temporaries for any user function that happened to share
+        // the name. Releases are unconditional now.
         for (release_regs) |release_reg| {
             if (release_reg) |arg_reg| {
-                if (skip_release_name) |name| {
-                    if (std.mem.eql(u8, name, "sum")) continue;
-                }
                 try self.emitRelease(arg_reg);
             }
         }
@@ -12877,7 +12883,7 @@ pub const Codegen = struct {
         }
         self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
 
-        try self.emitLoweredCallArgCleanups(release_regs.items, consume_regs.items, null);
+        try self.emitLoweredCallArgCleanups(release_regs.items, consume_regs.items);
         return reg;
     }
 
@@ -14964,7 +14970,14 @@ pub const Codegen = struct {
                 // block with ordinary drop semantics.
                 return CodegenError.CodegenError;
             },
-            else => {},
+            .using_decl => {
+                // FB-003: `using` is a name-resolution directive the
+                // checker consumes; it has no runtime effect, so the
+                // no-op here is deliberate (the SAB emitter treats
+                // using_decl the same way). It is spelled out so the
+                // residual else below can stay loud.
+            },
+            else => return CodegenError.CodegenError,
         }
 
         // Generate block exit cleanups if attached to this statement
@@ -17898,7 +17911,7 @@ pub const Codegen = struct {
                             self.outPrint("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
                         }
                         self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-                        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, null);
+                        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
                         return reg;
                     }
                 }
@@ -18460,7 +18473,7 @@ pub const Codegen = struct {
                         }
                         self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                     }
-                    try self.emitLoweredCallArgCleanups(release_regs.items, consume_regs.items, null);
+                    try self.emitLoweredCallArgCleanups(release_regs.items, consume_regs.items);
                     return ret_reg;
                 }
 
@@ -19602,7 +19615,7 @@ pub const Codegen = struct {
                             });
                         }
                     }
-                    try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, null);
+                    try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
                     return reg;
                 }
 
@@ -19675,7 +19688,7 @@ pub const Codegen = struct {
                                         self.outPrint("{s}", .{ar}) catch return CodegenError.CodegenError;
                                     }
                                     self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-                                    try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
+                                    try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
                                     return reg;
                                 }
                             }
@@ -19755,7 +19768,7 @@ pub const Codegen = struct {
                         self.outPrint("{s}", .{ar}) catch return CodegenError.CodegenError;
                     }
                     self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-                    try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
+                    try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
                     if (maybe_func) |func| {
                         if (lowering_rules.planAsyncJoin2AwaitContinuation(func) != null) {
                             try self.future_state_vtables.put(reg, try self.asyncJoin2AwaitVTableName(call.func_name));
@@ -19841,7 +19854,7 @@ pub const Codegen = struct {
                             self.outPrint("{s}", .{ar}) catch return CodegenError.CodegenError;
                         }
                         self.outPrint(")\n", .{}) catch return CodegenError.CodegenError;
-                        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, null);
+                        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items);
                         return reg;
                     }
                 }
@@ -19928,20 +19941,16 @@ pub const Codegen = struct {
                     return sentinel;
                 }
 
-                // Assume macro expansion call in Sla
-                const reg = try self.newTmp();
-                var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
-                defer arg_regs.deinit();
-                for (call.args) |arg| {
-                    const arg_reg = try self.genExpr(arg, hoisted_allocs);
-                    try arg_regs.append(arg_reg);
-                }
-                self.outPrint("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
-                for (arg_regs.items) |arg_reg| {
-                    self.outPrint(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
-                }
-                self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
-                return reg;
+                // FB-005: this tail used to assume any callee that
+                // survived every lookup above was an SA macro and
+                // emitted a raw `EXPAND {name}` with no result
+                // operand, returning a register nothing defined.
+                // A name the checker accepted but no dispatch table
+                // resolves is a frontend inconsistency; refuse
+                // loudly instead of emitting invalid SA. Registered
+                // imported macros are handled by planImportedMacroCall
+                // above, and user macros by the tc.macros arm.
+                return CodegenError.CodegenError;
             },
             .if_expr => |ife| {
                 if (ife.let_chain) |chain| {

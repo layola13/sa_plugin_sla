@@ -946,8 +946,9 @@ pub const Codegen = struct {
                     .add => std.math.add(i64, li, ri) catch return null,
                     .sub => std.math.sub(i64, li, ri) catch return null,
                     .mul => std.math.mul(i64, li, ri) catch return null,
-                    .div => if (ri == 0) return null else @divTrunc(li, ri),
-                    .mod => if (ri == 0) return null else @rem(li, ri),
+                    .div => std.math.divTrunc(i64, li, ri) catch return null,
+                    // @rem traps only on div-by-zero (guarded) and minInt / -1.
+                    .mod => if (ri == 0 or (li == std.math.minInt(i64) and ri == -1)) return null else @rem(li, ri),
                     .bit_and => li & ri,
                     .bit_or => li | ri,
                     .bit_xor => li ^ ri,

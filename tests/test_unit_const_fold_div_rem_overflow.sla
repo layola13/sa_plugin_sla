@@ -1,0 +1,54 @@
+// FB-025 regression: integer constant folding of i64::MIN / -1 (div and
+// rem forms) trapped the compiler itself (SIGFPE / integer-overflow
+// panic) because the fold evaluators used @divTrunc/@rem with only a
+// div-by-zero guard. The folds must abandon to the checked outcome
+// (no fold) instead of trapping, exactly like the pre-existing
+// add/sub/mul overflow arms.
+//
+// The div/rem overflow expressions sit in stack_alloc size arguments,
+// whose size evaluation routes through the shared constant evaluator
+// (lowering_rules.intConstantExprValue) on both backends: pre-fix this
+// file crashes the compiler on both backends; post-fix the size falls
+// back to the default and the tests run green.
+//
+// The top-level const form of the same defect (const B = MIN / -1)
+// is covered by the FB-025 minim repro: post-fix the text backend
+// rejects the abandoned fold loudly at the const decl (the standing
+// caliber for every abandoned overflow fold, add/sub/mul included)
+// and the SAB backend compiles it; neither backend may crash.
+const FB025_DIV_OK: int = 7 / 2;
+const FB025_MOD_OK: int = 7 % 2;
+
+fn fb025_probe_div() -> int {
+    let temp = stack_alloc((0 - 9223372036854775807 - 1) / (0 - 1));
+    return 1;
+}
+
+fn fb025_probe_mod() -> int {
+    let temp = stack_alloc((0 - 9223372036854775807 - 1) % (0 - 1));
+    return 2;
+}
+
+@test "const fold div overflow abandons instead of trapping"() {
+    if fb025_probe_div() != 1 {
+        panic(25021);
+    };
+}
+
+@test "const fold rem overflow abandons instead of trapping"() {
+    if fb025_probe_mod() != 2 {
+        panic(25022);
+    };
+}
+
+@test "ordinary const div/mod folds and min chain still fold"() {
+    if FB025_DIV_OK != 3 {
+        panic(25023);
+    };
+    if FB025_MOD_OK != 1 {
+        panic(25024);
+    };
+    if (0 - 9223372036854775807 - 1) + 1 != 0 - 9223372036854775807 {
+        panic(25025);
+    };
+}

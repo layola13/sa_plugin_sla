@@ -669,11 +669,12 @@ pub fn evalSyntacticInt(expr: *const ast.Node, facts: ?*const SyntacticFactSet) 
             const left = evalSyntacticInt(bin.left, facts) orelse break :blk null;
             const right = evalSyntacticInt(bin.right, facts) orelse break :blk null;
             break :blk switch (bin.op) {
-                .add => left + right,
-                .sub => left - right,
-                .mul => left * right,
-                .div => if (right != 0) @divTrunc(left, right) else null,
-                .mod => if (right != 0) @mod(left, right) else null,
+                .add => std.math.add(i64, left, right) catch null,
+                .sub => std.math.sub(i64, left, right) catch null,
+                .mul => std.math.mul(i64, left, right) catch null,
+                .div => std.math.divTrunc(i64, left, right) catch null,
+                // @mod traps only on div-by-zero (guarded) and minInt / -1.
+                .mod => if (right == 0 or (left == std.math.minInt(i64) and right == -1)) null else @mod(left, right),
                 else => null,
             };
         },

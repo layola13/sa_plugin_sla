@@ -253,7 +253,7 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
     }
 
     if (prune_known_branches) {
-        try pruneKnownFalseBranchesInReachableDecls(allocator, program, &analysis, &reachable);
+        try pruneKnownFalseBranchesInReachableDecls(allocator, program, &analysis, &reachable, &callable_index, null);
     }
 
     var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);

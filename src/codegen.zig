@@ -13780,6 +13780,24 @@ pub const Codegen = struct {
         return lowering_rules.isStackAllocNode(node);
     }
 
+    /// REG1 EXEC-TEXT predicate: `value` is an identity pointer-carrier
+    /// cast chain rooted at a bare identifier, and `val_reg` is exactly
+    /// that identifier's register -- the shape the checker treats as a
+    /// non-consuming copy while a bare SA assignment would move it.
+    fn identityCastAliasOfBinding(self: *Codegen, value: *const ast.Node, val_reg: []const u8) bool {
+        var node = value;
+        while (node.* == .cast_expr) {
+            const cast = node.cast_expr;
+            const src_ty = self.resolvedTypeForExpr(cast.expr) orelse return false;
+            if (!isPointerCarrierCastType(src_ty) or !isPointerCarrierCastType(cast.ty)) return false;
+            node = cast.expr;
+        }
+        if (node == value) return false;
+        if (node.* != .identifier) return false;
+        const resolved = self.resolveBindingName(node.identifier);
+        return std.mem.eql(u8, val_reg, resolved) or std.mem.eql(u8, val_reg, node.identifier);
+    }
+
     fn genStmt(self: *Codegen, stmt: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         switch (stmt.*) {
             .let_stmt => |let| {
@@ -14112,6 +14130,16 @@ pub const Codegen = struct {
                                 try self.emitRelease(val_reg);
                             }
                         }
+                    } else if (identityCastAliasOfBinding(self, let.value, val_reg)) {
+                        // REG1 EXEC-TEXT: the checker models an identity
+                        // pointer-carrier cast of a bare identifier as a
+                        // non-consuming copy, but a bare SA assignment is a
+                        // move -- the source would be Consumed here while
+                        // the checker still owes it uses and its scope-exit
+                        // release (trap 1009 at the later `!msg`). Bind a
+                        // materialized copy instead so the source register
+                        // stays live, mirroring the ZOZI-2 precedent.
+                        self.outPrint("    {s} = ptr_add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     } else {
                         self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }

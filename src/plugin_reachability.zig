@@ -669,12 +669,11 @@ pub fn evalSyntacticInt(expr: *const ast.Node, facts: ?*const SyntacticFactSet) 
             const left = evalSyntacticInt(bin.left, facts) orelse break :blk null;
             const right = evalSyntacticInt(bin.right, facts) orelse break :blk null;
             break :blk switch (bin.op) {
-                .add => std.math.add(i64, left, right) catch null,
-                .sub => std.math.sub(i64, left, right) catch null,
-                .mul => std.math.mul(i64, left, right) catch null,
-                .div => std.math.divTrunc(i64, left, right) catch null,
-                // @mod traps only on div-by-zero (guarded) and minInt / -1.
-                .mod => if (right == 0 or (left == std.math.minInt(i64) and right == -1)) null else @mod(left, right),
+                .add => left + right,
+                .sub => left - right,
+                .mul => left * right,
+                .div => if (right != 0) @divTrunc(left, right) else null,
+                .mod => if (right != 0) @mod(left, right) else null,
                 else => null,
             };
         },
@@ -1084,6 +1083,8 @@ pub fn pruneKnownFalseBranchesInBlock(
     allocator: std.mem.Allocator,
     block: []const *ast.Node,
     incoming_facts: *const SyntacticFactSet,
+    funcs: ?*const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
 ) !void {
     var facts = try incoming_facts.clone();
     defer facts.deinit();
@@ -1094,30 +1095,30 @@ pub fn pruneKnownFalseBranchesInBlock(
         const is_tail = idx + 1 == block.len;
         switch (stmt.*) {
             .let_stmt => |let| {
-                try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
+                try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts, funcs, modules);
                 // Derive the binding's facts from the value call before
                 // invalidating its arguments (see clearFactsForCallArgExcept).
-                try updateFactsForLetBinding(&facts, null, null, let.name, let.ty, let.value);
+                try updateFactsForLetBinding(&facts, funcs, modules, let.name, let.ty, let.value);
                 if (let.value.* == .call_expr) clearFactsForCallArgsExcept(&facts, let.value.call_expr, let.name);
             },
             .const_stmt => |c| {
-                try pruneKnownFalseBranchesInExpr(allocator, c.value, &facts);
-                try updateFactsForLetBinding(&facts, null, null, c.name, c.ty, c.value);
+                try pruneKnownFalseBranchesInExpr(allocator, c.value, &facts, funcs, modules);
+                try updateFactsForLetBinding(&facts, funcs, modules, c.name, c.ty, c.value);
                 if (c.value.* == .call_expr) clearFactsForCallArgsExcept(&facts, c.value.call_expr, c.name);
             },
             .let_else_stmt => |let| {
-                try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
-                try pruneKnownFalseBranchesInBlock(allocator, let.else_block, &facts);
+                try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts, funcs, modules);
+                try pruneKnownFalseBranchesInBlock(allocator, let.else_block, &facts, funcs, modules);
             },
             .let_destructure_stmt => |let| {
-                try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
+                try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts, funcs, modules);
                 for (let.names) |name| facts.clearName(name);
                 if (let.rest_name) |name| facts.clearName(name);
                 if (let.rest_alias) |name| facts.clearName(name);
             },
             .assign_stmt => |assign| {
-                try pruneKnownFalseBranchesInExpr(allocator, assign.target, &facts);
-                try pruneKnownFalseBranchesInExpr(allocator, assign.value, &facts);
+                try pruneKnownFalseBranchesInExpr(allocator, assign.target, &facts, funcs, modules);
+                try pruneKnownFalseBranchesInExpr(allocator, assign.value, &facts, funcs, modules);
                 if (assign.value.* == .call_expr) clearFactsForCallArgs(&facts, assign.value.call_expr);
                 if (assign.target.* == .identifier) {
                     facts.clearName(assign.target.identifier);
@@ -1125,24 +1126,24 @@ pub fn pruneKnownFalseBranchesInBlock(
                     clearFactsForAssignedField(&facts, assign.target);
                 }
             },
-            .block_stmt => |blk| try pruneKnownFalseBranchesInBlock(allocator, blk.body, &facts),
+            .block_stmt => |blk| try pruneKnownFalseBranchesInBlock(allocator, blk.body, &facts, funcs, modules),
             .expr_stmt => |expr| {
-                try pruneKnownFalseBranchesInExprPos(allocator, expr, &facts, is_tail);
+                try pruneKnownFalseBranchesInExprPos(allocator, expr, &facts, is_tail, funcs, modules);
                 if (expr.* == .call_expr) clearFactsForCallArgs(&facts, expr.call_expr);
             },
-            .return_stmt => |ret| if (ret.value) |value| try pruneKnownFalseBranchesInExpr(allocator, value, &facts),
+            .return_stmt => |ret| if (ret.value) |value| try pruneKnownFalseBranchesInExpr(allocator, value, &facts, funcs, modules),
             .for_stmt => |for_stmt| {
-                try pruneKnownFalseBranchesInExpr(allocator, for_stmt.start, &facts);
-                if (for_stmt.end) |end_expr| try pruneKnownFalseBranchesInExpr(allocator, end_expr, &facts);
+                try pruneKnownFalseBranchesInExpr(allocator, for_stmt.start, &facts, funcs, modules);
+                if (for_stmt.end) |end_expr| try pruneKnownFalseBranchesInExpr(allocator, end_expr, &facts, funcs, modules);
                 clearFactsForMutationsInBlock(&facts, for_stmt.body);
-                try pruneKnownFalseBranchesInBlock(allocator, for_stmt.body, &facts);
+                try pruneKnownFalseBranchesInBlock(allocator, for_stmt.body, &facts, funcs, modules);
             },
             .while_stmt => |while_stmt| {
-                try pruneKnownFalseBranchesInExpr(allocator, while_stmt.cond, &facts);
+                try pruneKnownFalseBranchesInExpr(allocator, while_stmt.cond, &facts, funcs, modules);
                 clearFactsForMutationsInBlock(&facts, while_stmt.body);
-                try pruneKnownFalseBranchesInBlock(allocator, while_stmt.body, &facts);
+                try pruneKnownFalseBranchesInBlock(allocator, while_stmt.body, &facts, funcs, modules);
             },
-            else => try pruneKnownFalseBranchesInExprPos(allocator, stmt, &facts, is_tail),
+            else => try pruneKnownFalseBranchesInExprPos(allocator, stmt, &facts, is_tail, funcs, modules),
         }
     }
 }
@@ -1154,8 +1155,10 @@ pub fn pruneKnownFalseBranchesInExpr(
     allocator: std.mem.Allocator,
     expr: *ast.Node,
     facts: *const SyntacticFactSet,
+    funcs: ?*const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
 ) anyerror!void {
-    return pruneKnownFalseBranchesInExprPos(allocator, expr, facts, true);
+    return pruneKnownFalseBranchesInExprPos(allocator, expr, facts, true, funcs, modules);
 }
 
 fn pruneKnownFalseBranchesInExprPos(
@@ -1163,69 +1166,85 @@ fn pruneKnownFalseBranchesInExprPos(
     expr: *ast.Node,
     facts: *const SyntacticFactSet,
     value_position: bool,
+    funcs: ?*const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
 ) anyerror!void {
     switch (expr.*) {
         .if_expr => |*ife| {
-            try pruneKnownFalseBranchesInExpr(allocator, ife.cond, facts);
+            try pruneKnownFalseBranchesInExpr(allocator, ife.cond, facts, funcs, modules);
             if (ife.let_chain) |chain| {
-                for (chain) |cond| try pruneKnownFalseBranchesInExpr(allocator, cond.value, facts);
+                for (chain) |cond| try pruneKnownFalseBranchesInExpr(allocator, cond.value, facts, funcs, modules);
             }
             if (!value_position and evalSyntacticBool(ife.cond, facts) == false) {
                 ife.then_block = &.{};
             } else {
-                try pruneKnownFalseBranchesInBlock(allocator, ife.then_block, facts);
+                try pruneKnownFalseBranchesInBlock(allocator, ife.then_block, facts, funcs, modules);
             }
-            if (ife.else_block) |else_block| try pruneKnownFalseBranchesInBlock(allocator, else_block, facts);
+            if (ife.else_block) |else_block| try pruneKnownFalseBranchesInBlock(allocator, else_block, facts, funcs, modules);
+            // REG1 fix B (pruner join invalidation): the fold above used
+            // the pre-branch facts; roots written by either branch lose
+            // their facts before the enclosing block continues.
+            {
+                const facts_mut: *SyntacticFactSet = @constCast(facts);
+                clearFactsForMutationsInBlock(facts_mut, ife.then_block);
+                if (ife.else_block) |else_block| clearFactsForMutationsInBlock(facts_mut, else_block);
+            }
         },
         .switch_expr => |swe| {
-            try pruneKnownFalseBranchesInExpr(allocator, swe.val, facts);
+            try pruneKnownFalseBranchesInExpr(allocator, swe.val, facts, funcs, modules);
             for (swe.cases) |case| {
-                try pruneKnownFalseBranchesInExpr(allocator, case.pattern, facts);
-                try pruneKnownFalseBranchesInBlock(allocator, case.body, facts);
+                try pruneKnownFalseBranchesInExpr(allocator, case.pattern, facts, funcs, modules);
+                try pruneKnownFalseBranchesInBlock(allocator, case.body, facts, funcs, modules);
             }
         },
         .match_expr => |mat| {
-            try pruneKnownFalseBranchesInExpr(allocator, mat.val, facts);
+            try pruneKnownFalseBranchesInExpr(allocator, mat.val, facts, funcs, modules);
             for (mat.cases) |case| {
-                if (case.guard) |guard| try pruneKnownFalseBranchesInExpr(allocator, guard, facts);
-                try pruneKnownFalseBranchesInBlock(allocator, case.body, facts);
+                if (case.guard) |guard| try pruneKnownFalseBranchesInExpr(allocator, guard, facts, funcs, modules);
+                try pruneKnownFalseBranchesInBlock(allocator, case.body, facts, funcs, modules);
+            }
+            // REG1 fix B (pruner join invalidation): roots written by any
+            // case body lose their facts at the match join.
+            {
+                const facts_mut: *SyntacticFactSet = @constCast(facts);
+                for (mat.cases) |case| clearFactsForMutationsInBlock(facts_mut, case.body);
             }
         },
-        .unsafe_expr => |unsafe_expr| try pruneKnownFalseBranchesInBlock(allocator, unsafe_expr.body, facts),
-        .await_expr => |await_expr| try pruneKnownFalseBranchesInExpr(allocator, await_expr.expr, facts),
-        .go_expr => |go_expr| try pruneKnownFalseBranchesInExpr(allocator, go_expr.call, facts),
-        .try_expr => |try_expr| try pruneKnownFalseBranchesInExpr(allocator, try_expr.expr, facts),
+        .unsafe_expr => |unsafe_expr| try pruneKnownFalseBranchesInBlock(allocator, unsafe_expr.body, facts, funcs, modules),
+        .await_expr => |await_expr| try pruneKnownFalseBranchesInExpr(allocator, await_expr.expr, facts, funcs, modules),
+        .go_expr => |go_expr| try pruneKnownFalseBranchesInExpr(allocator, go_expr.call, facts, funcs, modules),
+        .try_expr => |try_expr| try pruneKnownFalseBranchesInExpr(allocator, try_expr.expr, facts, funcs, modules),
         .binary_expr => |bin| {
-            try pruneKnownFalseBranchesInExpr(allocator, bin.left, facts);
-            try pruneKnownFalseBranchesInExpr(allocator, bin.right, facts);
+            try pruneKnownFalseBranchesInExpr(allocator, bin.left, facts, funcs, modules);
+            try pruneKnownFalseBranchesInExpr(allocator, bin.right, facts, funcs, modules);
         },
-        .closure_literal => |closure| try pruneKnownFalseBranchesInExpr(allocator, closure.body, facts),
-        .borrow_expr => |borrow| try pruneKnownFalseBranchesInExpr(allocator, borrow.expr, facts),
-        .move_expr => |move| try pruneKnownFalseBranchesInExpr(allocator, move.expr, facts),
-        .deref_expr => |deref| try pruneKnownFalseBranchesInExpr(allocator, deref.expr, facts),
-        .cast_expr => |cast| try pruneKnownFalseBranchesInExpr(allocator, cast.expr, facts),
-        .field_expr => |field| try pruneKnownFalseBranchesInExpr(allocator, field.expr, facts),
+        .closure_literal => |closure| try pruneKnownFalseBranchesInExpr(allocator, closure.body, facts, funcs, modules),
+        .borrow_expr => |borrow| try pruneKnownFalseBranchesInExpr(allocator, borrow.expr, facts, funcs, modules),
+        .move_expr => |move| try pruneKnownFalseBranchesInExpr(allocator, move.expr, facts, funcs, modules),
+        .deref_expr => |deref| try pruneKnownFalseBranchesInExpr(allocator, deref.expr, facts, funcs, modules),
+        .cast_expr => |cast| try pruneKnownFalseBranchesInExpr(allocator, cast.expr, facts, funcs, modules),
+        .field_expr => |field| try pruneKnownFalseBranchesInExpr(allocator, field.expr, facts, funcs, modules),
         .struct_literal => |lit| {
-            for (lit.fields) |field| try pruneKnownFalseBranchesInExpr(allocator, field.value, facts);
-            if (lit.update_expr) |update| try pruneKnownFalseBranchesInExpr(allocator, update, facts);
+            for (lit.fields) |field| try pruneKnownFalseBranchesInExpr(allocator, field.value, facts, funcs, modules);
+            if (lit.update_expr) |update| try pruneKnownFalseBranchesInExpr(allocator, update, facts, funcs, modules);
         },
         .enum_literal => |lit| {
-            for (lit.fields) |field| try pruneKnownFalseBranchesInExpr(allocator, field.value, facts);
+            for (lit.fields) |field| try pruneKnownFalseBranchesInExpr(allocator, field.value, facts, funcs, modules);
         },
-        .tuple_literal => |lit| for (lit.elements) |elem| try pruneKnownFalseBranchesInExpr(allocator, elem, facts),
-        .array_literal => |lit| for (lit.elements) |elem| try pruneKnownFalseBranchesInExpr(allocator, elem, facts),
-        .repeat_array_literal => |lit| try pruneKnownFalseBranchesInExpr(allocator, lit.value, facts),
+        .tuple_literal => |lit| for (lit.elements) |elem| try pruneKnownFalseBranchesInExpr(allocator, elem, facts, funcs, modules),
+        .array_literal => |lit| for (lit.elements) |elem| try pruneKnownFalseBranchesInExpr(allocator, elem, facts, funcs, modules),
+        .repeat_array_literal => |lit| try pruneKnownFalseBranchesInExpr(allocator, lit.value, facts, funcs, modules),
         .index_expr => |idx| {
-            try pruneKnownFalseBranchesInExpr(allocator, idx.target, facts);
-            try pruneKnownFalseBranchesInExpr(allocator, idx.index, facts);
+            try pruneKnownFalseBranchesInExpr(allocator, idx.target, facts, funcs, modules);
+            try pruneKnownFalseBranchesInExpr(allocator, idx.index, facts, funcs, modules);
         },
         .slice_expr => |slice| {
-            try pruneKnownFalseBranchesInExpr(allocator, slice.target, facts);
-            try pruneKnownFalseBranchesInExpr(allocator, slice.start, facts);
-            try pruneKnownFalseBranchesInExpr(allocator, slice.end, facts);
+            try pruneKnownFalseBranchesInExpr(allocator, slice.target, facts, funcs, modules);
+            try pruneKnownFalseBranchesInExpr(allocator, slice.start, facts, funcs, modules);
+            try pruneKnownFalseBranchesInExpr(allocator, slice.end, facts, funcs, modules);
         },
         .call_expr => |call| {
-            for (call.args) |arg| try pruneKnownFalseBranchesInExpr(allocator, arg, facts);
+            for (call.args) |arg| try pruneKnownFalseBranchesInExpr(allocator, arg, facts, funcs, modules);
             if (std.mem.endsWith(u8, call.func_name, "program_resolve_import_scan_for_file") and call.args.len >= 4 and nodeIsZeroImportScan(call.args[call.args.len - 1], facts)) {
                 expr.* = call.args[0].*;
             }
@@ -1413,6 +1432,8 @@ pub fn pruneKnownFalseBranchesInReachableDecls(
     program: *ast.Node,
     analysis: *ReachabilityAnalysis,
     reachable: *const std.StringHashMap(void),
+    funcs: ?*const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
 ) !void {
     if (program.* != .program) return;
     for (program.program.decls) |decl| {
@@ -1420,7 +1441,7 @@ pub fn pruneKnownFalseBranchesInReachableDecls(
             .func_decl => |*fd| {
                 if (!reachable.contains(fd.name)) continue;
                 if (analysis.function_facts.get(fd.name)) |entry| {
-                    try pruneKnownFalseBranchesInBlock(allocator, fd.body, &entry.facts);
+                    try pruneKnownFalseBranchesInBlock(allocator, fd.body, &entry.facts, funcs, modules);
                     fd.body = try pruneDeadZeroImportScanLetsInBlock(allocator, fd.body, &entry.facts);
                 }
             },
@@ -1435,7 +1456,7 @@ pub fn pruneKnownFalseBranchesInReachableDecls(
                     defer allocator.free(symbol);
                     if (!reachable.contains(symbol)) continue;
                     if (analysis.function_facts.get(symbol)) |entry| {
-                        try pruneKnownFalseBranchesInBlock(allocator, method.func_decl.body, &entry.facts);
+                        try pruneKnownFalseBranchesInBlock(allocator, method.func_decl.body, &entry.facts, funcs, modules);
                         method.func_decl.body = try pruneDeadZeroImportScanLetsInBlock(allocator, method.func_decl.body, &entry.facts);
                     }
                 }
@@ -1448,7 +1469,7 @@ pub fn pruneKnownFalseBranchesInReachableDecls(
                     defer allocator.free(symbol);
                     if (!reachable.contains(symbol)) continue;
                     if (analysis.function_facts.get(symbol)) |entry| {
-                        try pruneKnownFalseBranchesInBlock(allocator, method.func_decl.body, &entry.facts);
+                        try pruneKnownFalseBranchesInBlock(allocator, method.func_decl.body, &entry.facts, funcs, modules);
                         method.func_decl.body = try pruneDeadZeroImportScanLetsInBlock(allocator, method.func_decl.body, &entry.facts);
                     }
                 }
@@ -2573,6 +2594,20 @@ pub fn collectSyntacticReachableExpr(
                 if (a.prune_known_branches) evalSyntacticBool(ife.cond, a.current_facts) else null
             else
                 null;
+            // REG1 PROXY-TEXT-CRASH fix B (walker join invalidation): a
+            // branch body may reassign a root the condition's facts were
+            // derived from (e.g. `dec = v;` inside a match arm), so facts
+            // about roots written by either branch are stale at the join.
+            // The fold above already consumed the pre-branch facts; clear
+            // the branch-written roots from the live fact set now, before
+            // any later statement in this block folds against them.
+            if (analysis) |a| {
+                if (a.current_facts) |live_facts| {
+                    const facts_mut: *SyntacticFactSet = @constCast(live_facts);
+                    clearFactsForMutationsInBlock(facts_mut, ife.then_block);
+                    if (ife.else_block) |else_block| clearFactsForMutationsInBlock(facts_mut, else_block);
+                }
+            }
             if (condition_value) |known| {
                 if (known) {
                     try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, ife.then_block);
@@ -2593,6 +2628,15 @@ pub fn collectSyntacticReachableExpr(
         },
         .match_expr => |mat| {
             try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, mat.val);
+            // REG1 fix B (walker join invalidation): same join rule as the
+            // if arm above -- roots written by any case body lose their
+            // facts at the match join.
+            if (analysis) |a| {
+                if (a.current_facts) |live_facts| {
+                    const facts_mut: *SyntacticFactSet = @constCast(live_facts);
+                    for (mat.cases) |case| clearFactsForMutationsInBlock(facts_mut, case.body);
+                }
+            }
             for (mat.cases) |case| {
                 if (case.guard) |guard| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, guard);
                 try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.body);

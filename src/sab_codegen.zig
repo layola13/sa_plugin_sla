@@ -6,6 +6,7 @@ const contract_parser = @import("contract_parser.zig");
 const type_checker = @import("type_checker.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const sci_bridge = @import("sci_bridge");
+const decl_materialize = @import("decl_materialize.zig");
 const host_paths = @import("host_paths.zig");
 
 const sab = sci_bridge.sab;
@@ -23,6 +24,15 @@ const const_decl = sab.const_decl;
 /// pass is quadratic in that shape: 49,152 elements extrapolated to
 /// ~2,600-3,100 s of host compile time).
 const bulk_array_threshold: usize = 32;
+
+/// SAB-H1-ENROL (consult-forkh verdict §3, conditions 3 and 5): version
+/// of the shared decl_materialize specification
+/// (docs/target_conditional_decls.md) that this loader's materialization
+/// behaviour implements. It is part of every SAB std-load cache key in
+/// this file, so a change to the materialization semantics invalidates
+/// previously materialized std modules and macro templates instead of
+/// silently serving them. Bump when the spec's semantics change.
+pub const sab_std_load_spec_version: u32 = 1;
 
 fn stringSliceLessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
@@ -240,6 +250,10 @@ const StdSurfaceRuleOptions = struct {
 
 const StdImportModule = struct {
     import_path: []const u8,
+    /// Composite std-load cache key (module id, target, spec version,
+    /// std root, content hash) under which this module is registered in
+    /// std_import_module_ids; owned by this entry (the map borrows it).
+    cache_key: []const u8,
     flat: flattener.FlattenResult,
     function_sigs: []sig.FunctionSig,
 
@@ -407,6 +421,24 @@ pub const Codegen = struct {
     string_literal_consts: std.StringHashMap([]const u8),
     hashmap_key_slots: std.StringHashMap(u32),
     sa_std_root: ?[]const u8 = null,
+    /// SAB-H1-ENROL: the program compilation target, supplied by the
+    /// front end (SlaCompileOptions.decl_target, threaded through
+    /// generateWithTarget). The SAB std loader materializes std sources
+    /// for THIS target (via ResolveContext.decl_target on the shared
+    /// sci flattener), never silently for the host target when the
+    /// caller supplied a different one. The default matches the
+    /// front-end default for entry points that do not thread options.
+    decl_target: decl_materialize.DeclTarget = .native,
+    /// SAB-H1-ENROL: absolute paths of the std source files actually
+    /// read while loading std deps for this compilation (direct imports
+    /// plus the transitive files evidenced by the flatten results'
+    /// location tables). plugin_compile records them in the freshness
+    /// artifact's dependency closure, so a std source change invalidates
+    /// a cached SAB instead of silently serving stale std content
+    /// (consult-forkh §3 condition 5). The map borrows the list's
+    /// allocations; deinit frees through the list.
+    consumed_std_files: std.array_list.Managed([]const u8),
+    consumed_std_file_ids: std.StringHashMap(void),
     instructions: std.array_list.Managed(inst.Instruction),
     function_sigs: std.array_list.Managed(sig.FunctionSig),
     test_sigs: std.array_list.Managed(sig.FunctionSig),
@@ -501,6 +533,8 @@ pub const Codegen = struct {
             .pending_std_deps = std.array_list.Managed(PendingStdDep).init(allocator),
             .std_import_modules = std.array_list.Managed(StdImportModule).init(allocator),
             .std_import_module_ids = std.StringHashMap(usize).init(allocator),
+            .consumed_std_files = std.array_list.Managed([]const u8).init(allocator),
+            .consumed_std_file_ids = std.StringHashMap(void).init(allocator),
             .std_macro_templates = std.array_list.Managed(StdMacroTemplate).init(allocator),
             .std_macro_template_ids = std.StringHashMap(usize).init(allocator),
             .escaped_closure_entries = .empty,
@@ -583,12 +617,16 @@ pub const Codegen = struct {
         self.pending_std_deps.deinit();
         for (self.std_import_modules.items) |*entry| {
             self.allocator.free(entry.import_path);
+            self.allocator.free(entry.cache_key);
             for (entry.function_sigs) |*fsig| fsig.deinit(self.allocator);
             if (entry.function_sigs.len != 0) self.allocator.free(entry.function_sigs);
             entry.flat.deinit(self.allocator);
         }
         self.std_import_modules.deinit();
         self.std_import_module_ids.deinit();
+        for (self.consumed_std_files.items) |path| self.allocator.free(path);
+        self.consumed_std_files.deinit();
+        self.consumed_std_file_ids.deinit();
         for (self.std_macro_templates.items) |*entry| {
             self.allocator.free(entry.key);
             self.allocator.free(entry.func_name);
@@ -1514,8 +1552,92 @@ pub const Codegen = struct {
 
     fn flattenStdSnippet(self: *Codegen, source: []const u8) !flattener.FlattenResult {
         const std_root = try self.cachedSaStdRoot();
-        const resolve_ctx = flattener.ResolveContext{ .options = .{ .std_root = std_root } };
+        // SAB-H1-ENROL (condition 3-(3)): the loader materializes std
+        // sources for the program's compilation target, supplied by the
+        // front end through self.decl_target and forwarded to the shared
+        // sci flattener — the same decl_materialize spec, the same Zig
+        // module (condition 2), no second implementation here.
+        const resolve_ctx = flattener.ResolveContext{ .options = .{ .std_root = std_root }, .decl_target = switch (self.decl_target) {
+            .native => .native,
+            .wasm32 => .wasm32,
+        } };
         return flattener.flattenWithPackages(self.allocator, source, resolve_ctx);
+    }
+
+    /// SAB-H1-ENROL: record one std source file actually read during
+    /// std loading (see the consumed_std_files field comment).
+    fn recordConsumedStdFile(self: *Codegen, path: []const u8) !void {
+        if (path.len == 0) return;
+        if (self.consumed_std_file_ids.contains(path)) return;
+        const owned = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned);
+        try self.consumed_std_files.append(owned);
+        errdefer _ = self.consumed_std_files.pop();
+        try self.consumed_std_file_ids.put(owned, {});
+    }
+
+    /// Record the transitive std files a flatten result evidences
+    /// through its location table (every spliced source file that
+    /// contributed locations), plus the direct import's resolved path.
+    fn recordConsumedStdFilesFromFlat(self: *Codegen, import_path: []const u8, flat: *const flattener.FlattenResult) !void {
+        if (try self.stdImportResolvedPath(import_path)) |path| {
+            defer self.allocator.free(path);
+            try self.recordConsumedStdFile(path);
+        }
+        for (flat.loc_table) |entry| {
+            const loc = entry orelse continue;
+            try self.recordConsumedStdFile(loc.file);
+        }
+    }
+
+    /// Absolute path of a std import under the resolved sa_std root, or
+    /// null when the import does not live under that root.
+    fn stdImportResolvedPath(self: *Codegen, import_path: []const u8) !?[]const u8 {
+        const root = try self.cachedSaStdRoot();
+        const rel = if (std.mem.startsWith(u8, import_path, "sa_std/")) import_path["sa_std/".len..] else return null;
+        return try std.fs.path.join(self.allocator, &.{ root, rel });
+    }
+
+    /// SHA-256 (lowercase hex) of the std import's current source bytes,
+    /// or null when the file cannot be read. A null result must never
+    /// serve a cache hit: callers bypass the cache and let the flatten
+    /// itself fail loudly on the missing file.
+    fn stdImportContentHash(self: *Codegen, import_path: []const u8) !?[]const u8 {
+        const path = (try self.stdImportResolvedPath(import_path)) orelse return null;
+        defer self.allocator.free(path);
+        const bytes = sio.cwd().readFileAlloc(self.allocator, path, 16 * 1024 * 1024) catch return null;
+        defer self.allocator.free(bytes);
+        var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+        const hex = "0123456789abcdef";
+        const out = try self.allocator.alloc(u8, digest.len * 2);
+        errdefer self.allocator.free(out);
+        for (digest, 0..) |byte, i| {
+            out[i * 2] = hex[byte >> 4];
+            out[i * 2 + 1] = hex[byte & 0x0F];
+        }
+        return out;
+    }
+
+    /// SAB-H1-ENROL (condition 5): composite std-load cache key —
+    /// (module id, program target, decl_materialize spec version,
+    /// std root, SHA-256 of the module's current source bytes). A pure
+    /// path key (the pre-enrolment form) lets one target's materialized
+    /// module, or a stale read of a changed source, silently satisfy a
+    /// later load. Returns null when the source cannot be hashed; the
+    /// caller then bypasses the cache entirely (never serves a hit it
+    /// cannot validate).
+    fn stdModuleCacheKey(self: *Codegen, import_path: []const u8) !?[]const u8 {
+        const hash = (try self.stdImportContentHash(import_path)) orelse return null;
+        defer self.allocator.free(hash);
+        const root = try self.cachedSaStdRoot();
+        return try std.fmt.allocPrint(self.allocator, "{s}\x1f{s}\x1f{d}\x1f{s}\x1f{s}", .{
+            import_path,
+            self.decl_target.targetName(),
+            sab_std_load_spec_version,
+            root,
+            hash,
+        });
     }
 
     fn parseStdSurfaceArg(text: []const u8) !StdSurfaceArgKind {
@@ -6206,12 +6328,23 @@ pub const Codegen = struct {
     }
 
     fn cachedStdImportModule(self: *Codegen, import_path: []const u8) !*const StdImportModule {
-        if (self.std_import_module_ids.get(import_path)) |idx| return &self.std_import_modules.items[idx];
+        // SAB-H1-ENROL (condition 5): the cache key is the composite
+        // stdModuleCacheKey (module id, target, spec version, std root,
+        // content hash) — never the bare import path. When the key
+        // cannot be computed (source unreadable) the cache is bypassed
+        // entirely and the load proceeds fresh, so a failure surfaces
+        // loudly from the flatten instead of being masked by a hit.
+        const cache_key = try self.stdModuleCacheKey(import_path);
+        defer if (cache_key) |key| self.allocator.free(key);
+        if (cache_key) |key| {
+            if (self.std_import_module_ids.get(key)) |idx| return &self.std_import_modules.items[idx];
+        }
 
         const source = try std.fmt.allocPrint(self.allocator, "@import \"{s}\"\n", .{import_path});
         defer self.allocator.free(source);
         var flat = try self.flattenStdSnippet(source);
         errdefer flat.deinit(self.allocator);
+        try self.recordConsumedStdFilesFromFlat(import_path, &flat);
 
         const verified = try sci_bridge.verifier.verifyWithOptions(self.allocator, flat.instructions, flat.const_decls, .{});
         var function_sigs: []sig.FunctionSig = &.{};
@@ -6230,12 +6363,22 @@ pub const Codegen = struct {
 
         const owned_import_path = try self.allocator.dupe(u8, import_path);
         errdefer self.allocator.free(owned_import_path);
+        // The registered key is owned by the entry (see StdImportModule.
+        // cache_key); without a computable key the module is still
+        // returned for this load but is registered under a unique
+        // never-matching key, so no later load can be served from it.
+        const owned_cache_key = if (cache_key) |key|
+            try self.allocator.dupe(u8, key)
+        else
+            try std.fmt.allocPrint(self.allocator, "{s}\x1funcached\x1f{}", .{ import_path, self.std_import_modules.items.len });
+        errdefer self.allocator.free(owned_cache_key);
 
         const idx = self.std_import_modules.items.len;
-        try self.std_import_module_ids.put(owned_import_path, idx);
-        errdefer _ = self.std_import_module_ids.remove(owned_import_path);
+        try self.std_import_module_ids.put(owned_cache_key, idx);
+        errdefer _ = self.std_import_module_ids.remove(owned_cache_key);
         try self.std_import_modules.append(.{
             .import_path = owned_import_path,
+            .cache_key = owned_cache_key,
             .flat = flat,
             .function_sigs = function_sigs,
         });
@@ -6318,7 +6461,30 @@ pub const Codegen = struct {
     }
 
     fn stdMacroTemplateKey(self: *Codegen, import_path: []const u8, macro_name: []const u8, arg_count: usize) ![]const u8 {
-        return try std.fmt.allocPrint(self.allocator, "{s}\x1f{s}\x1f{}", .{ import_path, macro_name, arg_count });
+        // SAB-H1-ENROL (condition 5): like stdModuleCacheKey, the
+        // template key carries (module id, macro, arg count, program
+        // target, spec version, content hash of the module source).
+        // When the source cannot be hashed the key embeds the current
+        // template count, which grows with every stored template, so
+        // the lookup can never be served from an unvalidatable entry.
+        const hash = try self.stdImportContentHash(import_path);
+        defer if (hash) |h| self.allocator.free(h);
+        if (hash) |h| {
+            return try std.fmt.allocPrint(self.allocator, "{s}\x1f{s}\x1f{}\x1f{s}\x1f{d}\x1f{s}", .{
+                import_path,
+                macro_name,
+                arg_count,
+                self.decl_target.targetName(),
+                sab_std_load_spec_version,
+                h,
+            });
+        }
+        return try std.fmt.allocPrint(self.allocator, "{s}\x1f{s}\x1f{}\x1funcached\x1f{}", .{
+            import_path,
+            macro_name,
+            arg_count,
+            self.std_macro_templates.items.len,
+        });
     }
 
     fn cachedStdMacroTemplate(self: *Codegen, import_path: []const u8, macro_name: []const u8, arg_count: usize) !*const StdMacroTemplate {
@@ -6347,6 +6513,7 @@ pub const Codegen = struct {
 
         var flat = try self.flattenStdSnippet(source.items);
         defer flat.deinit(self.allocator);
+        try self.recordConsumedStdFilesFromFlat(import_path, &flat);
         const bytes = try sci_bridge.encodeSabFromFlatUnchecked(self.allocator, &flat);
         defer self.allocator.free(bytes);
         var module = try sab.decodeModule(self.allocator, bytes);
@@ -6485,6 +6652,7 @@ pub const Codegen = struct {
 
         var flat = try self.flattenStdSnippet(source.items);
         defer flat.deinit(self.allocator);
+        try self.recordConsumedStdFilesFromFlat(import_path, &flat);
         const bytes = try sci_bridge.encodeSabFromFlatUnchecked(self.allocator, &flat);
         defer self.allocator.free(bytes);
         var module = try sab.decodeModule(self.allocator, bytes);
@@ -23843,9 +24011,31 @@ pub const Codegen = struct {
 };
 
 pub fn generate(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker, program: *ast.Node) ![]u8 {
+    return generateWithTarget(allocator, tc, program, .native, null);
+}
+
+/// SAB-H1-ENROL: generate with the program's compilation target
+/// threaded into the SAB std loader (Codegen.decl_target), and — when
+/// std_deps_out is non-null — with the std source files the loader
+/// actually consumed appended (as owned duplicates) for the caller's
+/// freshness dependency closure.
+pub fn generateWithTarget(
+    allocator: std.mem.Allocator,
+    tc: *type_checker.TypeChecker,
+    program: *ast.Node,
+    target: decl_materialize.DeclTarget,
+    std_deps_out: ?*std.array_list.Managed([]const u8),
+) ![]u8 {
     var cg = Codegen.init(allocator, tc);
     defer cg.deinit();
-    return try cg.generate(program);
+    cg.decl_target = target;
+    const bytes = try cg.generate(program);
+    if (std_deps_out) |out| {
+        for (cg.consumed_std_files.items) |path| {
+            try out.append(try allocator.dupe(u8, path));
+        }
+    }
+    return bytes;
 }
 
 test "direct sab stack_alloc uses integer constant expression size" {
@@ -24749,4 +24939,81 @@ test "direct sab extern borrow call operand keeps prefix" {
 
     try std.testing.expectEqualSlices(u8, "&tmp_3", raw);
     try std.testing.expectEqualSlices(u8, "&tmp_4", already);
+}
+
+test "sab std import module cache key covers content and target" {
+    // SAB-H1-ENROL regression (consult-forkh §3 condition 5): the SAB
+    // std import cache must not serve a module loaded from an older
+    // read of the same import path, nor a module materialized for a
+    // different compilation target. On the pre-enrolment code the cache
+    // key was the bare import path, so both reloads below returned the
+    // first module and this test fails; with the composite key
+    // (module id, target, spec version, std root, content hash) each
+    // reload re-reads the source.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+    const root_path = try tdir.realpathAlloc(allocator, ".");
+    defer allocator.free(root_path);
+    const core_dir = try std.fs.path.join(allocator, &.{ root_path, "core" });
+    defer allocator.free(core_dir);
+    try tdir.makePath("core");
+    const probe_path = try std.fs.path.join(allocator, &.{ core_dir, "probe.sa" });
+    defer allocator.free(probe_path);
+
+    const v1 =
+        \\@export probe_one() -> u64:
+        \\L_ENTRY:
+        \\    return 11
+        \\
+    ;
+    const v2 =
+        \\@export probe_one() -> u64:
+        \\L_ENTRY:
+        \\    return 11
+        \\
+        \\@export probe_two() -> u64:
+        \\L_ENTRY:
+        \\    return 22
+        \\
+    ;
+    try tdir.writeFile(.{ .sub_path = "core/probe.sa", .data = v1 });
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+    cg.sa_std_root = root_path;
+
+    const first = try cg.cachedStdImportModule("sa_std/core/probe.sa");
+    try std.testing.expectEqual(@as(usize, 1), first.function_sigs.len);
+    try std.testing.expectEqual(@as(usize, 1), cg.std_import_modules.items.len);
+
+    // Same target, unchanged source: the cache legitimately hits.
+    const again = try cg.cachedStdImportModule("sa_std/core/probe.sa");
+    try std.testing.expectEqual(@as(usize, 1), again.function_sigs.len);
+    try std.testing.expectEqual(@as(usize, 1), cg.std_import_modules.items.len);
+
+    // Source changed under the same import path: must re-read.
+    try tdir.writeFile(.{ .sub_path = "core/probe.sa", .data = v2 });
+    const reloaded = try cg.cachedStdImportModule("sa_std/core/probe.sa");
+    try std.testing.expectEqual(@as(usize, 2), reloaded.function_sigs.len);
+    try std.testing.expectEqual(@as(usize, 2), cg.std_import_modules.items.len);
+
+    // Target changed: must not serve the native-target entry.
+    cg.decl_target = .wasm32;
+    const retargeted = try cg.cachedStdImportModule("sa_std/core/probe.sa");
+    try std.testing.expectEqual(@as(usize, 2), retargeted.function_sigs.len);
+    try std.testing.expectEqual(@as(usize, 3), cg.std_import_modules.items.len);
+
+    // The consumed-file record names the probe source exactly once.
+    var saw_probe = false;
+    for (cg.consumed_std_files.items) |path| {
+        if (std.mem.eql(u8, path, probe_path)) saw_probe = true;
+    }
+    try std.testing.expect(saw_probe);
 }

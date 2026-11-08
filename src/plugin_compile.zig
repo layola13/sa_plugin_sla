@@ -1086,7 +1086,17 @@ pub fn compileSlaFileToSabWithOptions(
     slaProfileStage(stderr, profile, "entry reachable decl filter", stage_start);
 
     stage_start = sio.nanoTimestamp();
-    const sab_bytes = sab_codegen_mod.generate(allocator, &tc, specialized_prog) catch |err| {
+    // SAB-H1-ENROL: thread the compilation target into the SAB std
+    // loader and collect the std source files it consumed, so the
+    // freshness closure below covers the SAB std dependency graph —
+    // not only the front-end import closure — and a std source change
+    // invalidates the cached artifact (condition 5).
+    var sab_std_deps = std.array_list.Managed([]const u8).init(allocator);
+    defer {
+        for (sab_std_deps.items) |path| allocator.free(path);
+        sab_std_deps.deinit();
+    }
+    const sab_bytes = sab_codegen_mod.generateWithTarget(allocator, &tc, specialized_prog, options.decl_target, &sab_std_deps) catch |err| {
         slaProfileStage(stderr, profile, "sab direct codegen", stage_start);
         switch (err) {
             error.OutOfMemory => return err,
@@ -1101,6 +1111,13 @@ pub fn compileSlaFileToSabWithOptions(
         }
     };
     slaProfileStage(stderr, profile, "sab direct codegen", stage_start);
+    // SAB-H1-ENROL: extend the recorded closure with the SAB std deps
+    // (storeFreshArtifact dedups and fingerprints file contents, so a
+    // changed std source — e.g. mem.sa behind vec.sa — now invalidates
+    // the cached SAB on the next invocation).
+    for (sab_std_deps.items) |path| {
+        closure.append(allocator.dupe(u8, path) catch continue) catch {};
+    }
     plugin_freshness.storeFreshArtifact(allocator, file, .sab, options, null, closure.items, sab_bytes) catch {};
     return sab_bytes;
 }

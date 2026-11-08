@@ -1,0 +1,30 @@
+@import "sa_std/vec.sa"
+
+// P1 coverage: Vec.iter().rev() — SAB audit registry entry Vec.rev
+// was checkfail on both backends (check:Undefined call) at registry
+// stamp ee7b41c3 and no unit corpus file references it.
+
+@test "p1 vec iter rev sum"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let c = v.iter().rev();
+    if c.sum() != 6 { panic(109); };
+}
+
+@test "p1 vec iter rev find sees last first"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(5);
+    v.push(12);
+    v.push(18);
+    v.push(24);
+    let f = v.iter().rev().find(|x| x > 10);
+    if f.is_none() { panic(110); };
+    if f.unwrap() != 24 { panic(111); };
+}
+
+@test "p1 vec iter rev empty"() {
+    let v: Vec<i32> = Vec::new();
+    if v.iter().rev().sum() != 0 { panic(112); };
+}

@@ -1,0 +1,25 @@
+@import "sa_std/hashset.sa"
+@import "sa_std/btree_set.sa"
+
+// P1 coverage: HashSet.remove(...) — SAB audit registry entry
+// HashSet.remove was checkfail on both backends
+// (check:TypeMismatch) at registry stamp ee7b41c3 and no unit
+// corpus file references it.
+
+@test "p1 hashset remove method"() {
+    let s = HashSet::new();
+    s.insert(5);
+    s.insert(9);
+    s.remove(5);
+    if s.len() != 1 { panic(40208); };
+    if s.contains(5) { panic(223); };
+    if !s.contains(9) { panic(224); };
+}
+
+@test "p1 hashset remove missing element"() {
+    let s = HashSet::new();
+    s.insert(5);
+    s.remove(77);
+    if s.len() != 1 { panic(225); };
+    if !s.contains(5) { panic(226); };
+}

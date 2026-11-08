@@ -1,0 +1,33 @@
+@import "sa_std/vec.sa"
+
+// P1 coverage: Vec.iter().max() — SAB audit registry entry Vec.max
+// was checkfail on both backends (check:Undefined call) at registry
+// stamp ee7b41c3 and no unit corpus file references it.
+
+@test "p1 vec iter max"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(9);
+    v.push(3);
+    let mx = v.iter().max();
+    if mx.is_none() { panic(108); };
+    if mx.unwrap() != 9 { panic(109); };
+}
+
+@test "p1 vec iter max empty"() {
+    let v: Vec<i32> = Vec::new();
+    let mx = v.iter().max();
+    if mx.is_some() { panic(110); };
+}
+
+@test "p1 vec iter max single and negatives"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(-7);
+    let one = v.iter().max();
+    if one.is_none() { panic(111); };
+    if one.unwrap() != -7 { panic(112); };
+    v.push(-3);
+    let two = v.iter().max();
+    if two.is_none() { panic(113); };
+    if two.unwrap() != -3 { panic(114); };
+}

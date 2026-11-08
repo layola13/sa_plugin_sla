@@ -1,0 +1,19 @@
+@import "sa_std/btree_map.sa"
+@import "sa_std/core/option.sa"
+
+// P1 coverage: BTreeMap.remove(...) — SAB audit registry entry
+// BTreeMap.remove was checkfail on both backends
+// (check:TypeMismatch) at registry stamp ee7b41c3 and no unit
+// corpus file references it. The macro-bridge form
+// BTREE_MAP_REMOVE separately failed with run panic 40302 /
+// sab codegen:UnknownRegister.
+
+@test "p1 btreemap remove method"() {
+    let m = BTreeMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.remove("a");
+    if m.len() != 1 { panic(401); };
+    if m.get("a").is_some() { panic(404); };
+    if m.get("b").copied().unwrap_or_default() != 2 { panic(405); };
+}

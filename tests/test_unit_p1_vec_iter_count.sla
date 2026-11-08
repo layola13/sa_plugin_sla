@@ -1,0 +1,29 @@
+@import "sa_std/vec.sa"
+
+// P1 coverage: Vec.iter().count() — SAB audit registry entry Vec.count
+// was checkfail on both backends (check:Undefined call) at registry
+// stamp ee7b41c3 and no unit corpus file references it.
+
+@test "p1 vec iter count"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    if v.iter().count() != 3 { panic(102); };
+}
+
+@test "p1 vec iter count empty"() {
+    let v: Vec<i32> = Vec::new();
+    if v.iter().count() != 0 { panic(103); };
+}
+
+@test "p1 vec iter count after remove"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    v.push(40);
+    let removed = v.remove(0);
+    if removed != 10 { panic(104); };
+    if v.iter().count() != 3 { panic(105); };
+}

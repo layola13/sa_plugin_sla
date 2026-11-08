@@ -1,0 +1,32 @@
+@import "sa_std/hashmap.sa"
+@import "sa_std/core/option.sa"
+
+// P1 coverage: HashMap.keys() / HashMap.values() — SAB audit
+// registry entries HashMap.keys and HashMap.values were checkfail
+// on both backends (check:Undefined call) at registry stamp
+// ee7b41c3 and no unit corpus file references them.
+
+@test "p1 hashmap keys len"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let ks = m.keys();
+    if ks.len() != 2 { panic(201); };
+}
+
+@test "p1 hashmap values len and sum"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let vs = m.values();
+    if vs.len() != 2 { panic(203); };
+    if vs.iter().sum() != 3 { panic(214); };
+}
+
+@test "p1 hashmap keys values empty"() {
+    let m = HashMap::new();
+    let ks = m.keys();
+    if ks.len() != 0 { panic(215); };
+    let vs = m.values();
+    if vs.len() != 0 { panic(216); };
+}

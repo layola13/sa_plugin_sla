@@ -1,0 +1,21 @@
+@import "sa_std/btree_map.sa"
+@import "sa_std/core/option.sa"
+
+// P1 coverage: BTreeMap.keys() — SAB audit registry entry
+// BTreeMap.keys was checkfail on both backends (check:Undefined
+// call) at registry stamp ee7b41c3 and no unit corpus file
+// references it.
+
+@test "p1 btreemap keys len"() {
+    let m = BTreeMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let ks = m.keys();
+    if ks.len() != 2 { panic(402); };
+}
+
+@test "p1 btreemap keys empty"() {
+    let m = BTreeMap::new();
+    let ks = m.keys();
+    if ks.len() != 0 { panic(403); };
+}

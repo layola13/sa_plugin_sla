@@ -24,6 +24,22 @@ const const_decl = sab.const_decl;
 /// pass is quadratic in that shape: 49,152 elements extrapolated to
 /// ~2,600-3,100 s of host compile time).
 const bulk_array_threshold: usize = 32;
+/// P1: an iterator chain reduced to a window over its source
+/// collection (mirror of the SA-text backend's plan): logical
+/// position p reads source index (rev ? start - p : start + p) for
+/// p in [0, count), with start/count derived from the source length
+/// and the skip/take stages.
+const IterChainPlan = struct {
+    source: *ast.Node,
+    rev: bool = false,
+    skip: ?*ast.Node = null,
+    take: ?*ast.Node = null,
+
+    fn hasStages(self: IterChainPlan) bool {
+        return self.rev or self.skip != null or self.take != null;
+    }
+};
+
 
 /// SAB-H1-ENROL (consult-forkh verdict §3, conditions 3 and 5): version
 /// of the shared decl_materialize specification
@@ -343,6 +359,11 @@ pub const Codegen = struct {
     // source through this table, mirroring the SA-text backend where
     // iter() is the identity on the collection value.
     iter_source_bindings: std.StringHashMap(*ast.Node),
+    // P1: names bound by `let` to a staged iterator chain
+    // (`let c = v.iter().rev();`), mapped to the chain's window
+    // plan. Like iter_source_bindings, the binding is a non-owning
+    // view; adapter terminals resolve through the plan.
+    iter_chain_bindings: std.StringHashMap(IterChainPlan),
     // Imported macros whose direct callees were already pulled via
     // ensureStdDeps (genImportedMacroCall). The dep set is a property
     // of the macro, not of the call site; without this memo every
@@ -521,6 +542,7 @@ pub const Codegen = struct {
             .fn_ptr_vtables = std.StringHashMap(void).init(allocator),
             .closure_bindings = std.StringHashMap(*const ast.ClosureLiteral).init(allocator),
             .iter_source_bindings = std.StringHashMap(*ast.Node).init(allocator),
+            .iter_chain_bindings = std.StringHashMap(IterChainPlan).init(allocator),
             .imported_macro_deps_seen = std.StringHashMap(void).init(allocator),
             .closure_param_regs = std.StringHashMap(u32).init(allocator),
             .borrowed_bindings = std.StringHashMap(void).init(allocator),
@@ -588,6 +610,7 @@ pub const Codegen = struct {
         self.fn_ptr_vtables.deinit();
         self.closure_bindings.deinit();
         self.iter_source_bindings.deinit();
+        self.iter_chain_bindings.deinit();
         {
             var seen_it = self.imported_macro_deps_seen.keyIterator();
             while (seen_it.next()) |key| self.allocator.free(key.*);
@@ -2781,6 +2804,7 @@ pub const Codegen = struct {
         self.loop_break_labels.clearRetainingCapacity();
         self.closure_bindings.clearRetainingCapacity();
         self.iter_source_bindings.clearRetainingCapacity();
+        self.iter_chain_bindings.clearRetainingCapacity();
         self.closure_param_regs.clearRetainingCapacity();
         self.borrowed_bindings.clearRetainingCapacity();
         self.clearRefCellBorrowValues();
@@ -8548,7 +8572,7 @@ pub const Codegen = struct {
             try self.pushLocal(name, src, false);
             return;
         }
-        if (value_expr.* == .call_expr and lowering_rules.isIterOrIntoIterCall(value_expr.call_expr) and value_expr.call_expr.args.len == 1) {
+        if (value_expr.* == .call_expr and ((lowering_rules.isIterOrIntoIterCall(value_expr.call_expr) and value_expr.call_expr.args.len == 1) or self.iter_chain_bindings.contains(name))) {
             // Held iterator: `src` is the non-owning alias produced by
             // genIterIdentityCall. Bind the name straight to it like a
             // borrow -- an `assign` here would consume the alias and,
@@ -8556,7 +8580,10 @@ pub const Codegen = struct {
             // collection's allocation. Adapter calls on the name are
             // resolved from iter_source_bindings provenance, and scope
             // cleanup skips non-owning registers, so the source
-            // binding's own drop stays the single release.
+            // binding's own drop stays the single release. P1: the
+            // same holds for a held staged chain (genIterChainStageCall
+            // hands out the same kind of alias; the window plan lives
+            // in iter_chain_bindings).
             try self.pushLocal(name, src, false);
             return;
         }
@@ -8663,8 +8690,20 @@ pub const Codegen = struct {
         // fold / collect) lower like the chained form.
         if (let.value.* == .call_expr and lowering_rules.isIterOrIntoIterCall(let.value.call_expr) and let.value.call_expr.args.len == 1) {
             try self.iter_source_bindings.put(let.name, let.value.call_expr.args[0]);
+            _ = self.iter_chain_bindings.remove(let.name);
+        } else if (let.value.* == .call_expr) {
+            // P1: a held staged chain (`let c = v.iter().rev();`) is a
+            // view binding like the plain held iterator, resolved
+            // through its window plan instead of a source node.
+            if (self.iterChainPlan(let.value)) |plan| {
+                try self.iter_chain_bindings.put(let.name, plan);
+            } else {
+                _ = self.iter_chain_bindings.remove(let.name);
+            }
+            _ = self.iter_source_bindings.remove(let.name);
         } else {
             _ = self.iter_source_bindings.remove(let.name);
+            _ = self.iter_chain_bindings.remove(let.name);
         }
         if (lowering_rules.isStackAllocNode(let.value)) {
             const dst = try self.bindingReg(let.name);
@@ -15985,6 +16024,392 @@ pub const Codegen = struct {
         return alias;
     }
 
+    /// P1: reduce an iterator receiver (a direct staged chain or a
+    /// held chain binding) to its window plan, mirroring the SA-text
+    /// backend's iterChainPlan.
+    fn iterChainPlan(self: *Codegen, recv: *ast.Node) ?IterChainPlan {
+        var plan = IterChainPlan{ .source = recv };
+        var cur = recv;
+        while (true) {
+            if (cur.* == .call_expr) {
+                const call = &cur.call_expr;
+                if (lowering_rules.isIterOrIntoIterCall(call.*) and call.args.len == 1) {
+                    plan.source = call.args[0];
+                    return plan;
+                }
+                if (std.mem.eql(u8, call.func_name, "rev") and call.args.len == 1) {
+                    plan.rev = !plan.rev;
+                    cur = call.args[0];
+                    continue;
+                }
+                if (std.mem.eql(u8, call.func_name, "skip") and call.args.len == 2) {
+                    if (plan.skip != null) return null;
+                    plan.skip = call.args[1];
+                    cur = call.args[0];
+                    continue;
+                }
+                if (std.mem.eql(u8, call.func_name, "take") and call.args.len == 2) {
+                    if (plan.take != null) return null;
+                    plan.take = call.args[1];
+                    cur = call.args[0];
+                    continue;
+                }
+                return null;
+            }
+            if (cur.* == .identifier) {
+                const held = self.iter_chain_bindings.get(cur.identifier) orelse return null;
+                if (plan.skip != null and held.skip != null) return null;
+                if (plan.take != null and held.take != null) return null;
+                plan.source = held.source;
+                plan.rev = plan.rev != held.rev;
+                if (plan.skip == null) plan.skip = held.skip;
+                if (plan.take == null) plan.take = held.take;
+                return plan;
+            }
+            return null;
+        }
+    }
+
+    /// P1: a lone rev/skip/take stage evaluated as a value (the held
+    /// chain form `let c = v.iter().rev();`): like genIterIdentityCall,
+    /// the chain IS its source collection viewed through the recorded
+    /// plan, so hand out the same non-owning alias.
+    fn genIterChainStageCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.args.len == 0) return null;
+        if (!std.mem.eql(u8, call.func_name, "rev") and !std.mem.eql(u8, call.func_name, "skip") and !std.mem.eql(u8, call.func_name, "take")) return null;
+        if (self.iterChainPlan(call.args[0]) == null) return null;
+        const src = try self.genExpr(@constCast(call.args[0]));
+        const alias = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(alias, src, .{ .imm_u64 = 0 });
+        try self.markNonOwningReg(alias);
+        if (!self.isLocalReg(src)) try self.emitRelease(src);
+        return alias;
+    }
+
+    /// P1: iterator-window terminals (sum / count / find / max /
+    /// collect) over Vec and Array sources. The (start, count)
+    /// window is computed branch-free, then one indexed loop walks
+    /// logical positions. find/max keep their state in stack slots
+    /// and merge through a single release point (loop bodies cannot
+    /// release the same register in both diamond arms).
+    fn genIterWindowCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        const kind: enum { sum, count, find, max, collect } = blk: {
+            if (call.args.len == 1 and std.mem.eql(u8, call.func_name, "sum")) break :blk .sum;
+            if (call.args.len == 1 and std.mem.eql(u8, call.func_name, "count")) break :blk .count;
+            if (call.args.len == 1 and std.mem.eql(u8, call.func_name, "max")) break :blk .max;
+            if (call.args.len == 2 and std.mem.eql(u8, call.func_name, "find") and call.args[1].* == .closure_literal) break :blk .find;
+            if (call.args.len == 1 and std.mem.eql(u8, call.func_name, "collect") and call.generics.len == 1 and call.generics[0].* == .user_defined and std.mem.eql(u8, call.generics[0].user_defined.name, "Vec")) break :blk .collect;
+            return null;
+        };
+        const plan = self.iterChainPlan(call.args[0]) orelse return null;
+        // Plain unstaged direct sums keep the historical fused path.
+        if (kind == .sum and !plan.hasStages() and call.args[0].* != .identifier) return null;
+        const source = plan.source;
+        const source_ty = self.tc.expr_types.get(source) orelse return null;
+        var elem_ty: *const ast.Type = undefined;
+        var stride: usize = undefined;
+        var data_reg: u32 = undefined;
+        var len_reg: u32 = undefined;
+        var src_reg: u32 = undefined;
+        var src_is_vec = false;
+        if (lowering_rules.vecElementType(source_ty)) |et| {
+            elem_ty = et;
+            stride = lowering_rules.vecElementSlotSize(et);
+            src_is_vec = true;
+            src_reg = try self.genExpr(@constCast(source));
+            try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
+            data_reg = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
+                self.symbols.items[data_reg],
+                self.symbols.items[src_reg],
+            });
+            len_reg = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_LEN", &.{
+                self.symbols.items[len_reg],
+                self.symbols.items[src_reg],
+            });
+        } else if (lowering_rules.arrayType(source_ty)) |arr| {
+            elem_ty = arr.elem;
+            stride = typeSize(arr.elem);
+            src_reg = try self.genExpr(@constCast(source));
+            data_reg = src_reg;
+            len_reg = try self.intern(try self.newTmp());
+            try self.emitAssignImm(len_reg, @intCast(arr.len));
+        } else {
+            return null;
+        }
+        const elem_prim = try storagePrimType(elem_ty);
+
+        // count = min(len - skip saturating, take?) branch-free.
+        var skip_reg: u32 = undefined;
+        if (plan.skip) |skip_expr| {
+            skip_reg = try self.genExpr(@constCast(skip_expr));
+        } else {
+            skip_reg = try self.intern(try self.newTmp());
+            try self.emitAssignImm(skip_reg, 0);
+        }
+        const avail_raw = try self.intern(try self.newTmp());
+        try self.emitOp(avail_raw, .sub, .{ .reg = len_reg }, .{ .reg = skip_reg });
+        const enough = try self.intern(try self.newTmp());
+        try self.emitOp(enough, .uge, .{ .reg = len_reg }, .{ .reg = skip_reg });
+        const mask = try self.intern(try self.newTmp());
+        try self.emitOp(mask, .sub, .{ .imm_u64 = 0 }, .{ .reg = enough });
+        var count_reg = try self.intern(try self.newTmp());
+        try self.emitOp(count_reg, .@"and", .{ .reg = avail_raw }, .{ .reg = mask });
+        try self.emitRelease(avail_raw);
+        try self.emitRelease(enough);
+        try self.emitRelease(mask);
+        if (plan.take) |take_expr| {
+            const take_reg = try self.genExpr(@constCast(take_expr));
+            const less = try self.intern(try self.newTmp());
+            try self.emitOp(less, .ult, .{ .reg = count_reg }, .{ .reg = take_reg });
+            const mask2 = try self.intern(try self.newTmp());
+            try self.emitOp(mask2, .sub, .{ .imm_u64 = 0 }, .{ .reg = less });
+            const diff = try self.intern(try self.newTmp());
+            try self.emitOp(diff, .xor, .{ .reg = count_reg }, .{ .reg = take_reg });
+            const masked = try self.intern(try self.newTmp());
+            try self.emitOp(masked, .@"and", .{ .reg = diff }, .{ .reg = mask2 });
+            const new_count = try self.intern(try self.newTmp());
+            try self.emitOp(new_count, .xor, .{ .reg = take_reg }, .{ .reg = masked });
+            try self.emitRelease(less);
+            try self.emitRelease(mask2);
+            try self.emitRelease(diff);
+            try self.emitRelease(masked);
+            try self.emitRelease(count_reg);
+            if (lowering_rules.callArgNeedsRelease(take_expr)) try self.emitRelease(take_reg);
+            count_reg = new_count;
+        }
+        if (kind == .count) {
+            try self.emitRelease(len_reg);
+            if (src_is_vec) {
+                try self.emitRelease(data_reg);
+                if (!self.isLocalReg(src_reg)) try self.emitRelease(src_reg);
+            } else if (!self.isLocalReg(src_reg)) {
+                try self.emitRelease(data_reg);
+            }
+            if (plan.skip) |skip_expr| {
+                if (lowering_rules.callArgNeedsRelease(skip_expr)) try self.emitRelease(skip_reg);
+            } else {
+                try self.emitRelease(skip_reg);
+            }
+            return count_reg;
+        }
+        // start = rev ? (len - 1 - skip) : skip.
+        var start_reg: u32 = undefined;
+        if (plan.rev) {
+            const lenm1 = try self.intern(try self.newTmp());
+            try self.emitOp(lenm1, .sub, .{ .reg = len_reg }, .{ .imm_u64 = 1 });
+            start_reg = try self.intern(try self.newTmp());
+            try self.emitOp(start_reg, .sub, .{ .reg = lenm1 }, .{ .reg = skip_reg });
+            try self.emitRelease(lenm1);
+            if (plan.skip) |skip_expr| {
+                if (lowering_rules.callArgNeedsRelease(skip_expr)) try self.emitRelease(skip_reg);
+            } else {
+                try self.emitRelease(skip_reg);
+            }
+        } else {
+            start_reg = skip_reg;
+        }
+
+        const acc_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(acc_slot, @max(sig.primTypeBytes(elem_prim), 8));
+        const zero_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero_reg, 0);
+        try self.emitStore(acc_slot, 0, zero_reg, elem_prim);
+        try self.emitRelease(zero_reg);
+        const has_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(has_slot, 8);
+        const zero2 = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero2, 0);
+        try self.emitStore(has_slot, 0, zero2, .u64);
+        try self.emitRelease(zero2);
+        var out_reg: ?u32 = null;
+        if (kind == .collect) {
+            try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_new", "sa_vec_push", "sa_mem_copy" });
+            const oreg = try self.intern(try self.newTmp());
+            try self.recordReg(oreg);
+            try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_NEW", &.{self.symbols.items[oreg]});
+            out_reg = oreg;
+        }
+        const elem_size_text = try std.fmt.allocPrint(self.allocator, "{}", .{stride});
+        defer self.allocator.free(elem_size_text);
+
+        const loop_start = try self.newLabel("L_ITERWIN_LOOP");
+        const loop_body = try self.newLabel("L_ITERWIN_BODY");
+        const loop_end = try self.newLabel("L_ITERWIN_END");
+        const idx = try self.intern(try self.newTmp());
+        try self.emitAssignImm(idx, 0);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_start);
+        const cmp = try self.intern(try self.newTmp());
+        try self.emitOp(cmp, .ult, .{ .reg = idx }, .{ .reg = count_reg });
+        try self.emitBranch(cmp, loop_body, loop_end);
+        try self.emitLabel(loop_body);
+        const src_idx = try self.intern(try self.newTmp());
+        if (plan.rev) {
+            try self.emitOp(src_idx, .sub, .{ .reg = start_reg }, .{ .reg = idx });
+        } else {
+            try self.emitOp(src_idx, .add, .{ .reg = start_reg }, .{ .reg = idx });
+        }
+        const byte_offset = try self.intern(try self.newTmp());
+        try self.emitOp(byte_offset, .mul, .{ .reg = src_idx }, .{ .imm_u64 = @intCast(stride) });
+        try self.emitRelease(src_idx);
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr, data_reg, .{ .reg = byte_offset });
+        const item = try self.intern(try self.newTmp());
+        try self.emitLoad(item, elem_ptr, 0, elem_prim);
+        try self.emitRelease(byte_offset);
+        try self.emitRelease(elem_ptr);
+        switch (kind) {
+            .sum => {
+                const acc = try self.intern(try self.newTmp());
+                try self.emitLoad(acc, acc_slot, 0, elem_prim);
+                const next_acc = try self.intern(try self.newTmp());
+                try self.emitOp(next_acc, .add, .{ .reg = acc }, .{ .reg = item });
+                try self.emitStore(acc_slot, 0, next_acc, elem_prim);
+                try self.emitRelease(acc);
+                try self.emitRelease(next_acc);
+                try self.emitRelease(item);
+            },
+            .collect => {
+                try self.emitStdMacroFragmentWithLiteralArgs("sa_std/vec.sa", "VEC_PUSH", &.{
+                    self.symbols.items[out_reg.?],
+                    self.symbols.items[item],
+                    elem_size_text,
+                }, &.{ false, false, true });
+                try self.emitRelease(item);
+            },
+            .find, .max => {
+                const has_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(has_reg, has_slot, 0, .u64);
+                const keep_reg = try self.intern(try self.newTmp());
+                var pred_reg: ?u32 = null;
+                var extra_regs: [3]?u32 = .{ null, null, null };
+                if (kind == .find) {
+                    const pred = try self.genInlineClosureUnary(&call.args[1].closure_literal, item);
+                    pred_reg = pred;
+                    const not_has = try self.intern(try self.newTmp());
+                    try self.emitOp(not_has, .eq, .{ .reg = has_reg }, .{ .imm_u64 = 0 });
+                    try self.emitOp(keep_reg, .@"and", .{ .reg = not_has }, .{ .reg = pred });
+                    extra_regs[0] = not_has;
+                } else {
+                    const best_reg = try self.intern(try self.newTmp());
+                    try self.emitLoad(best_reg, acc_slot, 0, elem_prim);
+                    const cmp_op: inst.OpKind = if (lowering_rules.isUnsignedIntegerType(elem_ty)) .ult else .slt;
+                    const better_reg = try self.intern(try self.newTmp());
+                    try self.emitOp(better_reg, cmp_op, .{ .reg = best_reg }, .{ .reg = item });
+                    const first_reg = try self.intern(try self.newTmp());
+                    try self.emitOp(first_reg, .eq, .{ .reg = has_reg }, .{ .imm_u64 = 0 });
+                    try self.emitOp(keep_reg, .@"or", .{ .reg = first_reg }, .{ .reg = better_reg });
+                    extra_regs[0] = best_reg;
+                    extra_regs[1] = better_reg;
+                    extra_regs[2] = first_reg;
+                }
+                const keep_label = try self.newLabel("L_ITERWIN_KEEP");
+                const skip_label = try self.newLabel("L_ITERWIN_SKIP");
+                const merge_label = try self.newLabel("L_ITERWIN_MERGE");
+                try self.emitBranch(keep_reg, keep_label, skip_label);
+                const branch_locals_len = self.locals.items.len;
+                var pre_released = try self.released_regs.clone();
+                defer pre_released.deinit();
+                try self.emitLabel(keep_label);
+                try self.emitBranchRelease(keep_reg);
+                try self.emitStore(acc_slot, 0, item, elem_prim);
+                const one_reg = try self.intern(try self.newTmp());
+                try self.emitAssignImm(one_reg, 1);
+                try self.emitStore(has_slot, 0, one_reg, .u64);
+                try self.emitRelease(one_reg);
+                try self.emitJmp(merge_label);
+                var then_released = try self.released_regs.clone();
+                defer then_released.deinit();
+                self.popLocalsTo(branch_locals_len);
+                try self.restoreReleased(&pre_released);
+                try self.emitLabel(skip_label);
+                try self.emitBranchRelease(keep_reg);
+                try self.emitJmp(merge_label);
+                var else_released = try self.released_regs.clone();
+                defer else_released.deinit();
+                self.popLocalsTo(branch_locals_len);
+                try self.restoreReleased(&pre_released);
+                try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+                try self.emitLabel(merge_label);
+                try self.emitRelease(has_reg);
+                if (pred_reg) |preg| {
+                    if (preg != item) try self.emitRelease(preg);
+                }
+                for (extra_regs) |ereg| {
+                    if (ereg) |r| try self.emitRelease(r);
+                }
+                try self.emitRelease(item);
+            },
+            .count => unreachable,
+        }
+        try self.emitOp(idx, .add, .{ .reg = idx }, .{ .imm_i64 = 1 });
+        try self.emitRelease(cmp);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_end);
+        if (src_is_vec) {
+            try self.emitRelease(data_reg);
+            if (!self.isLocalReg(src_reg)) try self.emitRelease(src_reg);
+        } else if (!self.isLocalReg(src_reg)) {
+            // Array arm: data_reg IS the source register.
+            try self.emitRelease(data_reg);
+        }
+        try self.emitRelease(len_reg);
+        try self.emitRelease(count_reg);
+        try self.emitRelease(start_reg);
+        try self.emitRelease(idx);
+        switch (kind) {
+            .sum => {
+                const result = try self.intern(try self.newTmp());
+                try self.emitLoad(result, acc_slot, 0, elem_prim);
+                return result;
+            },
+            .collect => return out_reg.?,
+            .find, .max => {
+                const has_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(has_reg, has_slot, 0, .u64);
+                const option_reg = try self.intern(try self.newTmp());
+                try self.recordReg(option_reg);
+                const some_label = try self.newLabel("L_ITERWIN_SOME");
+                const none_label = try self.newLabel("L_ITERWIN_NONE");
+                const end_label = try self.newLabel("L_ITERWIN_OPT_END");
+                try self.emitBranch(has_reg, some_label, none_label);
+                const branch_locals_len = self.locals.items.len;
+                var pre_released = try self.released_regs.clone();
+                defer pre_released.deinit();
+                try self.emitLabel(some_label);
+                try self.emitBranchRelease(has_reg);
+                const best_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(best_reg, acc_slot, 0, elem_prim);
+                try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+                    self.symbols.items[option_reg],
+                    self.symbols.items[best_reg],
+                });
+                try self.emitRelease(best_reg);
+                try self.emitJmp(end_label);
+                var then_released = try self.released_regs.clone();
+                defer then_released.deinit();
+                self.popLocalsTo(branch_locals_len);
+                try self.restoreReleased(&pre_released);
+                try self.emitLabel(none_label);
+                try self.emitBranchRelease(has_reg);
+                try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+                    self.symbols.items[option_reg],
+                });
+                try self.emitJmp(end_label);
+                var else_released = try self.released_regs.clone();
+                defer else_released.deinit();
+                self.popLocalsTo(branch_locals_len);
+                try self.restoreReleased(&pre_released);
+                try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+                try self.emitLabel(end_label);
+                return option_reg;
+            },
+            .count => unreachable,
+        }
+    }
+
     fn genIterSumCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
 
@@ -18890,6 +19315,14 @@ pub const Codegen = struct {
         if (try self.genMapGetCall(expr, call)) |reg| return reg;
         if (try self.genBTreeMapGetCall(expr, call)) |reg| return reg;
         if (try self.genMapClearCall(expr, call)) |reg| return reg;
+        if (try self.genMapContainsKeyCall(expr, call)) |reg| return reg;
+        if (try self.genMapRemoveCall(expr, call)) |reg| return reg;
+        if (try self.genMapKeysCall(expr, call)) |reg| return reg;
+        if (try self.genMapValuesCall(expr, call)) |reg| return reg;
+        if (try self.genBTreeMapRemoveCall(expr, call)) |reg| return reg;
+        if (try self.genBTreeMapKeysCall(expr, call)) |reg| return reg;
+        if (try self.genIterWindowCall(call)) |reg| return reg;
+        if (try self.genIterChainStageCall(call)) |reg| return reg;
         if (try self.genOptionCopiedCall(call)) |reg| return reg;
         if (try self.genOptionUnwrapCall(call)) |reg| return reg;
         if (try self.genVecDequePushBackCall(expr, call)) |reg| return reg;
@@ -21691,6 +22124,433 @@ pub const Codegen = struct {
         try self.recordReg(sentinel);
         try self.emitAssignImm(sentinel, 0);
         return sentinel;
+    }
+
+    /// P1: `map.contains_key(key)` for HashMap. String keys probe by
+    /// content through @sa_map_contains_key_str (direct call, no std
+    /// macro wraps it); other keys use MAP_CONTAINS_KEY.
+    fn genMapContainsKeyCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 2) return null;
+        if (!std.mem.eql(u8, call.func_name, "contains_key")) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const hm = lowering_rules.hashMapTypes(receiver_ty) orelse return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const key_arg = call.args[1];
+        const key_reg = try self.genMapKeyReg(key_arg);
+        const result_reg = try self.intern(try self.newTmp());
+        try self.recordReg(result_reg);
+        if (lowering_rules.isStringType(hm.key)) {
+            try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_contains_key_str"});
+            try self.emitCallBody(result_reg, try std.fmt.allocPrint(self.allocator, "@sa_map_contains_key_str(&{s}, &{s})", .{ self.symbols.items[recv_reg], self.symbols.items[key_reg] }));
+        } else {
+            try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_contains_key"});
+            try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_CONTAINS_KEY", &.{
+                self.symbols.items[result_reg],
+                self.symbols.items[recv_reg],
+                self.symbols.items[key_reg],
+            });
+        }
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        return result_reg;
+    }
+
+    /// P1: tombstone the unique slot whose value cell is `cell_reg`
+    /// (string-key HashMap remove: the cell pointer returned by
+    /// MAP_TRY_GET_STR identifies the entry). Mirrors the slot-walk
+    /// shape of emitHashMapValueCellsFree.
+    fn emitHashMapTombstoneByCell(self: *Codegen, map_reg: u32, cell_reg: u32) anyerror!void {
+        const slots_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(slots_reg, map_reg, 0, .ptr);
+        const cap_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(cap_reg, map_reg, 8, .u64);
+        const idx_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(idx_slot, 8);
+        const zero_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero_reg, 0);
+        try self.emitStore(idx_slot, 0, zero_reg, .u64);
+        try self.emitRelease(zero_reg);
+        const head_label = try self.newLabel("L_MAP_TOMB_HEAD");
+        const body_label = try self.newLabel("L_MAP_TOMB_BODY");
+        const hit_label = try self.newLabel("L_MAP_TOMB_HIT");
+        const skip_label = try self.newLabel("L_MAP_TOMB_SKIP");
+        const merge_label = try self.newLabel("L_MAP_TOMB_MERGE");
+        const done_label = try self.newLabel("L_MAP_TOMB_DONE");
+        try self.emitJmp(head_label);
+        try self.emitLabel(head_label);
+        const i_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(i_reg, idx_slot, 0, .u64);
+        const cond_reg = try self.intern(try self.newTmp());
+        try self.emitOp(cond_reg, .ult, .{ .reg = i_reg }, .{ .reg = cap_reg });
+        try self.emitBranch(cond_reg, body_label, done_label);
+        try self.emitLabel(body_label);
+        const off_reg = try self.intern(try self.newTmp());
+        try self.emitOp(off_reg, .mul, .{ .reg = i_reg }, .{ .imm_i64 = 32 });
+        const slot_reg = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(slot_reg, slots_reg, .{ .reg = off_reg });
+        try self.emitRelease(off_reg);
+        const state_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(state_reg, slot_reg, 24, .u8);
+        const filled_reg = try self.intern(try self.newTmp());
+        try self.emitOp(filled_reg, .eq, .{ .reg = state_reg }, .{ .imm_i64 = 1 });
+        const value_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(value_reg, slot_reg, 16, .ptr);
+        const same_reg = try self.intern(try self.newTmp());
+        try self.emitOp(same_reg, .eq, .{ .reg = value_reg }, .{ .reg = cell_reg });
+        const hit_reg = try self.intern(try self.newTmp());
+        try self.emitOp(hit_reg, .@"and", .{ .reg = filled_reg }, .{ .reg = same_reg });
+        try self.emitBranch(hit_reg, hit_label, skip_label);
+        try self.emitLabel(hit_label);
+        try self.emitBranchRelease(hit_reg);
+        const tomb_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(tomb_reg, 2);
+        try self.emitStore(slot_reg, 24, tomb_reg, .u8);
+        try self.emitRelease(tomb_reg);
+        const zero_ptr = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero_ptr, 0);
+        try self.emitStore(slot_reg, 8, zero_ptr, .ptr);
+        try self.emitStore(slot_reg, 16, zero_ptr, .ptr);
+        try self.emitRelease(zero_ptr);
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(len_reg, map_reg, 16, .u64);
+        const new_len = try self.intern(try self.newTmp());
+        try self.emitOp(new_len, .sub, .{ .reg = len_reg }, .{ .imm_i64 = 1 });
+        try self.emitStore(map_reg, 16, new_len, .u64);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(new_len);
+        const tombs_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(tombs_reg, map_reg, 24, .u64);
+        const new_tombs = try self.intern(try self.newTmp());
+        try self.emitOp(new_tombs, .add, .{ .reg = tombs_reg }, .{ .imm_i64 = 1 });
+        try self.emitStore(map_reg, 24, new_tombs, .u64);
+        try self.emitRelease(tombs_reg);
+        try self.emitRelease(new_tombs);
+        try self.emitJmp(merge_label);
+        try self.emitLabel(skip_label);
+        try self.emitBranchRelease(hit_reg);
+        try self.emitJmp(merge_label);
+        try self.emitLabel(merge_label);
+        try self.emitRelease(state_reg);
+        try self.emitRelease(value_reg);
+        try self.emitRelease(filled_reg);
+        try self.emitRelease(same_reg);
+        try self.emitRelease(slot_reg);
+        const next_reg = try self.intern(try self.newTmp());
+        try self.emitOp(next_reg, .add, .{ .reg = i_reg }, .{ .imm_i64 = 1 });
+        try self.emitStore(idx_slot, 0, next_reg, .u64);
+        try self.emitRelease(next_reg);
+        try self.emitBranchRelease(i_reg);
+        try self.emitBranchRelease(cond_reg);
+        try self.emitJmp(head_label);
+        try self.emitLabel(done_label);
+        try self.emitRelease(slots_reg);
+        try self.emitRelease(cap_reg);
+        try self.emitRelease(idx_slot);
+    }
+
+    /// P1: `map.remove(key)` / `map.del(key)` for HashMap, returning
+    /// Option<V> with the value folded out of its heap cell (insert's
+    /// SOME convention) and the cell freed. POD keys remove through
+    /// MAP_REMOVE_ENTRY; string keys probe the cell through the
+    /// shared index plan and tombstone the owning slot by cell
+    /// identity (std has no content-addressed delete export).
+    fn genMapRemoveCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 2) return null;
+        if (!std.mem.eql(u8, call.func_name, "remove") and !std.mem.eql(u8, call.func_name, "del")) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const hm = lowering_rules.hashMapTypes(receiver_ty) orelse return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const key_arg = call.args[1];
+        const key_reg = try self.genMapKeyReg(key_arg);
+        const string_key = lowering_rules.isStringType(hm.key);
+        const ok_reg = try self.intern(try self.newTmp());
+        const cell_reg = try self.intern(try self.newTmp());
+        var out_key_reg: ?u32 = null;
+        if (string_key) {
+            const plan = lowering_rules.mapIndexPlan(receiver_ty) orelse return null;
+            try self.ensureStdDeps(plan.import_path, &.{plan.dep_symbol});
+            try self.emitStdMacroFragment(plan.import_path, plan.macro_name, &.{
+                self.symbols.items[ok_reg],
+                self.symbols.items[cell_reg],
+                self.symbols.items[recv_reg],
+                self.symbols.items[key_reg],
+            });
+        } else {
+            try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_remove_entry"});
+            const ok2 = try self.intern(try self.newTmp());
+            out_key_reg = ok2;
+            try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_REMOVE_ENTRY", &.{
+                self.symbols.items[ok_reg],
+                self.symbols.items[ok2],
+                self.symbols.items[cell_reg],
+                self.symbols.items[recv_reg],
+                self.symbols.items[key_reg],
+            });
+        }
+        const option_reg = try self.intern(try self.newTmp());
+        try self.recordReg(option_reg);
+        const some_label = try self.newLabel("L_MAP_REMOVE_SOME");
+        const none_label = try self.newLabel("L_MAP_REMOVE_NONE");
+        const end_label = try self.newLabel("L_MAP_REMOVE_END");
+        try self.emitBranch(ok_reg, some_label, none_label);
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        try self.emitLabel(some_label);
+        try self.emitBranchRelease(ok_reg);
+        if (string_key) try self.emitHashMapTombstoneByCell(recv_reg, cell_reg);
+        const value_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(value_reg, cell_reg, 0, .u64);
+        try self.ensureStdDeps("sa_std/alloc/vec.sa", &.{"sa_mem_free"});
+        try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_mem_free(^{s})", .{self.symbols.items[cell_reg]}));
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+            self.symbols.items[option_reg],
+            self.symbols.items[value_reg],
+        });
+        try self.emitRelease(value_reg);
+        if (out_key_reg) |okr| try self.emitBranchRelease(okr);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.emitLabel(none_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitBranchRelease(cell_reg);
+        if (out_key_reg) |okr| try self.emitBranchRelease(okr);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+            self.symbols.items[option_reg],
+        });
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        return option_reg;
+    }
+
+    /// P1: `map.keys()` for HashMap via MAP_KEYS (the collected
+    /// words are the keys themselves under the std word model).
+    fn genMapKeysCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 1) return null;
+        if (!std.mem.eql(u8, call.func_name, "keys")) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.hashMapTypes(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_keys_vec"});
+        const out_reg = try self.intern(try self.newTmp());
+        try self.recordReg(out_reg);
+        try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_KEYS", &.{
+            self.symbols.items[out_reg],
+            self.symbols.items[recv_reg],
+        });
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        return out_reg;
+    }
+
+    /// P1: `map.values()` for HashMap. MAP_VALUES collects the
+    /// slots' stored words, which under the A-form value model are
+    /// heap cell pointers; dereference each in place so the Vec
+    /// holds the values themselves (mirrors the SA-text post-pass).
+    fn genMapValuesCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 1) return null;
+        if (!std.mem.eql(u8, call.func_name, "values")) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.hashMapTypes(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_values_vec"});
+        const out_reg = try self.intern(try self.newTmp());
+        try self.recordReg(out_reg);
+        try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_VALUES", &.{
+            self.symbols.items[out_reg],
+            self.symbols.items[recv_reg],
+        });
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
+        const data_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
+            self.symbols.items[data_reg],
+            self.symbols.items[out_reg],
+        });
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_LEN", &.{
+            self.symbols.items[len_reg],
+            self.symbols.items[out_reg],
+        });
+        const loop_start = try self.newLabel("L_MAP_VALUES_DEREF_LOOP");
+        const loop_body = try self.newLabel("L_MAP_VALUES_DEREF_BODY");
+        const loop_end = try self.newLabel("L_MAP_VALUES_DEREF_END");
+        const idx = try self.intern(try self.newTmp());
+        try self.emitAssignImm(idx, 0);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_start);
+        const cmp = try self.intern(try self.newTmp());
+        try self.emitOp(cmp, .ult, .{ .reg = idx }, .{ .reg = len_reg });
+        try self.emitBranch(cmp, loop_body, loop_end);
+        try self.emitLabel(loop_body);
+        const byte_offset = try self.intern(try self.newTmp());
+        try self.emitOp(byte_offset, .mul, .{ .reg = idx }, .{ .imm_u64 = 8 });
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr, data_reg, .{ .reg = byte_offset });
+        const cell_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(cell_reg, elem_ptr, 0, .ptr);
+        const value_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(value_reg, cell_reg, 0, .u64);
+        try self.emitStore(elem_ptr, 0, value_reg, .u64);
+        try self.emitRelease(byte_offset);
+        try self.emitRelease(elem_ptr);
+        try self.emitRelease(cell_reg);
+        try self.emitRelease(value_reg);
+        try self.emitOp(idx, .add, .{ .reg = idx }, .{ .imm_i64 = 1 });
+        try self.emitRelease(cmp);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_end);
+        try self.emitRelease(data_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(idx);
+        return out_reg;
+    }
+
+    /// P1: `map.remove(key)` for BTreeMap, mirroring the SA-text
+    /// composite: probe the value with BTREE_MAP_TRY_GET, remove in
+    /// the hit arm, and fold the Option from the probe (the value is
+    /// staged through a stack slot, exactly like genBTreeMapGetCall).
+    fn genBTreeMapRemoveCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 2) return null;
+        if (!std.mem.eql(u8, call.func_name, "remove")) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.btreeMapTypes(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const key_arg = call.args[1];
+        const key_reg = try self.genMapKeyReg(key_arg);
+        try self.ensureStdDeps("sa_std/btree_map.sa", &.{ "sa_btree_map_try_get", "sa_btree_map_remove" });
+        const ok_reg = try self.intern(try self.newTmp());
+        const val_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/btree_map.sa", "BTREE_MAP_TRY_GET", &.{
+            self.symbols.items[ok_reg],
+            self.symbols.items[val_reg],
+            self.symbols.items[recv_reg],
+            self.symbols.items[key_reg],
+        });
+        const option_reg = try self.intern(try self.newTmp());
+        try self.recordReg(option_reg);
+        const some_label = try self.newLabel("L_BTREE_REMOVE_SOME");
+        const none_label = try self.newLabel("L_BTREE_REMOVE_NONE");
+        const end_label = try self.newLabel("L_BTREE_REMOVE_END");
+        try self.emitBranch(ok_reg, some_label, none_label);
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        try self.emitLabel(some_label);
+        try self.emitBranchRelease(ok_reg);
+        const dropped_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/btree_map.sa", "BTREE_MAP_REMOVE", &.{
+            self.symbols.items[dropped_reg],
+            self.symbols.items[recv_reg],
+            self.symbols.items[key_reg],
+        });
+        try self.emitBranchRelease(dropped_reg);
+        const slot_reg = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(slot_reg, 8);
+        try self.emitStore(slot_reg, 0, val_reg, .u64);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+            self.symbols.items[option_reg],
+            self.symbols.items[slot_reg],
+        });
+        try self.emitBranchRelease(val_reg);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.emitLabel(none_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitBranchRelease(val_reg);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+            self.symbols.items[option_reg],
+        });
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        return option_reg;
+    }
+
+    /// P1: `map.keys()` for BTreeMap. The std keys_vec returns a
+    /// flat {data, len} word handle, not an SLA Vec, so traverse the
+    /// entry array and push each key word into a fresh Vec (string
+    /// keys push their key_ptr word; the corpus contract reads only
+    /// the length), mirroring the SA-text traversal.
+    fn genBTreeMapKeysCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 1) return null;
+        if (!std.mem.eql(u8, call.func_name, "keys")) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const bm = lowering_rules.btreeMapTypes(receiver_ty) orelse return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_new", "sa_vec_push", "sa_mem_copy" });
+        const out_reg = try self.intern(try self.newTmp());
+        try self.recordReg(out_reg);
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_NEW", &.{self.symbols.items[out_reg]});
+        const entries_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(entries_reg, recv_reg, 0, .ptr);
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(len_reg, recv_reg, 16, .u64);
+        // An uninferred key type (empty map: no inserts to pin it)
+        // has no storage prim; the entry key word is pointer-sized
+        // regardless, so fall back to .ptr instead of failing the
+        // whole lowering (P1).
+        const key_prim = storagePrimType(bm.key) catch .ptr;
+        const elem_size_text = try std.fmt.allocPrint(self.allocator, "{}", .{lowering_rules.vecElementSlotSize(bm.key)});
+        defer self.allocator.free(elem_size_text);
+        const loop_start = try self.newLabel("L_BTREE_KEYS_LOOP");
+        const loop_body = try self.newLabel("L_BTREE_KEYS_BODY");
+        const loop_end = try self.newLabel("L_BTREE_KEYS_END");
+        const idx = try self.intern(try self.newTmp());
+        try self.emitAssignImm(idx, 0);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_start);
+        const cmp = try self.intern(try self.newTmp());
+        try self.emitOp(cmp, .ult, .{ .reg = idx }, .{ .reg = len_reg });
+        try self.emitBranch(cmp, loop_body, loop_end);
+        try self.emitLabel(loop_body);
+        const byte_offset = try self.intern(try self.newTmp());
+        try self.emitOp(byte_offset, .mul, .{ .reg = idx }, .{ .imm_u64 = 24 });
+        const entry_reg = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(entry_reg, entries_reg, .{ .reg = byte_offset });
+        const key_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(key_reg, entry_reg, 0, key_prim);
+        try self.emitStdMacroFragmentWithLiteralArgs("sa_std/vec.sa", "VEC_PUSH", &.{
+            self.symbols.items[out_reg],
+            self.symbols.items[key_reg],
+            elem_size_text,
+        }, &.{ false, false, true });
+        try self.emitRelease(byte_offset);
+        try self.emitRelease(entry_reg);
+        try self.emitRelease(key_reg);
+        try self.emitOp(idx, .add, .{ .reg = idx }, .{ .imm_i64 = 1 });
+        try self.emitRelease(cmp);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_end);
+        try self.emitRelease(entries_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(idx);
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        return out_reg;
     }
 
     /// Direct-SAB `Option.copied()`, mirroring the SA-text emitter's

@@ -38,7 +38,7 @@ pub const entries: []const Entry = &.{
     .{ .symbol = "HashSet.insert", .class = "method", .text = .fail, .sab = .fail, .signature = "text:codegen:FallthroughForbidden; sab:codegen:UnsupportedSabDirectFeature" },
     .{ .symbol = "HashSet.len", .class = "method", .text = .fail, .sab = .fail, .signature = "text:codegen:FallthroughForbidden; sab:codegen:UnsupportedSabDirectFeature" },
     .{ .symbol = "HashSet.remove", .class = "method", .text = .checkfail, .sab = .checkfail, .signature = "text:check:TypeMismatch; sab:check:TypeMismatch" },
-    .{ .symbol = "HashSet.union", .class = "method", .text = .fail, .sab = .fail, .signature = "text:unknown:error.UnexpectedToken; sab:unknown:error.UnexpectedToken" },
+    .{ .symbol = "HashSet.union", .class = "method", .text = .ok, .sab = .ok, .signature = "" },
     .{ .symbol = "MAP_CONTAINS_KEY", .class = "macro_bridge", .text = .fail, .sab = .fail, .signature = "text:codegen:FallthroughForbidden; sab:codegen:UnsupportedSabDirectFeature" },
     .{ .symbol = "MAP_DEL", .class = "macro_bridge", .text = .fail, .sab = .fail, .signature = "text:codegen:FallthroughForbidden; sab:codegen:UnsupportedSabDirectFeature" },
     .{ .symbol = "MAP_KEYS", .class = "macro_bridge", .text = .fail, .sab = .fail, .signature = "text:codegen:FallthroughForbidden; sab:codegen:UnsupportedSabDirectFeature" },

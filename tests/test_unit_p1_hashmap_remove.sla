@@ -1,0 +1,26 @@
+@import "sa_std/hashmap.sa"
+@import "sa_std/core/option.sa"
+
+// P1 coverage: HashMap.remove(...) — SAB audit registry entry
+// HashMap.remove was checkfail on both backends
+// (check:TypeMismatch) at registry stamp ee7b41c3 and no unit
+// corpus file references it.
+
+@test "p1 hashmap remove method"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.remove("a");
+    if m.len() != 1 { panic(204); };
+    if m.get("a").is_some() { panic(217); };
+    if m.get("b").copied().unwrap_or_default() != 2 { panic(218); };
+}
+
+@test "p1 hashmap remove int keys"() {
+    let m: HashMap<i32, i32> = HashMap::new();
+    m.insert(1, 10);
+    m.insert(2, 20);
+    m.remove(1);
+    if len(m) != 1 { panic(219); };
+    if m.get(2).copied().unwrap_or_default() != 20 { panic(220); };
+}

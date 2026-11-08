@@ -1,0 +1,17 @@
+@import "sa_std/hashmap.sa"
+@import "sa_std/core/option.sa"
+
+// P1 coverage: HashMap.del(...) — SAB audit registry entry
+// HashMap.del was checkfail on both backends (check:Undefined
+// call) at registry stamp ee7b41c3 and no unit corpus file
+// references it.
+
+@test "p1 hashmap del method"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.del("a");
+    if len(m) != 1 { panic(40108); };
+    if m.get("a").is_some() { panic(221); };
+    if m.get("b").copied().unwrap_or_default() != 2 { panic(222); };
+}

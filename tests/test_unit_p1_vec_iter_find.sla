@@ -1,0 +1,35 @@
+@import "sa_std/vec.sa"
+
+// P1 coverage: Vec.iter().find(...) — SAB audit registry entry Vec.find
+// was checkfail on both backends (check:Undefined call) at registry
+// stamp ee7b41c3 and no unit corpus file references it.
+
+@test "p1 vec iter find hit"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let f = v.iter().find(|x| x == 2);
+    if f.is_none() { panic(107); };
+    if f.unwrap() != 2 { panic(108); };
+}
+
+@test "p1 vec iter find miss"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let f = v.iter().find(|x| x == 99);
+    if f.is_some() { panic(109); };
+}
+
+@test "p1 vec iter find first match wins"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(5);
+    v.push(12);
+    v.push(18);
+    v.push(24);
+    let f = v.iter().find(|x| x > 10);
+    if f.is_none() { panic(110); };
+    if f.unwrap() != 12 { panic(111); };
+}

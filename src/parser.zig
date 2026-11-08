@@ -3574,7 +3574,11 @@ pub const Parser = struct {
                     return node;
                 }
                 const field_tok = self.tok;
-                if (self.peek() != .identifier and self.peek() != .int_literal) {
+                // P1: `union` is a contextual keyword (type-union syntax)
+                // that is also a HashSet method name; like `.await` above,
+                // accept it as a member name after `.` (the only keyword
+                // colliding with a method name in the whole registry).
+                if (self.peek() != .identifier and self.peek() != .int_literal and self.peek() != .keyword_union) {
                     return ParserError.UnexpectedToken;
                 }
                 self.advance();

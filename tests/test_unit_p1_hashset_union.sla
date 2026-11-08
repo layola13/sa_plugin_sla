@@ -1,0 +1,31 @@
+@import "sa_std/hashset.sa"
+@import "sa_std/btree_set.sa"
+
+// P1 coverage: HashSet.union(...) — SAB audit registry entry
+// HashSet.union was fail on both backends
+// (unknown:error.UnexpectedToken) at registry stamp ee7b41c3 and
+// no unit corpus file references it.
+
+@test "p1 hashset union method"() {
+    let s = HashSet::new();
+    s.insert(5);
+    s.insert(9);
+    let b = HashSet::new();
+    b.insert(7);
+    let u = s.union(b);
+    if len(u) != 3 { panic(40204); };
+    if !u.contains(5) { panic(227); };
+    if !u.contains(7) { panic(228); };
+    if !u.contains(9) { panic(229); };
+}
+
+@test "p1 hashset union overlapping"() {
+    let s = HashSet::new();
+    s.insert(1);
+    s.insert(2);
+    let b = HashSet::new();
+    b.insert(2);
+    b.insert(3);
+    let u = s.union(b);
+    if len(u) != 3 { panic(230); };
+}

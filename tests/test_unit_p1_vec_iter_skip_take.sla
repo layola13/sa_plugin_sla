@@ -1,0 +1,32 @@
+@import "sa_std/vec.sa"
+
+// P1 coverage: Vec.iter().skip(n) / Vec.iter().take(n) — SAB audit
+// registry entries Vec.skip and Vec.take were checkfail on both
+// backends (check:Undefined call) at registry stamp ee7b41c3 and no
+// unit corpus file references them.
+
+@test "p1 vec iter skip sum"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    if v.iter().skip(1).sum() != 5 { panic(110); };
+}
+
+@test "p1 vec iter take sum"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    if v.iter().take(2).sum() != 3 { panic(112); };
+}
+
+@test "p1 vec iter skip beyond len and take zero"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(4);
+    v.push(5);
+    if v.iter().skip(10).sum() != 0 { panic(113); };
+    if v.iter().take(0).sum() != 0 { panic(114); };
+    if v.iter().skip(0).sum() != 9 { panic(115); };
+    if v.iter().take(99).sum() != 9 { panic(116); };
+}

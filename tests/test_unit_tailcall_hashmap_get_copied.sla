@@ -1,0 +1,19 @@
+@import "sa_std/hashmap.sa"
+@import "sa_std/core/option.sa"
+
+// TAILCALL-COPY-COLLISION regression corpus (tailcall-copy line).
+// Shape: HashMap get().copied().unwrap_or_default() tail-call chain, no
+// remove anywhere. Under a plugin baked against sci 8979c4e this trapped
+// error[UnknownRegister] (register 0, .sab line 8) on the SAB arm — the
+// let's destination register was missing from the emitted function's
+// register scope. Root cause was the stale bake generation, not this
+// chain's codegen: at matched current heads (sci 9d6474e7 bake) the same
+// file is dual-backend green. Guards the bake-generation invariant.
+
+@test "tailcall hashmap get copied"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    if m.get("b").copied().unwrap_or_default() != 2 { panic(218); };
+    if m.get("a").copied().unwrap_or_default() != 1 { panic(223); };
+}

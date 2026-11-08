@@ -9996,6 +9996,31 @@ pub const TypeChecker = struct {
                             void_ty.* = .{ .primitive = .void_type };
                             return void_ty;
                         }
+                        // P1 HashMap surface: contains_key / remove / del /
+                        // keys / values (SA-level exports exist in
+                        // sa_std/hashmap.sa; the SLA method face was missing).
+                        if (std.mem.eql(u8, call.func_name, "contains_key")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(hm.key, key_ty)) return TypeError.TypeMismatch;
+                            const ty = try self.allocator.create(ast.Type);
+                            ty.* = .{ .primitive = .boolean };
+                            return ty;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "remove") or std.mem.eql(u8, call.func_name, "del")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(hm.key, key_ty)) return TypeError.TypeMismatch;
+                            return try self.makeOptionType(hm.value);
+                        }
+                        if (std.mem.eql(u8, call.func_name, "keys")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return try self.makeVecType(hm.key);
+                        }
+                        if (std.mem.eql(u8, call.func_name, "values")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return try self.makeVecType(hm.value);
+                        }
                     }
 
                     if (hashSetTypes(recv_ty)) |hs| {
@@ -10024,6 +10049,21 @@ pub const TypeChecker = struct {
                             const ty = try self.allocator.create(ast.Type);
                             ty.* = .{ .primitive = .boolean };
                             return ty;
+                        }
+                        // P1 HashSet surface: remove (bool) / union (new set).
+                        if (std.mem.eql(u8, call.func_name, "remove")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(hs.key, key_ty)) return TypeError.TypeMismatch;
+                            const ty = try self.allocator.create(ast.Type);
+                            ty.* = .{ .primitive = .boolean };
+                            return ty;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "union")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const other_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(recv_ty, other_ty)) return TypeError.TypeMismatch;
+                            return recv_ty;
                         }
                     }
 
@@ -10060,6 +10100,18 @@ pub const TypeChecker = struct {
                             const void_ty = try self.allocator.create(ast.Type);
                             void_ty.* = .{ .primitive = .void_type };
                             return void_ty;
+                        }
+                        // P1 BTreeMap surface: remove / keys.
+                        if (std.mem.eql(u8, call.func_name, "remove")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(bm.key, key_ty)) return TypeError.TypeMismatch;
+                            if (!self.btreeSetKeySupported(key_ty)) return TypeError.TypeMismatch;
+                            return try self.makeOptionType(bm.value);
+                        }
+                        if (std.mem.eql(u8, call.func_name, "keys")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return try self.makeVecType(bm.key);
                         }
                     }
 
@@ -10258,6 +10310,62 @@ pub const TypeChecker = struct {
                     return target_ty;
                 }
 
+                // P1 iter adapters: rev / skip / take are stage calls on an
+                // iterator receiver; the checked type stays the source
+                // collection type (the codegens reduce the chain to a
+                // (start, step, count) window over the source), so chained
+                // and held forms compose with sum/fold and with each other.
+                if (std.mem.eql(u8, call.func_name, "rev")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    const target_ty = try self.checkExpr(call.args[0], scope);
+                    if (arrayType(target_ty) == null and vecElementType(target_ty) == null and lowering_rules.growVecElementType(target_ty) == null and sliceElementType(target_ty) == null) return TypeError.TypeMismatch;
+                    return target_ty;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "skip") or std.mem.eql(u8, call.func_name, "take")) {
+                    if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                    const target_ty = try self.checkExpr(call.args[0], scope);
+                    if (arrayType(target_ty) == null and vecElementType(target_ty) == null and lowering_rules.growVecElementType(target_ty) == null and sliceElementType(target_ty) == null) return TypeError.TypeMismatch;
+                    const count_ty = try self.checkExpr(call.args[1], scope);
+                    if (!isAnyIntegerType(count_ty)) return TypeError.TypeMismatch;
+                    return target_ty;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "count")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    const target_ty = try self.checkExpr(call.args[0], scope);
+                    if (iterableElementType(target_ty) == null) return TypeError.TypeMismatch;
+                    const ty = try self.allocator.create(ast.Type);
+                    ty.* = .{ .primitive = .u64 };
+                    return ty;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "find")) {
+                    if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                    const target_ty = try self.checkExpr(call.args[0], scope);
+                    const elem_ty = iterableElementType(target_ty) orelse return TypeError.TypeMismatch;
+                    const closure_ty = if (call.args[1].* == .closure_literal)
+                        try self.checkClosureLiteralWithContext(call.args[1], scope, &.{elem_ty})
+                    else
+                        try self.checkExpr(call.args[1], scope);
+                    if (closure_ty.* != .closure) return TypeError.TypeMismatch;
+                    if (closure_ty.closure.params.len != 1) return TypeError.InvalidArgsCount;
+                    if (!self.typesEqual(closure_ty.closure.params[0], elem_ty)) return TypeError.TypeMismatch;
+                    if (closure_ty.closure.ret.* != .primitive or closure_ty.closure.ret.primitive != .boolean) return TypeError.TypeMismatch;
+                    return try self.makeOptionType(elem_ty);
+                }
+
+                if (std.mem.eql(u8, call.func_name, "max")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    const target_ty = try self.checkExpr(call.args[0], scope);
+                    const elem_ty = iterableElementType(target_ty) orelse return TypeError.TypeMismatch;
+                    if (!isNumericType(elem_ty)) {
+                        self.setError("iter max: element type must be numeric (float max is loudly unsupported), got {s}", .{typeDesc(elem_ty)});
+                        return TypeError.TypeMismatch;
+                    }
+                    return try self.makeOptionType(elem_ty);
+                }
+
                 if (lowering_rules.isCopiedCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const target_ty = try self.checkExpr(call.args[0], scope);
@@ -10267,6 +10375,16 @@ pub const TypeChecker = struct {
 
                 if (std.mem.eql(u8, call.func_name, "collect")) {
                     if (call.args.len != 1 or call.generics.len != 1) return TypeError.InvalidArgsCount;
+                    // P1: collect<Vec<T>> collects into a fresh Vec of the
+                    // iterator's element type; the String target keeps its
+                    // historical u8-only form below.
+                    if (call.generics[0].* == .user_defined and std.mem.eql(u8, call.generics[0].user_defined.name, "Vec")) {
+                        const target_ty = try self.checkExpr(call.args[0], scope);
+                        const elem_ty = iterableElementType(target_ty) orelse return TypeError.TypeMismatch;
+                        if (call.generics[0].user_defined.generics.len != 1) return TypeError.TypeMismatch;
+                        if (!self.typesEqual(call.generics[0].user_defined.generics[0], elem_ty)) return TypeError.TypeMismatch;
+                        return call.generics[0];
+                    }
                     if (!isStringType(call.generics[0])) return TypeError.TypeMismatch;
                     const target_ty = try self.checkExpr(call.args[0], scope);
                     const elem_ty = iterableElementType(target_ty) orelse return TypeError.TypeMismatch;

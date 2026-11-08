@@ -1,0 +1,19 @@
+// P1 coverage (same adapter family as Vec): Array.iter().count()
+// and Array.iter().find(...) — SAB audit registry entries
+// Array.count and Array.find were checkfail on both backends
+// (check:Undefined call) at registry stamp ee7b41c3 and no unit
+// corpus file references them.
+
+@test "p1 array iter count"() {
+    let a = [1, 2, 3];
+    if a.iter().count() != 3 { panic(120); };
+}
+
+@test "p1 array iter find"() {
+    let a = [1, 2, 3];
+    let f = a.iter().find(|x| x == 2);
+    if f.is_none() { panic(121); };
+    if f.unwrap() != 2 { panic(122); };
+    let miss = a.iter().find(|x| x == 99);
+    if miss.is_some() { panic(123); };
+}

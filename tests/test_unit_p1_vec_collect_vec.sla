@@ -1,0 +1,17 @@
+@import "sa_std/vec.sa"
+
+// P1 coverage: iter().collect<Vec<...>>() — SAB audit registry entry
+// Vec.collect<target=Vec> was probe_only checkfail on both backends
+// (check:TypeMismatch) at registry stamp ee7b41c3; the checker's
+// collect branch only accepts a String target.
+
+@test "p1 vec iter collect vec target"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let out: Vec<i32> = v.iter().collect<Vec<i32>>();
+    if out.len() != 3 { panic(120); };
+    if out[0] != 1 { panic(121); };
+    if out[2] != 3 { panic(122); };
+}

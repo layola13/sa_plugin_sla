@@ -7,15 +7,21 @@
 #
 #  1. sample_good (only registry-green surfaces, incl. a chained
 #     iter().sum()): audit finds NOTHING, exit 0.
-#  2. sample_gaps in production mode: ONE pass lists every
-#     registry-failing symbol the program uses — held iterator and
-#     the Vec iter/sum chain — as hard SAB findings (text-only
-#     failures ride along as mirror findings), exit 3. The
-#     HashMap/BTreeMap insert and HashMap.len gaps asserted here
-#     at the base head were healed by the insert-family
-#     integration and are now asserted ABSENT.
-#  3. sample_gaps in mirror mode: severities flip (text failures
-#     become hard, SAB-only failures become mirror), exit 3.
+#  2. sample_gaps in production mode: the surfaces this sample
+#     exercises (held iterator, the Vec iter/sum chain, the
+#     HashMap/BTreeMap insert family, HashMap.len, Vec.push,
+#     panic) were the poisoned d31faea6-pairing snapshot false
+#     gaps. On the healthy pairing (DEF-SAB-REGISTRY-POISONED-
+#     REGEN regeneration) every one measures ok on both
+#     backends, so the audit must now find NOTHING here, exit
+#     0 — and any future regression that re-breaks one of them
+#     reappears as a finding and fails this proof. (One-pass
+#     listing of hard findings is exercised again as soon as a
+#     sample uses a symbol whose regenerated row carries a
+#     real failure, e.g. the MAP_KEYS family; re-pin a sample
+#     to one of those if listing coverage is wanted back.)
+#  3. sample_gaps in mirror mode: same healed state — no
+#     findings on either target set, exit 0.
 #  4. sample_using in lenient mode: post-E0 the checker accepts
 #     the `using` surface, the audit lists the extension symbols
 #     i32.double / i32.add_offset as plain uses with no findings,
@@ -55,35 +61,19 @@ expect_rc good 0 $?
 expect_has good "$W/good.out" "SUMMARY uses=5 findings=0 hard=0"
 expect_lacks good "$W/good.out" "FINDING"
 
-# 2. gaps, production targets: SAB findings hard, one pass, full list
+# 2. gaps sample, production targets: every surface in this
+#    sample measured ok/ok in the healthy-pairing regeneration
+#    (DEF-SAB-REGISTRY-POISONED-REGEN); the audit must be silent.
 "$DRIVER" "$HERE/samples/sample_gaps.sla" production > "$W/gaps.out" 2>&1
-expect_rc gaps-production 3 $?
-for pat in \
-    "FINDING Array.iter[held] method backend=sab severity=hard" \
-    "FINDING Vec.iter method backend=sab severity=hard" \
-    "FINDING Vec.sum method backend=sab severity=hard" \
-    "FINDING Vec.sum method backend=text severity=mirror" \
-    "SUMMARY uses=9 findings=5 hard=3"; do
-    expect_has gaps-production "$W/gaps.out" "$pat"
-done
-# healed by the insert-family integration: must NOT appear any more
-for pat in \
-    "FINDING BTreeMap.insert" \
-    "FINDING HashMap.insert" \
-    "FINDING HashMap.len"; do
-    expect_lacks gaps-production "$W/gaps.out" "$pat"
-done
+expect_rc gaps-production 0 $?
+expect_has gaps-production "$W/gaps.out" "SUMMARY uses=9 findings=0 hard=0"
+expect_lacks gaps-production "$W/gaps.out" "FINDING"
 
-# 3. gaps, mirror targets: severity flips with the target set
+# 3. gaps sample, mirror targets: same healed state, silent.
 "$DRIVER" "$HERE/samples/sample_gaps.sla" mirror > "$W/gaps_mirror.out" 2>&1
-expect_rc gaps-mirror 3 $?
-for pat in \
-    "FINDING Array.iter[held] method backend=text severity=hard" \
-    "FINDING Vec.sum method backend=text severity=hard" \
-    "FINDING Vec.iter method backend=sab severity=mirror" \
-    "SUMMARY uses=9 findings=5 hard=2"; do
-    expect_has gaps-mirror "$W/gaps_mirror.out" "$pat"
-done
+expect_rc gaps-mirror 0 $?
+expect_has gaps-mirror "$W/gaps_mirror.out" "SUMMARY uses=9 findings=0 hard=0"
+expect_lacks gaps-mirror "$W/gaps_mirror.out" "FINDING"
 
 # 4. using: post-E0 the checker accepts; audit lists the extension
 #    symbols as plain uses and finds nothing (exit 0)

@@ -13,10 +13,32 @@
 # Raw logs land in runs/latest/ for evidence; results.tsv is the
 # only output consumed downstream (build_registry.py).
 #
-# Requires: the dev plugin built from THIS tree installed
-# (SA_PLUGIN_DEV=1 sa plugin install --dev .) and `sa` on PATH.
+# Requires: the MEASUREMENT plugin built from this tree installed
+# and selected via SAB_AUDIT_MEAS_HOME (see regen.sh / make_meas.sh):
+# the checked-in registry baked into an ordinary plugin build would
+# intercept every probe whose row is fail, so the matrix would only
+# ever re-measure the registry itself
+# (DEF-SAB-AUDIT-REGEN-SELF-BLOCK). `sa` on PATH.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# Measurement assembly is mandatory: without it the audit hard gate
+# in the shipped plugin pre-empts the probes and the run measures
+# the fossil registry, not the backends. Fail loudly instead of
+# producing a plausible-but-void results.tsv.
+if [ -z "${SAB_AUDIT_MEAS_HOME:-}" ] || [ -z "${SAB_AUDIT_MEAS_STD:-}" ]; then
+    echo "run_matrix: REFUSING to run without a measurement assembly." >&2
+    echo "run_matrix: build one with tools/sab_audit/make_meas.sh and run via tools/sab_audit/regen.sh." >&2
+    exit 2
+fi
+export HOME="$SAB_AUDIT_MEAS_HOME"
+export SA_SAB_STD_DIR="$SAB_AUDIT_MEAS_STD"
+export SLA_SAB_AUDIT_MEASURE=1
+# SAB fragment routing prefers the plugin-baked sa_std_source_dir
+# (the measurement plugin is baked against SAB_AUDIT_MEAS_STD) over
+# SA_STD_DIR; SA_STD_DIR is set for the text fragments / decl plane.
+export SA_STD_DIR="$SAB_AUDIT_MEAS_STD"
+export SLA_STD_DIR="$HERE/../../sla_std"
 PROBES="$HERE/probes"
 RUNS="$HERE/runs/latest"
 rm -rf "$RUNS"
@@ -34,15 +56,24 @@ classify() {
         return
     fi
     local sig
-    sig="$(grep -oE '"trap":"[A-Za-z]+"' "$log" | head -1 | sed 's/"trap":"//; s/"//')"
+    # Signature extraction, panic patterns FIRST
+    # (DEF-SAB-AUDIT-REGEN-SELF-BLOCK (c)): a log can carry echoes of
+    # OTHER signatures — the audit findings list quotes registry
+    # signature strings verbatim, and stdout/stderr interleave — so a
+    # generic error-token grep can pick an echoed old signature over
+    # the cell's real one. A panic code in the log is the probe's own
+    # runtime outcome and outranks every token-shaped echo.
+    sig="$(grep -oE "panic: code=[0-9]+" "$log" | head -1 | sed 's/panic: code=/panic:/')"
+    if [ -z "$sig" ]; then
+        sig="$(grep -oE '"trap":"[A-Za-z]+"' "$log" | head -1 | sed 's/"trap":"//; s/"//')"
+    fi
     if [ -z "$sig" ]; then
         sig="$(grep -oE 'error\[[A-Za-z]+' "$log" | head -1 | sed 's/error\[//')"
     fi
     if [ -z "$sig" ]; then
-        sig="$(grep -oE "$TOKENS" "$log" | head -1)"
-    fi
-    if [ -z "$sig" ]; then
-        sig="$(grep -oE "panic: code=[0-9]+" "$log" | head -1 | sed 's/panic: code=/panic:/')"
+        # Audit-listing lines quote registry signatures; never let an
+        # echo be mistaken for this cell's own failure signature.
+        sig="$(grep -v '^SAB Audit: ' "$log" | grep -oE "$TOKENS" | head -1)"
     fi
     if [ -z "$sig" ]; then
         sig="$(grep -oE "panic [0-9]+|trap [0-9]+|error\.[A-Za-z]+" "$log" | head -1)"
@@ -73,7 +104,7 @@ for probe in "$PROBES"/*.sla; do
         flag="${spec##* }"
         work="$(mktemp -d)"
         log="$RUNS/${pid}.${backend}.log"
-        ( cd "$work" && SLA_NO_FRESHNESS_CACHE=1 SA_PLUGIN_DEV=1 timeout 180 sa sla test "$probe" --test-backend "$flag" ) > "$log" 2>&1
+        ( cd "$work" && SLA_NO_FRESHNESS_CACHE=1 SA_PLUGIN_DEV=1 SA_SAB_STD_DIR="$SAB_AUDIT_MEAS_STD" SLA_SAB_AUDIT_MEASURE=1 timeout 180 sa sla test "$probe" --test-backend "$flag" ) > "$log" 2>&1
         rc=$?
         read -r verdict phase sig <<< "$(classify "$log" "$rc")"
         echo -e "${pid}\t${backend}\t${verdict}\t${phase}\t${sig}\t${rc}" >> "$RESULTS"

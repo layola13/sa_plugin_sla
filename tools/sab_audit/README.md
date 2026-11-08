@@ -38,9 +38,21 @@ compiling probes, and the A′ audit module (src/sab_audit.zig)
   rejected the probe shape) / `decl`.
 - `emit_registry_zig.py` — renders `registry.tsv` as
   `src/sab_audit_registry.zig`, the table the audit module imports.
-- `regen.sh [--check]` — full regeneration; `--check` fails when
-  the checked-in registry or generated table differ from a fresh
-  regeneration for the same (plugin tree, sa_std tree) pair.
+- `make_meas.sh <scratch-dir> <sci-tree>` — builds the
+  *measurement assembly* a regeneration runs against (see
+  "Measurement assembly" below): a scratch copy of this plugin
+  tree with the measurement gate applied from `meas_gate.patch`,
+  installed into an isolated HOME, plus the narrowed sa_std tree
+  (`std/README.md`) built from the same sci tree. Emits
+  `<scratch-dir>/meas.env` with the assembly coordinates.
+- `regen.sh [--check]` — full regeneration **against the
+  measurement assembly** (source `meas.env` first); `--check`
+  fails when the checked-in registry or generated table differ
+  from a fresh regeneration for the same (plugin tree, sa_std
+  tree) pair. Running the matrix without the assembly is refused:
+  the shipped plugin's baked registry would intercept the probes
+  and the run would measure the registry, not the backends
+  (DEF-SAB-AUDIT-REGEN-SELF-BLOCK).
 - `samples/` + `self_proof.sh` — independent-driver self-proof:
   src/sab_audit_driver.zig exercises the audit module on checked
   sample programs (no pipeline wiring) and asserts the live-example
@@ -50,6 +62,33 @@ compiling probes, and the A′ audit module (src/sab_audit.zig)
   line: both candidate hook points sit in file domains owned by
   other in-flight lines; the main session lands it in integration
   order.
+
+## Measurement assembly (regen prerequisite)
+
+A regeneration measures the *backends*, so it must not run under
+the audit gate of the registry it is about to rewrite: that gate
+sits in the compile path (src/plugin_compile.zig, production
+targets) and kills any program using a symbol whose baked row is
+`fail` before either backend runs — under the old documented flow
+a fixed symbol could therefore never measure green again and the
+registry fossilized (DEF-SAB-AUDIT-REGEN-SELF-BLOCK). The
+production gate itself is unchanged and stays in the shipped
+plugin; only the measurement copy disarms it:
+
+1. `make_meas.sh` copies this tree to a scratch dir, applies
+   `meas_gate.patch` there (the `SLA_SAB_AUDIT_MEASURE` env gate:
+   findings are computed but hard findings no longer block), and
+   builds + installs that copy into an isolated HOME. The shipped
+   sources are asserted gate-free before and after.
+2. The same script builds the narrowed sa_std tree from the sci
+   tree under test (`std/README.md`) and builds the measurement
+   plugin against it, so the baked `sa_std_source_dir` is the std
+   being measured (the swap-in/sha discipline above, on a copy).
+3. `regen.sh` / `run_matrix.sh` require the assembly coordinates
+   (`SAB_AUDIT_MEAS_HOME`, `SAB_AUDIT_MEAS_STD`, `SA_SAB_STD_DIR`,
+   `SLA_STD_DIR=<this tree>/sla_std`) and refuse to run without
+   them — a probe run in a temp dir without `SLA_STD_DIR` resolves
+   no `sla_std/*` surface and falsely reports SAB gaps.
 
 ## Staleness rules (防陈腐)
 

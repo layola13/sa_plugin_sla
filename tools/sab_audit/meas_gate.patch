@@ -1,0 +1,36 @@
+--- a/src/plugin_compile.zig
++++ b/src/plugin_compile.zig
+@@ -822,8 +822,10 @@
+             return null;
+         };
+         var audit_hard: usize = 0;
+-        for (audit_result.findings) |finding| {
+-            if (finding.severity == .hard) audit_hard += 1;
++        if (!sabAuditMeasureOnly()) {
++            for (audit_result.findings) |finding| {
++                if (finding.severity == .hard) audit_hard += 1;
++            }
+         }
+         if (audit_hard > 0 or sabAuditReportEnabled(allocator)) {
+             for (audit_result.findings) |finding| {
+@@ -1135,6 +1137,20 @@
+     return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false") and !std.mem.eql(u8, value, "no");
+ }
+ 
++/// SABAUDIT-FIX-MEASURE-ONLY: measurement builds ONLY (audit registry
++/// regen). When SLA_SAB_AUDIT_MEASURE=1, audit findings are computed
++/// and printable but never block the compile, so registry probes
++/// measure the backends themselves instead of being intercepted by
++/// the checked-in registry (DEF-SAB-AUDIT-REGEN-SELF-BLOCK). This
++/// helper set is applied by tools/sab_audit/make_meas.sh to a scratch
++/// copy of the tree; it must never be committed to the shipped
++/// plugin sources.
++fn sabAuditMeasureOnly() bool {
++    const raw = std.c.getenv("SLA_SAB_AUDIT_MEASURE") orelse return false;
++    const s = std.mem.span(raw);
++    return s.len != 0 and !std.mem.eql(u8, s, "0") and !std.mem.eql(u8, s, "false") and !std.mem.eql(u8, s, "no");
++}
++
+ fn keepGeneratedSaTestInput(allocator: std.mem.Allocator) bool {
+     const value = sio.getEnvVarOwned(allocator, "SLA_KEEP_TEST_SA") catch return false;
+     defer allocator.free(value);

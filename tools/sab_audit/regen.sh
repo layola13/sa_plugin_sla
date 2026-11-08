@@ -11,14 +11,35 @@
 #                      gate must also hold while the generated files
 #                      are untracked in a staging tree.
 #
-# SA_STD_DIR must point at the sa_std tree the probes compile
-# against; AUDIT_SA_STD_HEAD should carry that tree's git head (the
-# registry stamp). The dev plugin must be installed from this tree.
+# Inputs (the measurement assembly, see make_meas.sh):
+#   SAB_AUDIT_MEAS_HOME   isolated HOME holding the installed
+#                         measurement plugin (audit gate disarmed by
+#                         SLA_SAB_AUDIT_MEASURE; the shipped plugin
+#                         would intercept every fail-row probe with
+#                         its own baked registry —
+#                         DEF-SAB-AUDIT-REGEN-SELF-BLOCK).
+#   SAB_AUDIT_MEAS_STD    the narrowed sa_std tree the measurement
+#                         plugin is baked against (tools/sab_audit/
+#                         std/README.md); becomes SA_STD_DIR and
+#                         SA_SAB_STD_DIR for the matrix.
+#   SAB_AUDIT_MEAS_SCI    the sci tree that std tree was built from;
+#                         its git head is the registry stamp.
+# Build the assembly once per (plugin tree, sci tree) pair:
+#   SA_LLVM_INCLUDE_DIR=... SA_LLVM_LIB_DIR=... \
+#     tools/sab_audit/make_meas.sh <scratch-dir> <sci-tree>
+#   source <scratch-dir>/meas.env
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
-export SA_STD_DIR="${SA_STD_DIR:?SA_STD_DIR must name the sa_std tree the probes compile against}"
-if [ -z "${AUDIT_SA_STD_HEAD:-}" ] && [ -d "$(dirname "$SA_STD_DIR")/.git" ]; then
-    AUDIT_SA_STD_HEAD="$(git -C "$(dirname "$SA_STD_DIR")" rev-parse HEAD)"
+: "${SAB_AUDIT_MEAS_HOME:?build the measurement assembly first: tools/sab_audit/make_meas.sh <scratch-dir> <sci-tree>, then source <scratch-dir>/meas.env}"
+: "${SAB_AUDIT_MEAS_STD:?build the measurement assembly first: tools/sab_audit/make_meas.sh <scratch-dir> <sci-tree>, then source <scratch-dir>/meas.env}"
+: "${SAB_AUDIT_MEAS_SCI:?build the measurement assembly first: tools/sab_audit/make_meas.sh <scratch-dir> <sci-tree>, then source <scratch-dir>/meas.env}"
+export HOME="$SAB_AUDIT_MEAS_HOME"
+export SA_STD_DIR="$SAB_AUDIT_MEAS_STD"
+export SA_SAB_STD_DIR="$SAB_AUDIT_MEAS_STD"
+export SLA_SAB_AUDIT_MEASURE=1
+export SLA_STD_DIR="$HERE/../../sla_std"
+if [ -z "${AUDIT_SA_STD_HEAD:-}" ] && [ -d "$SAB_AUDIT_MEAS_SCI/.git" ]; then
+    AUDIT_SA_STD_HEAD="$(git -C "$SAB_AUDIT_MEAS_SCI" rev-parse HEAD)"
     export AUDIT_SA_STD_HEAD
 fi
 

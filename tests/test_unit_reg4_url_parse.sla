@@ -1,0 +1,147 @@
+@import "sa_std/url.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Registry shard 4 coverage: url parsing from sa_std/url.sla
+// (SAB registry class=declared, never probed, zero corpus
+// references at census 2026-11-06).
+// Entries: url_parse, url_parse_port, url_is_abs.
+// Parse errors are SA_STD_ERR_INVALID_ARGUMENT (1).
+
+fn u4_parse(s: String) -> Url {
+    let r = url_parse(s);
+    match r {
+        Ok(u) => { return u; },
+        Err(e) => { panic(42690); },
+    }
+}
+
+// Field comparison without moving the field out of the Url:
+// url_range_eq over the field's own pointer, the std idiom.
+fn fe(p: ptr, n: u64, expect: String) -> bool {
+    return url_range_eq(p, 0, n, expect);
+}
+
+@test "reg4 url parse full form"() {
+    let u = u4_parse(format("https://user:pass@host.com:8443/p/a?q=1#frag"));
+    if !fe(STR_PTR(u.scheme), len(u.scheme), format("https")) { panic(42601); };
+    if u.has_authority != true { panic(42602); };
+    if u.has_userinfo != true { panic(42603); };
+    if !fe(STR_PTR(u.userinfo), len(u.userinfo), format("user:pass")) { panic(42604); };
+    if !fe(STR_PTR(u.host), len(u.host), format("host.com")) { panic(42605); };
+    if u.has_port != true { panic(42606); };
+    if u.port != 8443 { panic(42607); };
+    if !fe(STR_PTR(u.path), len(u.path), format("/p/a")) { panic(42608); };
+    if u.has_query != true { panic(42609); };
+    if !fe(STR_PTR(u.query), len(u.query), format("q=1")) { panic(42610); };
+    if u.has_fragment != true { panic(42611); };
+    if !fe(STR_PTR(u.fragment), len(u.fragment), format("frag")) { panic(42612); };
+    if url_is_abs(&u) != true { panic(42613); };
+}
+
+@test "reg4 url parse relative path only"() {
+    let u = u4_parse(format("/just/path"));
+    if len(u.scheme) != 0 { panic(42621); };
+    if u.has_authority != false { panic(42622); };
+    if !fe(STR_PTR(u.path), len(u.path), format("/just/path")) { panic(42623); };
+    if u.has_query != false { panic(42624); };
+    if u.has_fragment != false { panic(42625); };
+    if url_is_abs(&u) != false { panic(42626); };
+}
+
+@test "reg4 url parse empty and partial forms"() {
+    let u = u4_parse(format(""));
+    if len(u.scheme) != 0 { panic(42631); };
+    if len(u.path) != 0 { panic(42632); };
+    if u.has_authority != false { panic(42633); };
+    let q = u4_parse(format("?a=1"));
+    if len(q.path) != 0 { panic(42634); };
+    if q.has_query != true { panic(42635); };
+    if !fe(STR_PTR(q.query), len(q.query), format("a=1")) { panic(42636); };
+    let f = u4_parse(format("#sec"));
+    if f.has_fragment != true { panic(42637); };
+    if !fe(STR_PTR(f.fragment), len(f.fragment), format("sec")) { panic(42638); };
+}
+
+@test "reg4 url parse scheme character set"() {
+    let u = u4_parse(format("a+b-c.d://h/"));
+    if !fe(STR_PTR(u.scheme), len(u.scheme), format("a+b-c.d")) { panic(42641); };
+    // A leading digit cannot start a scheme: the text is a path.
+    let v = u4_parse(format("1http://h"));
+    if len(v.scheme) != 0 { panic(42642); };
+    if v.has_authority != false { panic(42643); };
+    if !fe(STR_PTR(v.path), len(v.path), format("1http://h")) { panic(42644); };
+}
+
+@test "reg4 url parse ipv6 host and port"() {
+    let u = u4_parse(format("http://[::1]:8080/x"));
+    if !fe(STR_PTR(u.host), len(u.host), format("[::1]")) { panic(42651); };
+    if u.has_port != true { panic(42652); };
+    if u.port != 8080 { panic(42653); };
+    if !fe(STR_PTR(u.path), len(u.path), format("/x")) { panic(42654); };
+}
+
+@test "reg4 url parse empty port means no port"() {
+    let u = u4_parse(format("http://h:/p"));
+    if !fe(STR_PTR(u.host), len(u.host), format("h")) { panic(42661); };
+    if u.has_port != false { panic(42662); };
+}
+
+@test "reg4 url parse rejects bad ports"() {
+    let r = url_parse(format("http://h:abc/"));
+    match r {
+        Ok(u) => { panic(42671); },
+        Err(e) => {
+            if e != 1 { panic(42672); };
+        },
+    };
+    let r2 = url_parse(format("http://h:99999/"));
+    match r2 {
+        Ok(u) => { panic(42673); },
+        Err(e) => {
+            if e != 1 { panic(42674); };
+        },
+    }
+}
+
+@test "reg4 url parse rejects control characters"() {
+    let bytes: [u8; 10] = [104, 116, 116, 112, 58, 47, 47, 104, 47, 1];
+    let s: String = bytes.iter().collect<String>();
+    let r = url_parse(s);
+    match r {
+        Ok(u) => { panic(42681); },
+        Err(e) => {
+            if e != 1 { panic(42682); };
+        },
+    }
+}
+
+@test "reg4 url parse port direct"() {
+    let s = format("8080");
+    let p: ptr = STR_PTR(s);
+    let n: u64 = len(s);
+    let r = url_parse_port(p, 0, n);
+    match r {
+        Ok(v) => {
+            if v != 8080 { panic(42683); };
+        },
+        Err(e) => { panic(42684); },
+    };
+    // Empty range is the "no port" sentinel -1, not an error.
+    let r2 = url_parse_port(p, 2, 2);
+    match r2 {
+        Ok(v) => {
+            if v != -1 { panic(42685); };
+        },
+        Err(e) => { panic(42686); },
+    };
+    let bad = format("8a");
+    let bp: ptr = STR_PTR(bad);
+    let r3 = url_parse_port(bp, 0, 2);
+    match r3 {
+        Ok(v) => { panic(42687); },
+        Err(e) => {
+            if e != 1 { panic(42688); };
+        },
+    }
+}

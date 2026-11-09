@@ -1,0 +1,46 @@
+@import "sa_std/jwt.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Coverage shard 2 (round 4 split of test_unit_reg2_jwt_b64):
+// jwt_signing_input alone. Round 3: this @test traps MemoryLeak
+// (1012) at @test exit on the TEXT backend (the matched input Vec is
+// only borrowed afterwards and stays Active at return); SAB passes.
+// Split out so the sibling b64 entries measure cleanly on the text
+// backend; assertions unchanged.
+
+fn vb(p: ptr, n: u64) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    let i: u64 = 0;
+    while i < n {
+        v.push(PTR_BYTE_AT(p, i));
+        i = i + 1;
+    }
+    return v;
+}
+
+fn vec_byte(v: &Vec<u8>, i: u64) -> u8 {
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let b: u8 = 0;
+    SLICE_GET(b, sl, i);
+    return b;
+}
+
+fn expect_vec(v: &Vec<u8>, want: ptr, want_len: u64, code: i32) {
+    if len(v) != want_len { panic(code); };
+    let i: u64 = 0;
+    while i < want_len {
+        if vec_byte(v, i) != PTR_BYTE_AT(want, i) { panic(code); };
+        i = i + 1;
+    }
+}
+
+@test "reg2 jwt_signing_input"() {
+    let header = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+    match jwt_signing_input(STR_PTR(header), STR_LEN(header) as u64, vb(STR_PTR("{\"sub\":\"1234567890\"}"), 20)) {
+        Ok(input) => {
+            expect_vec(&input, STR_PTR("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"), 64, 24823);
+        },
+        Err(e) => { panic(24824); },
+    };
+}

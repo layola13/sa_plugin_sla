@@ -1,0 +1,35 @@
+@import "sa_std/jwt.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Coverage shard 2 (round 4 split of test_unit_reg2_jwt_sign_a):
+// jwt_sign_rs256 bad-key rejection alone. Round 3: this @test traps
+// MemoryLeak (1012) at @test exit on the TEXT backend; SAB passes.
+// Split out so the sibling sign_a entries measure cleanly on the
+// text backend; assertions unchanged.
+
+fn vb(p: ptr, n: u64) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    let i: u64 = 0;
+    while i < n {
+        v.push(PTR_BYTE_AT(p, i));
+        i = i + 1;
+    }
+    return v;
+}
+
+fn claims_vec() -> Vec<u8> {
+    let c = "{\"sub\":\"1234567890\",\"name\":\"John Doe\",\"iat\":1516239022}";
+    return vb(STR_PTR(c), STR_LEN(c) as u64);
+}
+
+@test "reg2 jwt_sign_rs256 rejects bad key"() {
+    let der: Vec<u8> = Vec::new();
+    der.push(1);
+    der.push(2);
+    der.push(3);
+    match jwt_sign_rs256(der, claims_vec()) {
+        Ok(t) => { panic(24931); },
+        Err(e) => {},
+    };
+}

@@ -1,0 +1,125 @@
+@import "sa_std/url.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Registry shard 4 coverage: reference resolution from
+// sa_std/url.sla (SAB registry class=declared, never probed,
+// zero corpus references at census 2026-11-06).
+// Entries: url_resolve, url_join, url_merge_paths,
+// url_pop_last_segment, url_remove_dot_segments, url_relativize.
+// Expected values are the RFC 3986 section 5.4 examples against
+// the base "http://a/b/c/d;p?q".
+
+fn s4_eq(a: String, b: String) -> bool {
+    let pa: ptr = STR_PTR(a);
+    let pb: ptr = STR_PTR(b);
+    if len(a) != len(b) { return false; };
+    let i: u64 = 0;
+    while i < len(a) {
+        if PTR_BYTE_AT(pa, i) != PTR_BYTE_AT(pb, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+fn u4_parse(s: String) -> Url {
+    let r = url_parse(s);
+    match r {
+        Ok(u) => { return u; },
+        Err(e) => { panic(42890); },
+    }
+}
+
+fn resolved_str(base: String, ref_text: String) -> String {
+    let b = u4_parse(base);
+    let r = url_resolve(&b, ref_text);
+    match r {
+        Ok(t) => { return url_to_string(&t); },
+        Err(e) => { panic(42891); },
+    }
+}
+
+@test "reg4 url resolve rfc3986 relative refs"() {
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("g")), format("http://a/b/c/g")) { panic(42801); };
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("./g")), format("http://a/b/c/g")) { panic(42802); };
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("g/")), format("http://a/b/c/g/")) { panic(42803); };
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("/g")), format("http://a/g")) { panic(42804); };
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("//x/y")), format("http://x/y")) { panic(42805); };
+}
+
+@test "reg4 url resolve rfc3986 query and fragment refs"() {
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("?y")), format("http://a/b/c/d;p?y")) { panic(42811); };
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("#s")), format("http://a/b/c/d;p?q#s")) { panic(42812); };
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("")), format("http://a/b/c/d;p?q")) { panic(42813); };
+}
+
+@test "reg4 url resolve rfc3986 dot refs and absolute"() {
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("../g")), format("http://a/b/g")) { panic(42821); };
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("../../g")), format("http://a/g")) { panic(42822); };
+    if !s4_eq(resolved_str(format("http://a/b/c/d;p?q"), format("http://z/abs")), format("http://z/abs")) { panic(42823); };
+}
+
+@test "reg4 url join parses resolves and stringifies"() {
+    let r = url_join(format("http://a/b/c/d;p?q"), format("g"));
+    match r {
+        Ok(s) => {
+            if !s4_eq(s, format("http://a/b/c/g")) { panic(42831); };
+        },
+        Err(e) => { panic(42832); },
+    };
+    // An unparseable base propagates the error.
+    let r2 = url_join(format("http://h:99999/"), format("g"));
+    match r2 {
+        Ok(s) => { panic(42833); },
+        Err(e) => {
+            if e != 1 { panic(42834); };
+        },
+    }
+}
+
+@test "reg4 url merge paths"() {
+    let b = u4_parse(format("http://a/b/c/d"));
+    if !s4_eq(url_merge_paths(&b, format("g")), format("/b/c/g")) { panic(42841); };
+    // Authority with an empty base path roots the merge at "/".
+    let b2 = u4_parse(format("http://a"));
+    if !s4_eq(url_merge_paths(&b2, format("g")), format("/g")) { panic(42842); };
+    let b3 = u4_parse(format("http://a/b/c/"));
+    if !s4_eq(url_merge_paths(&b3, format("g")), format("/b/c/g")) { panic(42843); };
+}
+
+@test "reg4 url pop last segment"() {
+    if !s4_eq(url_pop_last_segment(format("/a/b/c")), format("/a/b")) { panic(42851); };
+    if !s4_eq(url_pop_last_segment(format("/a/b/")), format("/a/b")) { panic(42852); };
+    if !s4_eq(url_pop_last_segment(format("abc")), format("")) { panic(42853); };
+    if !s4_eq(url_pop_last_segment(format("/a")), format("")) { panic(42854); };
+    if !s4_eq(url_pop_last_segment(format("")), format("")) { panic(42855); };
+}
+
+@test "reg4 url remove dot segments"() {
+    if !s4_eq(url_remove_dot_segments(format("/a/b/c/./../../g")), format("/a/g")) { panic(42861); };
+    if !s4_eq(url_remove_dot_segments(format("mid/content=5/../6")), format("mid/6")) { panic(42862); };
+    if !s4_eq(url_remove_dot_segments(format("/a/./b")), format("/a/b")) { panic(42863); };
+    if !s4_eq(url_remove_dot_segments(format("/a/b/.")), format("/a/b/")) { panic(42864); };
+    if !s4_eq(url_remove_dot_segments(format("/a/b/..")), format("/a/")) { panic(42865); };
+    if !s4_eq(url_remove_dot_segments(format(".")), format("")) { panic(42866); };
+    if !s4_eq(url_remove_dot_segments(format("..")), format("")) { panic(42867); };
+    if !s4_eq(url_remove_dot_segments(format("/.")), format("/")) { panic(42868); };
+}
+
+@test "reg4 url relativize"() {
+    let b = u4_parse(format("http://a/b/c/d;p?q"));
+    let t1 = u4_parse(format("http://a/b/c/g"));
+    if !s4_eq(url_relativize(&b, &t1), format("g")) { panic(42871); };
+    let t2 = u4_parse(format("http://a/b/g"));
+    if !s4_eq(url_relativize(&b, &t2), format("../g")) { panic(42872); };
+    let t3 = u4_parse(format("http://a/b/c/d;p?y"));
+    if !s4_eq(url_relativize(&b, &t3), format("?y")) { panic(42873); };
+    let t4 = u4_parse(format("http://a/b/c/d;p?q#s"));
+    if !s4_eq(url_relativize(&b, &t4), format("#s")) { panic(42874); };
+    // Different scheme: only the absolute form works.
+    let t5 = u4_parse(format("https://a/b/c/g"));
+    if !s4_eq(url_relativize(&b, &t5), format("https://a/b/c/g")) { panic(42875); };
+    // Different authority: a network-path reference.
+    let t6 = u4_parse(format("http://other/b/c/g"));
+    if !s4_eq(url_relativize(&b, &t6), format("//other/b/c/g")) { panic(42876); };
+}

@@ -1,0 +1,51 @@
+@import "sa_std/jwt.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Coverage shard 2 (round 3 split of test_unit_reg2_jwt_b64):
+// jwt_build_token alone. Round 2: this @test traps MemoryLeak (1012)
+// at @test exit on the TEXT backend — the match-bound token Vec is
+// only ever borrowed (expect_vec) and stays Active at return; SAB
+// retires it and passes. Split out so the sibling b64 entries measure
+// cleanly on the text backend; assertions unchanged from round 1/2.
+
+fn vb(p: ptr, n: u64) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    let i: u64 = 0;
+    while i < n {
+        v.push(PTR_BYTE_AT(p, i));
+        i = i + 1;
+    }
+    return v;
+}
+
+fn vec_byte(v: &Vec<u8>, i: u64) -> u8 {
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let b: u8 = 0;
+    SLICE_GET(b, sl, i);
+    return b;
+}
+
+fn expect_vec(v: &Vec<u8>, want: ptr, want_len: u64, code: i32) {
+    if len(v) != want_len { panic(code); };
+    let i: u64 = 0;
+    while i < want_len {
+        if vec_byte(v, i) != PTR_BYTE_AT(want, i) { panic(code); };
+        i = i + 1;
+    }
+}
+
+@test "reg2 jwt_build_token"() {
+    match jwt_build_token(vb(STR_PTR("abc.def"), 7), vb(STR_PTR("hello"), 5)) {
+        Ok(tok) => { expect_vec(&tok, STR_PTR("abc.def.aGVsbG8"), 15, 24825); },
+        Err(e) => { panic(24826); },
+    };
+    let sig: Vec<u8> = Vec::new();
+    sig.push(0);
+    sig.push(1);
+    sig.push(2);
+    match jwt_build_token(vb(STR_PTR("abc.def"), 7), sig) {
+        Ok(tok) => { expect_vec(&tok, STR_PTR("abc.def.AAEC"), 12, 24827); },
+        Err(e) => { panic(24828); },
+    };
+}

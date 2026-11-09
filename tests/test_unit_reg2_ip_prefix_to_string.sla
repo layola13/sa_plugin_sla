@@ -1,0 +1,36 @@
+@import "sa_std/ip.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Coverage shard 2 (round 5 split of test_unit_reg2_ip_prefix):
+// ip_prefix_to_string alone. Round 4: this @test traps MemoryLeak
+// (1012) at @test exit on the TEXT backend (the formatted Strings are
+// only borrowed by the comparison helper and stay Active at return);
+// SAB passes. Split out so the sibling prefix entries measure
+// cleanly on the text backend; assertions unchanged.
+
+fn v4prefix(lo: u64, len: u32) -> IpPrefix {
+    return ip_prefix_from(ip_addr_from_ipv4(lo as u32), len);
+}
+
+fn expect_str(got: String, want: ptr, want_len: u64, code: i32) {
+    if len(got) != want_len { panic(code); };
+    let gp: ptr = STR_PTR(got);
+    let i: u64 = 0;
+    while i < want_len {
+        if PTR_BYTE_AT(gp, i) != PTR_BYTE_AT(want, i) { panic(code); };
+        i = i + 1;
+    }
+}
+
+@test "reg2 ip_prefix_to_string"() {
+    let w1 = "192.168.1.0/24";
+    expect_str(ip_prefix_to_string(v4prefix(3232235776, 24)), STR_PTR(w1), STR_LEN(w1) as u64, 24577);
+    let w2 = "192.168.1.37/24";
+    expect_str(ip_prefix_to_string(v4prefix(3232235813, 24)), STR_PTR(w2), STR_LEN(w2) as u64, 24578);
+    let w3 = "0.0.0.0/0";
+    expect_str(ip_prefix_to_string(v4prefix(0, 0)), STR_PTR(w3), STR_LEN(w3) as u64, 24579);
+    let v6p = ip_prefix_from(ip_addr_from_ipv6(ipv6_from_segments(8193, 3512, 0, 0, 0, 0, 0, 0)), 32);
+    let w4 = "2001:db8::/32";
+    expect_str(ip_prefix_to_string(v6p), STR_PTR(w4), STR_LEN(w4) as u64, 24580);
+}

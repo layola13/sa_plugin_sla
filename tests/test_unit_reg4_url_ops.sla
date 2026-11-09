@@ -1,0 +1,115 @@
+@import "sa_std/url.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Registry shard 4 coverage: whole-Url operations from
+// sa_std/url.sla (SAB registry class=declared, never probed,
+// zero corpus references at census 2026-11-06).
+// Entries: url_empty, url_clone, url_to_string, url_normalize,
+// url_request_uri, url_redacted, url_host_name.
+
+fn s4_eq(a: String, b: String) -> bool {
+    let pa: ptr = STR_PTR(a);
+    let pb: ptr = STR_PTR(b);
+    if len(a) != len(b) { return false; };
+    let i: u64 = 0;
+    while i < len(a) {
+        if PTR_BYTE_AT(pa, i) != PTR_BYTE_AT(pb, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+fn u4_parse(s: String) -> Url {
+    let r = url_parse(s);
+    match r {
+        Ok(u) => { return u; },
+        Err(e) => { panic(42790); },
+    }
+}
+
+fn fe(p: ptr, n: u64, expect: String) -> bool {
+    return url_range_eq(p, 0, n, expect);
+}
+
+@test "reg4 url empty shape"() {
+    let u = url_empty();
+    if len(u.scheme) != 0 { panic(42701); };
+    if u.has_authority != false { panic(42702); };
+    if u.has_userinfo != false { panic(42703); };
+    if len(u.host) != 0 { panic(42704); };
+    if u.has_port != false { panic(42705); };
+    if u.port != 0 { panic(42706); };
+    if len(u.path) != 0 { panic(42707); };
+    if u.has_query != false { panic(42708); };
+    if u.has_fragment != false { panic(42709); };
+    if !s4_eq(url_to_string(&u), format("")) { panic(42710); };
+}
+
+@test "reg4 url to string roundtrips a full url"() {
+    let u = u4_parse(format("https://user@h.com:81/p?q=1#f"));
+    if !s4_eq(url_to_string(&u), format("https://user@h.com:81/p?q=1#f")) { panic(42711); };
+    let v = u4_parse(format("/rel/path"));
+    if !s4_eq(url_to_string(&v), format("/rel/path")) { panic(42712); };
+}
+
+@test "reg4 url clone copies every field"() {
+    let u = u4_parse(format("https://user:pass@h.com:8443/p/a?q=1#frag"));
+    let c = url_clone(&u);
+    if !fe(STR_PTR(c.scheme), len(c.scheme), format("https")) { panic(42721); };
+    if !fe(STR_PTR(c.userinfo), len(c.userinfo), format("user:pass")) { panic(42722); };
+    if !fe(STR_PTR(c.host), len(c.host), format("h.com")) { panic(42723); };
+    if c.has_port != true { panic(42724); };
+    if c.port != 8443 { panic(42725); };
+    if !fe(STR_PTR(c.path), len(c.path), format("/p/a")) { panic(42726); };
+    if !fe(STR_PTR(c.query), len(c.query), format("q=1")) { panic(42727); };
+    if !fe(STR_PTR(c.fragment), len(c.fragment), format("frag")) { panic(42728); };
+    if !s4_eq(url_to_string(&c), url_to_string(&u)) { panic(42729); };
+}
+
+@test "reg4 url normalize canonicalises case port and dots"() {
+    let u = u4_parse(format("HTTP://User@EXAMPLE.com:80/a/../b/%7euser"));
+    let n = url_normalize(&u);
+    if n.has_port != false { panic(42731); };
+    if !s4_eq(url_to_string(&n), format("http://User@example.com/b/~user")) { panic(42732); };
+}
+
+@test "reg4 url normalize empty path with authority becomes slash"() {
+    let u = u4_parse(format("http://EXAMPLE.com"));
+    let n = url_normalize(&u);
+    if !s4_eq(url_to_string(&n), format("http://example.com/")) { panic(42741); };
+}
+
+@test "reg4 url normalize keeps non-default port"() {
+    let u = u4_parse(format("http://h:81/"));
+    let n = url_normalize(&u);
+    if n.has_port != true { panic(42751); };
+    if n.port != 81 { panic(42752); };
+}
+
+@test "reg4 url request uri"() {
+    let u = u4_parse(format("http://h/p?q=1"));
+    if !s4_eq(url_request_uri(&u), format("/p?q=1")) { panic(42761); };
+    let v = u4_parse(format("http://h"));
+    if !s4_eq(url_request_uri(&v), format("/")) { panic(42762); };
+    let w = u4_parse(format("http://h/p"));
+    if !s4_eq(url_request_uri(&w), format("/p")) { panic(42763); };
+}
+
+@test "reg4 url redacted masks the password"() {
+    let u = u4_parse(format("https://user:secret@h/p"));
+    if !s4_eq(url_redacted(&u), format("https://user:xxxxx@h/p")) { panic(42771); };
+    // No password in the userinfo: nothing to mask.
+    let v = u4_parse(format("https://user@h/p"));
+    if !s4_eq(url_redacted(&v), format("https://user@h/p")) { panic(42772); };
+    // No userinfo at all: plain to_string.
+    let w = u4_parse(format("https://h/p"));
+    if !s4_eq(url_redacted(&w), format("https://h/p")) { panic(42773); };
+}
+
+@test "reg4 url host name strips ipv6 brackets"() {
+    let u = u4_parse(format("http://[::1]:8080/x"));
+    if !s4_eq(url_host_name(&u), format("::1")) { panic(42781); };
+    let v = u4_parse(format("http://h.com/x"));
+    if !s4_eq(url_host_name(&v), format("h.com")) { panic(42782); };
+}

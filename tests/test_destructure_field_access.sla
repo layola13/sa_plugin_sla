@@ -1,0 +1,97 @@
+// DEF-DESTRUCTURED-TUPLE-FIELD-ACCESS regression corpus (corrected forms).
+// Destructuring a tuple obtained from a field access (X.N), then using
+// field access on a destructured element that is itself a tuple, must
+// type-check and run. The pattern binds the elements of the projected
+// tuple, so for an element to be a tuple the projected value sits one
+// level deeper than the pattern. Control shapes: plain let binding of
+// the same field access, whole-tuple destructuring, and struct field
+// access must stay green.
+
+fn nested_via_field_destructure() -> int {
+    let t = (((1, 2), 3), 4);
+    let (inner, z) = t.0;
+    return inner.0 * 100 + inner.1 * 10 + z;
+}
+
+fn nested_via_param_destructure(p: (((int, int), int), int)) -> int {
+    let (inner, z) = p.0;
+    return inner.0 + inner.1 + z;
+}
+
+fn make_nested() -> (((int, int), int), int) {
+    return (((4, 5), 6), 7);
+}
+
+fn nested_via_call_destructure() -> int {
+    let t = make_nested();
+    let (inner, z) = t.0;
+    return inner.0 + inner.1;
+}
+
+fn nested_three_level() -> int {
+    let t = (((((1, 2), 3), 4), 5), 6);
+    let (a, e) = t.0;
+    let (mid, w) = a.0;
+    return mid.0 * 1000 + mid.1 * 100 + w * 10 + e;
+}
+
+fn nested_via_dot1() -> int {
+    let t = (4, ((1, 2), 3));
+    let (mid, w) = t.1;
+    return mid.0 * 100 + mid.1 * 10 + w;
+}
+
+fn control_plain_let_field() -> int {
+    let t = ((1, 2), 3);
+    let v = t.0;
+    return v.0 + v.1;
+}
+
+fn control_whole_tuple_destructure() -> int {
+    let t = ((1, 2), 3);
+    let (a, b) = t;
+    return a.0 + a.1 + b;
+}
+
+struct PairBox {
+    pair: (int, int),
+    tag: int,
+}
+
+fn control_struct_field_tuple() -> int {
+    let b = PairBox { pair: (7, 8), tag: 9 };
+    let p = b.pair;
+    return p.0 + p.1 + b.tag;
+}
+
+@test "destructured element field access"() {
+    if nested_via_field_destructure() != 123 { panic(9101); };
+}
+
+@test "destructured element field access via param"() {
+    if nested_via_param_destructure((((1, 2), 3), 4)) != 6 { panic(9102); };
+}
+
+@test "destructured element field access via call"() {
+    if nested_via_call_destructure() != 9 { panic(9103); };
+}
+
+@test "destructured element field access three levels"() {
+    if nested_three_level() != 1235 { panic(9107); };
+}
+
+@test "destructured element field access via dot1"() {
+    if nested_via_dot1() != 123 { panic(9108); };
+}
+
+@test "control plain let field access"() {
+    if control_plain_let_field() != 3 { panic(9104); };
+}
+
+@test "control whole tuple destructure"() {
+    if control_whole_tuple_destructure() != 6 { panic(9105); };
+}
+
+@test "control struct field tuple"() {
+    if control_struct_field_tuple() != 24 { panic(9106); };
+}

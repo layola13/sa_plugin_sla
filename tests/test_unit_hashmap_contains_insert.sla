@@ -1,0 +1,43 @@
+@import "sa_std/hashmap.sa"
+@import "sa_std/core/option.sa"
+
+// Regression: SAB decoded-module retirement accounting (MemoryLeak
+// "register: map") on HashMap method insert + contains_key. Root cause
+// was in sa_std/hashmap.sa: sa_map_contains_key / sa_map_put /
+// sa_map_get / sa_map_contains_key_str / sa_map_put_str /
+// sa_map_get_str / map_rehash never released the borrowed `map`
+// register at their exits; the SAB verifier (unlike the text
+// flattener) rejects a decoded function that leaves it live.
+// Fixed by adding the missing `!map` releases (16 exits).
+
+@test "hashmap insert then contains_key method"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    if !m.contains_key("a") { panic(9201); };
+    if m.contains_key("zzz") { panic(9202); };
+}
+
+@test "hashmap insert many then contains_key (grow/rehash path)"() {
+    let m = HashMap::new();
+    m.insert("k0", 0);
+    m.insert("k1", 1);
+    m.insert("k2", 2);
+    m.insert("k3", 3);
+    m.insert("k4", 4);
+    m.insert("k5", 5);
+    m.insert("k6", 6);
+    m.insert("k7", 7);
+    m.insert("k8", 8);
+    m.insert("k9", 9);
+    if len(m) != 10 { panic(9211); };
+    if !m.contains_key("k0") { panic(9212); };
+    if !m.contains_key("k9") { panic(9213); };
+    if m.contains_key("nope") { panic(9214); };
+}
+
+@test "hashmap get after insert (decoded get_str path)"() {
+    let m = HashMap::new();
+    m.insert("a", 41);
+    let g = m.get("a");
+    if g.copied().unwrap_or(0) != 41 { panic(9221); };
+}

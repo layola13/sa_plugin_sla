@@ -1,0 +1,92 @@
+// E1 extern carrier batch #1 -- tree_sitter incremental group (2 names):
+// sa_ts_tree_edit, sa_ts_parse_incremental.
+// Substantive assertions over the generated thin wraps (sla_ts_*).
+// Requires SA_TREE_SITTER_DIR=<sci>/artifacts/tree_sitter; every test
+// panics loudly when the core library is unavailable (no silent pass).
+// Edit under test: in "let x = 1;" replace byte 8..9 ("1") with "42":
+// start (0,8), old end (0,9), new end (0,10); result "let x = 42;".
+@import "sla_std/wrap/tree_sitter.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn ts_buf_starts(buf: ptr, lit: ptr, lit_len: u64) -> u32 {
+    let i: u64 = 0;
+    while i < lit_len {
+        let a = SLA_BYTE_AT(buf, i);
+        let b = SLA_BYTE_AT(lit, i);
+        if a != b { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn ts_buf_eq(buf: ptr, buf_len: u64, lit: ptr, lit_len: u64) -> u32 {
+    if buf_len != lit_len { return 0; };
+    return ts_buf_starts(buf, lit, lit_len);
+}
+
+@test "extern ts sa_ts_tree_edit"() {
+    if sla_ts_available() != 1 { panic(93601); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93602); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93603); };
+    let tree: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("let x = 1;"), STR_LEN("let x = 1;"), &tree) != 0 { panic(93604); };
+    let rc: i32 = sla_ts_tree_edit(tree, 8, 9, 10, 0, 8, 0, 9, 0, 10);
+    if rc != 0 { panic(93605); };
+    let root: u64 = 0;
+    if sla_ts_tree_root(tree, &root) != 0 { panic(93606); };
+    let s: u64 = 0;
+    let e: u64 = 0;
+    if sla_ts_node_byte_range(root, &s, &e) != 0 { panic(93607); };
+    if s != 0 { panic(93608); };
+    if e != 11 { panic(93609); };
+    sla_ts_node_free(^root);
+    sla_ts_tree_free(^tree);
+    sla_ts_parser_free(^parser);
+}
+
+@test "extern ts sa_ts_parse_incremental"() {
+    if sla_ts_available() != 1 { panic(93621); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93622); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93623); };
+    let tree: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("let x = 1;"), STR_LEN("let x = 1;"), &tree) != 0 { panic(93624); };
+    if sla_ts_tree_edit(tree, 8, 9, 10, 0, 8, 0, 9, 0, 10) != 0 { panic(93625); };
+    let tree2: u64 = 0;
+    if sla_ts_parse_incremental(parser, tree, STR_PTR("let x = 42;"), STR_LEN("let x = 42;"), &tree2) != 0 { panic(93626); };
+    if tree2 == 0 { panic(93627); };
+    if tree2 == tree { panic(93628); };
+    let root2: u64 = 0;
+    if sla_ts_tree_root(tree2, &root2) != 0 { panic(93629); };
+    let buf = [0u8; 256];
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let tlen: u64 = 0;
+    if sla_ts_node_text(root2, &buf[0], 256, &tlen) != 0 { panic(93630); };
+    if ts_buf_eq(bp, tlen, STR_PTR("let x = 42;"), STR_LEN("let x = 42;")) != 1 { panic(93631); };
+    let s: u64 = 0;
+    let e: u64 = 0;
+    if sla_ts_node_byte_range(root2, &s, &e) != 0 { panic(93632); };
+    if s != 0 { panic(93633); };
+    if e != 11 { panic(93634); };
+    let count: u64 = 0;
+    if sla_ts_node_child_count(root2, &count) != 0 { panic(93635); };
+    if count != 1 { panic(93636); };
+    let sbuf2 = [0u8; 256];
+    let sp2: ptr = SLA_PTR_ADD(&sbuf2[0], 0);
+    let slen2: u64 = 0;
+    if sla_ts_tree_sexp(tree2, &sbuf2[0], 256, &slen2) != 0 { panic(93637); };
+    let tree3: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("let x = 42;"), STR_LEN("let x = 42;"), &tree3) != 0 { panic(93638); };
+    let sbuf3 = [0u8; 256];
+    let sp3: ptr = SLA_PTR_ADD(&sbuf3[0], 0);
+    let slen3: u64 = 0;
+    if sla_ts_tree_sexp(tree3, &sbuf3[0], 256, &slen3) != 0 { panic(93639); };
+    if ts_buf_eq(sp2, slen2, sp3, slen3) != 1 { panic(93640); };
+    sla_ts_tree_free(^tree3);
+    sla_ts_node_free(^root2);
+    sla_ts_tree_free(^tree2);
+    sla_ts_tree_free(^tree);
+    sla_ts_parser_free(^parser);
+}

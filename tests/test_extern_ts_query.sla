@@ -1,0 +1,205 @@
+// E1 extern carrier batch #1 -- tree_sitter query group (8 names):
+// sa_ts_query_pattern_count, sa_ts_query_capture_count,
+// sa_ts_query_capture_name, sa_ts_query_exec, sa_ts_query_next_match,
+// sa_ts_query_match_capture, sa_ts_query_free, sa_ts_query_cursor_free.
+// Substantive assertions over the generated thin wraps (sla_ts_*).
+// Requires SA_TREE_SITTER_DIR=<sci>/artifacts/tree_sitter; every test
+// panics loudly when the core library is unavailable (no silent pass).
+@import "sla_std/wrap/tree_sitter.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn ts_buf_starts(buf: ptr, lit: ptr, lit_len: u64) -> u32 {
+    let i: u64 = 0;
+    while i < lit_len {
+        let a = SLA_BYTE_AT(buf, i);
+        let b = SLA_BYTE_AT(lit, i);
+        if a != b { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn ts_buf_eq(buf: ptr, buf_len: u64, lit: ptr, lit_len: u64) -> u32 {
+    if buf_len != lit_len { return 0; };
+    return ts_buf_starts(buf, lit, lit_len);
+}
+
+@test "extern ts sa_ts_query_pattern_count"() {
+    if sla_ts_available() != 1 { panic(93501); };
+    let q: u64 = 0;
+    let eoff: u64 = 0;
+    let ekind: u64 = 0;
+    if sla_ts_query_new(STR_PTR("typescript"), STR_LEN("typescript"), STR_PTR("(function_declaration name: (identifier) @fname)"), STR_LEN("(function_declaration name: (identifier) @fname)"), &q, &eoff, &ekind) != 0 { panic(93502); };
+    if q == 0 { panic(93503); };
+    let count: u64 = 0;
+    if sla_ts_query_pattern_count(q, &count) != 0 { panic(93504); };
+    if count != 1 { panic(93505); };
+    let q2: u64 = 0;
+    if sla_ts_query_new(STR_PTR("typescript"), STR_LEN("typescript"), STR_PTR("(identifier) @x (number) @y"), STR_LEN("(identifier) @x (number) @y"), &q2, &eoff, &ekind) != 0 { panic(93506); };
+    if sla_ts_query_pattern_count(q2, &count) != 0 { panic(93507); };
+    if count != 2 { panic(93508); };
+    sla_ts_query_free(^q2);
+    sla_ts_query_free(^q);
+}
+
+@test "extern ts sa_ts_query_capture_count"() {
+    if sla_ts_available() != 1 { panic(93511); };
+    let q: u64 = 0;
+    let eoff: u64 = 0;
+    let ekind: u64 = 0;
+    if sla_ts_query_new(STR_PTR("typescript"), STR_LEN("typescript"), STR_PTR("(function_declaration name: (identifier) @fname)"), STR_LEN("(function_declaration name: (identifier) @fname)"), &q, &eoff, &ekind) != 0 { panic(93512); };
+    let count: u64 = 0;
+    if sla_ts_query_capture_count(q, &count) != 0 { panic(93513); };
+    if count != 1 { panic(93514); };
+    let q2: u64 = 0;
+    if sla_ts_query_new(STR_PTR("typescript"), STR_LEN("typescript"), STR_PTR("(identifier) @x (number) @y"), STR_LEN("(identifier) @x (number) @y"), &q2, &eoff, &ekind) != 0 { panic(93515); };
+    if sla_ts_query_capture_count(q2, &count) != 0 { panic(93516); };
+    if count != 2 { panic(93517); };
+    sla_ts_query_free(^q2);
+    sla_ts_query_free(^q);
+}
+
+@test "extern ts sa_ts_query_capture_name"() {
+    if sla_ts_available() != 1 { panic(93521); };
+    let q: u64 = 0;
+    let eoff: u64 = 0;
+    let ekind: u64 = 0;
+    if sla_ts_query_new(STR_PTR("typescript"), STR_LEN("typescript"), STR_PTR("(function_declaration name: (identifier) @fname)"), STR_LEN("(function_declaration name: (identifier) @fname)"), &q, &eoff, &ekind) != 0 { panic(93522); };
+    let buf = [0u8; 64];
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let nlen: u64 = 0;
+    if sla_ts_query_capture_name(q, 0, &buf[0], 64, &nlen) != 0 { panic(93523); };
+    if ts_buf_eq(bp, nlen, STR_PTR("fname"), STR_LEN("fname")) != 1 { panic(93524); };
+    sla_ts_query_free(^q);
+}
+
+@test "extern ts sa_ts_query_exec"() {
+    if sla_ts_available() != 1 { panic(93531); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93532); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93533); };
+    let tree: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("function alpha() {} function beta() {}"), STR_LEN("function alpha() {} function beta() {}"), &tree) != 0 { panic(93534); };
+    let root: u64 = 0;
+    if sla_ts_tree_root(tree, &root) != 0 { panic(93535); };
+    let q: u64 = 0;
+    let eoff: u64 = 0;
+    let ekind: u64 = 0;
+    if sla_ts_query_new(STR_PTR("typescript"), STR_LEN("typescript"), STR_PTR("(function_declaration name: (identifier) @fname)"), STR_LEN("(function_declaration name: (identifier) @fname)"), &q, &eoff, &ekind) != 0 { panic(93536); };
+    let cursor: u64 = 0;
+    if sla_ts_query_cursor_new(&cursor) != 0 { panic(93537); };
+    if sla_ts_query_exec(cursor, q, root) != 0 { panic(93538); };
+    let has: u64 = 0;
+    let pat: u64 = 0;
+    let caps: u64 = 0;
+    if sla_ts_query_next_match(cursor, &has, &pat, &caps) != 0 { panic(93539); };
+    if has != 1 { panic(93540); };
+    sla_ts_query_cursor_free(^cursor);
+    sla_ts_query_free(^q);
+    sla_ts_node_free(^root);
+    sla_ts_tree_free(^tree);
+    sla_ts_parser_free(^parser);
+}
+
+@test "extern ts sa_ts_query_next_match"() {
+    if sla_ts_available() != 1 { panic(93551); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93552); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93553); };
+    let tree: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("function alpha() {} function beta() {}"), STR_LEN("function alpha() {} function beta() {}"), &tree) != 0 { panic(93554); };
+    let root: u64 = 0;
+    if sla_ts_tree_root(tree, &root) != 0 { panic(93555); };
+    let q: u64 = 0;
+    let eoff: u64 = 0;
+    let ekind: u64 = 0;
+    if sla_ts_query_new(STR_PTR("typescript"), STR_LEN("typescript"), STR_PTR("(function_declaration name: (identifier) @fname)"), STR_LEN("(function_declaration name: (identifier) @fname)"), &q, &eoff, &ekind) != 0 { panic(93556); };
+    let cursor: u64 = 0;
+    if sla_ts_query_cursor_new(&cursor) != 0 { panic(93557); };
+    if sla_ts_query_exec(cursor, q, root) != 0 { panic(93558); };
+    let has: u64 = 0;
+    let pat: u64 = 0;
+    let caps: u64 = 0;
+    if sla_ts_query_next_match(cursor, &has, &pat, &caps) != 0 { panic(93559); };
+    if has != 1 { panic(93560); };
+    if pat != 0 { panic(93561); };
+    if caps != 1 { panic(93562); };
+    if sla_ts_query_next_match(cursor, &has, &pat, &caps) != 0 { panic(93563); };
+    if has != 1 { panic(93564); };
+    if sla_ts_query_next_match(cursor, &has, &pat, &caps) != 0 { panic(93565); };
+    if has != 0 { panic(93566); };
+    sla_ts_query_cursor_free(^cursor);
+    sla_ts_query_free(^q);
+    sla_ts_node_free(^root);
+    sla_ts_tree_free(^tree);
+    sla_ts_parser_free(^parser);
+}
+
+@test "extern ts sa_ts_query_match_capture"() {
+    if sla_ts_available() != 1 { panic(93571); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93572); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93573); };
+    let tree: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("function alpha() {} function beta() {}"), STR_LEN("function alpha() {} function beta() {}"), &tree) != 0 { panic(93574); };
+    let root: u64 = 0;
+    if sla_ts_tree_root(tree, &root) != 0 { panic(93575); };
+    let q: u64 = 0;
+    let eoff: u64 = 0;
+    let ekind: u64 = 0;
+    if sla_ts_query_new(STR_PTR("typescript"), STR_LEN("typescript"), STR_PTR("(function_declaration name: (identifier) @fname)"), STR_LEN("(function_declaration name: (identifier) @fname)"), &q, &eoff, &ekind) != 0 { panic(93576); };
+    let cursor: u64 = 0;
+    if sla_ts_query_cursor_new(&cursor) != 0 { panic(93577); };
+    if sla_ts_query_exec(cursor, q, root) != 0 { panic(93578); };
+    let has: u64 = 0;
+    let pat: u64 = 0;
+    let caps: u64 = 0;
+    if sla_ts_query_next_match(cursor, &has, &pat, &caps) != 0 { panic(93579); };
+    if has != 1 { panic(93580); };
+    let node: u64 = 0;
+    let cap: u64 = 0;
+    if sla_ts_query_match_capture(cursor, 0, &node, &cap) != 0 { panic(93581); };
+    if node == 0 { panic(93582); };
+    if cap != 0 { panic(93583); };
+    let buf = [0u8; 64];
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let tlen: u64 = 0;
+    if sla_ts_node_text(node, &buf[0], 64, &tlen) != 0 { panic(93584); };
+    if ts_buf_eq(bp, tlen, STR_PTR("alpha"), STR_LEN("alpha")) != 1 { panic(93585); };
+    sla_ts_node_free(^node);
+    if sla_ts_query_next_match(cursor, &has, &pat, &caps) != 0 { panic(93586); };
+    if has != 1 { panic(93587); };
+    let node2: u64 = 0;
+    if sla_ts_query_match_capture(cursor, 0, &node2, &cap) != 0 { panic(93588); };
+    if sla_ts_node_text(node2, &buf[0], 64, &tlen) != 0 { panic(93589); };
+    if ts_buf_eq(bp, tlen, STR_PTR("beta"), STR_LEN("beta")) != 1 { panic(93590); };
+    sla_ts_node_free(^node2);
+    let node3: u64 = 0;
+    if sla_ts_query_match_capture(cursor, 7, &node3, &cap) != 0 { panic(93591); };
+    if node3 != 0 { panic(93592); };
+    sla_ts_query_cursor_free(^cursor);
+    sla_ts_query_free(^q);
+    sla_ts_node_free(^root);
+    sla_ts_tree_free(^tree);
+    sla_ts_parser_free(^parser);
+}
+
+@test "extern ts sa_ts_query_free"() {
+    if sla_ts_available() != 1 { panic(935101); };
+    let q: u64 = 0;
+    let eoff: u64 = 0;
+    let ekind: u64 = 0;
+    if sla_ts_query_new(STR_PTR("typescript"), STR_LEN("typescript"), STR_PTR("(identifier) @x"), STR_LEN("(identifier) @x"), &q, &eoff, &ekind) != 0 { panic(935102); };
+    let rc: i32 = sla_ts_query_free(^q);
+    if rc != 0 { panic(935103); };
+}
+
+@test "extern ts sa_ts_query_cursor_free"() {
+    if sla_ts_available() != 1 { panic(935111); };
+    let cursor: u64 = 0;
+    if sla_ts_query_cursor_new(&cursor) != 0 { panic(935112); };
+    if cursor == 0 { panic(935113); };
+    let rc: i32 = sla_ts_query_cursor_free(^cursor);
+    if rc != 0 { panic(935114); };
+}

@@ -1,0 +1,140 @@
+// E1 extern carrier batch #1 -- tree_sitter parser/tree group (6 names):
+// sa_ts_parser_set_language, sa_ts_parser_free, sa_ts_parse,
+// sa_ts_tree_root, sa_ts_tree_sexp, sa_ts_tree_free.
+// Substantive assertions over the generated thin wraps (sla_ts_*).
+// Requires SA_TREE_SITTER_DIR=<sci>/artifacts/tree_sitter; every test
+// panics loudly when the core library is unavailable (no silent pass).
+@import "sla_std/wrap/tree_sitter.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn ts_buf_starts(buf: ptr, lit: ptr, lit_len: u64) -> u32 {
+    let i: u64 = 0;
+    while i < lit_len {
+        let a = SLA_BYTE_AT(buf, i);
+        let b = SLA_BYTE_AT(lit, i);
+        if a != b { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn ts_buf_eq(buf: ptr, buf_len: u64, lit: ptr, lit_len: u64) -> u32 {
+    if buf_len != lit_len { return 0; };
+    return ts_buf_starts(buf, lit, lit_len);
+}
+
+fn ts_buf_contains(hay: ptr, hay_len: u64, ndl: ptr, ndl_len: u64) -> u32 {
+    if ndl_len > hay_len { return 0; };
+    let last: u64 = hay_len - ndl_len;
+    let i: u64 = 0;
+    while i <= last {
+        let j: u64 = 0;
+        let ok: u32 = 1;
+        while j < ndl_len {
+            let k: u64 = i + j;
+            let a = SLA_BYTE_AT(hay, k);
+            let b = SLA_BYTE_AT(ndl, j);
+            if a != b { ok = 0; };
+            j = j + 1;
+        }
+        if ok == 1 { return 1; };
+        i = i + 1;
+    }
+    return 0;
+}
+
+@test "extern ts sa_ts_parser_set_language"() {
+    if sla_ts_available() != 1 { panic(93101); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93102); };
+    if parser == 0 { panic(93103); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93104); };
+    if sla_ts_parser_set_language(parser, STR_PTR("nosuchlang42"), STR_LEN("nosuchlang42")) == 0 { panic(93105); };
+    if sla_ts_parser_set_language(parser, STR_PTR("javascript"), STR_LEN("javascript")) != 0 { panic(93106); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93107); };
+    sla_ts_parser_free(^parser);
+}
+
+@test "extern ts sa_ts_parser_free"() {
+    if sla_ts_available() != 1 { panic(93111); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93112); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93113); };
+    let rc: i32 = sla_ts_parser_free(^parser);
+    if rc != 0 { panic(93114); };
+}
+
+@test "extern ts sa_ts_parse"() {
+    if sla_ts_available() != 1 { panic(93121); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93122); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93123); };
+    let tree: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("let x = 1;"), STR_LEN("let x = 1;"), &tree) != 0 { panic(93124); };
+    if tree == 0 { panic(93125); };
+    let tree2: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("let y = 2;"), STR_LEN("let y = 2;"), &tree2) != 0 { panic(93126); };
+    if tree2 == 0 { panic(93127); };
+    if tree2 == tree { panic(93128); };
+    sla_ts_tree_free(^tree);
+    sla_ts_tree_free(^tree2);
+    sla_ts_parser_free(^parser);
+}
+
+@test "extern ts sa_ts_tree_root"() {
+    if sla_ts_available() != 1 { panic(93131); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93132); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93133); };
+    let tree: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("let x = 1;"), STR_LEN("let x = 1;"), &tree) != 0 { panic(93134); };
+    let root: u64 = 0;
+    if sla_ts_tree_root(tree, &root) != 0 { panic(93135); };
+    if root == 0 { panic(93136); };
+    let buf = [0u8; 64];
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let tlen: u64 = 0;
+    if sla_ts_node_type(root, &buf[0], 64, &tlen) != 0 { panic(93137); };
+    if ts_buf_eq(bp, tlen, STR_PTR("program"), STR_LEN("program")) != 1 { panic(93138); };
+    let root2: u64 = 0;
+    if sla_ts_tree_root(tree, &root2) != 0 { panic(93139); };
+    if root2 == 0 { panic(93140); };
+    if root2 == root { panic(93141); };
+    sla_ts_node_free(^root);
+    sla_ts_node_free(^root2);
+    sla_ts_tree_free(^tree);
+    sla_ts_parser_free(^parser);
+}
+
+@test "extern ts sa_ts_tree_sexp"() {
+    if sla_ts_available() != 1 { panic(93151); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93152); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93153); };
+    let tree: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("let x = 1;"), STR_LEN("let x = 1;"), &tree) != 0 { panic(93154); };
+    let sbuf = [0u8; 256];
+    let sp: ptr = SLA_PTR_ADD(&sbuf[0], 0);
+    let slen: u64 = 0;
+    if sla_ts_tree_sexp(tree, &sbuf[0], 256, &slen) != 0 { panic(93155); };
+    if slen < 40 { panic(93156); };
+    if ts_buf_starts(sp, STR_PTR("(program"), STR_LEN("(program")) != 1 { panic(93157); };
+    if ts_buf_contains(sp, slen, STR_PTR("(lexical_declaration"), STR_LEN("(lexical_declaration")) != 1 { panic(93158); };
+    if ts_buf_contains(sp, slen, STR_PTR("(variable_declarator"), STR_LEN("(variable_declarator")) != 1 { panic(93159); };
+    if ts_buf_contains(sp, slen, STR_PTR("(number)"), STR_LEN("(number)")) != 1 { panic(93160); };
+    sla_ts_tree_free(^tree);
+    sla_ts_parser_free(^parser);
+}
+
+@test "extern ts sa_ts_tree_free"() {
+    if sla_ts_available() != 1 { panic(93171); };
+    let parser: u64 = 0;
+    if sla_ts_parser_new(&parser) != 0 { panic(93172); };
+    if sla_ts_parser_set_language(parser, STR_PTR("typescript"), STR_LEN("typescript")) != 0 { panic(93173); };
+    let tree: u64 = 0;
+    if sla_ts_parse(parser, STR_PTR("let x = 1;"), STR_LEN("let x = 1;"), &tree) != 0 { panic(93174); };
+    let rc: i32 = sla_ts_tree_free(^tree);
+    if rc != 0 { panic(93175); };
+    sla_ts_parser_free(^parser);
+}

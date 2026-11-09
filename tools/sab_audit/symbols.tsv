@@ -21,7 +21,7 @@ array_count	Array.count	method	array_adapter	if a.iter().count() != 3 { panic(12
 array_find	Array.find	method	array_adapter	let f = a.iter().find(|x| x == 2); if f.is_none() { panic(121); };	adapter family, array receiver
 map_keys_macro	MAP_KEYS	macro_bridge	hashmap_macro	let ks = MAP_KEYS(m); if len(ks) != 2 { panic(40101); };	triage mechanism A: SAB bridge UnknownRegister; text ok (single handle arg)
 map_values_macro	MAP_VALUES	macro_bridge	hashmap_macro	let vs = MAP_VALUES(m); if len(vs) != 2 { panic(40102); };	triage card 6: same bridge family as MAP_KEYS
-map_del_macro	MAP_DEL	macro_bridge	hashmap_macro	let old = MAP_DEL(m, "a"); if old != 1 { panic(40103); }; if len(m) != 0 { panic(40104); };	triage mechanism B: text silently returns wrong old value (value assertion catches it)
+map_del_macro	MAP_DEL	macro_bridge	hashmap_macro	let old = MAP_DEL(m, "a"); if old != 1 { panic(40103); }; if len(m) != 1 { panic(40104); };	triage mechanism B: text silently returns wrong old value (value assertion catches it)
 map_put_macro	MAP_PUT	macro_bridge	hashmap_macro	MAP_PUT(m, "c", 3); if len(m) != 3 { panic(40105); }; let v = m.get("c").copied().unwrap_or(0); if v != 3 { panic(40106); };	triage mechanism B: text corrupts the inserted key (get misses)
 map_contains_macro	MAP_CONTAINS_KEY	macro_bridge	hashmap_macro	if !MAP_CONTAINS_KEY(m, "a") { panic(40107); };	triage mechanism B: text returns false for an existing key
 map_del_method	HashMap.del	method	hashmap	m.del("a"); if len(m) != 1 { panic(40108); };	the HashMap deletion method surface (del, not remove)
@@ -43,7 +43,7 @@ set_contains	HashSet.contains	method	hashset_i32	if !s.contains(5) { panic(40205
 set_insert	HashSet.insert	method	hashset_i32	if s.len() != 2 { panic(40206); };	control: cascade core surface
 set_len	HashSet.len	method	hashset_i32	if s.len() != 2 { panic(40207); };	control: core surface
 set_remove_method	HashSet.remove	method	hashset_i32	s.remove(5); if s.len() != 1 { panic(40208); };	no remove method surface at this head; the macro is the surface
-btree_remove_macro	BTREE_MAP_REMOVE	macro_bridge	btreemap	let old = BTREE_MAP_REMOVE(m, "a"); if old != 1 { panic(40301); }; if len(m) != 0 { panic(40302); };	triage mechanism A: SAB UnknownRegister
+btree_remove_macro	BTREE_MAP_REMOVE	macro_bridge	btreemap	let old = BTREE_MAP_REMOVE(m, "a"); if old != 1 { panic(40301); }; if len(m) != 1 { panic(40302); };	triage mechanism A: SAB UnknownRegister
 btree_keys_method	BTreeMap.keys	method	btreemap	let ks = m.keys(); if ks.len() != 2 { panic(402); };	method surface does not exist at this head (Undefined call)
 btree_remove_method	BTreeMap.remove	method	btreemap	m.remove("a"); if m.len() != 1 { panic(401); };	method surface shape rejected at this head (TypeMismatch); the macro is the surface
 btree_get	BTreeMap.get	method	btreemap	if m.get("a").copied().unwrap_or_default() != 1 { panic(403); };	control chain shape

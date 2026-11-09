@@ -5,5 +5,5 @@
     let m = BTreeMap::new();
     m.insert("a", 1);
     m.insert("b", 2);
-    let old = BTREE_MAP_REMOVE(m, "a"); if old != 1 { panic(40301); }; if len(m) != 0 { panic(40302); };
+    let old = BTREE_MAP_REMOVE(m, "a"); if old != 1 { panic(40301); }; if len(m) != 1 { panic(40302); };
 }

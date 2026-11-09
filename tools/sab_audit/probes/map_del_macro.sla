@@ -6,5 +6,5 @@
     let m = HashMap::new();
     m.insert("a", 1);
     m.insert("b", 2);
-    let old = MAP_DEL(m, "a"); if old != 1 { panic(40103); }; if len(m) != 0 { panic(40104); };
+    let old = MAP_DEL(m, "a"); if old != 1 { panic(40103); }; if len(m) != 1 { panic(40104); };
 }

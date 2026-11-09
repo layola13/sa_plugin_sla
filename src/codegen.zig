@@ -17228,6 +17228,130 @@ pub const Codegen = struct {
         return result_reg;
     }
 
+    fn genVecIterFold(
+        self: *Codegen,
+        source: *ast.Node,
+        init_expr: *ast.Node,
+        folder: *const ast.ClosureLiteral,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError![]const u8 {
+        const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
+        const elem_ty = vecElementType(source_ty) orelse return CodegenError.CodegenError;
+        if (folder.params.len != 2) return CodegenError.CodegenError;
+        const acc_ty = folder.params[0].ty;
+        const vec_reg = try self.genExpr(source, hoisted_allocs);
+        const len_reg = try self.newTmp();
+        self.outPrint("    {s} = call @sa_vec_len(&{s})\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+        const data_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+        const init_reg = try self.genExpr(init_expr, hoisted_allocs);
+        const acc_slot = try self.newTmp();
+        self.outPrint("    {s} = stack_alloc {}\n", .{ acc_slot, typeSize(acc_ty) }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as {s}\n", .{ acc_slot, init_reg, typeString(acc_ty) }) catch return CodegenError.CodegenError;
+        if (callArgNeedsRelease(init_expr)) try self.emitRelease(init_reg);
+        const idx_slot = try self.newTmp();
+        self.outPrint("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        const head_label = try self.newLabel("L_VEC_FOLD_HEAD");
+        const body_label = try self.newLabel("L_VEC_FOLD_BODY");
+        const end_label = try self.newLabel("L_VEC_FOLD_END");
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+        const idx_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
+        const more_reg = try self.newTmp();
+        self.outPrint("    {s} = ult {s}, {s}\n", .{ more_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ more_reg, body_label, end_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
+        const acc_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ acc_reg, acc_slot, typeString(acc_ty) }) catch return CodegenError.CodegenError;
+        const off_reg = try self.newTmp();
+        self.outPrint("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+        const slot_reg = try self.newTmp();
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, off_reg }) catch return CodegenError.CodegenError;
+        const item_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, slot_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+        const next_acc = try self.genInlineClosureBinary(folder, acc_reg, item_reg, hoisted_allocs);
+        self.outPrint("    store {s}+0, {s} as {s}\n", .{ acc_slot, next_acc, typeString(acc_ty) }) catch return CodegenError.CodegenError;
+        try self.emitRelease(off_reg);
+        try self.emitRelease(slot_reg);
+        try self.emitRelease(item_reg);
+        try self.emitRelease(acc_reg);
+        if (!std.mem.eql(u8, next_acc, acc_reg) and !std.mem.eql(u8, next_acc, item_reg)) try self.emitRelease(next_acc);
+        const next_idx = try self.newTmp();
+        self.outPrint("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
+        try self.emitRelease(next_idx);
+        try self.emitRelease(idx_reg);
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
+        try self.emitRelease(len_reg);
+        try self.emitRelease(data_reg);
+        const result_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ result_reg, acc_slot, typeString(acc_ty) }) catch return CodegenError.CodegenError;
+        if (callArgNeedsRelease(source)) try self.emitRelease(vec_reg);
+        return result_reg;
+    }
+
+    fn genVecIterMapCollect(
+        self: *Codegen,
+        source: *ast.Node,
+        mapper: *const ast.ClosureLiteral,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError![]const u8 {
+        const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
+        const elem_ty = vecElementType(source_ty) orelse return CodegenError.CodegenError;
+        const out_ty = self.tc.expr_types.get(mapper.body) orelse return CodegenError.CodegenError;
+        const vec_reg = try self.genExpr(source, hoisted_allocs);
+        const len_reg = try self.newTmp();
+        self.outPrint("    {s} = call @sa_vec_len(&{s})\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+        const data_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+        const out_reg = try self.newTmp();
+        self.outPrint("    EXPAND VEC_NEW {s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        const idx_slot = try self.newTmp();
+        self.outPrint("    {s} = stack_alloc 8\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, 0 as u64\n", .{idx_slot}) catch return CodegenError.CodegenError;
+        const head_label = try self.newLabel("L_VEC_MAP_HEAD");
+        const body_label = try self.newLabel("L_VEC_MAP_BODY");
+        const end_label = try self.newLabel("L_VEC_MAP_END");
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{head_label}) catch return CodegenError.CodegenError;
+        const idx_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as u64\n", .{ idx_reg, idx_slot }) catch return CodegenError.CodegenError;
+        const more_reg = try self.newTmp();
+        self.outPrint("    {s} = ult {s}, {s}\n", .{ more_reg, idx_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ more_reg, body_label, end_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
+        const off_reg = try self.newTmp();
+        self.outPrint("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+        const slot_reg = try self.newTmp();
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, off_reg }) catch return CodegenError.CodegenError;
+        const item_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, slot_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+        const mapped_reg = try self.genInlineClosureUnary(mapper, item_reg, hoisted_allocs);
+        self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ out_reg, mapped_reg, self.vecElementSlotSize(out_ty) }) catch return CodegenError.CodegenError;
+        try self.emitRelease(off_reg);
+        try self.emitRelease(slot_reg);
+        try self.emitRelease(item_reg);
+        if (!std.mem.eql(u8, mapped_reg, item_reg)) try self.emitRelease(mapped_reg);
+        const next_idx = try self.newTmp();
+        self.outPrint("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u64\n", .{ idx_slot, next_idx }) catch return CodegenError.CodegenError;
+        try self.emitRelease(next_idx);
+        try self.emitRelease(idx_reg);
+        self.outPrint("    jmp {s}\n\n", .{head_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{more_reg}) catch return CodegenError.CodegenError;
+        try self.emitRelease(len_reg);
+        try self.emitRelease(data_reg);
+        if (callArgNeedsRelease(source)) try self.emitRelease(vec_reg);
+        return out_reg;
+    }
+
     const SavedClosureParam = struct {
         name: []const u8,
         old: ?[]const u8,
@@ -18876,6 +19000,18 @@ pub const Codegen = struct {
                         const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return CodegenError.CodegenError;
                         if (arrayType(source_ty) != null) {
                             return try self.genArrayIterFold(iter_call.args[0], call.args[1], &call.args[2].closure_literal, hoisted_allocs);
+                        }
+                        if (vecElementType(source_ty) != null) {
+                            return try self.genVecIterFold(iter_call.args[0], call.args[1], &call.args[2].closure_literal, hoisted_allocs);
+                        }
+                    }
+                }
+                if (std.mem.eql(u8, call.func_name, "map") and call.args.len == 2 and call.args[0].* == .call_expr and call.args[1].* == .closure_literal) {
+                    const iter_call = &call.args[0].call_expr;
+                    if ((lowering_rules.isIterOrIntoIterCall(iter_call.*)) and iter_call.args.len == 1) {
+                        const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return CodegenError.CodegenError;
+                        if (vecElementType(source_ty) != null) {
+                            return try self.genVecIterMapCollect(iter_call.args[0], &call.args[1].closure_literal, hoisted_allocs);
                         }
                     }
                 }

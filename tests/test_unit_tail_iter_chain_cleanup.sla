@@ -1,0 +1,17 @@
+@import "sa_std/vec.sa"
+
+// Regression (single @test by design): the text codegen's held
+// iterator-chain branch in genStmt used to return early, skipping the
+// statement-exit cleanups attached to a block-final statement, so owned
+// locals declared earlier in the block were never released
+// (error[MemoryLeak] at function exit, text backend only; same family
+// as test_unit_tail_discard_cleanup.sla).
+// NOTE: keep this file to ONE @test — on the text backend the host's
+// exit-liveness enforcement only fires for the last @test of a file,
+// so a leaking shape in a non-final @test would be silently masked.
+
+@test "tail iter chain let releases earlier owned locals"() {
+    let marker: Vec<u8> = Vec::new();
+    let v: Vec<i32> = Vec::new();
+    let c = v.iter().rev();
+}

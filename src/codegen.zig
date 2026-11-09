@@ -13829,6 +13829,22 @@ pub const Codegen = struct {
         return std.mem.eql(u8, val_reg, resolved) or std.mem.eql(u8, val_reg, node.identifier);
     }
 
+    /// Emit the block-exit cleanups the checker attached to a statement.
+    /// genStmt's epilogue runs this for every statement that falls
+    /// through; a statement branch that returns early must run it
+    /// itself before returning. Otherwise the cleanups attached to a
+    /// block-final statement (the block's remaining owned locals) are
+    /// silently dropped and the SA verifier reports error[MemoryLeak]
+    /// at the function exit (found via test_unit_reg2_net_sys.sla's
+    /// trailing `let _ = sa_json_free(doc);` leaking its `empty` Vec).
+    fn emitStmtExitCleanups(self: *Codegen, stmt: *const ast.Node) CodegenError!void {
+        if (self.tc.cleanups.get(stmt)) |list| {
+            for (list.items) |c_var| {
+                try self.emitLexicalCleanupRelease(c_var);
+            }
+        }
+    }
+
     fn genStmt(self: *Codegen, stmt: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         switch (stmt.*) {
             .let_stmt => |let| {
@@ -13858,6 +13874,7 @@ pub const Codegen = struct {
                         }
                     }
                     if (callArgNeedsRelease(let.value)) try self.emitRelease(discard_reg);
+                    try self.emitStmtExitCleanups(stmt);
                     return;
                 }
                 try self.rememberLocalBindingType(let.name, let_ty);
@@ -13871,6 +13888,7 @@ pub const Codegen = struct {
                 if (let.value.* == .call_expr) {
                     if (self.iterChainPlan(let.value)) |plan| {
                         self.iter_chain_bindings.put(let.name, plan) catch return CodegenError.OutOfMemory;
+                        try self.emitStmtExitCleanups(stmt);
                         return;
                     }
                 }
@@ -15054,11 +15072,7 @@ pub const Codegen = struct {
 
         // Generate block exit cleanups if attached to this statement
         if (!stmtTerminates(stmt)) {
-            if (self.tc.cleanups.get(stmt)) |list| {
-                for (list.items) |c_var| {
-                    try self.emitLexicalCleanupRelease(c_var);
-                }
-            }
+            try self.emitStmtExitCleanups(stmt);
         }
     }
 

@@ -1,0 +1,21 @@
+@import "sa_std/vec.sa"
+
+// Regression (single @test by design): the text codegen's discard-let
+// branch in genStmt used to return early, skipping the statement-exit
+// cleanups attached to a block-final statement, so owned locals declared
+// earlier in the block were never released. Found via
+// tests/test_unit_reg2_net_sys.sla @test "reg2 ni_parse_entry", whose
+// trailing `let _ = sa_json_free(doc);` leaked its `empty` Vec
+// (error[MemoryLeak] at function exit, text backend only).
+// NOTE: keep this file to ONE @test — on the text backend the host's
+// exit-liveness enforcement only fires for the last @test of a file,
+// so a leaking shape in a non-final @test would be silently masked.
+
+fn tail_cleanup_sink(x: i32) -> i32 {
+    return x + 1;
+}
+
+@test "tail discard let releases earlier owned locals"() {
+    let empty: Vec<u8> = Vec::new();
+    let _ = tail_cleanup_sink(1);
+}

@@ -1,0 +1,14 @@
+@import "sa_std/vec.sa"
+
+// Guard (single @test by design): the identifier move-discard path
+// (`let _ = owned;`) was never broken — it releases earlier owned
+// locals correctly on both backends. Kept as a regression guard for
+// the tail-cleanup family (see test_unit_tail_discard_cleanup.sla):
+// a future change to the discard paths must not turn this into a
+// leak or a double release.
+
+@test "tail discard move keeps earlier owned locals released"() {
+    let marker: Vec<u8> = Vec::new();
+    let owned: Vec<u8> = Vec::new();
+    let _ = owned;
+}

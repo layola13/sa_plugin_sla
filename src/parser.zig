@@ -3957,6 +3957,12 @@ pub const Parser = struct {
                     return try makePrimitive(self.allocator, .f64);
                 } else if (std.mem.eql(u8, name, "bool")) {
                     return try makePrimitive(self.allocator, .boolean);
+                } else if (std.mem.eql(u8, name, "i1")) {
+                    // ABI spelling of bool, emitted verbatim into
+                    // generated .sai wrappers (sla_std/wrap) and used
+                    // by .sai-mirroring signatures; same alias class
+                    // as "int"/"float" above (DEF-SAB-FMT-BOOL-I1).
+                    return try makePrimitive(self.allocator, .boolean);
                 } else if (std.mem.eql(u8, name, "void")) {
                     return try makePrimitive(self.allocator, .void_type);
                 } else if (std.mem.eql(u8, name, "ptr")) {

@@ -1,0 +1,49 @@
+// DEF-SAB-FMT-BOOL-I1 regression corpus.
+// Two faces of one root: the ABI spelling "i1" (SA's name for bool)
+// was not recognized as boolean by the SLA-side name->type maps.
+//  (a) SAB contract-extern lowering: sa_fmt_bool / sa_fmt_bool_into
+//      take an i1 parameter per sa_std/fmt.sai; the SAB path mapped
+//      the spelling "i1" to void, emitting `trunc i8 %x to void` and
+//      `call i64 @sa_fmt_bool(void ...)` (LLVMBackend first-class-type
+//      error). The text backend was green.
+//  (b) Generated wrapper surface: sla_std/wrap/fmt.sla spells the
+//      wrapper parameter `value: i1` (verbatim from the .sai); the
+//      SLA parser treated "i1" as an undefined user type, so the
+//      checker rejected every SLA bool value (literal and variable)
+//      passed to sla_fmt_bool / sla_fmt_bool_into on BOTH backends.
+// Pre-fix: (a) fails on sab only, (b) fails the check on both.
+// Post-fix: this file is dual-backend green.
+@import "sla_std/wrap/fmt.sla"
+@import "sa_std/fmt.sai"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+@test "def sab fmt bool i1 raw extern"() {
+    let t: bool = true;
+    let h: u64 = sa_fmt_bool(t);
+    if h == 0 { panic(970101); };
+    if sla_fmt_buffer_len(h) != 4 { panic(970102); };
+    if sla_fmt_buffer_free(^h) != 0 { panic(970103); };
+    let buf = [0u8; 64];
+    let n: u64 = 0;
+    let f: bool = 1 < 0;
+    if sa_fmt_bool_into(f, &buf[0], 64, &n) != 0 { panic(970104); };
+    if n != 5 { panic(970105); };
+    if SLA_BYTE_AT(&buf[0], 0) != 102 { panic(970106); };
+}
+
+@test "def sab fmt bool i1 via generated wrapper"() {
+    let t: bool = true;
+    let h: u64 = sla_fmt_bool(t);
+    if h == 0 { panic(970111); };
+    if sla_fmt_buffer_len(h) != 4 { panic(970112); };
+    if sla_fmt_buffer_free(^h) != 0 { panic(970113); };
+    let h2: u64 = sla_fmt_bool(false);
+    if h2 == 0 { panic(970114); };
+    if sla_fmt_buffer_len(h2) != 5 { panic(970115); };
+    if sla_fmt_buffer_free(^h2) != 0 { panic(970116); };
+    let buf = [0u8; 64];
+    let n: u64 = 0;
+    if sla_fmt_bool_into(true, SLA_PTR_ADD(&buf[0], 0), 64, &n) != 0 { panic(970117); };
+    if n != 4 { panic(970118); };
+    if SLA_BYTE_AT(&buf[0], 0) != 116 { panic(970119); };
+}

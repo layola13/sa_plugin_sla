@@ -7470,7 +7470,11 @@ pub const Codegen = struct {
         if (name.len > 0 and (name[0] == '&' or name[0] == '^' or name[0] == '*')) name = std.mem.trim(u8, name[1..], " \t\r");
         if (std.mem.endsWith(u8, name, "!")) name = std.mem.trim(u8, name[0 .. name.len - 1], " \t\r");
         if (std.mem.eql(u8, name, "ptr")) return .ptr;
-        if (std.mem.eql(u8, name, "bool")) return .i1;
+        // "i1" is SA's own spelling of bool in .sai contracts
+        // (fmt.sai's sa_fmt_bool / sa_fmt_bool_into); without this
+        // arm the parameter falls through to .void and the call
+        // emits `trunc i8 %x to void` (DEF-SAB-FMT-BOOL-I1).
+        if (std.mem.eql(u8, name, "bool") or std.mem.eql(u8, name, "i1")) return .i1;
         if (std.mem.eql(u8, name, "i8")) return .i8;
         if (std.mem.eql(u8, name, "i16")) return .i16;
         if (std.mem.eql(u8, name, "i32")) return .i32;

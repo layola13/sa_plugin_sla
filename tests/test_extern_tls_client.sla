@@ -1,0 +1,218 @@
+// TLS extern carrier batch -- plain client group (11 names):
+// sa_std_tls_client_supported, sa_std_tls_client_connect,
+// sa_std_tls_client_add_ca_file, sa_std_tls_client_read,
+// sa_std_tls_client_write, sa_std_tls_client_close,
+// sa_std_tls_client_status_json, sa_std_tls_client_peer_cert_json,
+// sa_std_tls_client_buffer_data, sa_std_tls_client_buffer_len,
+// sa_std_tls_client_buffer_free.
+// (The config family lives in test_extern_tls_config.sla, the shaped
+// family in test_extern_tls_shaped.sla.)
+// Substantive assertions over the generated thin wraps
+// (sla_std_tls_client_*), per the tls_client.sai contract:
+// 0 ok, -1 unsupported, -5 io, -12 oom, -22 invalid argument,
+// -100 certificate verification failure.
+// Requires live loopback TLS echo servers set up by the gate script
+// under /tmp/tlstest (python3 ssl):
+//   127.0.0.1:55601  cert signed by test CA A (SAN localhost/127.0.0.1)
+//   127.0.0.1:55606  cert signed by test CA B (never pinned anywhere)
+// Every test panics loudly when a server is unreachable (no silent
+// pass). The unpinned-connect test dials the CA-B server so its -100
+// verdict is independent of @test execution order: the process-wide
+// bundle only ever gains CA A inside this file.
+// NOTE: peer_cert_json is UNSUPPORTED by construction on this backend
+// (std.crypto.tls discards the peer cert after the handshake): the
+// .sai contract is -22 for handle 0 and -1 for any live handle.
+@import "sla_std/wrap/tls_client.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn tls_buf_contains(h: u64, lit: ptr, litn: u64) -> u32 {
+    let n: u64 = sla_std_tls_client_buffer_len(h);
+    if n < litn { return 0; };
+    let sb = TlsClientBuffer { raw: h };
+    let v = sla_std_tls_client_buffer_data(&sb);
+    if v.len() != n { return 0; };
+    let last: u64 = n - litn;
+    let i: u64 = 0;
+    while i <= last {
+        let ok: u32 = 1;
+        let j: u64 = 0;
+        while j < litn {
+            if v[i + j] != SLA_BYTE_AT(lit, j) { ok = 0; };
+            j = j + 1;
+        }
+        if ok == 1 { return 1; };
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn tls_pin_ca_a() {
+    let rc: i32 = sla_std_tls_client_add_ca_file(STR_PTR("/tmp/tlstest/caA.pem"), STR_LEN("/tmp/tlstest/caA.pem"));
+    if rc != 0 { panic(971901); };
+}
+
+fn tls_connect_a() -> u64 {
+    let h: u64 = 0;
+    let rc: i32 = sla_std_tls_client_connect(STR_PTR("localhost"), STR_LEN("localhost"), 55601, &h);
+    if rc != 0 { panic(971902); };
+    if h == 0 { panic(971903); };
+    return h;
+}
+
+@test "extern tls_client sa_std_tls_client_supported"() {
+    let flag: u64 = 0;
+    let rc: i32 = sla_std_tls_client_supported(&flag);
+    if rc != 0 { panic(971101); };
+    // Pure-Zig backend (std.crypto.tls), no dlopen: always supported.
+    if flag != 1 { panic(971102); };
+}
+
+@test "extern tls_client sa_std_tls_client_status_json"() {
+    let h: u64 = 0;
+    let rc: i32 = sla_std_tls_client_status_json(&h);
+    if rc != 0 { panic(971201); };
+    if h == 0 { panic(971202); };
+    if sla_std_tls_client_buffer_len(h) == 0 { panic(971203); };
+    if sla_std_tls_client_buffer_free(^h) != 0 { panic(971204); };
+}
+
+@test "extern tls_client sa_std_tls_client_buffer_len"() {
+    let h: u64 = 0;
+    if sla_std_tls_client_status_json(&h) != 0 { panic(971301); };
+    let n: u64 = sla_std_tls_client_buffer_len(h);
+    // {"module":"tls_client","backend":"std.crypto.tls","supported":true}
+    if n < 60 { panic(971302); };
+    if sla_std_tls_client_buffer_len(0) != 0 { panic(971303); };
+    if sla_std_tls_client_buffer_free(^h) != 0 { panic(971304); };
+}
+
+@test "extern tls_client sa_std_tls_client_buffer_data"() {
+    let h: u64 = 0;
+    if sla_std_tls_client_status_json(&h) != 0 { panic(971401); };
+    if tls_buf_contains(h, STR_PTR("\"module\":\"tls_client\""), STR_LEN("\"module\":\"tls_client\"")) != 1 { panic(971402); };
+    if tls_buf_contains(h, STR_PTR("\"backend\":\"std.crypto.tls\""), STR_LEN("\"backend\":\"std.crypto.tls\"")) != 1 { panic(971403); };
+    if tls_buf_contains(h, STR_PTR("\"supported\":true"), STR_LEN("\"supported\":true")) != 1 { panic(971404); };
+    if sla_std_tls_client_buffer_free(^h) != 0 { panic(971405); };
+}
+
+@test "extern tls_client sa_std_tls_client_buffer_free"() {
+    let h: u64 = 0;
+    if sla_std_tls_client_status_json(&h) != 0 { panic(971501); };
+    let h2: u64 = h;
+    if sla_std_tls_client_buffer_free(^h) != 0 { panic(971502); };
+    // Registry-backed: a second free of the same handle is invalid (-22).
+    if sla_std_tls_client_buffer_free(^h2) != -22 { panic(971503); };
+    // Freeing the null buffer is a no-op success.
+    let zh: u64 = 0;
+    if sla_std_tls_client_buffer_free(^zh) != 0 { panic(971504); };
+}
+
+@test "extern tls_client sa_std_tls_client_add_ca_file"() {
+    // Empty path is invalid before any file access.
+    if sla_std_tls_client_add_ca_file(STR_PTR(""), 0) != -22 { panic(971601); };
+    // Relative paths are rejected (bundle API contract).
+    if sla_std_tls_client_add_ca_file(STR_PTR("certs/ca.pem"), STR_LEN("certs/ca.pem")) != -22 { panic(971602); };
+    // A missing absolute path is an I/O error (-5), never success.
+    if sla_std_tls_client_add_ca_file(STR_PTR("/tmp/tlstest/nope-ca.pem"), STR_LEN("/tmp/tlstest/nope-ca.pem")) != -5 { panic(971603); };
+    // The success path (real CA pinned) is asserted in the connect test.
+}
+
+@test "extern tls_client sa_std_tls_client_connect"() {
+    // Bad arguments are rejected without touching the network.
+    let h1: u64 = 0;
+    if sla_std_tls_client_connect(STR_PTR("localhost"), 0, 55601, &h1) != -22 { panic(971701); };
+    if h1 != 0 { panic(971702); };
+    let h2: u64 = 0;
+    if sla_std_tls_client_connect(STR_PTR("localhost"), STR_LEN("localhost"), 0, &h2) != -22 { panic(971703); };
+    if h2 != 0 { panic(971704); };
+    let h3: u64 = 0;
+    if sla_std_tls_client_connect(STR_PTR("localhost"), STR_LEN("localhost"), 65536, &h3) != -22 { panic(971705); };
+    if h3 != 0 { panic(971706); };
+    // Unreachable port: loud I/O failure (-5), no handle issued.
+    let h4: u64 = 0;
+    if sla_std_tls_client_connect(STR_PTR("localhost"), STR_LEN("localhost"), 55999, &h4) != -5 { panic(971707); };
+    if h4 != 0 { panic(971708); };
+    // Unpinned peer (CA B is never added to the process bundle):
+    // verification failure (-100), never a silent connect.
+    let h5: u64 = 0;
+    if sla_std_tls_client_connect(STR_PTR("localhost"), STR_LEN("localhost"), 55606, &h5) != -100 { panic(971709); };
+    if h5 != 0 { panic(971710); };
+}
+
+@test "extern tls_client sa_std_tls_client_connect_pinned_echo"() {
+    // Pin the real test CA, then a fully verified connect succeeds.
+    tls_pin_ca_a();
+    let h: u64 = tls_connect_a();
+    if sla_std_tls_client_close(h) != 0 { panic(971801); };
+}
+
+@test "extern tls_client sa_std_tls_client_write"() {
+    tls_pin_ca_a();
+    let h: u64 = tls_connect_a();
+    let w: u64 = 0;
+    let rc: i32 = sla_std_tls_client_write(h, STR_PTR("tls-plain-ping"), STR_LEN("tls-plain-ping"), &w);
+    if rc != 0 { panic(971911); };
+    if w != 14 { panic(971912); };
+    // Writing the null handle is invalid (-22) and writes nothing.
+    let w0: u64 = 77;
+    if sla_std_tls_client_write(0, STR_PTR("x"), 1, &w0) != -22 { panic(971913); };
+    if w0 != 0 { panic(971914); };
+    if sla_std_tls_client_close(h) != 0 { panic(971915); };
+}
+
+@test "extern tls_client sa_std_tls_client_read"() {
+    tls_pin_ca_a();
+    let h: u64 = tls_connect_a();
+    let w: u64 = 0;
+    if sla_std_tls_client_write(h, STR_PTR("tls-plain-ping"), STR_LEN("tls-plain-ping"), &w) != 0 { panic(971921); };
+    // The echo comes back byte-for-byte.
+    let buf = [0u8; 64];
+    let got: u64 = 0;
+    while got < 14 {
+        let chunk = [0u8; 64];
+        let n: u64 = 0;
+        let rc: i32 = sla_std_tls_client_read(h, &chunk[0], 64, &n);
+        if rc != 0 { panic(971922); };
+        if n == 0 { panic(971923); };
+        let k: u64 = 0;
+        while k < n {
+            buf[got + k] = chunk[k];
+            k = k + 1;
+        }
+        got = got + n;
+    }
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let i: u64 = 0;
+    while i < 14 {
+        if SLA_BYTE_AT(bp, i) != SLA_BYTE_AT(STR_PTR("tls-plain-ping"), i) { panic(971924); };
+        i = i + 1;
+    }
+    // Reading the null handle is invalid (-22), out_read zeroed.
+    let n0: u64 = 77;
+    let chunk0 = [0u8; 8];
+    if sla_std_tls_client_read(0, &chunk0[0], 8, &n0) != -22 { panic(971925); };
+    if n0 != 0 { panic(971926); };
+    if sla_std_tls_client_close(h) != 0 { panic(971927); };
+}
+
+@test "extern tls_client sa_std_tls_client_close"() {
+    // close(0) is an idempotent no-op success (sci unit-test contract).
+    if sla_std_tls_client_close(0) != 0 { panic(971931); };
+    tls_pin_ca_a();
+    let h: u64 = tls_connect_a();
+    if sla_std_tls_client_close(h) != 0 { panic(971932); };
+}
+
+@test "extern tls_client sa_std_tls_client_peer_cert_json"() {
+    tls_pin_ca_a();
+    let h: u64 = tls_connect_a();
+    // Live handle: explicitly UNSUPPORTED (-1) on this backend.
+    let out: u64 = 0;
+    if sla_std_tls_client_peer_cert_json(h, &out) != -1 { panic(971941); };
+    if out != 0 { panic(971942); };
+    // Null handle: invalid (-22).
+    let out0: u64 = 0;
+    if sla_std_tls_client_peer_cert_json(0, &out0) != -22 { panic(971943); };
+    if sla_std_tls_client_close(h) != 0 { panic(971944); };
+}

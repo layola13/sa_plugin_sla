@@ -1,0 +1,564 @@
+// TLS extern carrier batch -- shaped client family (15 names):
+// sa_std_tls_shaped_supported, sa_std_tls_shaped_connect,
+// sa_std_tls_shaped_read, sa_std_tls_shaped_write,
+// sa_std_tls_shaped_close, sa_std_tls_shaped_negotiated_json,
+// sa_std_tls_shaped_hello_ja3, sa_std_tls_shaped_hello_ja3_string,
+// sa_std_tls_shaped_hello_ja4, sa_std_tls_shaped_start_tls,
+// sa_std_tls_shaped_session_blob,
+// sa_std_tls_shaped_peer_cert_chain_json,
+// sa_std_tls_shaped_buffer_data, sa_std_tls_shaped_buffer_len,
+// sa_std_tls_shaped_buffer_free.
+// Assertions per the tls_client.sai shaped contract (OpenSSL backend,
+// profile-controlled ClientHello): unknown profile keys -22,
+// grease:true -1, ca_file/ca_pem mutually exclusive -22, cert_file
+// without key_file -22, bad session base64 -22, verification failure
+// -100, dial failure -5. JA3/JA4 come from the ClientHello bytes
+// actually sent. ja3/ja3_string/ja4 outputs truncate with code 9 and
+// out_len always reports the full length.
+// Requires the gate script's loopback servers under /tmp/tlstest:
+//   127.0.0.1:55601  TLS echo, cert signed by test CA A (serial
+//                    0x12345678, CN=localhost, SAN localhost/127.0.0.1)
+//   127.0.0.1:55602  TLS echo, self-signed cert
+//   127.0.0.1:55604  STARTTLS echo (threaded), CA A cert
+//   127.0.0.1:55605  TLS echo with ALPN h2, CA A cert
+//   127.0.0.1:55607  TLS echo requiring a client cert chained to CA A
+// NOTE: shaped connection handles are raw pointers -- a second close
+// of a live handle is a use-after-free, not an error code, so only
+// close(0) is exercised on the invalid side. Buffer handles ARE
+// registry-backed and get the full double-free treatment.
+@import "sla_std/wrap/tls_client.sla"
+@import "sla_std/wrap/net.sla"
+@import "sla_std/wrap/os/fd.sla"
+@import "sla_std/wrap/fs.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn shaped_buf_contains(h: u64, lit: ptr, litn: u64) -> u32 {
+    let n: u64 = sla_std_tls_shaped_buffer_len(h);
+    if n < litn { return 0; };
+    let sb = TlsShapedBuffer { raw: h };
+    let v = sla_std_tls_shaped_buffer_data(&sb);
+    if v.len() != n { return 0; };
+    let last: u64 = n - litn;
+    let i: u64 = 0;
+    while i <= last {
+        let ok: u32 = 1;
+        let j: u64 = 0;
+        while j < litn {
+            if v[i + j] != SLA_BYTE_AT(lit, j) { ok = 0; };
+            j = j + 1;
+        }
+        if ok == 1 { return 1; };
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn arr_contains(bp: ptr, blen: u64, lit: ptr, litn: u64) -> u32 {
+    if blen < litn { return 0; };
+    let last: u64 = blen - litn;
+    let i: u64 = 0;
+    while i <= last {
+        let ok: u32 = 1;
+        let j: u64 = 0;
+        while j < litn {
+            if SLA_BYTE_AT(bp, i + j) != SLA_BYTE_AT(lit, j) { ok = 0; };
+            j = j + 1;
+        }
+        if ok == 1 { return 1; };
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn shaped_connect_lit(profile: ptr, plen: u64, host: ptr, hlen: u64, port: u32, code: i32) -> u64 {
+    let h: u64 = 0;
+    let rc: i32 = sla_std_tls_shaped_connect(host, hlen, port, profile, plen, &h);
+    if rc != 0 { panic(code + 1); };
+    if h == 0 { panic(code + 2); };
+    return h;
+}
+
+fn shaped_chrome_a(code: i32) -> u64 {
+    return shaped_connect_lit(STR_PTR("{\"preset\":\"chrome\",\"ca_file\":\"/tmp/tlstest/caA.pem\"}"), STR_LEN("{\"preset\":\"chrome\",\"ca_file\":\"/tmp/tlstest/caA.pem\"}"), STR_PTR("localhost"), STR_LEN("localhost"), 55601, code);
+}
+
+fn shaped_echo(h: u64, code: i32) {
+    let w: u64 = 0;
+    if sla_std_tls_shaped_write(h, STR_PTR("shaped-hello"), STR_LEN("shaped-hello"), &w) != 0 { panic(code + 1); };
+    if w != 12 { panic(code + 2); };
+    let buf = [0u8; 64];
+    let got: u64 = 0;
+    while got < 12 {
+        let chunk = [0u8; 64];
+        let n: u64 = 0;
+        if sla_std_tls_shaped_read(h, &chunk[0], 64, &n) != 0 { panic(code + 3); };
+        if n == 0 { panic(code + 4); };
+        let k: u64 = 0;
+        while k < n {
+            buf[got + k] = chunk[k];
+            k = k + 1;
+        }
+        got = got + n;
+    }
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let i: u64 = 0;
+    while i < 12 {
+        if SLA_BYTE_AT(bp, i) != SLA_BYTE_AT(STR_PTR("shaped-hello"), i) { panic(code + 5); };
+        i = i + 1;
+    }
+}
+
+// Connects with a {"ca_pem": "<pem file contents>"} profile (plus
+// ,"sni":"localhost" when sni_flag == 1). Returns the handle as i64 on
+// success, or the (negative) shaped_connect status on failure.
+fn try_pem_profile(pem_path: ptr, pem_plen: u64, host: ptr, hlen: u64, port: u32, sni_flag: u32) -> i64 {
+    let result: i64 = -999;
+    let r = sla_fs_read_file(pem_path, pem_plen, 8192);
+    match r {
+        Ok(b) => {
+            let v = sla_fs_read_buffer_data(&b);
+            let n: u64 = v.len();
+            if n == 0 { panic(973901); };
+            let arr = [0u8; 8192];
+            let pos: u64 = 0;
+            let pre: ptr = STR_PTR("{\"ca_pem\":\"");
+            let pren: u64 = STR_LEN("{\"ca_pem\":\"");
+            let k: u64 = 0;
+            while k < pren {
+                arr[pos] = SLA_BYTE_AT(pre, k);
+                pos = pos + 1;
+                k = k + 1;
+            }
+            let i: u64 = 0;
+            while i < n {
+                let byte: u8 = v[i];
+                if byte == 10 {
+                    arr[pos] = 92;
+                    pos = pos + 1;
+                    arr[pos] = 110;
+                    pos = pos + 1;
+                } else {
+                    arr[pos] = byte;
+                    pos = pos + 1;
+                };
+                i = i + 1;
+            }
+            if sla_fs_read_buffer_free(^b.raw) != 0 { panic(973902); };
+            if sni_flag == 1 {
+                let mid: ptr = STR_PTR("\",\"sni\":\"localhost\"}");
+                let midn: u64 = STR_LEN("\",\"sni\":\"localhost\"}");
+                let m: u64 = 0;
+                while m < midn {
+                    arr[pos] = SLA_BYTE_AT(mid, m);
+                    pos = pos + 1;
+                    m = m + 1;
+                }
+            } else {
+                let tail: ptr = STR_PTR("\"}");
+                let tailn: u64 = STR_LEN("\"}");
+                let m: u64 = 0;
+                while m < tailn {
+                    arr[pos] = SLA_BYTE_AT(tail, m);
+                    pos = pos + 1;
+                    m = m + 1;
+                }
+            };
+            let hh: u64 = 0;
+            let rc: i32 = sla_std_tls_shaped_connect(host, hlen, port, SLA_PTR_ADD(&arr[0], 0), pos, &hh);
+            if rc == 0 {
+                result = hh as i64;
+            } else {
+                result = rc as i64;
+            };
+        },
+        Err(e) => { panic(973903); },
+    };
+    return result;
+}
+
+// Connects with {"max_version":"1.2","ca_file":..., "session":<blob>}
+// where blob is the base64 text of a shaped session buffer handle.
+fn try_session_profile(blob_h: u64) -> i64 {
+    let result: i64 = -999;
+    let sb = TlsShapedBuffer { raw: blob_h };
+    let v = sla_std_tls_shaped_buffer_data(&sb);
+    let n: u64 = v.len();
+    if n == 0 { panic(973911); };
+    let arr = [0u8; 8192];
+    let pos: u64 = 0;
+    let pre: ptr = STR_PTR("{\"max_version\":\"1.2\",\"ca_file\":\"/tmp/tlstest/caA.pem\",\"session\":\"");
+    let pren: u64 = STR_LEN("{\"max_version\":\"1.2\",\"ca_file\":\"/tmp/tlstest/caA.pem\",\"session\":\"");
+    let k: u64 = 0;
+    while k < pren {
+        arr[pos] = SLA_BYTE_AT(pre, k);
+        pos = pos + 1;
+        k = k + 1;
+    }
+    let i: u64 = 0;
+    while i < n {
+        arr[pos] = v[i];
+        pos = pos + 1;
+        i = i + 1;
+    }
+    let tail: ptr = STR_PTR("\"}");
+    let tailn: u64 = STR_LEN("\"}");
+    let m: u64 = 0;
+    while m < tailn {
+        arr[pos] = SLA_BYTE_AT(tail, m);
+        pos = pos + 1;
+        m = m + 1;
+    }
+    let hh: u64 = 0;
+    let rc: i32 = sla_std_tls_shaped_connect(STR_PTR("localhost"), STR_LEN("localhost"), 55601, SLA_PTR_ADD(&arr[0], 0), pos, &hh);
+    if rc == 0 {
+        result = hh as i64;
+    } else {
+        result = rc as i64;
+    };
+    return result;
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_supported"() {
+    let flag: u64 = 0;
+    let rc: i32 = sla_std_tls_shaped_supported(&flag);
+    if rc != 0 { panic(973101); };
+    // OpenSSL is present on this host: the dlopen result must be 1.
+    if flag != 1 { panic(973102); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_connect"() {
+    // Profile validation rejects bad documents before any dial
+    // (port 1: a dial error here would mean validation ran too late).
+    let h: u64 = 0;
+    if sla_std_tls_shaped_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 1, STR_PTR("{\"bogus\":1}"), STR_LEN("{\"bogus\":1}"), &h) != -22 { panic(973201); };
+    // grease is honestly unsupported on the OpenSSL backend (-1).
+    if sla_std_tls_shaped_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 1, STR_PTR("{\"grease\":true}"), STR_LEN("{\"grease\":true}"), &h) != -1 { panic(973202); };
+    if sla_std_tls_shaped_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 1, STR_PTR("{\"preset\":\"netscape\"}"), STR_LEN("{\"preset\":\"netscape\"}"), &h) != -22 { panic(973203); };
+    if sla_std_tls_shaped_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 1, STR_PTR("{\"min_version\":\"1.9\"}"), STR_LEN("{\"min_version\":\"1.9\"}"), &h) != -22 { panic(973204); };
+    if sla_std_tls_shaped_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 1, STR_PTR("{oops"), STR_LEN("{oops"), &h) != -22 { panic(973205); };
+    if sla_std_tls_shaped_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 1, STR_PTR("{\"session\":\"!!!not-base64!!!\"}"), STR_LEN("{\"session\":\"!!!not-base64!!!\"}"), &h) != -22 { panic(973206); };
+    if sla_std_tls_shaped_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 1, STR_PTR("{\"ca_file\":\"/tmp/x.pem\",\"ca_pem\":\"y\"}"), STR_LEN("{\"ca_file\":\"/tmp/x.pem\",\"ca_pem\":\"y\"}"), &h) != -22 { panic(973207); };
+    if sla_std_tls_shaped_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 1, STR_PTR("{\"cert_file\":\"/tmp/x.pem\"}"), STR_LEN("{\"cert_file\":\"/tmp/x.pem\"}"), &h) != -22 { panic(973208); };
+    if h != 0 { panic(973209); };
+    // A valid empty profile against a dead port: dial error (-5).
+    if sla_std_tls_shaped_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 1, STR_PTR("{}"), STR_LEN("{}"), &h) != -5 { panic(973210); };
+    if h != 0 { panic(973211); };
+    // Port 0 is invalid.
+    if sla_std_tls_shaped_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 0, STR_PTR("{}"), STR_LEN("{}"), &h) != -22 { panic(973212); };
+    // A real chrome-preset connect against the CA A echo server.
+    let live: u64 = shaped_chrome_a(973220);
+    if sla_std_tls_shaped_close(live) != 0 { panic(973213); };
+}
+
+@test "extern tls_shaped connect verification paths"() {
+    // ca_pem pins trust, sni names the peer: dial by IP, verify as
+    // "localhost".
+    let r1: i64 = try_pem_profile(STR_PTR("/tmp/tlstest/caA.pem"), STR_LEN("/tmp/tlstest/caA.pem"), STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55601, 1);
+    if r1 <= 0 { panic(973231); };
+    if sla_std_tls_shaped_close(r1 as u64) != 0 { panic(973232); };
+    // Wrong CA in ca_pem: explicit verification failure (-100).
+    let r2: i64 = try_pem_profile(STR_PTR("/tmp/tlstest/caB.pem"), STR_LEN("/tmp/tlstest/caB.pem"), STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55601, 1);
+    if r2 != -100 { panic(973233); };
+    // Default profile (system store): the test-CA peer fails (-100).
+    let h3: u64 = 0;
+    if sla_std_tls_shaped_connect(STR_PTR("localhost"), STR_LEN("localhost"), 55601, STR_PTR("{}"), STR_LEN("{}"), &h3) != -100 { panic(973234); };
+    if h3 != 0 { panic(973235); };
+    // The explicitly named insecure switch connects to the
+    // self-signed peer.
+    let h4: u64 = shaped_connect_lit(STR_PTR("{\"insecure_skip_verify\":true}"), STR_LEN("{\"insecure_skip_verify\":true}"), STR_PTR("localhost"), STR_LEN("localhost"), 55602, 973240);
+    if sla_std_tls_shaped_close(h4) != 0 { panic(973236); };
+}
+
+@test "extern tls_shaped connect with client certificate"() {
+    // The 55607 server requires a client certificate chained to CA A.
+    let prof: ptr = STR_PTR("{\"ca_file\":\"/tmp/tlstest/caA.pem\",\"cert_file\":\"/tmp/tlstest/cli.pem\",\"key_file\":\"/tmp/tlstest/cli.key\"}");
+    let h: u64 = shaped_connect_lit(prof, STR_LEN("{\"ca_file\":\"/tmp/tlstest/caA.pem\",\"cert_file\":\"/tmp/tlstest/cli.pem\",\"key_file\":\"/tmp/tlstest/cli.key\"}"), STR_PTR("localhost"), STR_LEN("localhost"), 55607, 973250);
+    shaped_echo(h, 973260);
+    if sla_std_tls_shaped_close(h) != 0 { panic(973251); };
+    // Without a client certificate the server refuses service. In
+    // TLS 1.3 the refusal alert can land after the client-side
+    // handshake has already completed, so the loud failure is
+    // asserted at the first echo attempt: no byte may come back.
+    let h2: u64 = 0;
+    let rc: i32 = sla_std_tls_shaped_connect(STR_PTR("localhost"), STR_LEN("localhost"), 55607, STR_PTR("{\"ca_file\":\"/tmp/tlstest/caA.pem\"}"), STR_LEN("{\"ca_file\":\"/tmp/tlstest/caA.pem\"}"), &h2);
+    if rc == 0 {
+        let w: u64 = 0;
+        let wrc: i32 = sla_std_tls_shaped_write(h2, STR_PTR("z"), STR_LEN("z"), &w);
+        let echoed: u64 = 0;
+        if wrc == 0 {
+            let ch = [0u8; 8];
+            let nn: u64 = 0;
+            let rrc: i32 = sla_std_tls_shaped_read(h2, &ch[0], 8, &nn);
+            if rrc == 0 { echoed = nn; };
+        };
+        if echoed != 0 { panic(973252); };
+        if sla_std_tls_shaped_close(h2) != 0 { panic(973253); };
+    };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_write"() {
+    let h: u64 = shaped_chrome_a(973270);
+    let w: u64 = 0;
+    if sla_std_tls_shaped_write(h, STR_PTR("shaped-hello"), STR_LEN("shaped-hello"), &w) != 0 { panic(973271); };
+    if w != 12 { panic(973272); };
+    // Writing the null handle is invalid (-22), out_written zeroed.
+    let w0: u64 = 77;
+    if sla_std_tls_shaped_write(0, STR_PTR("x"), 1, &w0) != -22 { panic(973273); };
+    if w0 != 0 { panic(973274); };
+    if sla_std_tls_shaped_close(h) != 0 { panic(973275); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_read"() {
+    let h: u64 = shaped_chrome_a(973280);
+    shaped_echo(h, 973290);
+    // Reading the null handle is invalid (-22), out_read zeroed.
+    let n0: u64 = 77;
+    let chunk0 = [0u8; 8];
+    if sla_std_tls_shaped_read(0, &chunk0[0], 8, &n0) != -22 { panic(973281); };
+    if n0 != 0 { panic(973282); };
+    if sla_std_tls_shaped_close(h) != 0 { panic(973283); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_close"() {
+    // close(0) is a no-op success.
+    if sla_std_tls_shaped_close(0) != 0 { panic(973301); };
+    let h: u64 = shaped_chrome_a(973310);
+    if sla_std_tls_shaped_close(h) != 0 { panic(973302); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_negotiated_json"() {
+    let h: u64 = shaped_chrome_a(973320);
+    let j: u64 = 0;
+    if sla_std_tls_shaped_negotiated_json(h, &j) != 0 { panic(973321); };
+    if j == 0 { panic(973322); };
+    if shaped_buf_contains(j, STR_PTR("\"version\":\"TLSv1.3\""), STR_LEN("\"version\":\"TLSv1.3\"")) != 1 { panic(973323); };
+    if shaped_buf_contains(j, STR_PTR("\"alpn\":\"\""), STR_LEN("\"alpn\":\"\"")) != 1 { panic(973324); };
+    if shaped_buf_contains(j, STR_PTR("\"session_reused\":false"), STR_LEN("\"session_reused\":false")) != 1 { panic(973325); };
+    if sla_std_tls_shaped_buffer_free(^j) != 0 { panic(973326); };
+    // The null handle is invalid for negotiated_json.
+    let j0: u64 = 0;
+    if sla_std_tls_shaped_negotiated_json(0, &j0) != -22 { panic(973327); };
+    if sla_std_tls_shaped_close(h) != 0 { panic(973328); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_buffer_len"() {
+    let h: u64 = shaped_chrome_a(973330);
+    let j: u64 = 0;
+    if sla_std_tls_shaped_negotiated_json(h, &j) != 0 { panic(973331); };
+    if sla_std_tls_shaped_buffer_len(j) < 40 { panic(973332); };
+    if sla_std_tls_shaped_buffer_len(0) != 0 { panic(973333); };
+    if sla_std_tls_shaped_buffer_free(^j) != 0 { panic(973334); };
+    if sla_std_tls_shaped_close(h) != 0 { panic(973335); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_buffer_data"() {
+    let h: u64 = shaped_chrome_a(973340);
+    let j: u64 = 0;
+    if sla_std_tls_shaped_negotiated_json(h, &j) != 0 { panic(973341); };
+    if shaped_buf_contains(j, STR_PTR("\"cipher\":\"TLS_AES_"), STR_LEN("\"cipher\":\"TLS_AES_")) != 1 { panic(973342); };
+    if sla_std_tls_shaped_buffer_free(^j) != 0 { panic(973343); };
+    if sla_std_tls_shaped_close(h) != 0 { panic(973344); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_buffer_free"() {
+    let h: u64 = shaped_chrome_a(973350);
+    let j: u64 = 0;
+    if sla_std_tls_shaped_negotiated_json(h, &j) != 0 { panic(973351); };
+    let j2: u64 = j;
+    if sla_std_tls_shaped_buffer_free(^j) != 0 { panic(973352); };
+    // Registry-backed: the second free is invalid (-22).
+    if sla_std_tls_shaped_buffer_free(^j2) != -22 { panic(973353); };
+    let zh: u64 = 0;
+    if sla_std_tls_shaped_buffer_free(^zh) != 0 { panic(973354); };
+    if sla_std_tls_shaped_close(h) != 0 { panic(973355); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_hello_ja3_string"() {
+    let h: u64 = shaped_chrome_a(973360);
+    let buf = [0u8; 2048];
+    let n: u64 = 0;
+    if sla_std_tls_shaped_hello_ja3_string(h, &buf[0], 2048, &n) != 0 { panic(973361); };
+    if n < 20 { panic(973362); };
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    // JA3 string opens with the legacy version "771," and the TLS 1.3
+    // suites lead the cipher list.
+    if arr_contains(bp, 4, STR_PTR("771,"), STR_LEN("771,")) != 1 { panic(973363); };
+    if SLA_BYTE_AT(bp, 0) != 55 { panic(973364); };
+    if arr_contains(bp, n, STR_PTR("4865-4866-4867"), STR_LEN("4865-4866-4867")) != 1 { panic(973365); };
+    if sla_std_tls_shaped_close(h) != 0 { panic(973366); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_hello_ja3"() {
+    let h: u64 = shaped_chrome_a(973370);
+    let buf = [0u8; 64];
+    let n: u64 = 0;
+    if sla_std_tls_shaped_hello_ja3(h, &buf[0], 64, &n) != 0 { panic(973371); };
+    if n != 32 { panic(973372); };
+    // The hash is 32 lowercase hex characters.
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let i: u64 = 0;
+    while i < 32 {
+        let c: u8 = SLA_BYTE_AT(bp, i);
+        let isdig: u32 = 0;
+        if c >= 48 { if c <= 57 { isdig = 1; }; };
+        let ishex: u32 = 0;
+        if c >= 97 { if c <= 102 { ishex = 1; }; };
+        if isdig + ishex != 1 { panic(973373); };
+        i = i + 1;
+    }
+    // Truncation: cap 8 returns 9 and out_len stays the full 32.
+    let tn: u64 = 0;
+    if sla_std_tls_shaped_hello_ja3(h, &buf[0], 8, &tn) != 9 { panic(973374); };
+    if tn != 32 { panic(973375); };
+    // A zero cap is a pure length query and succeeds.
+    let qn: u64 = 0;
+    if sla_std_tls_shaped_hello_ja3(h, &buf[0], 0, &qn) != 0 { panic(973376); };
+    if qn != 32 { panic(973377); };
+    if sla_std_tls_shaped_close(h) != 0 { panic(973378); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_hello_ja4"() {
+    let h: u64 = shaped_chrome_a(973380);
+    let buf = [0u8; 128];
+    let n: u64 = 0;
+    if sla_std_tls_shaped_hello_ja4(h, &buf[0], 128, &n) != 0 { panic(973381); };
+    if n != 36 { panic(973382); };
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    // JA4 for a TLS 1.3 TCP connection opens with "t13d".
+    if arr_contains(bp, 4, STR_PTR("t13d"), STR_LEN("t13d")) != 1 { panic(973383); };
+    if SLA_BYTE_AT(bp, 0) != 116 { panic(973384); };
+    if sla_std_tls_shaped_close(h) != 0 { panic(973385); };
+}
+
+@test "extern tls_shaped alpn cipher and version shaping"() {
+    // Restricted suite order + ALPN: the server offers h2 only.
+    let p1: ptr = STR_PTR("{\"ca_file\":\"/tmp/tlstest/caA.pem\",\"ciphersuites\":\"TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256\",\"alpn\":[\"h2\"]}");
+    let h1: u64 = shaped_connect_lit(p1, STR_LEN("{\"ca_file\":\"/tmp/tlstest/caA.pem\",\"ciphersuites\":\"TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256\",\"alpn\":[\"h2\"]}"), STR_PTR("localhost"), STR_LEN("localhost"), 55605, 973390);
+    let j1: u64 = 0;
+    if sla_std_tls_shaped_negotiated_json(h1, &j1) != 0 { panic(973391); };
+    if shaped_buf_contains(j1, STR_PTR("\"cipher\":\"TLS_AES_256_GCM_SHA384\""), STR_LEN("\"cipher\":\"TLS_AES_256_GCM_SHA384\"")) != 1 { panic(973392); };
+    if shaped_buf_contains(j1, STR_PTR("\"alpn\":\"h2\""), STR_LEN("\"alpn\":\"h2\"")) != 1 { panic(973393); };
+    if sla_std_tls_shaped_buffer_free(^j1) != 0 { panic(973394); };
+    let s1 = [0u8; 2048];
+    let l1: u64 = 0;
+    if sla_std_tls_shaped_hello_ja3_string(h1, &s1[0], 2048, &l1) != 0 { panic(973395); };
+    let s1p: ptr = SLA_PTR_ADD(&s1[0], 0);
+    if arr_contains(s1p, l1, STR_PTR("4866-4865"), STR_LEN("4866-4865")) != 1 { panic(973396); };
+    if sla_std_tls_shaped_close(h1) != 0 { panic(973397); };
+    // Reversed suite order flips the JA3 cipher segment.
+    let p2: ptr = STR_PTR("{\"ca_file\":\"/tmp/tlstest/caA.pem\",\"ciphersuites\":\"TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384\",\"alpn\":[\"h2\"]}");
+    let h2: u64 = shaped_connect_lit(p2, STR_LEN("{\"ca_file\":\"/tmp/tlstest/caA.pem\",\"ciphersuites\":\"TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384\",\"alpn\":[\"h2\"]}"), STR_PTR("localhost"), STR_LEN("localhost"), 55605, 973400);
+    let s2 = [0u8; 2048];
+    let l2: u64 = 0;
+    if sla_std_tls_shaped_hello_ja3_string(h2, &s2[0], 2048, &l2) != 0 { panic(973401); };
+    let s2p: ptr = SLA_PTR_ADD(&s2[0], 0);
+    if arr_contains(s2p, l2, STR_PTR("4865-4866"), STR_LEN("4865-4866")) != 1 { panic(973402); };
+    // The two JA3 strings differ (order is part of the fingerprint).
+    let same: u32 = 1;
+    if l1 != l2 { same = 0; };
+    if same == 1 {
+        let i: u64 = 0;
+        while i < l1 {
+            if SLA_BYTE_AT(s1p, i) != SLA_BYTE_AT(s2p, i) { same = 0; };
+            i = i + 1;
+        }
+    };
+    if same == 1 { panic(973403); };
+    if sla_std_tls_shaped_close(h2) != 0 { panic(973404); };
+    // A version cap negotiates TLS 1.2 with an ECDHE suite.
+    let p3: ptr = STR_PTR("{\"preset\":\"chrome\",\"ca_file\":\"/tmp/tlstest/caA.pem\",\"max_version\":\"1.2\"}");
+    let h3: u64 = shaped_connect_lit(p3, STR_LEN("{\"preset\":\"chrome\",\"ca_file\":\"/tmp/tlstest/caA.pem\",\"max_version\":\"1.2\"}"), STR_PTR("localhost"), STR_LEN("localhost"), 55601, 973410);
+    let j3: u64 = 0;
+    if sla_std_tls_shaped_negotiated_json(h3, &j3) != 0 { panic(973411); };
+    if shaped_buf_contains(j3, STR_PTR("\"version\":\"TLSv1.2\""), STR_LEN("\"version\":\"TLSv1.2\"")) != 1 { panic(973412); };
+    if shaped_buf_contains(j3, STR_PTR("ECDHE"), STR_LEN("ECDHE")) != 1 { panic(973413); };
+    if sla_std_tls_shaped_buffer_free(^j3) != 0 { panic(973414); };
+    if sla_std_tls_shaped_close(h3) != 0 { panic(973415); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_session_blob"() {
+    // TLS 1.2: the session exists right after the handshake.
+    let p1: ptr = STR_PTR("{\"max_version\":\"1.2\",\"ca_file\":\"/tmp/tlstest/caA.pem\"}");
+    let h1: u64 = shaped_connect_lit(p1, STR_LEN("{\"max_version\":\"1.2\",\"ca_file\":\"/tmp/tlstest/caA.pem\"}"), STR_PTR("localhost"), STR_LEN("localhost"), 55601, 973420);
+    let blob: u64 = 0;
+    if sla_std_tls_shaped_session_blob(h1, &blob) != 0 { panic(973421); };
+    if blob == 0 { panic(973422); };
+    if sla_std_tls_shaped_buffer_len(blob) == 0 { panic(973423); };
+    if sla_std_tls_shaped_close(h1) != 0 { panic(973424); };
+    // Presenting the blob to the same server process resumes the
+    // session: negotiated_json reports session_reused:true.
+    let r2: i64 = try_session_profile(blob);
+    if r2 <= 0 { panic(973425); };
+    let h2: u64 = r2 as u64;
+    let j: u64 = 0;
+    if sla_std_tls_shaped_negotiated_json(h2, &j) != 0 { panic(973426); };
+    if shaped_buf_contains(j, STR_PTR("\"session_reused\":true"), STR_LEN("\"session_reused\":true")) != 1 { panic(973427); };
+    if sla_std_tls_shaped_buffer_free(^j) != 0 { panic(973428); };
+    if sla_std_tls_shaped_close(h2) != 0 { panic(973429); };
+    if sla_std_tls_shaped_buffer_free(^blob) != 0 { panic(973430); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_peer_cert_chain_json"() {
+    let h: u64 = shaped_chrome_a(973440);
+    let j: u64 = 0;
+    if sla_std_tls_shaped_peer_cert_chain_json(h, &j) != 0 { panic(973441); };
+    if j == 0 { panic(973442); };
+    if shaped_buf_contains(j, STR_PTR("\"common_name\":\"localhost\""), STR_LEN("\"common_name\":\"localhost\"")) != 1 { panic(973443); };
+    if shaped_buf_contains(j, STR_PTR("\"subject\":\"CN = localhost\""), STR_LEN("\"subject\":\"CN = localhost\"")) != 1 { panic(973444); };
+    // The fixture server cert carries the fixed serial 0x12345678.
+    if shaped_buf_contains(j, STR_PTR("\"serial_hex\":\"12345678\""), STR_LEN("\"serial_hex\":\"12345678\"")) != 1 { panic(973445); };
+    if shaped_buf_contains(j, STR_PTR("\"not_before\":"), STR_LEN("\"not_before\":")) != 1 { panic(973446); };
+    if shaped_buf_contains(j, STR_PTR("\"not_after\":"), STR_LEN("\"not_after\":")) != 1 { panic(973447); };
+    if shaped_buf_contains(j, STR_PTR("\"sha256_fingerprint\":\""), STR_LEN("\"sha256_fingerprint\":\"")) != 1 { panic(973448); };
+    if sla_std_tls_shaped_buffer_free(^j) != 0 { panic(973449); };
+    // The null handle is invalid.
+    let j0: u64 = 0;
+    if sla_std_tls_shaped_peer_cert_chain_json(0, &j0) != -22 { panic(973450); };
+    if sla_std_tls_shaped_close(h) != 0 { panic(973451); };
+}
+
+@test "extern tls_shaped sa_std_tls_shaped_start_tls"() {
+    // Negative: a negative fd is invalid.
+    let ox: u64 = 0;
+    if sla_std_tls_shaped_start_tls(-1, STR_PTR("localhost"), STR_LEN("localhost"), STR_PTR("{}"), STR_LEN("{}"), &ox) != -22 { panic(973461); };
+    if ox != 0 { panic(973462); };
+    // Plaintext connect + preamble, then upgrade with a profile.
+    let s: u64 = 0;
+    if sla_std_net_tcp_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55604, &s) != 0 { panic(973463); };
+    if s == 0 { panic(973464); };
+    let w: u64 = 0;
+    if sla_std_net_tcp_stream_write(s, STR_PTR("STARTTLS\n"), STR_LEN("STARTTLS\n"), &w) != 0 { panic(973465); };
+    if w != 9 { panic(973466); };
+    let fd64: u64 = 0;
+    if sla_std_fd_into_raw(s, &fd64) != 0 { panic(973467); };
+    let prof: ptr = STR_PTR("{\"ca_file\":\"/tmp/tlstest/caA.pem\"}");
+    let h: u64 = 0;
+    if sla_std_tls_shaped_start_tls(fd64 as i32, STR_PTR("localhost"), STR_LEN("localhost"), prof, STR_LEN("{\"ca_file\":\"/tmp/tlstest/caA.pem\"}"), &h) != 0 { panic(973468); };
+    if h == 0 { panic(973469); };
+    // Echo over the upgraded connection: "shaped-starttls-echo" (20).
+    let w2: u64 = 0;
+    if sla_std_tls_shaped_write(h, STR_PTR("shaped-starttls-echo"), STR_LEN("shaped-starttls-echo"), &w2) != 0 { panic(973470); };
+    if w2 != 20 { panic(973471); };
+    let buf = [0u8; 64];
+    let got: u64 = 0;
+    while got < 20 {
+        let chunk = [0u8; 64];
+        let n: u64 = 0;
+        if sla_std_tls_shaped_read(h, &chunk[0], 64, &n) != 0 { panic(973472); };
+        if n == 0 { panic(973473); };
+        let k: u64 = 0;
+        while k < n {
+            buf[got + k] = chunk[k];
+            k = k + 1;
+        }
+        got = got + n;
+    }
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let i: u64 = 0;
+    while i < 20 {
+        if SLA_BYTE_AT(bp, i) != SLA_BYTE_AT(STR_PTR("shaped-starttls-echo"), i) { panic(973474); };
+        i = i + 1;
+    }
+    if sla_std_tls_shaped_close(h) != 0 { panic(973475); };
+}

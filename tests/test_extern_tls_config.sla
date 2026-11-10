@@ -1,0 +1,276 @@
+// TLS extern carrier batch -- config family (9 names):
+// sa_std_tls_client_config_new, sa_std_tls_client_config_free,
+// sa_std_tls_client_config_set_server_name,
+// sa_std_tls_client_config_add_ca_file,
+// sa_std_tls_client_config_add_ca_memory,
+// sa_std_tls_client_config_set_insecure_no_verification,
+// sa_std_tls_client_config_set_verify_self_signed,
+// sa_std_tls_client_connect_config, sa_std_tls_client_start_tls.
+// Assertions per the tls_client.sai config contract: config 0 is the
+// default configuration; setters reject handle 0 with -22; memory CA
+// is validated at set time (-22 on unusable PEM); verify_self_signed
+// is mutually exclusive with custom CA anchors and with the insecure
+// switch, and insecure + server_name is contradictory -- all conflicts
+// fail loudly with -22 at connect time, never silently.
+// Requires the gate script's loopback servers under /tmp/tlstest:
+//   127.0.0.1:55601  TLS echo, cert signed by test CA A
+//   127.0.0.1:55602  TLS echo, self-signed cert (CN=localhost)
+//   127.0.0.1:55604  STARTTLS echo (plaintext "STARTTLS\n" preamble,
+//                    then TLS with the CA A cert), threaded
+// This file's process never calls the process-wide add_ca_file, so
+// connect_config with config 0 verifies against the bare OS store and
+// must fail with -100 against the test-CA peer.
+@import "sla_std/wrap/tls_client.sla"
+@import "sla_std/wrap/net.sla"
+@import "sla_std/wrap/os/fd.sla"
+@import "sla_std/wrap/fs.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn cfg_new() -> u64 {
+    let cfg: u64 = 0;
+    if sla_std_tls_client_config_new(&cfg) != 0 { panic(972901); };
+    if cfg == 0 { panic(972902); };
+    return cfg;
+}
+
+// Builds a config whose only trust anchor addition is the test CA A,
+// loaded from its PEM file through config_add_ca_memory.
+fn cfg_ca_memory_a() -> u64 {
+    let cfg: u64 = cfg_new();
+    let r = sla_fs_read_file(STR_PTR("/tmp/tlstest/caA.pem"), STR_LEN("/tmp/tlstest/caA.pem"), 8192);
+    match r {
+        Ok(b) => {
+            let v = sla_fs_read_buffer_data(&b);
+            let n: u64 = v.len();
+            if n == 0 { panic(972903); };
+            if n > 8192 { panic(972904); };
+            let arr = [0u8; 8192];
+            let i: u64 = 0;
+            while i < n {
+                arr[i] = v[i];
+                i = i + 1;
+            }
+            if sla_fs_read_buffer_free(^b.raw) != 0 { panic(972905); };
+            if sla_std_tls_client_config_add_ca_memory(cfg, SLA_PTR_ADD(&arr[0], 0), n) != 0 { panic(972906); };
+        },
+        Err(e) => { panic(972907); },
+    };
+    return cfg;
+}
+
+fn cfg_echo_roundtrip(h: u64, code: i32) {
+    let w: u64 = 0;
+    if sla_std_tls_client_write(h, STR_PTR("tls-config-ping"), STR_LEN("tls-config-ping"), &w) != 0 { panic(code + 1); };
+    if w != 15 { panic(code + 2); };
+    let buf = [0u8; 64];
+    let got: u64 = 0;
+    while got < 15 {
+        let chunk = [0u8; 64];
+        let n: u64 = 0;
+        if sla_std_tls_client_read(h, &chunk[0], 64, &n) != 0 { panic(code + 3); };
+        if n == 0 { panic(code + 4); };
+        let k: u64 = 0;
+        while k < n {
+            buf[got + k] = chunk[k];
+            k = k + 1;
+        }
+        got = got + n;
+    }
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let i: u64 = 0;
+    while i < 15 {
+        if SLA_BYTE_AT(bp, i) != SLA_BYTE_AT(STR_PTR("tls-config-ping"), i) { panic(code + 5); };
+        i = i + 1;
+    }
+}
+
+@test "extern tls_config sa_std_tls_client_config_new"() {
+    let cfg: u64 = 0;
+    if sla_std_tls_client_config_new(&cfg) != 0 { panic(972101); };
+    if cfg == 0 { panic(972102); };
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972103); };
+}
+
+@test "extern tls_config sa_std_tls_client_config_free"() {
+    // free(0) is a no-op success, matching close() conventions.
+    if sla_std_tls_client_config_free(0) != 0 { panic(972111); };
+    let cfg: u64 = cfg_new();
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972112); };
+}
+
+@test "extern tls_config sa_std_tls_client_config_set_server_name"() {
+    // Handle 0 is invalid for the setter.
+    if sla_std_tls_client_config_set_server_name(0, STR_PTR("x"), 1) != -22 { panic(972121); };
+    let cfg: u64 = cfg_new();
+    if sla_std_tls_client_config_set_server_name(cfg, STR_PTR("example.internal"), STR_LEN("example.internal")) != 0 { panic(972122); };
+    // An empty name clears the override back to the dial host.
+    if sla_std_tls_client_config_set_server_name(cfg, STR_PTR(""), 0) != 0 { panic(972123); };
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972124); };
+}
+
+@test "extern tls_config sa_std_tls_client_config_add_ca_file"() {
+    if sla_std_tls_client_config_add_ca_file(0, STR_PTR("/tmp/tlstest/caA.pem"), STR_LEN("/tmp/tlstest/caA.pem")) != -22 { panic(972131); };
+    let cfg: u64 = cfg_new();
+    // Relative CA paths are rejected at set time (bundle API contract).
+    if sla_std_tls_client_config_add_ca_file(cfg, STR_PTR("certs/ca.pem"), STR_LEN("certs/ca.pem")) != -22 { panic(972132); };
+    // A real absolute CA path is accepted at set time.
+    if sla_std_tls_client_config_add_ca_file(cfg, STR_PTR("/tmp/tlstest/caA.pem"), STR_LEN("/tmp/tlstest/caA.pem")) != 0 { panic(972133); };
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972134); };
+}
+
+@test "extern tls_config sa_std_tls_client_config_add_ca_memory"() {
+    if sla_std_tls_client_config_add_ca_memory(0, STR_PTR("x"), 1) != -22 { panic(972141); };
+    let cfg: u64 = cfg_new();
+    // Malformed PEM fails at set time, not silently at connect time.
+    if sla_std_tls_client_config_add_ca_memory(cfg, STR_PTR("this is not a pem file"), STR_LEN("this is not a pem file")) != -22 { panic(972142); };
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972143); };
+    // A real CA PEM is accepted eagerly (full exercise in the helper).
+    let cfg2: u64 = cfg_ca_memory_a();
+    if sla_std_tls_client_config_free(cfg2) != 0 { panic(972144); };
+}
+
+@test "extern tls_config sa_std_tls_client_config_set_insecure_no_verification"() {
+    if sla_std_tls_client_config_set_insecure_no_verification(0, 1) != -22 { panic(972151); };
+    let cfg: u64 = cfg_new();
+    if sla_std_tls_client_config_set_insecure_no_verification(cfg, 1) != 0 { panic(972152); };
+    if sla_std_tls_client_config_set_insecure_no_verification(cfg, 0) != 0 { panic(972153); };
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972154); };
+}
+
+@test "extern tls_config sa_std_tls_client_config_set_verify_self_signed"() {
+    if sla_std_tls_client_config_set_verify_self_signed(0, 1) != -22 { panic(972161); };
+    let cfg: u64 = cfg_new();
+    if sla_std_tls_client_config_set_verify_self_signed(cfg, 1) != 0 { panic(972162); };
+    if sla_std_tls_client_config_set_verify_self_signed(cfg, 0) != 0 { panic(972163); };
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972164); };
+}
+
+@test "extern tls_config sa_std_tls_client_connect_config"() {
+    // (1) Memory CA + server_name override: dial by IP, verify as
+    // "localhost" -- succeeds only because the config drives both the
+    // SNI and the verification name.
+    let cfg: u64 = cfg_ca_memory_a();
+    if sla_std_tls_client_config_set_server_name(cfg, STR_PTR("localhost"), STR_LEN("localhost")) != 0 { panic(972171); };
+    let h: u64 = 0;
+    if sla_std_tls_client_connect_config(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55601, cfg, &h) != 0 { panic(972172); };
+    if h == 0 { panic(972173); };
+    cfg_echo_roundtrip(h, 972180);
+    if sla_std_tls_client_close(h) != 0 { panic(972174); };
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972175); };
+    // (2) CA-file variant of the same config also connects by IP.
+    let cfg2: u64 = cfg_new();
+    if sla_std_tls_client_config_add_ca_file(cfg2, STR_PTR("/tmp/tlstest/caA.pem"), STR_LEN("/tmp/tlstest/caA.pem")) != 0 { panic(972176); };
+    if sla_std_tls_client_config_set_server_name(cfg2, STR_PTR("localhost"), STR_LEN("localhost")) != 0 { panic(972177); };
+    let h2: u64 = 0;
+    if sla_std_tls_client_connect_config(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55601, cfg2, &h2) != 0 { panic(972178); };
+    if h2 == 0 { panic(972179); };
+    if sla_std_tls_client_close(h2) != 0 { panic(972181); };
+    if sla_std_tls_client_config_free(cfg2) != 0 { panic(972182); };
+    // (3) Config 0 (default): the test-CA peer fails verification (-100).
+    let h3: u64 = 0;
+    if sla_std_tls_client_connect_config(STR_PTR("localhost"), STR_LEN("localhost"), 55601, 0, &h3) != -100 { panic(972183); };
+    if h3 != 0 { panic(972184); };
+    // (4) Port 0 is invalid before any network traffic.
+    let h4: u64 = 0;
+    if sla_std_tls_client_connect_config(STR_PTR("localhost"), STR_LEN("localhost"), 0, 0, &h4) != -22 { panic(972185); };
+    if h4 != 0 { panic(972186); };
+}
+
+@test "extern tls_config connect_config insecure and self_signed modes"() {
+    // Insecure switch alone connects to the unpinned self-signed peer.
+    let cfg: u64 = cfg_new();
+    if sla_std_tls_client_config_set_insecure_no_verification(cfg, 1) != 0 { panic(972191); };
+    let h: u64 = 0;
+    if sla_std_tls_client_connect_config(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55602, cfg, &h) != 0 { panic(972192); };
+    if h == 0 { panic(972193); };
+    cfg_echo_roundtrip(h, 972200);
+    if sla_std_tls_client_close(h) != 0 { panic(972194); };
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972195); };
+    // Self-signed mode (NOT a bypass) connects by name: the peer cert
+    // still passes the std cryptographic checks.
+    let cfg2: u64 = cfg_new();
+    if sla_std_tls_client_config_set_verify_self_signed(cfg2, 1) != 0 { panic(972196); };
+    let h2: u64 = 0;
+    if sla_std_tls_client_connect_config(STR_PTR("localhost"), STR_LEN("localhost"), 55602, cfg2, &h2) != 0 { panic(972197); };
+    if h2 == 0 { panic(972198); };
+    if sla_std_tls_client_close(h2) != 0 { panic(972199); };
+    if sla_std_tls_client_config_free(cfg2) != 0 { panic(972201); };
+}
+
+@test "extern tls_config connect_config conflicts are loud"() {
+    // Insecure + server_name is a contradiction (no_verification sends
+    // no SNI): INVALID_ARGUMENT at connect time, not a silent ignore.
+    let cfg: u64 = cfg_new();
+    if sla_std_tls_client_config_set_insecure_no_verification(cfg, 1) != 0 { panic(972211); };
+    if sla_std_tls_client_config_set_server_name(cfg, STR_PTR("localhost"), STR_LEN("localhost")) != 0 { panic(972212); };
+    let h: u64 = 0;
+    if sla_std_tls_client_connect_config(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55602, cfg, &h) != -22 { panic(972213); };
+    if h != 0 { panic(972214); };
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972215); };
+    // verify_self_signed + a custom CA anchor are mutually exclusive.
+    let cfg2: u64 = cfg_ca_memory_a();
+    if sla_std_tls_client_config_set_verify_self_signed(cfg2, 1) != 0 { panic(972216); };
+    let h2: u64 = 0;
+    if sla_std_tls_client_connect_config(STR_PTR("localhost"), STR_LEN("localhost"), 55601, cfg2, &h2) != -22 { panic(972217); };
+    if h2 != 0 { panic(972218); };
+    if sla_std_tls_client_config_free(cfg2) != 0 { panic(972219); };
+}
+
+@test "extern tls_config sa_std_tls_client_start_tls"() {
+    // Negative: a negative fd is invalid before anything else.
+    let ox: u64 = 0;
+    if sla_std_tls_client_start_tls(-1, STR_PTR("localhost"), STR_LEN("localhost"), 0, &ox) != -22 { panic(972221); };
+    if ox != 0 { panic(972222); };
+    // Plaintext connect + STARTTLS preamble, then upgrade in place.
+    let s: u64 = 0;
+    if sla_std_net_tcp_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55604, &s) != 0 { panic(972223); };
+    if s == 0 { panic(972224); };
+    let w: u64 = 0;
+    if sla_std_net_tcp_stream_write(s, STR_PTR("STARTTLS\n"), STR_LEN("STARTTLS\n"), &w) != 0 { panic(972225); };
+    if w != 9 { panic(972226); };
+    let fd64: u64 = 0;
+    if sla_std_fd_into_raw(s, &fd64) != 0 { panic(972227); };
+    let fd: i32 = fd64 as i32;
+    if fd < 0 { panic(972228); };
+    let cfg: u64 = cfg_ca_memory_a();
+    let h: u64 = 0;
+    if sla_std_tls_client_start_tls(fd, STR_PTR("localhost"), STR_LEN("localhost"), cfg, &h) != 0 { panic(972229); };
+    if h == 0 { panic(972230); };
+    // The upgraded connection echoes over TLS.
+    let w2: u64 = 0;
+    if sla_std_tls_client_write(h, STR_PTR("tls-starttls-ping"), STR_LEN("tls-starttls-ping"), &w2) != 0 { panic(972231); };
+    if w2 != 17 { panic(972232); };
+    let buf = [0u8; 64];
+    let got: u64 = 0;
+    while got < 17 {
+        let chunk = [0u8; 64];
+        let n: u64 = 0;
+        if sla_std_tls_client_read(h, &chunk[0], 64, &n) != 0 { panic(972233); };
+        if n == 0 { panic(972234); };
+        let k: u64 = 0;
+        while k < n {
+            buf[got + k] = chunk[k];
+            k = k + 1;
+        }
+        got = got + n;
+    }
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let i: u64 = 0;
+    while i < 17 {
+        if SLA_BYTE_AT(bp, i) != SLA_BYTE_AT(STR_PTR("tls-starttls-ping"), i) { panic(972235); };
+        i = i + 1;
+    }
+    if sla_std_tls_client_close(h) != 0 { panic(972236); };
+    if sla_std_tls_client_config_free(cfg) != 0 { panic(972237); };
+    // Negative with a valid fd: an empty host name is invalid (-22);
+    // the fd is not consumed on this path and is closed raw.
+    let s2: u64 = 0;
+    if sla_std_net_tcp_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55604, &s2) != 0 { panic(972238); };
+    let fd2_64: u64 = 0;
+    if sla_std_fd_into_raw(s2, &fd2_64) != 0 { panic(972239); };
+    let o2: u64 = 0;
+    if sla_std_tls_client_start_tls(fd2_64 as i32, STR_PTR(""), 0, 0, &o2) != -22 { panic(972240); };
+    if o2 != 0 { panic(972241); };
+    if sla_std_fd_close_raw(fd2_64 as i32) != 0 { panic(972242); };
+}

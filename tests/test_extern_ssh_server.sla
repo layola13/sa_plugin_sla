@@ -18,14 +18,15 @@
 // Pointer handles are not registry-validated by the impl, so only
 // null-handle (2) edges are exercised for close/accept, never bogus
 // or double closes.
-// KNOWN GAP (see RESULT.md): the auth_next publickey kind (2) cannot
-// be exercised against the real OpenSSH client on this assembly --
-// probe_ssh_pubkey{,2}.sla + the client's DEBUG3 trace show the
-// offered public key is default-rejected inside auth_next (legacy
-// key extraction path) and the client falls back to an empty
-// password attempt; the stdin round below therefore authenticates
-// the system client by password (kind 1) instead. The password kind
-// of auth_next is exercised by all three rounds.
+// The auth_next publickey kind (2) is exercised by the pubkey round
+// below against the real OpenSSH client (query state 0, then signed
+// state 1, key blob asserted by form). That round was impossible
+// before DEF-SSH-AUTHNEXT-PUBKEY was fixed in sci: the legacy key
+// extraction inside auth_next (publickey_to_string) returns NULL on
+// libssh 0.10, the offer was silently default-rejected, and the
+// client fell back to an empty password attempt. The stdin round
+// authenticates the system client by password (kind 1); the
+// password kind of auth_next is exercised by all three other rounds.
 @import "sla_std/wrap/ssh.sla"
 @import "sla_std/wrap/time.sla"
 @import "sla_std/wrap/process.sla"
@@ -212,6 +213,110 @@ fn ssh_srv_pw_read(bind_h: u64) -> i32 {
     return 0;
 }
 
+// Key-blob form check for an ed25519 publickey attempt: the wire
+// blob is 51 bytes -> 68 base64 chars, and the first 20 chars are
+// the base64 of the length-prefixed "ssh-ed25519" type string. The
+// concrete key is gate-generated, so assert the form, not the key.
+fn ssh_keyblob_form(h: u64) -> u32 {
+    let n: u64 = sla_std_ssh_buffer_len(h);
+    if n != 68 { return 0; };
+    let sb = SshBuffer { raw: h };
+    let v = sla_std_ssh_buffer_data(&sb);
+    if v.len() != 68 { return 0; };
+    let i: u64 = 0;
+    while i < 20 {
+        let b = SLA_BYTE_AT(STR_PTR("AAAAC3NzaC1lZDI1NTE5"), i);
+        if v[i] != b { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+// Server thread: publickey auth (user "root", gate userkey) from the
+// system ssh client, exec "cat", echo the client's stdin back. The
+// auth pump must surface the query attempt (kind 2, state 0) first
+// and the signed attempt (kind 2, state 1) second; any other kind
+// (above all a kind-1 password fallback) fails the round loudly.
+// Stage codes: -231 accept, -232 rounds exhausted, -233 auth_next,
+// -234 kind, -235 user, -236 key blob form, -237 query out of order,
+// -238 signed out of order, -239 buffer free, -240 auth_accept,
+// -241 channel_accept, -242/-243/-244 channel_exec, -245 cmd free,
+// -246 read rounds, -247 channel_read, -248 overlong stdin,
+// -249 stdin length, -250 stdin bytes, -251/-252 channel_write,
+// -253 send_exit, -254 channel_close, -255 session close.
+fn ssh_srv_pubkey(bind_h: u64) -> i32 {
+    let ss: u64 = 0;
+    if sla_std_ssh_server_accept((bind_h as ptr), &ss) != 0 { return -231; };
+    let sp: ptr = ss as ptr;
+    let seen: u64 = 0;
+    let rounds: u64 = 0;
+    while seen != 3 {
+        if rounds >= 4 { return srv_fail(sp, -232); };
+        rounds = rounds + 1;
+        let kind: u64 = 0;
+        let uh: u64 = 0;
+        let sh: u64 = 0;
+        let st: u64 = 0;
+        if sla_std_ssh_server_auth_next(sp, &kind, &uh, &sh, &st) != 0 { return srv_fail(sp, -233); };
+        if kind != 2 { return srv_fail(sp, -234); };
+        if ssh_buf_eq(uh, STR_PTR("root"), STR_LEN("root")) != 1 { return srv_fail(sp, -235); };
+        if ssh_keyblob_form(sh) != 1 { return srv_fail(sp, -236); };
+        if sla_std_ssh_buffer_free(^uh) != 0 { return srv_fail(sp, -239); };
+        if sla_std_ssh_buffer_free(^sh) != 0 { return srv_fail(sp, -239); };
+        if st == 0 {
+            if seen != 0 { return srv_fail(sp, -237); };
+            seen = 1;
+        } else {
+            if st != 1 { return srv_fail(sp, -238); };
+            if seen != 1 { return srv_fail(sp, -238); };
+            seen = 3;
+        };
+        if sla_std_ssh_server_auth_accept(sp) != 0 { return srv_fail(sp, -240); };
+    }
+    let ch: u64 = 0;
+    if sla_std_ssh_server_channel_accept(sp, &ch) != 0 { return srv_fail(sp, -241); };
+    let chp: ptr = ch as ptr;
+    let ck: u64 = 0;
+    let cmdh: u64 = 0;
+    if sla_std_ssh_server_channel_exec(sp, &ck, &cmdh) != 0 { return srv_fail_ch(sp, chp, -242); };
+    if ck != 1 { return srv_fail_ch(sp, chp, -243); };
+    if ssh_buf_eq(cmdh, STR_PTR("cat"), STR_LEN("cat")) != 1 { return srv_fail_ch(sp, chp, -244); };
+    if sla_std_ssh_buffer_free(^cmdh) != 0 { return srv_fail_ch(sp, chp, -245); };
+    let rbuf = [0u8; 64];
+    let rp: ptr = SLA_PTR_ADD(&rbuf[0], 0);
+    let tbuf = [0u8; 64];
+    let tp: ptr = SLA_PTR_ADD(&tbuf[0], 0);
+    let total: u64 = 0;
+    let reads: u64 = 0;
+    let eof: u64 = 0;
+    while eof == 0 {
+        if reads >= 8 { return srv_fail_ch(sp, chp, -246); };
+        reads = reads + 1;
+        let n: u64 = 0;
+        if sla_std_ssh_channel_read(chp, 0, &tbuf[0], 64, &n) != 0 { return srv_fail_ch(sp, chp, -247); };
+        if n == 0 { eof = 1; };
+        let j: u64 = 0;
+        while j < n {
+            let b = SLA_BYTE_AT(tp, j);
+            let off: u64 = total + j;
+            SLA_BYTE_PUT(rp, off, b);
+            j = j + 1;
+        }
+        total = total + n;
+        if total > 13 { return srv_fail_ch(sp, chp, -248); };
+    }
+    if total != 13 { return srv_fail_ch(sp, chp, -249); };
+    if ssh_raw_eq(rp, total, STR_PTR("stdin-data-42"), STR_LEN("stdin-data-42")) != 1 { return srv_fail_ch(sp, chp, -250); };
+    let wr: u64 = 0;
+    if sla_std_ssh_channel_write(chp, 0, rp, total, &wr) != 0 { return srv_fail_ch(sp, chp, -251); };
+    if wr != 13 { return srv_fail_ch(sp, chp, -252); };
+    let _slp: i32 = sla_time_sleep_ms(150);
+    if sla_std_ssh_channel_send_exit(chp, 0) != 0 { return srv_fail_ch(sp, chp, -253); };
+    if sla_std_ssh_channel_close(^chp) != 0 { return srv_fail(sp, -254); };
+    if sla_std_ssh_server_session_close(^sp) != 0 { return -255; };
+    return 0;
+}
+
 fn ssh_client_connect(port: u32, code_base: i32) -> u64 {
     let s: u64 = 0;
     if sla_std_ssh_client_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), port, &s) != 0 { panic(code_base); };
@@ -328,5 +433,41 @@ fn ssh_client_connect(port: u32, code_base: i32) -> u64 {
     if wout[0] != 0 { panic(98604); };
     let code: i32 = handle.join().unwrap();
     if code != 0 { panic(98605); };
+    ssh_bind_close(bh);
+}
+
+@test "extern ssh server pubkey round (system client)"() {
+    let bh: u64 = ssh_listen(55527);
+    let handle = thread::spawn(^|| ssh_srv_pubkey(bh));
+    // Drive the system ssh client with publickey-only auth (gate
+    // userkey): printf pipes "stdin-data-42" into `ssh ... cat`; the
+    // server thread asserts the two publickey attempts (query then
+    // signed), the exec request and the exact stdin bytes, echoes
+    // them back, so the client must exit 0 and cli_out_pk.txt must
+    // hold the echo.
+    let rec = [0u64; 6];
+    let x: u64 = 0;
+    PTR_ADDR(x, STR_PTR("sh"));
+    rec[0] = x;
+    rec[1] = 2;
+    let y: u64 = 0;
+    PTR_ADDR(y, STR_PTR("-c"));
+    rec[2] = y;
+    rec[3] = 2;
+    let z: u64 = 0;
+    PTR_ADDR(z, STR_PTR("printf stdin-data-42 | ssh -i /tmp/sshtest/userkey -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p 55527 root@127.0.0.1 cat > /tmp/sshtest/cli_out_pk.txt 2> /tmp/sshtest/cli_err_pk.txt"));
+    rec[4] = z;
+    rec[5] = STR_LEN("printf stdin-data-42 | ssh -i /tmp/sshtest/userkey -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p 55527 root@127.0.0.1 cat > /tmp/sshtest/cli_out_pk.txt 2> /tmp/sshtest/cli_err_pk.txt");
+    let cell = [0u64; 4];
+    let bp: ptr = PTR_BYTE_ADD(&rec, 0);
+    if sla_std_process_spawn(bp, 3, &cell[0]) != 0 { panic(98701); };
+    let ph: u64 = cell[0];
+    if ph == 0 { panic(98702); };
+    let wout = [0u64; 4];
+    if sla_std_process_wait(ph, &wout[0]) != 0 { panic(98703); };
+    sla_std_process_close(ph);
+    if wout[0] != 0 { panic(98704); };
+    let code: i32 = handle.join().unwrap();
+    if code != 0 { panic(98705); };
     ssh_bind_close(bh);
 }

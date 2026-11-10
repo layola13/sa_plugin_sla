@@ -1,0 +1,216 @@
+// MySQL extern carrier batch -- connection/session group (9 names):
+// sa_mysql_supported, sa_mysql_connect, sa_mysql_close, sa_mysql_ping,
+// sa_mysql_server_version, sa_mysql_connection_id, sa_mysql_errno,
+// sa_mysql_sqlstate, sa_mysql_error_message.
+// Substantive assertions over the generated thin wraps (sla_mysql_*).
+// Requires a live MariaDB test instance at 127.0.0.1:55434
+// (user satest / satestpw, database satestdb, mysql_native_password;
+// plus user edtest authenticated via the ed25519 plugin for the -104
+// path). Every test panics loudly when the server is unreachable
+// (no silent pass). Status codes per mysql_client.sai: 0 ok,
+// -1 unsupported, -5 I/O, -12 OOM, -22 invalid argument,
+// -101 server ERR packet, -102 protocol error, -103 caching_sha2
+// full auth refused, -104 unknown auth plugin.
+// Handle discipline (per .sai + impl): handles are raw pointers;
+// only the 0 handle is ever passed as an invalid handle, and no
+// handle is closed twice (double-close is a caller bug).
+@import "sla_std/wrap/mysql_client.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn my_conn() -> u64 {
+    let h: u64 = 0;
+    let rc: i32 = sla_mysql_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55434, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), &h);
+    if rc != 0 { panic(940001); };
+    if h == 0 { panic(940002); };
+    return h;
+}
+
+fn my_buf_eq(p: ptr, n: u64, lit: ptr, lit_len: u64) -> u32 {
+    if n != lit_len { return 0; };
+    let i: u64 = 0;
+    while i < lit_len {
+        let a = SLA_BYTE_AT(p, i);
+        let b = SLA_BYTE_AT(lit, i);
+        if a != b { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn my_buf_contains(hay: ptr, hay_len: u64, ndl: ptr, ndl_len: u64) -> u32 {
+    if ndl_len > hay_len { return 0; };
+    let last: u64 = hay_len - ndl_len;
+    let i: u64 = 0;
+    while i <= last {
+        let j: u64 = 0;
+        let ok: u32 = 1;
+        while j < ndl_len {
+            let k: u64 = i + j;
+            let a = SLA_BYTE_AT(hay, k);
+            let b = SLA_BYTE_AT(ndl, j);
+            if a != b { ok = 0; };
+            j = j + 1;
+        }
+        if ok == 1 { return 1; };
+        i = i + 1;
+    }
+    return 0;
+}
+
+@test "extern mysql sa_mysql_supported"() {
+    let cell: u64 = 0;
+    let rc: i32 = sla_mysql_supported(&cell);
+    if rc != 0 { panic(940101); };
+    if cell != 1 { panic(940102); };
+}
+
+@test "extern mysql sa_mysql_connect"() {
+    // Port 0: invalid argument, no handle.
+    let o1: u64 = 0;
+    let r1: i32 = sla_mysql_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 0, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), &o1);
+    if r1 != -22 { panic(940111); };
+    if o1 != 0 { panic(940112); };
+    // Port above 65535: invalid argument, no handle.
+    let o2: u64 = 0;
+    let r2: i32 = sla_mysql_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 65536, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), &o2);
+    if r2 != -22 { panic(940113); };
+    if o2 != 0 { panic(940114); };
+    // Empty host: invalid argument, no handle.
+    let o3: u64 = 0;
+    let r3: i32 = sla_mysql_connect(STR_PTR(""), 0, 55434, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), &o3);
+    if r3 != -22 { panic(940115); };
+    if o3 != 0 { panic(940116); };
+    // Unreachable port: I/O error (-5); the handle is still handed
+    // back (per .sai) so the caller can close it.
+    let o4: u64 = 0;
+    let r4: i32 = sla_mysql_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 59999, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), &o4);
+    if r4 != -5 { panic(940117); };
+    if o4 == 0 { panic(940118); };
+    if sla_mysql_close(o4) != 0 { panic(940119); };
+    // Two live connections get distinct nonzero handles.
+    let c1: u64 = my_conn();
+    let c2: u64 = my_conn();
+    if c1 == c2 { panic(940120); };
+    if sla_mysql_close(c1) != 0 { panic(940121); };
+    if sla_mysql_close(c2) != 0 { panic(940122); };
+    // Unknown database: server ERR packet (-101), errno 1044
+    // (MariaDB denies the initial database by privilege check --
+    // vendor client ground truth: ERROR 1044 (42000)), handle
+    // handed back for the error accessors + close.
+    let o5: u64 = 0;
+    let r5: i32 = sla_mysql_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55434, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("nosuchdb"), STR_LEN("nosuchdb"), &o5);
+    if r5 != -101 { panic(940125); };
+    if o5 == 0 { panic(940126); };
+    if sla_mysql_errno(o5) != 1044 { panic(940127); };
+    if sla_mysql_close(o5) != 0 { panic(940128); };
+}
+
+@test "extern mysql sa_mysql_connect auth plugin"() {
+    // edtest authenticates via the ed25519 plugin, which v1 does not
+    // implement: connect must refuse explicitly with -104 (never a
+    // silent fallback), and the handle is handed back for close.
+    let o: u64 = 0;
+    let rc: i32 = sla_mysql_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55434, STR_PTR("edtest"), STR_LEN("edtest"), STR_PTR("edpw"), STR_LEN("edpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), &o);
+    if rc != -104 { panic(940131); };
+    if o == 0 { panic(940132); };
+    if sla_mysql_close(o) != 0 { panic(940133); };
+}
+
+@test "extern mysql sa_mysql_close"() {
+    let h: u64 = my_conn();
+    if sla_mysql_close(h) != 0 { panic(940141); };
+    // Zero handle: invalid argument.
+    if sla_mysql_close(0) != -22 { panic(940142); };
+}
+
+@test "extern mysql sa_mysql_ping"() {
+    let h: u64 = my_conn();
+    if sla_mysql_ping(h) != 0 { panic(940151); };
+    if sla_mysql_ping(h) != 0 { panic(940152); };
+    if sla_mysql_ping(0) != -22 { panic(940153); };
+    if sla_mysql_close(h) != 0 { panic(940154); };
+}
+
+@test "extern mysql sa_mysql_server_version"() {
+    let h: u64 = my_conn();
+    let vp: u64 = 0;
+    let vl: u64 = 0;
+    if sla_mysql_server_version(h, &vp, &vl) != 0 { panic(940161); };
+    if vl < 10 { panic(940162); };
+    let p: ptr = vp as ptr;
+    if my_buf_contains(p, vl, STR_PTR("MariaDB"), STR_LEN("MariaDB")) != 1 { panic(940163); };
+    if my_buf_contains(p, vl, STR_PTR("10.11"), STR_LEN("10.11")) != 1 { panic(940164); };
+    let zp: u64 = 0;
+    let zl: u64 = 0;
+    if sla_mysql_server_version(0, &zp, &zl) != -22 { panic(940165); };
+    if sla_mysql_close(h) != 0 { panic(940166); };
+}
+
+@test "extern mysql sa_mysql_connection_id"() {
+    let c1: u64 = my_conn();
+    let c2: u64 = my_conn();
+    let id1: u32 = sla_mysql_connection_id(c1);
+    let id2: u32 = sla_mysql_connection_id(c2);
+    if id1 == 0 { panic(940171); };
+    if id2 == 0 { panic(940172); };
+    if id1 == id2 { panic(940173); };
+    if sla_mysql_connection_id(0) != 0 { panic(940174); };
+    if sla_mysql_close(c1) != 0 { panic(940175); };
+    if sla_mysql_close(c2) != 0 { panic(940176); };
+}
+
+@test "extern mysql sa_mysql_errno sqlstate error_message"() {
+    let h: u64 = my_conn();
+    // Fresh connection: errno 0, SQLSTATE "00000", empty message.
+    if sla_mysql_errno(h) != 0 { panic(940181); };
+    let sp: u64 = 0;
+    let sl: u64 = 0;
+    if sla_mysql_sqlstate(h, &sp, &sl) != 0 { panic(940182); };
+    if sl != 5 { panic(940183); };
+    let spp: ptr = sp as ptr;
+    if my_buf_eq(spp, sl, STR_PTR("00000"), STR_LEN("00000")) != 1 { panic(940184); };
+    let mp: u64 = 0;
+    let ml: u64 = 0;
+    if sla_mysql_error_message(h, &mp, &ml) != 0 { panic(940185); };
+    if ml != 0 { panic(940186); };
+    // Syntax error: -101 with the server error recorded verbatim.
+    let res: u64 = 0;
+    let qrc: i32 = sla_mysql_query(h, STR_PTR("SELEC 1"), STR_LEN("SELEC 1"), &res);
+    if qrc != -101 { panic(940187); };
+    if res != 0 { panic(940188); };
+    if sla_mysql_errno(h) != 1064 { panic(940189); };
+    if sla_mysql_sqlstate(h, &sp, &sl) != 0 { panic(940190); };
+    let spp2: ptr = sp as ptr;
+    if my_buf_eq(spp2, sl, STR_PTR("42000"), STR_LEN("42000")) != 1 { panic(940191); };
+    if sla_mysql_error_message(h, &mp, &ml) != 0 { panic(940192); };
+    if ml < 10 { panic(940193); };
+    let mpp: ptr = mp as ptr;
+    if my_buf_contains(mpp, ml, STR_PTR("SQL syntax"), STR_LEN("SQL syntax")) != 1 { panic(940194); };
+    // The connection survives a server error: ping still answers.
+    if sla_mysql_ping(h) != 0 { panic(940195); };
+    // Zero handle: invalid argument on both accessors.
+    let zp: u64 = 0;
+    let zl: u64 = 0;
+    if sla_mysql_sqlstate(0, &zp, &zl) != -22 { panic(940196); };
+    if sla_mysql_error_message(0, &zp, &zl) != -22 { panic(940197); };
+    if sla_mysql_close(h) != 0 { panic(940198); };
+    // Auth failure: the recorded error is readable on the failed
+    // connection handle (errno 1045, SQLSTATE 28000, Access denied).
+    let bad: u64 = 0;
+    let brc: i32 = sla_mysql_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55434, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("wrongpw"), STR_LEN("wrongpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), &bad);
+    if brc != -101 { panic(940201); };
+    if bad == 0 { panic(940202); };
+    if sla_mysql_errno(bad) != 1045 { panic(940203); };
+    let bp: u64 = 0;
+    let bl: u64 = 0;
+    if sla_mysql_sqlstate(bad, &bp, &bl) != 0 { panic(940204); };
+    let bpp: ptr = bp as ptr;
+    if my_buf_eq(bpp, bl, STR_PTR("28000"), STR_LEN("28000")) != 1 { panic(940205); };
+    let bm: u64 = 0;
+    let bml: u64 = 0;
+    if sla_mysql_error_message(bad, &bm, &bml) != 0 { panic(940206); };
+    let bmp: ptr = bm as ptr;
+    if my_buf_contains(bmp, bml, STR_PTR("Access denied"), STR_LEN("Access denied")) != 1 { panic(940207); };
+    if sla_mysql_close(bad) != 0 { panic(940208); };
+}

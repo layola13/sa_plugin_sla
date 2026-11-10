@@ -1,0 +1,220 @@
+// MySQL extern carrier batch -- query/result group (12 names):
+// sa_mysql_query, sa_mysql_result_free, sa_mysql_result_has_result_set,
+// sa_mysql_result_column_count, sa_mysql_result_column_name,
+// sa_mysql_result_column_type, sa_mysql_result_row_count,
+// sa_mysql_result_next, sa_mysql_result_value, sa_mysql_affected_rows,
+// sa_mysql_last_insert_id, sa_mysql_result_warnings.
+// Substantive assertions over the generated thin wraps (sla_mysql_*)
+// against a live MariaDB test instance at 127.0.0.1:55434
+// (user satest / satestpw, database satestdb). Values are read back
+// cell by cell in the server's own text rendering, per the .sai
+// value model. Status codes: 0 ok, -22 invalid argument,
+// -101 server ERR packet. Only the 0 handle is used as an invalid
+// handle; no result is freed twice.
+@import "sla_std/wrap/mysql_client.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn my_conn() -> u64 {
+    let h: u64 = 0;
+    let rc: i32 = sla_mysql_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55434, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), &h);
+    if rc != 0 { panic(940003); };
+    if h == 0 { panic(940004); };
+    return h;
+}
+
+fn my_exec(h: u64, sql: ptr, sql_len: u64, code: u64) -> u64 {
+    let res: u64 = 0;
+    let rc: i32 = sla_mysql_query(h, sql, sql_len, &res);
+    if rc != 0 { panic(code); };
+    if res == 0 { panic(code + 1); };
+    return res;
+}
+
+fn my_buf_eq(p: ptr, n: u64, lit: ptr, lit_len: u64) -> u32 {
+    if n != lit_len { return 0; };
+    let i: u64 = 0;
+    while i < lit_len {
+        let a = SLA_BYTE_AT(p, i);
+        let b = SLA_BYTE_AT(lit, i);
+        if a != b { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn my_col_name_eq(res: u64, idx: u64, lit: ptr, lit_len: u64, code: u64) {
+    let np: u64 = 0;
+    let nl: u64 = 0;
+    if sla_mysql_result_column_name(res, idx, &np, &nl) != 0 { panic(code); };
+    let p: ptr = np as ptr;
+    if my_buf_eq(p, nl, lit, lit_len) != 1 { panic(code + 1); };
+}
+
+fn my_val_eq(res: u64, row: u64, col: u64, lit: ptr, lit_len: u64, code: u64) {
+    let vp: u64 = 0;
+    let vl: u64 = 0;
+    let vn: u64 = 0;
+    if sla_mysql_result_value(res, row, col, &vp, &vl, &vn) != 0 { panic(code); };
+    if vn != 0 { panic(code + 1); };
+    let p: ptr = vp as ptr;
+    if my_buf_eq(p, vl, lit, lit_len) != 1 { panic(code + 2); };
+}
+
+@test "extern mysql sa_mysql_query result set"() {
+    let h: u64 = my_conn();
+    let r0: u64 = my_exec(h, STR_PTR("DROP TABLE IF EXISTS mq1"), STR_LEN("DROP TABLE IF EXISTS mq1"), 940221);
+    if sla_mysql_result_free(r0) != 0 { panic(940223); };
+    let r1: u64 = my_exec(h, STR_PTR("CREATE TABLE mq1 (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64), amount DOUBLE, d DATE, note TEXT, big BIGINT)"), STR_LEN("CREATE TABLE mq1 (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64), amount DOUBLE, d DATE, note TEXT, big BIGINT)"), 940224);
+    if sla_mysql_result_free(r1) != 0 { panic(940226); };
+    let ri1: u64 = my_exec(h, STR_PTR("INSERT INTO mq1 (name, amount, d, note, big) VALUES ('alice', 3.5, '2026-11-10', 'hello', 1234567890123)"), STR_LEN("INSERT INTO mq1 (name, amount, d, note, big) VALUES ('alice', 3.5, '2026-11-10', 'hello', 1234567890123)"), 940227);
+    if sla_mysql_result_has_result_set(ri1) != 0 { panic(940229); };
+    if sla_mysql_affected_rows(ri1) != 1 { panic(940230); };
+    if sla_mysql_last_insert_id(ri1) != 1 { panic(940231); };
+    if sla_mysql_result_free(ri1) != 0 { panic(940232); };
+    let ri2: u64 = my_exec(h, STR_PTR("INSERT INTO mq1 (name, amount, d, note, big) VALUES ('bob', 2.25, '2026-01-02', NULL, -99)"), STR_LEN("INSERT INTO mq1 (name, amount, d, note, big) VALUES ('bob', 2.25, '2026-01-02', NULL, -99)"), 940233);
+    if sla_mysql_last_insert_id(ri2) != 2 { panic(940235); };
+    if sla_mysql_result_free(ri2) != 0 { panic(940236); };
+    // The SELECT: full shape + value assertions.
+    let rs: u64 = my_exec(h, STR_PTR("SELECT id, name, amount, d, note, big FROM mq1 ORDER BY id"), STR_LEN("SELECT id, name, amount, d, note, big FROM mq1 ORDER BY id"), 940237);
+    if sla_mysql_result_has_result_set(rs) != 1 { panic(940239); };
+    if sla_mysql_result_column_count(rs) != 6 { panic(940240); };
+    if sla_mysql_result_row_count(rs) != 2 { panic(940241); };
+    if sla_mysql_result_warnings(rs) != 0 { panic(940242); };
+    my_col_name_eq(rs, 0, STR_PTR("id"), STR_LEN("id"), 940243);
+    my_col_name_eq(rs, 1, STR_PTR("name"), STR_LEN("name"), 940245);
+    my_col_name_eq(rs, 2, STR_PTR("amount"), STR_LEN("amount"), 940247);
+    my_col_name_eq(rs, 3, STR_PTR("d"), STR_LEN("d"), 940249);
+    my_col_name_eq(rs, 4, STR_PTR("note"), STR_LEN("note"), 940251);
+    my_col_name_eq(rs, 5, STR_PTR("big"), STR_LEN("big"), 940253);
+    // Column type codes (sa_std/mysql_client.sla SA_MYSQL_TYPE_*):
+    // INT=LONG 3, VARCHAR=VAR_STRING 253, DOUBLE 5, DATE 10,
+    // TEXT=BLOB 252, BIGINT=LONGLONG 8.
+    if sla_mysql_result_column_type(rs, 0) != 3 { panic(940255); };
+    if sla_mysql_result_column_type(rs, 1) != 253 { panic(940256); };
+    if sla_mysql_result_column_type(rs, 2) != 5 { panic(940257); };
+    if sla_mysql_result_column_type(rs, 3) != 10 { panic(940258); };
+    if sla_mysql_result_column_type(rs, 4) != 252 { panic(940259); };
+    if sla_mysql_result_column_type(rs, 5) != 8 { panic(940260); };
+    // Out-of-range column access.
+    let xp: u64 = 0;
+    let xl: u64 = 0;
+    if sla_mysql_result_column_name(rs, 6, &xp, &xl) != -22 { panic(940261); };
+    if sla_mysql_result_column_type(rs, 6) != 4294967295 { panic(940262); };
+    // Sequential cursor: rows 0, 1, then exhausted.
+    let row: u64 = 999;
+    if sla_mysql_result_next(rs, &row) != 1 { panic(940263); };
+    if row != 0 { panic(940264); };
+    if sla_mysql_result_next(rs, &row) != 1 { panic(940265); };
+    if row != 1 { panic(940266); };
+    if sla_mysql_result_next(rs, &row) != 0 { panic(940267); };
+    // Cell values, byte for byte.
+    my_val_eq(rs, 0, 0, STR_PTR("1"), STR_LEN("1"), 940268);
+    my_val_eq(rs, 0, 1, STR_PTR("alice"), STR_LEN("alice"), 940271);
+    my_val_eq(rs, 0, 2, STR_PTR("3.5"), STR_LEN("3.5"), 940274);
+    my_val_eq(rs, 0, 3, STR_PTR("2026-11-10"), STR_LEN("2026-11-10"), 940277);
+    my_val_eq(rs, 0, 4, STR_PTR("hello"), STR_LEN("hello"), 940280);
+    my_val_eq(rs, 0, 5, STR_PTR("1234567890123"), STR_LEN("1234567890123"), 940283);
+    my_val_eq(rs, 1, 0, STR_PTR("2"), STR_LEN("2"), 940286);
+    my_val_eq(rs, 1, 1, STR_PTR("bob"), STR_LEN("bob"), 940289);
+    my_val_eq(rs, 1, 2, STR_PTR("2.25"), STR_LEN("2.25"), 940292);
+    my_val_eq(rs, 1, 3, STR_PTR("2026-01-02"), STR_LEN("2026-01-02"), 940295);
+    // SQL NULL: is_null 1, length 0 (never an empty string).
+    let np: u64 = 0;
+    let nl: u64 = 0;
+    let nn: u64 = 0;
+    if sla_mysql_result_value(rs, 1, 4, &np, &nl, &nn) != 0 { panic(940298); };
+    if nn != 1 { panic(940299); };
+    if nl != 0 { panic(940300); };
+    my_val_eq(rs, 1, 5, STR_PTR("-99"), STR_LEN("-99"), 940301);
+    // Out-of-range row / column reads are invalid argument.
+    let zp: u64 = 0;
+    let zl: u64 = 0;
+    let zn: u64 = 0;
+    if sla_mysql_result_value(rs, 2, 0, &zp, &zl, &zn) != -22 { panic(940304); };
+    if sla_mysql_result_value(rs, 0, 6, &zp, &zl, &zn) != -22 { panic(940305); };
+    if sla_mysql_result_free(rs) != 0 { panic(940306); };
+    if sla_mysql_close(h) != 0 { panic(940307); };
+}
+
+@test "extern mysql sa_mysql_affected_rows last_insert_id"() {
+    let h: u64 = my_conn();
+    let r0: u64 = my_exec(h, STR_PTR("DROP TABLE IF EXISTS mq2"), STR_LEN("DROP TABLE IF EXISTS mq2"), 940311);
+    if sla_mysql_result_free(r0) != 0 { panic(940313); };
+    let r1: u64 = my_exec(h, STR_PTR("CREATE TABLE mq2 (id INT AUTO_INCREMENT PRIMARY KEY, v INT)"), STR_LEN("CREATE TABLE mq2 (id INT AUTO_INCREMENT PRIMARY KEY, v INT)"), 940314);
+    if sla_mysql_result_free(r1) != 0 { panic(940316); };
+    let i1: u64 = my_exec(h, STR_PTR("INSERT INTO mq2 (v) VALUES (10)"), STR_LEN("INSERT INTO mq2 (v) VALUES (10)"), 940317);
+    if sla_mysql_affected_rows(i1) != 1 { panic(940319); };
+    if sla_mysql_last_insert_id(i1) != 1 { panic(940320); };
+    if sla_mysql_result_free(i1) != 0 { panic(940321); };
+    let i2: u64 = my_exec(h, STR_PTR("INSERT INTO mq2 (v) VALUES (20)"), STR_LEN("INSERT INTO mq2 (v) VALUES (20)"), 940322);
+    if sla_mysql_affected_rows(i2) != 1 { panic(940324); };
+    if sla_mysql_last_insert_id(i2) != 2 { panic(940325); };
+    if sla_mysql_result_free(i2) != 0 { panic(940326); };
+    // UPDATE that changes one row: affected 1, no insert id.
+    let u1: u64 = my_exec(h, STR_PTR("UPDATE mq2 SET v = 99 WHERE id = 1"), STR_LEN("UPDATE mq2 SET v = 99 WHERE id = 1"), 940327);
+    if sla_mysql_affected_rows(u1) != 1 { panic(940329); };
+    if sla_mysql_last_insert_id(u1) != 0 { panic(940330); };
+    if sla_mysql_result_free(u1) != 0 { panic(940331); };
+    // UPDATE that matches nothing: affected 0.
+    let u2: u64 = my_exec(h, STR_PTR("UPDATE mq2 SET v = 1 WHERE id = 999"), STR_LEN("UPDATE mq2 SET v = 1 WHERE id = 999"), 940332);
+    if sla_mysql_affected_rows(u2) != 0 { panic(940334); };
+    if sla_mysql_result_free(u2) != 0 { panic(940335); };
+    // DELETE one row: affected 1.
+    let d1: u64 = my_exec(h, STR_PTR("DELETE FROM mq2 WHERE id = 2"), STR_LEN("DELETE FROM mq2 WHERE id = 2"), 940336);
+    if sla_mysql_affected_rows(d1) != 1 { panic(940338); };
+    if sla_mysql_result_free(d1) != 0 { panic(940339); };
+    // A SELECT result carries no affected-row count.
+    let s1: u64 = my_exec(h, STR_PTR("SELECT v FROM mq2"), STR_LEN("SELECT v FROM mq2"), 940340);
+    if sla_mysql_affected_rows(s1) != 0 { panic(940342); };
+    if sla_mysql_result_free(s1) != 0 { panic(940343); };
+    if sla_mysql_close(h) != 0 { panic(940344); };
+}
+
+@test "extern mysql sa_mysql_result_warnings"() {
+    let h: u64 = my_conn();
+    // Division by zero in a SELECT: NULL value + exactly one
+    // warning (1365) recorded on the result.
+    let rs: u64 = my_exec(h, STR_PTR("SELECT 1/0 AS z"), STR_LEN("SELECT 1/0 AS z"), 940351);
+    if sla_mysql_result_row_count(rs) != 1 { panic(940353); };
+    if sla_mysql_result_warnings(rs) != 1 { panic(940354); };
+    my_col_name_eq(rs, 0, STR_PTR("z"), STR_LEN("z"), 940355);
+    let vp: u64 = 0;
+    let vl: u64 = 0;
+    let vn: u64 = 0;
+    if sla_mysql_result_value(rs, 0, 0, &vp, &vl, &vn) != 0 { panic(940357); };
+    if vn != 1 { panic(940358); };
+    if sla_mysql_result_free(rs) != 0 { panic(940359); };
+    if sla_mysql_close(h) != 0 { panic(940360); };
+}
+
+@test "extern mysql sa_mysql_query errors"() {
+    let h: u64 = my_conn();
+    // Zero connection handle: invalid argument.
+    let r0: u64 = 0;
+    if sla_mysql_query(0, STR_PTR("SELECT 1"), STR_LEN("SELECT 1"), &r0) != -22 { panic(940371); };
+    // Empty SQL: invalid argument.
+    let r1: u64 = 0;
+    if sla_mysql_query(h, STR_PTR(""), 0, &r1) != -22 { panic(940372); };
+    // Server-side error: -101 and no result handle.
+    let r2: u64 = 0;
+    if sla_mysql_query(h, STR_PTR("SELEC 1"), STR_LEN("SELEC 1"), &r2) != -101 { panic(940373); };
+    if r2 != 0 { panic(940374); };
+    // Accessors on the 0 result: documented sentinels.
+    if sla_mysql_result_free(0) != -22 { panic(940375); };
+    if sla_mysql_result_has_result_set(0) != 0 { panic(940376); };
+    if sla_mysql_result_column_count(0) != 0 { panic(940377); };
+    if sla_mysql_result_row_count(0) != 0 { panic(940378); };
+    if sla_mysql_affected_rows(0) != 0 { panic(940379); };
+    if sla_mysql_last_insert_id(0) != 0 { panic(940380); };
+    if sla_mysql_result_warnings(0) != 0 { panic(940381); };
+    let cell: u64 = 0;
+    if sla_mysql_result_next(0, &cell) != -22 { panic(940382); };
+    let zp: u64 = 0;
+    let zl: u64 = 0;
+    let zn: u64 = 0;
+    if sla_mysql_result_column_name(0, 0, &zp, &zl) != -22 { panic(940383); };
+    if sla_mysql_result_column_type(0, 0) != 4294967295 { panic(940384); };
+    if sla_mysql_result_value(0, 0, 0, &zp, &zl, &zn) != -22 { panic(940385); };
+    if sla_mysql_close(h) != 0 { panic(940386); };
+}

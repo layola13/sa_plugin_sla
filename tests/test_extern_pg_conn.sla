@@ -1,0 +1,172 @@
+// PG extern carrier batch -- connection/session group (7 names):
+// sa_pg_connect, sa_pg_close, sa_pg_server_version, sa_pg_txn_status,
+// sa_pg_last_sqlstate, sa_pg_last_error, sa_pg_last_error_detail.
+// Substantive assertions over the generated thin wraps (sla_pg_*).
+// Requires a live PostgreSQL test instance at 127.0.0.1:55433
+// (user satest, database satestdb); every test panics loudly when the
+// server is unreachable (no silent pass). Status codes per postgres.sai:
+// 0 ok, 2 invalid handle, 3 not found, 9 truncated, 12 server error.
+@import "sla_std/wrap/postgres.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn pg_conn() -> u64 {
+    let h: u64 = 0;
+    let rc: i32 = sla_pg_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55433, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), 5000, 0, &h);
+    if rc != 0 { panic(95001); };
+    if h == 0 { panic(95002); };
+    return h;
+}
+
+fn pg_buf_starts(buf: ptr, lit: ptr, lit_len: u64) -> u32 {
+    let i: u64 = 0;
+    while i < lit_len {
+        let a = SLA_BYTE_AT(buf, i);
+        let b = SLA_BYTE_AT(lit, i);
+        if a != b { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn pg_buf_contains(hay: ptr, hay_len: u64, ndl: ptr, ndl_len: u64) -> u32 {
+    if ndl_len > hay_len { return 0; };
+    let last: u64 = hay_len - ndl_len;
+    let i: u64 = 0;
+    while i <= last {
+        let j: u64 = 0;
+        let ok: u32 = 1;
+        while j < ndl_len {
+            let k: u64 = i + j;
+            let a = SLA_BYTE_AT(hay, k);
+            let b = SLA_BYTE_AT(ndl, j);
+            if a != b { ok = 0; };
+            j = j + 1;
+        }
+        if ok == 1 { return 1; };
+        i = i + 1;
+    }
+    return 0;
+}
+
+@test "extern pg sa_pg_connect"() {
+    // Unreachable port: loud failure, no handle issued.
+    let bad: u64 = 0;
+    let brc: i32 = sla_pg_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 59999, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), 2000, 0, &bad);
+    if brc == 0 { panic(95501); };
+    if bad != 0 { panic(95502); };
+    // SSL requested in this version: unsupported (8), never downgraded.
+    let sh: u64 = 0;
+    let src: i32 = sla_pg_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55433, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), 2000, 1, &sh);
+    if src != 8 { panic(95503); };
+    if sh != 0 { panic(95504); };
+    // Two live connections get distinct nonzero handles.
+    let c1: u64 = pg_conn();
+    let c2: u64 = pg_conn();
+    if c1 == c2 { panic(95505); };
+    if sla_pg_close(c1) != 0 { panic(95506); };
+    if sla_pg_close(c2) != 0 { panic(95507); };
+}
+
+@test "extern pg sa_pg_close"() {
+    let h: u64 = pg_conn();
+    let rc1: i32 = sla_pg_close(h);
+    if rc1 != 0 { panic(95521); };
+    // Second close of the same handle: invalid handle (2).
+    let rc2: i32 = sla_pg_close(h);
+    if rc2 != 2 { panic(95522); };
+    // Bogus and zero handles are invalid too.
+    if sla_pg_close(42424242) != 2 { panic(95523); };
+    if sla_pg_close(0) != 2 { panic(95524); };
+}
+
+@test "extern pg sa_pg_server_version"() {
+    let h: u64 = pg_conn();
+    let buf = [0u8; 128];
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let vlen: u64 = 0;
+    if sla_pg_server_version(h, &buf[0], 128, &vlen) != 0 { panic(95531); };
+    if vlen < 5 { panic(95532); };
+    if pg_buf_starts(bp, STR_PTR("16."), STR_LEN("16.")) != 1 { panic(95533); };
+    // Caller-buffer model: cap too small returns 9, out_len stays full.
+    let tlen: u64 = 0;
+    let trc: i32 = sla_pg_server_version(h, &buf[0], 2, &tlen);
+    if trc != 9 { panic(95534); };
+    if tlen != vlen { panic(95535); };
+    if sla_pg_close(h) != 0 { panic(95536); };
+}
+
+@test "extern pg sa_pg_txn_status"() {
+    let h: u64 = pg_conn();
+    let st: u64 = 99;
+    if sla_pg_txn_status(h, &st) != 0 { panic(95541); };
+    if st != 0 { panic(95542); };
+    if sla_pg_exec(h, STR_PTR("BEGIN"), STR_LEN("BEGIN")) != 0 { panic(95543); };
+    if sla_pg_txn_status(h, &st) != 0 { panic(95544); };
+    if st != 1 { panic(95545); };
+    // Error inside an explicit transaction: status 2 (failed txn).
+    let erc: i32 = sla_pg_exec(h, STR_PTR("SELEC 1"), STR_LEN("SELEC 1"));
+    if erc != 12 { panic(95546); };
+    if sla_pg_txn_status(h, &st) != 0 { panic(95547); };
+    if st != 2 { panic(95548); };
+    if sla_pg_exec(h, STR_PTR("ROLLBACK"), STR_LEN("ROLLBACK")) != 0 { panic(95549); };
+    if sla_pg_txn_status(h, &st) != 0 { panic(95550); };
+    if st != 0 { panic(95551); };
+    if sla_pg_close(h) != 0 { panic(95552); };
+}
+
+@test "extern pg sa_pg_last_sqlstate"() {
+    let h: u64 = pg_conn();
+    // No error yet on a fresh connection: not found (3).
+    let sv: u64 = 0;
+    let rc0: i32 = sla_pg_last_sqlstate(h, &sv);
+    if rc0 != 3 { panic(95553); };
+    let erc: i32 = sla_pg_exec(h, STR_PTR("SELEC 1"), STR_LEN("SELEC 1"));
+    if erc != 12 { panic(95554); };
+    if sla_pg_last_sqlstate(h, &sv) != 0 { panic(95555); };
+    // SQLSTATE 42601 (syntax error), written as 5 raw bytes, no NUL.
+    if (sv & 255) != 52 { panic(95556); };
+    if ((sv >> 8) & 255) != 50 { panic(95557); };
+    if ((sv >> 16) & 255) != 54 { panic(95558); };
+    if ((sv >> 24) & 255) != 48 { panic(95559); };
+    if ((sv >> 32) & 255) != 49 { panic(95560); };
+    if sla_pg_close(h) != 0 { panic(95561); };
+}
+
+@test "extern pg sa_pg_last_error"() {
+    let h: u64 = pg_conn();
+    let buf = [0u8; 256];
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let elen: u64 = 0;
+    let rc0: i32 = sla_pg_last_error(h, &buf[0], 256, &elen);
+    if rc0 != 3 { panic(95562); };
+    let erc: i32 = sla_pg_exec(h, STR_PTR("SELEC 1"), STR_LEN("SELEC 1"));
+    if erc != 12 { panic(95563); };
+    if sla_pg_last_error(h, &buf[0], 256, &elen) != 0 { panic(95564); };
+    if elen < 10 { panic(95565); };
+    if pg_buf_contains(bp, elen, STR_PTR("syntax error"), STR_LEN("syntax error")) != 1 { panic(95566); };
+    // Truncation: cap too small returns 9, out_len stays full.
+    let tlen: u64 = 0;
+    let trc: i32 = sla_pg_last_error(h, &buf[0], 4, &tlen);
+    if trc != 9 { panic(95567); };
+    if tlen != elen { panic(95568); };
+    if sla_pg_close(h) != 0 { panic(95569); };
+}
+
+@test "extern pg sa_pg_last_error_detail"() {
+    let h: u64 = pg_conn();
+    let buf = [0u8; 256];
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let dlen: u64 = 0;
+    let rc0: i32 = sla_pg_last_error_detail(h, &buf[0], 256, &dlen);
+    if rc0 != 3 { panic(95571); };
+    if sla_pg_exec(h, STR_PTR("CREATE TEMP TABLE pgdet (id int8 PRIMARY KEY)"), STR_LEN("CREATE TEMP TABLE pgdet (id int8 PRIMARY KEY)")) != 0 { panic(95572); };
+    if sla_pg_exec(h, STR_PTR("INSERT INTO pgdet VALUES (1)"), STR_LEN("INSERT INTO pgdet VALUES (1)")) != 0 { panic(95573); };
+    // Unique violation (23505): DETAIL carries "Key (id)=(1) already exists.".
+    let erc: i32 = sla_pg_exec(h, STR_PTR("INSERT INTO pgdet VALUES (1)"), STR_LEN("INSERT INTO pgdet VALUES (1)"));
+    if erc != 12 { panic(95574); };
+    if sla_pg_last_error_detail(h, &buf[0], 256, &dlen) != 0 { panic(95575); };
+    if dlen == 0 { panic(95576); };
+    if pg_buf_contains(bp, dlen, STR_PTR("already exists"), STR_LEN("already exists")) != 1 { panic(95577); };
+    if sla_pg_close(h) != 0 { panic(95578); };
+}

@@ -1,0 +1,216 @@
+// PG extern carrier batch -- extended-query group (9 names):
+// sa_pg_prepare, sa_pg_stmt_param_count, sa_pg_stmt_free, sa_pg_bind_text,
+// sa_pg_bind_i64, sa_pg_bind_f64, sa_pg_bind_bool, sa_pg_bind_null,
+// sa_pg_execute.
+// Requires the live test instance at 127.0.0.1:55433 (see conn carrier).
+// Bind indexes are 1-based (postgres.sai contract).
+@import "sla_std/wrap/postgres.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn pg_conn() -> u64 {
+    let h: u64 = 0;
+    let rc: i32 = sla_pg_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55433, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), 5000, 0, &h);
+    if rc != 0 { panic(95001); };
+    if h == 0 { panic(95002); };
+    return h;
+}
+
+fn pg_buf_eq(buf: ptr, buf_len: u64, lit: ptr, lit_len: u64) -> u32 {
+    if buf_len != lit_len { return 0; };
+    let i: u64 = 0;
+    while i < lit_len {
+        let a = SLA_BYTE_AT(buf, i);
+        let b = SLA_BYTE_AT(lit, i);
+        if a != b { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn pg_stmt_table(h: u64) {
+    if sla_pg_exec(h, STR_PTR("CREATE TEMP TABLE pgs (id int8, name text, val float8, flag bool)"), STR_LEN("CREATE TEMP TABLE pgs (id int8, name text, val float8, flag bool)")) != 0 { panic(95005); };
+}
+
+// Prepares the standard INSERT statement against pgs; caller frees.
+fn pg_insert_stmt(h: u64) -> u64 {
+    let stmt: u64 = 0;
+    let rc: i32 = sla_pg_prepare(h, STR_PTR("INSERT INTO pgs VALUES ($1, $2, $3, $4)"), STR_LEN("INSERT INTO pgs VALUES ($1, $2, $3, $4)"), &stmt);
+    if rc != 0 { panic(95006); };
+    if stmt == 0 { panic(95007); };
+    return stmt;
+}
+
+@test "extern pg sa_pg_prepare"() {
+    let h: u64 = pg_conn();
+    pg_stmt_table(h);
+    // Bad SQL first: server error (12), no statement issued, and the
+    // connection stays usable afterwards.
+    let bad: u64 = 0;
+    let brc: i32 = sla_pg_prepare(h, STR_PTR("SELEC $1"), STR_LEN("SELEC $1"), &bad);
+    if brc != 12 { panic(95801); };
+    if bad != 0 { panic(95802); };
+    let s1: u64 = pg_insert_stmt(h);
+    let s2: u64 = 0;
+    if sla_pg_prepare(h, STR_PTR("SELECT $1::int8"), STR_LEN("SELECT $1::int8"), &s2) != 0 { panic(95803); };
+    if s2 == 0 { panic(95804); };
+    if s2 == s1 { panic(95805); };
+    if sla_pg_stmt_free(s1) != 0 { panic(95806); };
+    if sla_pg_stmt_free(s2) != 0 { panic(95807); };
+    if sla_pg_close(h) != 0 { panic(95808); };
+}
+
+@test "extern pg sa_pg_stmt_param_count"() {
+    let h: u64 = pg_conn();
+    pg_stmt_table(h);
+    let s1: u64 = pg_insert_stmt(h);
+    let cnt: u64 = 99;
+    if sla_pg_stmt_param_count(s1, &cnt) != 0 { panic(95821); };
+    if cnt != 4 { panic(95822); };
+    let s2: u64 = 0;
+    if sla_pg_prepare(h, STR_PTR("SELECT $1::int8, $2::text"), STR_LEN("SELECT $1::int8, $2::text"), &s2) != 0 { panic(95823); };
+    if sla_pg_stmt_param_count(s2, &cnt) != 0 { panic(95824); };
+    if cnt != 2 { panic(95825); };
+    let s3: u64 = 0;
+    if sla_pg_prepare(h, STR_PTR("SELECT 1"), STR_LEN("SELECT 1"), &s3) != 0 { panic(95826); };
+    if sla_pg_stmt_param_count(s3, &cnt) != 0 { panic(95827); };
+    if cnt != 0 { panic(95828); };
+    if sla_pg_stmt_free(s1) != 0 { panic(95829); };
+    if sla_pg_stmt_free(s2) != 0 { panic(95830); };
+    if sla_pg_stmt_free(s3) != 0 { panic(95831); };
+    if sla_pg_close(h) != 0 { panic(95832); };
+}
+
+@test "extern pg sa_pg_stmt_free"() {
+    let h: u64 = pg_conn();
+    pg_stmt_table(h);
+    let stmt: u64 = pg_insert_stmt(h);
+    let rc1: i32 = sla_pg_stmt_free(stmt);
+    if rc1 != 0 { panic(95833); };
+    // Second free of the same statement: invalid handle (2).
+    let rc2: i32 = sla_pg_stmt_free(stmt);
+    if rc2 != 2 { panic(95834); };
+    if sla_pg_stmt_free(42424242) != 2 { panic(95835); };
+    if sla_pg_close(h) != 0 { panic(95836); };
+}
+
+@test "extern pg sa_pg_bind_text"() {
+    let h: u64 = pg_conn();
+    pg_stmt_table(h);
+    let stmt: u64 = pg_insert_stmt(h);
+    if sla_pg_bind_i64(stmt, 1, 7) != 0 { panic(95841); };
+    if sla_pg_bind_text(stmt, 2, STR_PTR("carol"), STR_LEN("carol")) != 0 { panic(95842); };
+    if sla_pg_bind_f64(stmt, 3, 2.5) != 0 { panic(95843); };
+    if sla_pg_bind_bool(stmt, 4, 1) != 0 { panic(95844); };
+    if sla_pg_execute(h, stmt) != 0 { panic(95845); };
+    if sla_pg_exec(h, STR_PTR("SELECT name FROM pgs WHERE id = 7"), STR_LEN("SELECT name FROM pgs WHERE id = 7")) != 0 { panic(95846); };
+    let buf = [0u8; 64];
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let clen: u64 = 0;
+    if sla_pg_cell_copy(h, 0, 0, &buf[0], 64, &clen) != 0 { panic(95847); };
+    if pg_buf_eq(bp, clen, STR_PTR("carol"), STR_LEN("carol")) != 1 { panic(95848); };
+    if sla_pg_stmt_free(stmt) != 0 { panic(95849); };
+    if sla_pg_close(h) != 0 { panic(95850); };
+}
+
+@test "extern pg sa_pg_bind_i64"() {
+    let h: u64 = pg_conn();
+    pg_stmt_table(h);
+    let stmt: u64 = pg_insert_stmt(h);
+    if sla_pg_bind_i64(stmt, 1, 1234567890123) != 0 { panic(95851); };
+    if sla_pg_bind_text(stmt, 2, STR_PTR("dave"), STR_LEN("dave")) != 0 { panic(95852); };
+    if sla_pg_bind_f64(stmt, 3, 1.5) != 0 { panic(95853); };
+    if sla_pg_bind_bool(stmt, 4, 0) != 0 { panic(95854); };
+    if sla_pg_execute(h, stmt) != 0 { panic(95855); };
+    if sla_pg_exec(h, STR_PTR("SELECT id FROM pgs WHERE name = 'dave'"), STR_LEN("SELECT id FROM pgs WHERE name = 'dave'")) != 0 { panic(95856); };
+    let v: u64 = 0;
+    if sla_pg_cell_i64(h, 0, 0, &v) != 0 { panic(95857); };
+    if v != 1234567890123 { panic(95858); };
+    if sla_pg_stmt_free(stmt) != 0 { panic(95859); };
+    if sla_pg_close(h) != 0 { panic(95860); };
+}
+
+@test "extern pg sa_pg_bind_f64"() {
+    let h: u64 = pg_conn();
+    pg_stmt_table(h);
+    let stmt: u64 = pg_insert_stmt(h);
+    if sla_pg_bind_i64(stmt, 1, 11) != 0 { panic(95861); };
+    if sla_pg_bind_text(stmt, 2, STR_PTR("fred"), STR_LEN("fred")) != 0 { panic(95862); };
+    if sla_pg_bind_f64(stmt, 3, 0.5) != 0 { panic(95863); };
+    if sla_pg_bind_bool(stmt, 4, 1) != 0 { panic(95864); };
+    if sla_pg_execute(h, stmt) != 0 { panic(95865); };
+    if sla_pg_exec(h, STR_PTR("SELECT val FROM pgs WHERE id = 11"), STR_LEN("SELECT val FROM pgs WHERE id = 11")) != 0 { panic(95866); };
+    let bits: u64 = 0;
+    if sla_pg_cell_f64(h, 0, 0, &bits) != 0 { panic(95867); };
+    // IEEE-754 bit pattern of 0.5, carried in the wrap's u64 out slot.
+    if bits != 4602678819172646912 { panic(95868); };
+    if sla_pg_stmt_free(stmt) != 0 { panic(95869); };
+    if sla_pg_close(h) != 0 { panic(95870); };
+}
+
+@test "extern pg sa_pg_bind_bool"() {
+    let h: u64 = pg_conn();
+    pg_stmt_table(h);
+    let stmt: u64 = pg_insert_stmt(h);
+    if sla_pg_bind_i64(stmt, 1, 21) != 0 { panic(95871); };
+    if sla_pg_bind_text(stmt, 2, STR_PTR("gina"), STR_LEN("gina")) != 0 { panic(95872); };
+    if sla_pg_bind_f64(stmt, 3, 1.5) != 0 { panic(95873); };
+    if sla_pg_bind_bool(stmt, 4, 1) != 0 { panic(95874); };
+    if sla_pg_execute(h, stmt) != 0 { panic(95875); };
+    if sla_pg_bind_i64(stmt, 1, 22) != 0 { panic(95876); };
+    if sla_pg_bind_bool(stmt, 4, 0) != 0 { panic(95877); };
+    if sla_pg_execute(h, stmt) != 0 { panic(95878); };
+    if sla_pg_exec(h, STR_PTR("SELECT flag FROM pgs ORDER BY id"), STR_LEN("SELECT flag FROM pgs ORDER BY id")) != 0 { panic(95879); };
+    let b: u64 = 99;
+    if sla_pg_cell_bool(h, 0, 0, &b) != 0 { panic(95880); };
+    if b != 1 { panic(95881); };
+    if sla_pg_cell_bool(h, 1, 0, &b) != 0 { panic(95882); };
+    if b != 0 { panic(95883); };
+    if sla_pg_stmt_free(stmt) != 0 { panic(95884); };
+    if sla_pg_close(h) != 0 { panic(95885); };
+}
+
+@test "extern pg sa_pg_bind_null"() {
+    let h: u64 = pg_conn();
+    pg_stmt_table(h);
+    let stmt: u64 = pg_insert_stmt(h);
+    if sla_pg_bind_i64(stmt, 1, 31) != 0 { panic(95886); };
+    if sla_pg_bind_null(stmt, 2) != 0 { panic(95887); };
+    if sla_pg_bind_f64(stmt, 3, 1.5) != 0 { panic(95888); };
+    if sla_pg_bind_bool(stmt, 4, 1) != 0 { panic(95889); };
+    if sla_pg_execute(h, stmt) != 0 { panic(95890); };
+    if sla_pg_exec(h, STR_PTR("SELECT name FROM pgs WHERE id = 31"), STR_LEN("SELECT name FROM pgs WHERE id = 31")) != 0 { panic(95891); };
+    let isn: u64 = 0;
+    if sla_pg_cell_is_null(h, 0, 0, &isn) != 0 { panic(95892); };
+    if isn != 1 { panic(95893); };
+    if sla_pg_stmt_free(stmt) != 0 { panic(95894); };
+    if sla_pg_close(h) != 0 { panic(95895); };
+}
+
+@test "extern pg sa_pg_execute"() {
+    let h: u64 = pg_conn();
+    pg_stmt_table(h);
+    let stmt: u64 = pg_insert_stmt(h);
+    if sla_pg_bind_i64(stmt, 1, 8) != 0 { panic(95896); };
+    if sla_pg_bind_text(stmt, 2, STR_PTR("hank"), STR_LEN("hank")) != 0 { panic(95897); };
+    if sla_pg_bind_f64(stmt, 3, 3.5) != 0 { panic(95898); };
+    if sla_pg_bind_bool(stmt, 4, 1) != 0 { panic(95899); };
+    if sla_pg_execute(h, stmt) != 0 { panic(95900); };
+    let n: u64 = 0;
+    if sla_pg_rows_affected(h, &n) != 0 { panic(95901); };
+    if n != 1 { panic(95902); };
+    // Rebind the key and execute again on the same statement.
+    if sla_pg_bind_i64(stmt, 1, 9) != 0 { panic(95903); };
+    if sla_pg_execute(h, stmt) != 0 { panic(95904); };
+    if sla_pg_exec(h, STR_PTR("SELECT id FROM pgs ORDER BY id"), STR_LEN("SELECT id FROM pgs ORDER BY id")) != 0 { panic(95905); };
+    let rows: u64 = 0;
+    if sla_pg_result_rows(h, &rows) != 0 { panic(95906); };
+    if rows != 2 { panic(95907); };
+    let v: u64 = 0;
+    if sla_pg_cell_i64(h, 0, 0, &v) != 0 { panic(95908); };
+    if v != 8 { panic(95909); };
+    if sla_pg_cell_i64(h, 1, 0, &v) != 0 { panic(95910); };
+    if v != 9 { panic(95911); };
+    if sla_pg_stmt_free(stmt) != 0 { panic(95912); };
+    if sla_pg_close(h) != 0 { panic(95913); };
+}

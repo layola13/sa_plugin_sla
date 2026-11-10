@@ -1,0 +1,222 @@
+// PG extern carrier batch -- simple-query + result-access group (12 names):
+// sa_pg_exec, sa_pg_result_rows, sa_pg_result_cols, sa_pg_col_name,
+// sa_pg_col_type_oid, sa_pg_cell_is_null, sa_pg_cell_len, sa_pg_cell_copy,
+// sa_pg_cell_i64, sa_pg_cell_f64, sa_pg_cell_bool, sa_pg_rows_affected.
+// Requires the live test instance at 127.0.0.1:55433 (see conn carrier).
+// Column type OIDs per postgres.sai: bool 16, int8 20, text 25, float8 701.
+@import "sla_std/wrap/postgres.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn pg_conn() -> u64 {
+    let h: u64 = 0;
+    let rc: i32 = sla_pg_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55433, STR_PTR("satest"), STR_LEN("satest"), STR_PTR("satestpw"), STR_LEN("satestpw"), STR_PTR("satestdb"), STR_LEN("satestdb"), 5000, 0, &h);
+    if rc != 0 { panic(95001); };
+    if h == 0 { panic(95002); };
+    return h;
+}
+
+fn pg_buf_eq(buf: ptr, buf_len: u64, lit: ptr, lit_len: u64) -> u32 {
+    if buf_len != lit_len { return 0; };
+    let i: u64 = 0;
+    while i < lit_len {
+        let a = SLA_BYTE_AT(buf, i);
+        let b = SLA_BYTE_AT(lit, i);
+        if a != b { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+// Fresh per-connection temp table with the standard 3-row fixture:
+// (1,'alice',3.5,true), (2,'bob',2.25,false), (3,NULL,-0.5,true).
+fn pg_fixture(h: u64) {
+    if sla_pg_exec(h, STR_PTR("CREATE TEMP TABLE pgt (id int8, name text, val float8, flag bool)"), STR_LEN("CREATE TEMP TABLE pgt (id int8, name text, val float8, flag bool)")) != 0 { panic(95003); };
+    if sla_pg_exec(h, STR_PTR("INSERT INTO pgt VALUES (1, 'alice', 3.5, true), (2, 'bob', 2.25, false), (3, NULL, -0.5, true)"), STR_LEN("INSERT INTO pgt VALUES (1, 'alice', 3.5, true), (2, 'bob', 2.25, false), (3, NULL, -0.5, true)")) != 0 { panic(95004); };
+}
+
+@test "extern pg sa_pg_exec"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    // DDL + DML + SELECT all run through the simple protocol.
+    if sla_pg_exec(h, STR_PTR("UPDATE pgt SET val = 9.5 WHERE id = 2"), STR_LEN("UPDATE pgt SET val = 9.5 WHERE id = 2")) != 0 { panic(95601); };
+    // Multi-statement SQL keeps the last result (postgres.sai contract).
+    if sla_pg_exec(h, STR_PTR("SELECT 1; SELECT 2"), STR_LEN("SELECT 1; SELECT 2")) != 0 { panic(95602); };
+    let rows: u64 = 99;
+    if sla_pg_result_rows(h, &rows) != 0 { panic(95603); };
+    if rows != 1 { panic(95604); };
+    let v: u64 = 0;
+    if sla_pg_cell_i64(h, 0, 0, &v) != 0 { panic(95605); };
+    if v != 2 { panic(95606); };
+    // Server-side error surfaces as 12, never swallowed.
+    let erc: i32 = sla_pg_exec(h, STR_PTR("SELECT * FROM pg_no_such_table"), STR_LEN("SELECT * FROM pg_no_such_table"));
+    if erc != 12 { panic(95607); };
+    if sla_pg_close(h) != 0 { panic(95608); };
+}
+
+@test "extern pg sa_pg_result_rows"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    if sla_pg_exec(h, STR_PTR("SELECT id FROM pgt ORDER BY id"), STR_LEN("SELECT id FROM pgt ORDER BY id")) != 0 { panic(95621); };
+    let rows: u64 = 0;
+    if sla_pg_result_rows(h, &rows) != 0 { panic(95622); };
+    if rows != 3 { panic(95623); };
+    if sla_pg_exec(h, STR_PTR("SELECT id FROM pgt WHERE id > 100"), STR_LEN("SELECT id FROM pgt WHERE id > 100")) != 0 { panic(95624); };
+    if sla_pg_result_rows(h, &rows) != 0 { panic(95625); };
+    if rows != 0 { panic(95626); };
+    if sla_pg_close(h) != 0 { panic(95627); };
+}
+
+@test "extern pg sa_pg_result_cols"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    if sla_pg_exec(h, STR_PTR("SELECT id, name, val, flag FROM pgt"), STR_LEN("SELECT id, name, val, flag FROM pgt")) != 0 { panic(95631); };
+    let cols: u64 = 0;
+    if sla_pg_result_cols(h, &cols) != 0 { panic(95632); };
+    if cols != 4 { panic(95633); };
+    if sla_pg_exec(h, STR_PTR("SELECT 1"), STR_LEN("SELECT 1")) != 0 { panic(95634); };
+    if sla_pg_result_cols(h, &cols) != 0 { panic(95635); };
+    if cols != 1 { panic(95636); };
+    if sla_pg_close(h) != 0 { panic(95637); };
+}
+
+@test "extern pg sa_pg_col_name"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    if sla_pg_exec(h, STR_PTR("SELECT id AS ident, name FROM pgt"), STR_LEN("SELECT id AS ident, name FROM pgt")) != 0 { panic(95641); };
+    let buf = [0u8; 64];
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let nlen: u64 = 0;
+    if sla_pg_col_name(h, 0, &buf[0], 64, &nlen) != 0 { panic(95642); };
+    if pg_buf_eq(bp, nlen, STR_PTR("ident"), STR_LEN("ident")) != 1 { panic(95643); };
+    if sla_pg_col_name(h, 1, &buf[0], 64, &nlen) != 0 { panic(95644); };
+    if pg_buf_eq(bp, nlen, STR_PTR("name"), STR_LEN("name")) != 1 { panic(95645); };
+    // Truncation: cap 2 on "ident" returns 9 with the full length kept.
+    let tlen: u64 = 0;
+    let trc: i32 = sla_pg_col_name(h, 0, &buf[0], 2, &tlen);
+    if trc != 9 { panic(95646); };
+    if tlen != 5 { panic(95647); };
+    if sla_pg_close(h) != 0 { panic(95648); };
+}
+
+@test "extern pg sa_pg_col_type_oid"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    if sla_pg_exec(h, STR_PTR("SELECT id, name, val, flag FROM pgt"), STR_LEN("SELECT id, name, val, flag FROM pgt")) != 0 { panic(95651); };
+    let oid: u64 = 0;
+    if sla_pg_col_type_oid(h, 0, &oid) != 0 { panic(95652); };
+    if oid != 20 { panic(95653); };
+    if sla_pg_col_type_oid(h, 1, &oid) != 0 { panic(95654); };
+    if oid != 25 { panic(95655); };
+    if sla_pg_col_type_oid(h, 2, &oid) != 0 { panic(95656); };
+    if oid != 701 { panic(95657); };
+    if sla_pg_col_type_oid(h, 3, &oid) != 0 { panic(95658); };
+    if oid != 16 { panic(95659); };
+    if sla_pg_close(h) != 0 { panic(95660); };
+}
+
+@test "extern pg sa_pg_cell_is_null"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    if sla_pg_exec(h, STR_PTR("SELECT name FROM pgt ORDER BY id"), STR_LEN("SELECT name FROM pgt ORDER BY id")) != 0 { panic(95661); };
+    let isn: u64 = 99;
+    if sla_pg_cell_is_null(h, 0, 0, &isn) != 0 { panic(95662); };
+    if isn != 0 { panic(95663); };
+    if sla_pg_cell_is_null(h, 2, 0, &isn) != 0 { panic(95664); };
+    if isn != 1 { panic(95665); };
+    if sla_pg_close(h) != 0 { panic(95666); };
+}
+
+@test "extern pg sa_pg_cell_len"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    if sla_pg_exec(h, STR_PTR("SELECT name, val FROM pgt WHERE id = 1"), STR_LEN("SELECT name, val FROM pgt WHERE id = 1")) != 0 { panic(95671); };
+    let ln: u64 = 0;
+    if sla_pg_cell_len(h, 0, 0, &ln) != 0 { panic(95672); };
+    if ln != 5 { panic(95673); };
+    // float8 text form of 3.5 is "3.5": 3 bytes.
+    if sla_pg_cell_len(h, 0, 1, &ln) != 0 { panic(95674); };
+    if ln != 3 { panic(95675); };
+    if sla_pg_close(h) != 0 { panic(95676); };
+}
+
+@test "extern pg sa_pg_cell_copy"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    if sla_pg_exec(h, STR_PTR("SELECT name FROM pgt WHERE id = 1"), STR_LEN("SELECT name FROM pgt WHERE id = 1")) != 0 { panic(95681); };
+    let buf = [0u8; 64];
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let clen: u64 = 0;
+    if sla_pg_cell_copy(h, 0, 0, &buf[0], 64, &clen) != 0 { panic(95682); };
+    if pg_buf_eq(bp, clen, STR_PTR("alice"), STR_LEN("alice")) != 1 { panic(95683); };
+    // Truncation: cap 3 on "alice" returns 9, full length kept.
+    let tlen: u64 = 0;
+    let trc: i32 = sla_pg_cell_copy(h, 0, 0, &buf[0], 3, &tlen);
+    if trc != 9 { panic(95684); };
+    if tlen != 5 { panic(95685); };
+    if sla_pg_close(h) != 0 { panic(95686); };
+}
+
+@test "extern pg sa_pg_cell_i64"() {
+    let h: u64 = pg_conn();
+    if sla_pg_exec(h, STR_PTR("CREATE TEMP TABLE pgn (n int8)"), STR_LEN("CREATE TEMP TABLE pgn (n int8)")) != 0 { panic(95691); };
+    if sla_pg_exec(h, STR_PTR("INSERT INTO pgn VALUES (-7), (42)"), STR_LEN("INSERT INTO pgn VALUES (-7), (42)")) != 0 { panic(95692); };
+    if sla_pg_exec(h, STR_PTR("SELECT n FROM pgn ORDER BY n"), STR_LEN("SELECT n FROM pgn ORDER BY n")) != 0 { panic(95693); };
+    let v: u64 = 0;
+    if sla_pg_cell_i64(h, 0, 0, &v) != 0 { panic(95694); };
+    // -7 in two's complement: v + 7 wraps to 0.
+    if v + 7 != 0 { panic(95695); };
+    if sla_pg_cell_i64(h, 1, 0, &v) != 0 { panic(95696); };
+    if v != 42 { panic(95697); };
+    if sla_pg_close(h) != 0 { panic(95698); };
+}
+
+@test "extern pg sa_pg_cell_f64"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    if sla_pg_exec(h, STR_PTR("SELECT val FROM pgt WHERE id = 1"), STR_LEN("SELECT val FROM pgt WHERE id = 1")) != 0 { panic(95701); };
+    let bits: u64 = 0;
+    if sla_pg_cell_f64(h, 0, 0, &bits) != 0 { panic(95702); };
+    // The generated wrap types the out slot as u64: it carries the exact
+    // IEEE-754 bit pattern of 3.5 (decimal value below).
+    if bits != 4615063718147915776 { panic(95703); };
+    if sla_pg_close(h) != 0 { panic(95704); };
+}
+
+@test "extern pg sa_pg_cell_bool"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    if sla_pg_exec(h, STR_PTR("SELECT flag FROM pgt ORDER BY id"), STR_LEN("SELECT flag FROM pgt ORDER BY id")) != 0 { panic(95711); };
+    let b: u64 = 99;
+    if sla_pg_cell_bool(h, 0, 0, &b) != 0 { panic(95712); };
+    if b != 1 { panic(95713); };
+    if sla_pg_cell_bool(h, 1, 0, &b) != 0 { panic(95714); };
+    if b != 0 { panic(95715); };
+    if sla_pg_close(h) != 0 { panic(95716); };
+}
+
+@test "extern pg sa_pg_rows_affected"() {
+    let h: u64 = pg_conn();
+    pg_fixture(h);
+    let n: u64 = 99;
+    // INSERT of the fixture touched 3 rows; the fixture's own final
+    // statement is that INSERT, so re-run a dedicated 2-row INSERT.
+    if sla_pg_exec(h, STR_PTR("INSERT INTO pgt VALUES (4, 'dan', 1.5, true), (5, 'eve', 2.5, false)"), STR_LEN("INSERT INTO pgt VALUES (4, 'dan', 1.5, true), (5, 'eve', 2.5, false)")) != 0 { panic(95721); };
+    if sla_pg_rows_affected(h, &n) != 0 { panic(95722); };
+    if n != 2 { panic(95723); };
+    if sla_pg_exec(h, STR_PTR("UPDATE pgt SET flag = false WHERE id = 1"), STR_LEN("UPDATE pgt SET flag = false WHERE id = 1")) != 0 { panic(95724); };
+    if sla_pg_rows_affected(h, &n) != 0 { panic(95725); };
+    if n != 1 { panic(95726); };
+    if sla_pg_exec(h, STR_PTR("UPDATE pgt SET flag = false WHERE id > 100"), STR_LEN("UPDATE pgt SET flag = false WHERE id > 100")) != 0 { panic(95727); };
+    if sla_pg_rows_affected(h, &n) != 0 { panic(95728); };
+    if n != 0 { panic(95729); };
+    // SELECT tags carry the row count too.
+    if sla_pg_exec(h, STR_PTR("SELECT id FROM pgt"), STR_LEN("SELECT id FROM pgt")) != 0 { panic(95730); };
+    if sla_pg_rows_affected(h, &n) != 0 { panic(95731); };
+    if n != 5 { panic(95732); };
+    // A tag without a count (CREATE TABLE) reports not found (3).
+    if sla_pg_exec(h, STR_PTR("CREATE TEMP TABLE pgx (a int8)"), STR_LEN("CREATE TEMP TABLE pgx (a int8)")) != 0 { panic(95733); };
+    let rc: i32 = sla_pg_rows_affected(h, &n);
+    if rc != 3 { panic(95734); };
+    if sla_pg_close(h) != 0 { panic(95735); };
+}

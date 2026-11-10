@@ -1,0 +1,123 @@
+// extern FINAL batch -- tls_server group (8 names):
+// sa_std_tls_server_ctx_set_alpn,
+// sa_std_tls_server_ctx_set_version_bounds,
+// sa_std_tls_server_ctx_require_client_cert,
+// sa_std_tls_server_accept, sa_std_tls_server_ctx_free,
+// sa_std_tls_server_buffer_data, sa_std_tls_server_buffer_len,
+// sa_std_tls_server_buffer_free.
+// The accepted stream's OS fd comes from the std net registry via
+// sa_std_fd_into_raw (os/fd.sai). Certificates live in
+// /tmp/fincert2 (batch fixtures: a local CA plus a CN=localhost
+// server certificate; see the batch setup commands in RESULT).
+// The client side is the already-cleared tls_client stack.
+@import "sla_std/wrap/tls_server.sla"
+@import "sla_std/wrap/tls_client.sla"
+@import "sla_std/wrap/net.sla"
+@import "sla_std/wrap/task.sla"
+@import "sa_std/os/fd.sai"
+@import "sa_std/task.sai"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/globals.sai"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+
+
+fn fin_tlsg(name: ptr, name_len: u64) -> u64 {
+    let v: u64 = 0;
+    let rc: i32 = sa_global_u64_get(name, name_len, &v);
+    if rc != 0 { return 0; };
+    return v;
+}
+
+fn fin_tls_put(name: ptr, name_len: u64, delta: u64) {
+    let dummy: u64 = 0;
+    let rc: i32 = sa_global_u64_add(name, name_len, delta, &dummy);
+}
+
+// Server worker: arg0/arg1 pack (listener, ctx) via globals set by
+// the test body (fin.tls.l / fin.tls.c). Accepts one connection,
+// echoes one message, records the negotiated-json handle and the
+// accept rc in globals.
+fn fin_tls_server_worker(a0: u64, a1: u64) -> i32 {
+    let l: u64 = fin_tlsg(STR_PTR("fin.tls.l"), STR_LEN("fin.tls.l"));
+    let ctx: u64 = fin_tlsg(STR_PTR("fin.tls.c"), STR_LEN("fin.tls.c"));
+    let s = sla_net_tcp_listener_accept(l);
+    match s {
+        Ok(sv) => {
+            let cell = [0i32; 1];
+            if sa_std_fd_into_raw(sv, &cell[0]) != 0 { fin_tls_put(STR_PTR("fin.tls.arc"), STR_LEN("fin.tls.arc"), 9000); return 0; };
+            let ssl: u64 = 0;
+            let arc: i32 = sla_std_tls_server_accept(ctx, cell[0], &ssl);
+            fin_tls_put(STR_PTR("fin.tls.arc"), STR_LEN("fin.tls.arc"), (arc + 1000) as u64);
+            if arc != 0 { return 0; };
+            let jh: u64 = 0;
+            if sla_std_tls_server_negotiated_json(ssl, &jh) == 0 {
+                fin_tls_put(STR_PTR("fin.tls.jh"), STR_LEN("fin.tls.jh"), jh);
+            };
+            let buf = [0u8; 64];
+            let n: u64 = 0;
+            if sla_std_tls_server_read(ssl, &buf[0], 64, &n) != 0 { return 0; };
+            if n == 0 { return 0; };
+            let w: u64 = 0;
+            let bp: ptr = PTR_BYTE_ADD(&buf, 0);
+            if sla_std_tls_server_write(ssl, bp, n, &w) != 0 { return 0; };
+            let crc: i32 = sla_std_tls_server_close(ssl);
+            return 0;
+        },
+        Err(e) => {
+            fin_tls_put(STR_PTR("fin.tls.arc"), STR_LEN("fin.tls.arc"), 8000);
+            return 0;
+        },
+    };
+    return 0;
+}
+
+@test "extern final tls_server accept echo"() {
+    let rl = sla_net_tcp_listener_bind(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 61482);
+    let l: u64 = 0;
+    match rl {
+        Ok(h) => { l = h; },
+        Err(e) => { panic(956001); },
+    };
+    if l == 0 { panic(956001); };
+    let ctx: u64 = 0;
+    if sla_std_tls_server_ctx_create(STR_PTR("/tmp/fincert2/srv.pem"), STR_LEN("/tmp/fincert2/srv.pem"), STR_PTR("/tmp/fincert2/srvkey.pem"), STR_LEN("/tmp/fincert2/srvkey.pem"), &ctx) != 0 { panic(956002); };
+    if ctx == 0 { panic(956003); };
+    if sla_std_tls_server_ctx_set_alpn(ctx, STR_PTR("[\"fin1\"]"), STR_LEN("[\"fin1\"]")) != 0 { panic(956004); };
+    if sla_std_tls_server_ctx_set_version_bounds(ctx, 2, 3) != 0 { panic(956005); };
+    fin_tls_put(STR_PTR("fin.tls.l"), STR_LEN("fin.tls.l"), l);
+    fin_tls_put(STR_PTR("fin.tls.c"), STR_LEN("fin.tls.c"), ctx);
+    let th: u64 = 0;
+    if sa_task_spawn(fin_tls_server_worker, 0, &th) != 0 { panic(956006); };
+    if sla_std_tls_client_add_ca_file(STR_PTR("/tmp/fincert2/ca.pem"), STR_LEN("/tmp/fincert2/ca.pem")) != 0 { panic(956007); };
+    let c: u64 = 0;
+    if sla_std_tls_client_connect(STR_PTR("localhost"), STR_LEN("localhost"), 61482, &c) != 0 { panic(956008); };
+    if c == 0 { panic(956009); };
+    let w: u64 = 0;
+    if sla_std_tls_client_write(c, STR_PTR("fin-tls"), STR_LEN("fin-tls"), &w) != 0 { panic(956010); };
+    if w != 7 { panic(956011); };
+    let buf = [0u8; 64];
+    let n: u64 = 0;
+    if sla_std_tls_client_read(c, &buf[0], 64, &n) != 0 { panic(956012); };
+    if n != 7 { panic(956013); };
+    if SLA_BYTE_AT(&buf[0], 0) != 102 { panic(956014); };
+    if SLA_BYTE_AT(&buf[0], 6) != 115 { panic(956015); };
+    if sla_std_tls_client_close(c) != 0 { panic(956016); };
+    if sla_task_join(th) != 0 { panic(956017); };
+    if fin_tlsg(STR_PTR("fin.tls.arc"), STR_LEN("fin.tls.arc")) != 1000 { panic(956018); };
+    let jh: u64 = fin_tlsg(STR_PTR("fin.tls.jh"), STR_LEN("fin.tls.jh"));
+    if jh == 0 { panic(956019); };
+    if sla_std_tls_server_buffer_len(jh) == 0 { panic(956020); };
+    let tb = TlsServerBuffer { raw: jh };
+    let view = sla_std_tls_server_buffer_data(&tb);
+    if view.len() == 0 { panic(956021); };
+    if view[0] != 123 { panic(956022); };
+    if sla_std_tls_server_buffer_free(^jh) != 0 { panic(956023); };
+    let lrc = sla_net_tcp_listener_close(l);
+    match lrc {
+        Ok(v) => { if v != 0 { panic(956024); }; },
+        Err(e) => { panic(956024); },
+    };
+}
+

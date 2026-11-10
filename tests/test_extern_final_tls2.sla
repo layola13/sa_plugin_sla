@@ -1,0 +1,122 @@
+// extern FINAL batch -- tls_server group (8 names):
+// sa_std_tls_server_ctx_set_alpn,
+// sa_std_tls_server_ctx_set_version_bounds,
+// sa_std_tls_server_ctx_require_client_cert,
+// sa_std_tls_server_accept, sa_std_tls_server_ctx_free,
+// sa_std_tls_server_buffer_data, sa_std_tls_server_buffer_len,
+// sa_std_tls_server_buffer_free.
+// The accepted stream's OS fd comes from the std net registry via
+// sa_std_fd_into_raw (os/fd.sai). Certificates live in
+// /tmp/fincert2 (batch fixtures: a local CA plus a CN=localhost
+// server certificate; see the batch setup commands in RESULT).
+// The client side is the already-cleared tls_client stack.
+@import "sla_std/wrap/tls_server.sla"
+@import "sla_std/wrap/tls_client.sla"
+@import "sla_std/wrap/net.sla"
+@import "sla_std/wrap/task.sla"
+@import "sa_std/os/fd.sai"
+@import "sa_std/task.sai"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/globals.sai"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+
+
+fn fin_tlsg(name: ptr, name_len: u64) -> u64 {
+    let v: u64 = 0;
+    let rc: i32 = sa_global_u64_get(name, name_len, &v);
+    if rc != 0 { return 0; };
+    return v;
+}
+
+fn fin_tls_put(name: ptr, name_len: u64, delta: u64) {
+    let dummy: u64 = 0;
+    let rc: i32 = sa_global_u64_add(name, name_len, delta, &dummy);
+}
+
+// Server worker: arg0/arg1 pack (listener, ctx) via globals set by
+// the test body (fin.tls.l / fin.tls.c). Accepts one connection,
+// echoes one message, records the negotiated-json handle and the
+// accept rc in globals.
+fn fin_tls_server_worker(a0: u64, a1: u64) -> i32 {
+    let l: u64 = fin_tlsg(STR_PTR("fin.tls.l"), STR_LEN("fin.tls.l"));
+    let ctx: u64 = fin_tlsg(STR_PTR("fin.tls.c"), STR_LEN("fin.tls.c"));
+    let s = sla_net_tcp_listener_accept(l);
+    match s {
+        Ok(sv) => {
+            let cell = [0i32; 1];
+            if sa_std_fd_into_raw(sv, &cell[0]) != 0 { fin_tls_put(STR_PTR("fin.tls.arc"), STR_LEN("fin.tls.arc"), 9000); return 0; };
+            let ssl: u64 = 0;
+            let arc: i32 = sla_std_tls_server_accept(ctx, cell[0], &ssl);
+            fin_tls_put(STR_PTR("fin.tls.arc"), STR_LEN("fin.tls.arc"), (arc + 1000) as u64);
+            if arc != 0 { return 0; };
+            let jh: u64 = 0;
+            if sla_std_tls_server_negotiated_json(ssl, &jh) == 0 {
+                fin_tls_put(STR_PTR("fin.tls.jh"), STR_LEN("fin.tls.jh"), jh);
+            };
+            let buf = [0u8; 64];
+            let n: u64 = 0;
+            if sla_std_tls_server_read(ssl, &buf[0], 64, &n) != 0 { return 0; };
+            if n == 0 { return 0; };
+            let w: u64 = 0;
+            let bp: ptr = PTR_BYTE_ADD(&buf, 0);
+            if sla_std_tls_server_write(ssl, bp, n, &w) != 0 { return 0; };
+            let crc: i32 = sla_std_tls_server_close(ssl);
+            return 0;
+        },
+        Err(e) => {
+            fin_tls_put(STR_PTR("fin.tls.arc"), STR_LEN("fin.tls.arc"), 8000);
+            return 0;
+        },
+    };
+    return 0;
+}
+
+@test "extern final tls_server require_client_cert negative"() {
+    let ctx: u64 = 0;
+    if sla_std_tls_server_ctx_create(STR_PTR("/tmp/fincert2/srv.pem"), STR_LEN("/tmp/fincert2/srv.pem"), STR_PTR("/tmp/fincert2/srvkey.pem"), STR_LEN("/tmp/fincert2/srvkey.pem"), &ctx) != 0 { panic(956031); };
+    // require_client_cert with the batch CA: a certificate-less
+    // client must fail the handshake; the setter itself must
+    // accept the CA file.
+    if sla_std_tls_server_ctx_require_client_cert(ctx, STR_PTR("/tmp/fincert2/ca.pem"), STR_LEN("/tmp/fincert2/ca.pem")) != 0 { panic(956032); };
+    let rl = sla_net_tcp_listener_bind(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 61483);
+    let l: u64 = 0;
+    match rl {
+        Ok(h) => { l = h; },
+        Err(e) => { panic(956033); },
+    };
+    if l == 0 { panic(956033); };
+    fin_tls_put(STR_PTR("fin.tls.l"), STR_LEN("fin.tls.l"), l);
+    fin_tls_put(STR_PTR("fin.tls.c"), STR_LEN("fin.tls.c"), ctx);
+    let th: u64 = 0;
+    if sa_task_spawn(fin_tls_server_worker, 0, &th) != 0 { panic(956034); };
+    let c: u64 = 0;
+    let crc: i32 = sla_std_tls_client_connect(STR_PTR("localhost"), STR_LEN("localhost"), 61483, &c);
+    // The handshake must NOT succeed without a client certificate:
+    // either connect fails outright, or the first write/read does.
+    let leg_ok: bool = crc != 0;
+    if crc == 0 {
+        let w: u64 = 0;
+        let wrc: i32 = sla_std_tls_client_write(c, STR_PTR("fin-tls"), STR_LEN("fin-tls"), &w);
+        if wrc != 0 { leg_ok = true; };
+        if wrc == 0 {
+            let buf = [0u8; 16];
+            let n: u64 = 0;
+            let rrc: i32 = sla_std_tls_client_read(c, &buf[0], 16, &n);
+            if rrc != 0 { leg_ok = true; };
+            if n == 0 { leg_ok = true; };
+        };
+        let clrc: i32 = sla_std_tls_client_close(c);
+    };
+    if !leg_ok { panic(956035); };
+    if sla_task_join(th) != 0 { panic(956036); };
+    // Server-side: accept must have failed (recorded rc != SA_OK).
+    if fin_tlsg(STR_PTR("fin.tls.arc"), STR_LEN("fin.tls.arc")) == 1000 { panic(956037); };
+    let lrc = sla_net_tcp_listener_close(l);
+    match lrc {
+        Ok(v) => { if v != 0 { panic(956038); }; },
+        Err(e) => { panic(956038); },
+    };
+}
+

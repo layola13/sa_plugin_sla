@@ -1,0 +1,11 @@
+// extern FINAL batch -- sa_std_process_abort.
+// Exercised in build-exe form (not @test: the process must die).
+// The batch harness builds this file with `sa sla build-exe`,
+// runs the binary, and asserts the exit signal is SIGABRT.
+// Reaching the return below would mean abort did not fire.
+@import "sa_std/process.sai"
+
+fn main() -> i32 {
+    sa_std_process_abort();
+    return 0;
+}

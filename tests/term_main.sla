@@ -1,0 +1,23 @@
+// exe-form twin of test_extern_final_term_raw.sla: the `sa sla
+// test` harness redirects the test binary's stdin, so winsize on
+// fd 0 can never see a tty there; this main() runs under
+// script(1) with a real 24x80 pty as stdin. Handle 1 is
+// SA_STD_STDIN (sa_std.zig: SA_STD_STDIN=1 -> STDIN_FILENO in
+// handleToFd).
+@import "sla_std/wrap/term.sla"
+@import "sa_std/io/print.sai"
+
+fn main() -> i32 {
+    let cell: u64 = 0;
+    if sla_term_winsize(1, &cell) != 0 { println("fail winsize"); return 21; };
+    let row: u64 = cell % 65536;
+    let col: u64 = (cell / 65536) % 65536;
+    if row != 24 { println("fail row"); return 22; };
+    if col != 80 { println("fail col"); return 23; };
+    let sess: u64 = 0;
+    if sla_term_raw_enter(1, &sess) != 0 { println("fail enter"); return 24; };
+    if sess == 0 { println("fail session"); return 25; };
+    if sla_term_raw_leave(sess) != 0 { println("fail leave"); return 26; };
+    println("term-ok");
+    return 0;
+}

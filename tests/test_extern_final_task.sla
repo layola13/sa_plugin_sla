@@ -1,0 +1,267 @@
+// extern FINAL batch -- task group (11 names):
+// sa_task_spawn, sa_task_join, sa_task_detach, sa_task_current,
+// sa_task_live_count, sa_task_monitor, sa_chan_select,
+// sa_sync_once_do, sa_task_net_wait, sa_task_spawn_supervised,
+// sa_task_trap_info.
+// (The coop pair sa_coop_take_result / sa_coop_finish is wasm-only by
+// design -- task.sai: symbols exist ONLY in the cooperative runtime;
+// native link must fail loudly. Evidence is captured separately.
+// sa_coop_run_main has its own probe file.)
+// Spawn-family calls (task_spawn, task_spawn_supervised,
+// sync_once_do) go through the raw externs (sa_std/task.sai): an
+// SLA fn value materializes to a callable address only at a raw
+// extern ptr boundary, never through an SLA-level wrap fn's ptr
+// parameter -- same shape as the in-tree fn-pointer corpus.
+// Semantics per task.sai + src/runtime/sa_task.zig:
+// - chan values are 16-byte Slots {a, b}; OP_RECV=0, OP_SEND=1;
+//   select default -> index -1, timeout -> index -2.
+// - a trapped supervised task makes sa_task_join report 100
+//   (SA_TASK_TRAPPED); sa_task_trap_info reads {code, msg} back.
+// - monitor enqueues an exit notification on the returned channel.
+// - net_wait interest: READ=1, WRITE=2; parks the caller.
+@import "sla_std/wrap/task.sla"
+@import "sa_std/task.sai"
+@import "sla_std/wrap/net.sla"
+@import "sa_std/globals.sai"
+@import "sa_std/string.sa"
+@import "sa_std/time.sai"
+
+fn fin_tk_cell(name: ptr, name_len: u64) -> u64 {
+    let v: u64 = 0;
+    let rc: i32 = sa_global_u64_get(name, name_len, &v);
+    if rc != 0 { return 0; };
+    return v;
+}
+
+fn fin_tk_wait(name: ptr, name_len: u64, want: u64) -> bool {
+    let i: i32 = 0;
+    while i < 400 {
+        if fin_tk_cell(name, name_len) == want { return true; };
+        if sa_time_sleep_ms(5) != 0 { return false; };
+        i = i + 1;
+    }
+    return fin_tk_cell(name, name_len) == want;
+}
+
+fn fin_tk_bump_a(arg: ptr) {
+    let out: u64 = 0;
+    let rc: i32 = sa_global_u64_add(STR_PTR("fin.tk.a"), STR_LEN("fin.tk.a"), 1, &out);
+}
+
+fn fin_tk_bump_b(arg: ptr) {
+    let out: u64 = 0;
+    let rc: i32 = sa_global_u64_add(STR_PTR("fin.tk.b"), STR_LEN("fin.tk.b"), 1, &out);
+}
+
+fn fin_tk_sleeper(arg: ptr) {
+    if sa_task_sleep_ms(60) != 0 { panic(951090); };
+    let out: u64 = 0;
+    let rc: i32 = sa_global_u64_add(STR_PTR("fin.tk.slp"), STR_LEN("fin.tk.slp"), 1, &out);
+}
+
+fn fin_tk_self(arg: ptr) {
+    let self_h: u64 = 0;
+    let rc: i32 = sla_task_current(&self_h);
+    let out: u64 = 0;
+    let rc2: i32 = sa_global_u64_add(STR_PTR("fin.tk.self"), STR_LEN("fin.tk.self"), self_h, &out);
+}
+
+fn fin_tk_trap(arg: ptr) {
+    // A runtime-raised trap (the class task.sai documents as
+    // boundary-recoverable): send on a closed channel. The chan
+    // handle travels through a global because spawn args are raw
+    // pointers in this surface.
+    let ch: u64 = fin_tk_cell(STR_PTR("fin.tk.trapch"), STR_LEN("fin.tk.trapch"));
+    if sla_chan_close(ch) != 0 { panic(951072); };
+    let vs = [0u64; 2];
+    vs[0] = 1;
+    let rc: i32 = sa_chan_send(ch, &vs[0]);
+    // Unreachable when the trap fires; if the send is silently
+    // accepted the test's trap_info assertions fail loudly.
+    let out: u64 = 0;
+    let rc2: i32 = sa_global_u64_add(STR_PTR("fin.tk.notrap"), STR_LEN("fin.tk.notrap"), 1, &out);
+}
+
+fn fin_tk_sink(arg: ptr) {
+    // Trap sink: the runtime calls it as
+    // sink(handle, trap_code, msg_ptr, msg_len, ctx); an SLA fn
+    // value's trampoline reads the first argument only. It must
+    // exist: with no sink registered the boundary trap is the
+    // default process trap (stderr + abort).
+    let out: u64 = 0;
+    let rc: i32 = sa_global_u64_add(STR_PTR("fin.tk.sink"), STR_LEN("fin.tk.sink"), 1, &out);
+}
+
+fn fin_tk_once_a(arg: ptr) {
+    let out: u64 = 0;
+    let rc: i32 = sa_global_u64_add(STR_PTR("fin.tk.oncea"), STR_LEN("fin.tk.oncea"), 1, &out);
+}
+
+fn fin_tk_once_b(arg: ptr) {
+    let out: u64 = 0;
+    let rc: i32 = sa_global_u64_add(STR_PTR("fin.tk.onceb"), STR_LEN("fin.tk.onceb"), 1, &out);
+}
+
+@test "extern final task_spawn task_join task_current"() {
+    let h: u64 = 0;
+    let rc: i32 = sa_task_spawn(fin_tk_self, 0, &h);
+    if rc != 0 { panic(951101); };
+    if h == 0 { panic(951102); };
+    let rc2: i32 = sla_task_join(h);
+    if rc2 != 0 { panic(951103); };
+    // The worker recorded its own sa_task_current handle: it must be
+    // the very handle spawn handed out.
+    if fin_tk_cell(STR_PTR("fin.tk.self"), STR_LEN("fin.tk.self")) != h { panic(951104); };
+    // From the main task, current must succeed and be stable.
+    let c1: u64 = 0;
+    let c2: u64 = 0;
+    if sla_task_current(&c1) != 0 { panic(951105); };
+    if sla_task_current(&c2) != 0 { panic(951106); };
+    if c1 != c2 { panic(951107); };
+}
+
+@test "extern final task_detach"() {
+    let h: u64 = 0;
+    let rc: i32 = sa_task_spawn(fin_tk_bump_a, 0, &h);
+    if rc != 0 { panic(951111); };
+    if sla_task_detach(h) != 0 { panic(951112); };
+    if fin_tk_wait(STR_PTR("fin.tk.a"), STR_LEN("fin.tk.a"), 1) != true { panic(951113); };
+}
+
+@test "extern final task_live_count"() {
+    let c0: u64 = 0;
+    if sla_task_live_count(&c0) != 0 { panic(951121); };
+    let h1: u64 = 0;
+    let h2: u64 = 0;
+    if sa_task_spawn(fin_tk_sleeper, 0, &h1) != 0 { panic(951122); };
+    if sa_task_spawn(fin_tk_sleeper, 0, &h2) != 0 { panic(951123); };
+    let c1: u64 = 0;
+    if sla_task_live_count(&c1) != 0 { panic(951124); };
+    if c1 < c0 + 2 { panic(951125); };
+    if sla_task_join(h1) != 0 { panic(951126); };
+    if sla_task_join(h2) != 0 { panic(951127); };
+    let c2: u64 = 0;
+    if sla_task_live_count(&c2) != 0 { panic(951128); };
+    if c2 > c0 { panic(951129); };
+}
+
+@test "extern final chan_select"() {
+    // Default on an empty rendezvous channel: index -1, immediate.
+    let ch: u64 = 0;
+    if sla_chan_make(0, &ch) != 0 { panic(951131); };
+    let cases = [0u64; 2];
+    cases[0] = ch;
+    let ops = [0u32; 2];
+    ops[0] = 0;
+    let slots = [0u64; 4];
+    let idx: u64 = 0;
+    let closed: u64 = 0;
+    let rc: i32 = sa_chan_select(&cases[0], &ops[0], &slots[0], 1, 1, -1, &idx, &closed);
+    if rc != 0 { panic(951132); };
+    if idx as i64 != -1 { panic(951133); };
+    // Timeout on the same empty channel: index -2.
+    let idx2: u64 = 0;
+    let rc2: i32 = sa_chan_select(&cases[0], &ops[0], &slots[0], 1, 0, 60000000, &idx2, &closed);
+    if rc2 != 0 { panic(951134); };
+    if idx2 as i64 != -2 { panic(951135); };
+    // Ready case: a buffered channel holding Slot{a=777} wins at
+    // index 1 and delivers the value into slots[1].a.
+    let ch2: u64 = 0;
+    if sla_chan_make(1, &ch2) != 0 { panic(951136); };
+    let vs = [0u64; 2];
+    vs[0] = 777;
+    if sa_chan_send(ch2, &vs[0]) != 0 { panic(951137); };
+    cases[1] = ch2;
+    ops[1] = 0;
+    let idx3: u64 = 0;
+    let rc3: i32 = sa_chan_select(&cases[0], &ops[0], &slots[0], 2, 0, 5000000000, &idx3, &closed);
+    if rc3 != 0 { panic(951138); };
+    if idx3 != 1 { panic(951139); };
+    if slots[2] != 777 { panic(951140); };
+    if sla_chan_destroy(ch) != 0 { panic(951141); };
+    if sla_chan_destroy(ch2) != 0 { panic(951142); };
+}
+
+@test "extern final task_monitor"() {
+    let h: u64 = 0;
+    if sa_task_spawn(fin_tk_sleeper, 0, &h) != 0 { panic(951151); };
+    let mc: u64 = 0;
+    if sla_task_monitor(h, &mc) != 0 { panic(951152); };
+    if mc == 0 { panic(951153); };
+    // The exit notification must arrive on the monitor channel:
+    // select on it with a generous timeout.
+    let cases = [0u64; 1];
+    cases[0] = mc;
+    let ops = [0u32; 1];
+    ops[0] = 0;
+    let slots = [0u64; 2];
+    let idx: u64 = 0;
+    let closed: u64 = 0;
+    let rc: i32 = sa_chan_select(&cases[0], &ops[0], &slots[0], 1, 0, 5000000000, &idx, &closed);
+    if rc != 0 { panic(951154); };
+    if idx != 0 { panic(951155); };
+    if sla_task_join(h) != 0 { panic(951156); };
+    if fin_tk_cell(STR_PTR("fin.tk.slp"), STR_LEN("fin.tk.slp")) < 1 { panic(951157); };
+}
+
+@test "extern final sync_once_do"() {
+    let o: u64 = 0;
+    if sla_sync_once_new(&o) != 0 { panic(951161); };
+    if o == 0 { panic(951162); };
+    if sa_sync_once_do(o, fin_tk_once_a, 0) != 0 { panic(951163); };
+    if sa_sync_once_do(o, fin_tk_once_b, 0) != 0 { panic(951164); };
+    if sa_sync_once_do(o, fin_tk_once_a, 0) != 0 { panic(951165); };
+    if fin_tk_cell(STR_PTR("fin.tk.oncea"), STR_LEN("fin.tk.oncea")) != 1 { panic(951166); };
+    if fin_tk_cell(STR_PTR("fin.tk.onceb"), STR_LEN("fin.tk.onceb")) != 0 { panic(951167); };
+    if sla_sync_destroy(o) != 0 { panic(951168); };
+}
+
+@test "extern final task_spawn_supervised task_trap_info"() {
+    let tch: u64 = 0;
+    if sla_chan_make(1, &tch) != 0 { panic(951170); };
+    let dummy: u64 = 0;
+    if sa_global_u64_add(STR_PTR("fin.tk.trapch"), STR_LEN("fin.tk.trapch"), tch, &dummy) != 0 { panic(951169); };
+    let h: u64 = 0;
+    let rc: i32 = sa_task_spawn_supervised(fin_tk_trap, 0, fin_tk_sink, 0, &h);
+    if rc != 0 { panic(951171); };
+    if h == 0 { panic(951172); };
+    // task.sai: join of a trapped task reports SA_TASK_TRAPPED (100).
+    let jr: i32 = sla_task_join(h);
+    if jr != 100 { panic(951173); };
+    let code: u64 = 0;
+    let mp: u64 = 0;
+    let ml: u64 = 0;
+    if sla_task_trap_info(h, &code, &mp, &ml) != 0 { panic(951174); };
+    if code == 0 { panic(951175); };
+    if ml == 0 { panic(951176); };
+    if mp == 0 { panic(951177); };
+    // The registered sink must have been invoked exactly once.
+    if fin_tk_cell(STR_PTR("fin.tk.sink"), STR_LEN("fin.tk.sink")) != 1 { panic(951178); };
+}
+
+@test "extern final task_net_wait"() {
+    // Listener on an isolated high port; nobody connects: a READ
+    // wait with a short timeout must report ready == 0.
+    let rl = sla_net_tcp_listener_bind(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 61471);
+    let lh: u64 = 0;
+    match rl {
+        Ok(h) => { lh = h; },
+        Err(e) => { panic(951181); },
+    };
+    if lh == 0 { panic(951182); };
+    let ready: u64 = 0;
+    let rc: i32 = sla_task_net_wait(lh, 1, 60000000, &ready);
+    if rc != 0 { panic(951183); };
+    if ready != 0 { panic(951184); };
+    // Now a client connects: a READ wait must report the READ bit.
+    let cc = sla_net_tcp_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 61471);
+    let stream: u64 = 0;
+    match cc {
+        Ok(s) => { stream = s; },
+        Err(e) => { panic(951185); },
+    };
+    let ready2: u64 = 0;
+    let rc3: i32 = sla_task_net_wait(lh, 1, 5000000000, &ready2);
+    if rc3 != 0 { panic(951186); };
+    if ready2 % 2 != 1 { panic(951187); };
+}

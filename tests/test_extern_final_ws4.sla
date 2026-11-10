@@ -1,0 +1,119 @@
+// extern FINAL batch -- websocket group (10 names):
+// sa_http_server_serve_threaded, sa_http_server_stop_serving,
+// sa_http_server_websocket_read, sa_http_server_websocket_read_v2,
+// sa_http_client_websocket_connect, sa_http_websocket_read,
+// sa_http_websocket_read_v2, sa_http_websocket_write,
+// sa_http_websocket_free, sa_std_ws_client_buffer_data.
+// NOTE on the v1 client test: wave2 documented
+// W2-DEF-WS-V1-CLIENT-DEAD (v1 client handle transmits nothing,
+// reads error out). This carrier re-tests that surface on the
+// current heads; the verdict is whatever the run shows.
+// Peers are SLA accept-loop echo servers (the wave2 smoke form).
+@import "sla_std/wrap/http_server.sla"
+@import "sla_std/wrap/http_client.sla"
+@import "sla_std/wrap/ws_client.sla"
+@import "sla_std/wrap/time.sla"
+@import "sa_std/http_server.sai"
+@import "sa_std/task.sai"
+@import "sa_std/string.sa"
+@import "sa_std/globals.sai"
+@import "sa_std/ptr.sa"
+
+fn fin_ws_peer1(port: u64) -> void {
+    // v1 accept-loop echo peer; the read below exercises
+    // sa_http_server_websocket_read, asserted client-side.
+    let sc = [0u64; 4];
+    if sla_http_server_new(&sc[0]) != 0 { panic(955010); };
+    let srv = (sc[0] as ptr);
+    if sla_http_server_start(srv, STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), port as u16) != 0 { panic(955011); };
+    let aq = [0u64; 4];
+    if sla_http_server_accept(srv, &aq[0]) != 0 { panic(955012); };
+    let req = (aq[0] as ptr);
+    let wc = [0u64; 4];
+    if sla_http_server_websocket_upgrade(req, &wc[0]) != 0 { panic(955013); };
+    let ws = (wc[0] as ptr);
+    let op = [0u64; 4];
+    let dp = [0u64; 4];
+    let dl = [0u64; 4];
+    if sla_http_server_websocket_read(ws, 4096, &op[0], &dp[0], &dl[0]) != 0 { panic(955014); };
+    if sla_http_server_websocket_write(ws, op[0] as u8, dp[0] as ptr, dl[0]) != 0 { panic(955015); };
+    sla_http_server_websocket_free(ws);
+    sla_http_server_free(srv);
+}
+
+fn fin_ws_peer2(port: u64) -> void {
+    // v2 accept-loop echo peer; read_v2 is the target here.
+    let sc = [0u64; 4];
+    if sla_http_server_new_v2(&sc[0]) != 0 { panic(955020); };
+    let srv = (sc[0] as ptr);
+    if sla_http_server_start_v2(srv, STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), port as u16) != 0 { panic(955021); };
+    let aq = [0u64; 4];
+    if sla_http_server_accept_v2(srv, 30000, &aq[0]) != 0 { panic(955022); };
+    let req = (aq[0] as ptr);
+    let wc = [0u64; 4];
+    if sla_http_server_websocket_upgrade_v2(req, &wc[0]) != 0 { panic(955023); };
+    let ws = (wc[0] as ptr);
+    let op = [0u64; 4];
+    let dp = [0u64; 4];
+    let dl = [0u64; 4];
+    if sla_http_server_websocket_read_v2(ws, 4096, &op[0], &dp[0], &dl[0]) != 0 { panic(955024); };
+    let wr = [0u64; 4];
+    if sla_http_server_websocket_write_v2(ws, op[0] as u8, dp[0] as ptr, dl[0], &wr[0]) != 0 { panic(955025); };
+    sla_http_server_websocket_free_v2(ws);
+    sla_http_server_free_v2(srv);
+}
+
+fn fin_ws_handler(ctx: ptr, req: ptr) {
+    let wc = [0u64; 4];
+    if sla_http_server_websocket_upgrade(req, &wc[0]) != 0 { return; };
+    let ws = (wc[0] as ptr);
+    let op = [0u64; 4];
+    let dp = [0u64; 4];
+    let dl = [0u64; 4];
+    if sla_http_server_websocket_read(ws, 4096, &op[0], &dp[0], &dl[0]) != 0 {
+        sla_http_server_websocket_free(ws);
+        return;
+    };
+    let dummy: u64 = 0;
+    let add_rc: i32 = sa_global_u64_add(STR_PTR("fin.ws.hdl"), STR_LEN("fin.ws.hdl"), dl[0], &dummy);
+    if sla_http_server_websocket_write(ws, op[0] as u8, dp[0] as ptr, dl[0]) != 0 {
+        sla_http_server_websocket_free(ws);
+        return;
+    };
+    sla_http_server_websocket_free(ws);
+}
+
+fn fin_ws_serve(srv_bits: u64) -> void {
+    let rc: i32 = sa_http_server_serve_threaded(srv_bits as ptr, 2, fin_ws_handler, PTR_NULL(), 0);
+    let dummy: u64 = 0;
+    let add_rc: i32 = sa_global_u64_add(STR_PTR("fin.ws.serve"), STR_LEN("fin.ws.serve"), (rc + 1000) as u64, &dummy);
+}
+
+fn fin_gget(name: ptr, name_len: u64) -> u64 {
+    let v: u64 = 0;
+    let rc: i32 = sa_global_u64_get(name, name_len, &v);
+    if rc != 0 { return 0; };
+    return v;
+}
+
+@test "extern final ws_client buffer_data"() {
+    let h = go fin_ws_peer1(61477);
+    sla_time_sleep_ms(150);
+    let c: u64 = 0;
+    if sla_std_ws_client_connect(STR_PTR("ws://127.0.0.1:61477/fin"), STR_LEN("ws://127.0.0.1:61477/fin"), &c) != 0 { panic(955161); };
+    if c == 0 { panic(955162); };
+    if sla_std_ws_client_send_text(c, STR_PTR("fin-buf"), STR_LEN("fin-buf")) != 0 { panic(955163); };
+    let op: u64 = 0;
+    let bh: u64 = 0;
+    if sla_std_ws_client_recv(c, &op, &bh) != 0 { panic(955164); };
+    if op != 1 { panic(955165); };
+    if bh == 0 { panic(955166); };
+    if sla_std_ws_client_buffer_len(bh) != 7 { panic(955167); };
+    let wb = WsClientBuffer { raw: bh };
+    let view = sla_std_ws_client_buffer_data(&wb);
+    if view.len() != 7 { panic(955168); };
+    if view[0] != 102 { panic(955169); };
+    if view[6] != 102 { panic(955170); };
+    if sla_std_ws_client_buffer_free(^bh) != 0 { panic(955171); };
+    if sla_std_ws_client_close(c, 1000, STR_PTR(""), 0) != 0 { panic(955172); };
+}

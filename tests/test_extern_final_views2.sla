@@ -1,0 +1,69 @@
+// extern FINAL batch -- remaining buffer_data views (2 names):
+// sa_std_multipart_buffer_data, sa_std_http2_buffer_data.
+// Producers: the multipart builder's finish (a complete encoded
+// body buffer) and http2's sensitive-headers buffer.
+@import "sla_std/wrap/multipart.sla"
+@import "sla_std/wrap/http2.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+@test "extern final multipart_buffer_data"() {
+    let b: u64 = 0;
+    if sla_std_multipart_builder_new(&b) != 0 { panic(959001); };
+    if b == 0 { panic(959002); };
+    if sla_std_multipart_builder_add_field(b, STR_PTR("field1"), STR_LEN("field1"), STR_PTR("fin-value"), STR_LEN("fin-value")) != 0 { panic(959003); };
+    let body: u64 = 0;
+    if sla_std_multipart_builder_finish(b, &body) != 0 { panic(959004); };
+    if body == 0 { panic(959005); };
+    let n: u64 = sla_std_multipart_buffer_len(body);
+    if n == 0 { panic(959006); };
+    let mb = MultipartBuffer { raw: body };
+    let view = sla_std_multipart_buffer_data(&mb);
+    if view.len() != n { panic(959007); };
+    // The encoded body must contain the field value verbatim.
+    let found: bool = false;
+    let i: u64 = 0;
+    while i + 9 <= view.len() {
+        if view[i] == 102 {
+            if view[i + 1] == 105 {
+                if view[i + 2] == 110 {
+                    if view[i + 3] == 45 {
+                        if view[i + 4] == 118 { found = true; };
+                    };
+                };
+            };
+        };
+        i = i + 1;
+    }
+    if !found { panic(959008); };
+    if sla_std_multipart_buffer_free(^body) != 0 { panic(959009); };
+    if sla_std_multipart_builder_free(^b) != 0 { panic(959010); };
+}
+
+@test "extern final http2_buffer_data"() {
+    let h: u64 = 0;
+    if sla_std_http2_sensitive_headers(&h) != 0 { panic(959021); };
+    if h == 0 { panic(959022); };
+    let n: u64 = sla_std_http2_buffer_len(h);
+    if n == 0 { panic(959023); };
+    let hb = Http2Buffer { raw: h };
+    let view = sla_std_http2_buffer_data(&hb);
+    if view.len() != n { panic(959024); };
+    // The sensitive-headers table is a JSON list of header names;
+    // it must at least be a JSON array mentioning authorization.
+    if view[0] != 91 { panic(959025); };
+    let found: bool = false;
+    let i: u64 = 0;
+    while i + 13 <= view.len() {
+        if view[i] == 97 {
+            if view[i + 1] == 117 {
+                if view[i + 2] == 116 {
+                    if view[i + 3] == 104 { found = true; };
+                };
+            };
+        };
+        i = i + 1;
+    }
+    if !found { panic(959026); };
+    if sla_std_http2_buffer_free(^h) != 0 { panic(959027); };
+}

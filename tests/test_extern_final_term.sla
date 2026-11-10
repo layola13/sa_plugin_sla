@@ -1,0 +1,114 @@
+// extern FINAL batch -- term/pty group (9 names):
+// sa_pty_read, sa_pty_write, sa_pty_poll, sa_pty_resize,
+// sa_pty_winsize, sa_pty_pid, sa_pty_kill, sa_pty_try_wait,
+// sa_pty_close. Producer sa_pty_spawn was already cleared and is
+// used here as the handle source. Cases mirror the proven pty demo
+// (demos/cxu/05_terminal_pty): /bin/echo output gains \r\n from the
+// line discipline; /bin/cat echoes input back.
+// (sa_term_raw_enter / sa_term_raw_leave / sa_term_winsize live in
+// test_extern_final_term_raw.sla: they need a real tty.)
+@import "sla_std/wrap/term.sla"
+@import "sa_std/term.sai"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn fin_pt_read_all(h: u64, acc: &u64, want_byte: u8) -> u64 {
+    // Poll+read until a byte equal to want_byte has been seen or the
+    // poll budget runs out; returns total bytes read.
+    let total: u64 = 0;
+    let seen: u64 = 0;
+    let i: i32 = 0;
+    while i < 200 {
+        let events: u64 = 0;
+        let prc: i32 = sla_pty_poll(h, 50, &events);
+        if prc != 0 { return total; };
+        if events != 0 {
+            let chunk = [0u8; 256];
+            let n: u64 = 0;
+            let rrc: i32 = sla_pty_read(h, &chunk[0], 256, &n);
+            if rrc != 0 { return total; };
+            let j: u64 = 0;
+            while j < n {
+                if SLA_BYTE_AT(&chunk[0], j) == want_byte { seen = 1; };
+                j = j + 1;
+            }
+            total = total + n;
+            if seen == 1 { return total; };
+        };
+        i = i + 1;
+    }
+    return total;
+}
+
+@test "extern final pty echo read poll try_wait pid close"() {
+    let argv = [0u64; 4];
+    argv[0] = STR_PTR("/bin/echo") as u64;
+    argv[1] = STR_LEN("/bin/echo");
+    argv[2] = STR_PTR("pty-hello") as u64;
+    argv[3] = STR_LEN("pty-hello");
+    let h: u64 = 0;
+    if sa_pty_spawn(STR_PTR("/bin/echo"), STR_LEN("/bin/echo"), &argv[0], 2, 80, 24, &h) != 0 { panic(952101); };
+    if h == 0 { panic(952102); };
+    let pid: u64 = 0;
+    if sla_pty_pid(h, &pid) != 0 { panic(952103); };
+    if pid == 0 { panic(952104); };
+    let acc: u64 = 0;
+    let total: u64 = fin_pt_read_all(h, &acc, 10);
+    // "pty-hello\r\n" is 11 bytes; the \n (10) is its last byte.
+    if total < 11 { panic(952105); };
+    // Child has exited after printing: try_wait must report done
+    // with status 0 (bounded retry while the zombie settles).
+    let done: u64 = 0;
+    let status: u64 = 0;
+    let i: i32 = 0;
+    while i < 100 {
+        if sla_pty_try_wait(h, &done, &status) != 0 { panic(952106); };
+        if done == 1 { break; };
+        let ev: u64 = 0;
+        if sla_pty_poll(h, 50, &ev) != 0 { panic(952107); };
+        i = i + 1;
+    }
+    if done != 1 { panic(952108); };
+    if status != 0 { panic(952109); };
+    if sla_pty_close(^h) != 0 { panic(952110); };
+}
+
+@test "extern final pty cat write resize winsize kill"() {
+    let argv = [0u64; 2];
+    argv[0] = STR_PTR("/bin/cat") as u64;
+    argv[1] = STR_LEN("/bin/cat");
+    let h: u64 = 0;
+    if sa_pty_spawn(STR_PTR("/bin/cat"), STR_LEN("/bin/cat"), &argv[0], 1, 80, 24, &h) != 0 { panic(952121); };
+    let cols: u64 = 0;
+    let rows: u64 = 0;
+    if sla_pty_winsize(h, &cols, &rows) != 0 { panic(952122); };
+    if cols != 80 { panic(952123); };
+    if rows != 24 { panic(952124); };
+    if sla_pty_resize(h, 100, 40) != 0 { panic(952125); };
+    let c2: u64 = 0;
+    let r2: u64 = 0;
+    if sla_pty_winsize(h, &c2, &r2) != 0 { panic(952126); };
+    if c2 != 100 { panic(952127); };
+    if r2 != 40 { panic(952128); };
+    let written: u64 = 0;
+    if sla_pty_write(h, STR_PTR("hello\n"), STR_LEN("hello\n"), &written) != 0 { panic(952129); };
+    if written != 6 { panic(952130); };
+    // cat echoes the line back through the pty (plus the tty's own
+    // echo): at least the 6 written bytes must come back.
+    let acc: u64 = 0;
+    let total: u64 = fin_pt_read_all(h, &acc, 10);
+    if total < 6 { panic(952131); };
+    if sla_pty_kill(h, 9) != 0 { panic(952132); };
+    let done: u64 = 0;
+    let status: u64 = 0;
+    let i: i32 = 0;
+    while i < 100 {
+        if sla_pty_try_wait(h, &done, &status) != 0 { panic(952133); };
+        if done == 1 { break; };
+        let ev: u64 = 0;
+        if sla_pty_poll(h, 50, &ev) != 0 { panic(952134); };
+        i = i + 1;
+    }
+    if done != 1 { panic(952135); };
+    if sla_pty_close(^h) != 0 { panic(952136); };
+}

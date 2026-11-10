@@ -18711,6 +18711,13 @@ pub const Codegen = struct {
             const addr = try self.intern(try self.newTmp());
             try self.emitPtrAdd(addr, ptr, .{ .reg = offset });
             try self.emitLoad(dst, addr, 0, .u8);
+            // DEF-SAB-PHISTATE: the SA macro body ends with
+            // `!__sla_ba_addr`; the direct lowering must retire the
+            // address temp the same way. Without the release, a
+            // borrow-derived base leaves the temp Active|InteriorPtr
+            // at a loop back-edge, which cannot join with its
+            // Uninitialized loop-head state (PhiStateConflict 1015).
+            try self.emitRelease(addr);
             return .{ .emitted = true, .consumed_dst = null };
         }
 
@@ -18722,6 +18729,9 @@ pub const Codegen = struct {
             const addr = try self.intern(try self.newTmp());
             try self.emitPtrAdd(addr, ptr, .{ .reg = offset });
             try self.emitStore(addr, 0, value, .u8);
+            // DEF-SAB-PHISTATE: same dropped release as SLA_BYTE_AT
+            // above (the SA macro body ends with `!__sla_bp_addr`).
+            try self.emitRelease(addr);
             return .{ .emitted = true, .consumed_dst = null };
         }
 

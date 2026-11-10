@@ -1,0 +1,51 @@
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+// DEF-SAB-PHISTATE regression: SLA_BYTE_AT / SLA_BYTE_PUT applied to a
+// &u8 reference parameter inside a while loop. The direct SAB lowering
+// of these macros used to drop the address temp's release (the SA macro
+// bodies end with `!__sla_ba_addr` / `!__sla_bp_addr`), leaving the temp
+// Active|InteriorPtr at the loop back-edge; the loop head then trapped
+// PhiStateConflict (1015) against its Uninitialized entry state.
+// Pre-fix: sa backend ok, sab backend PhiStateConflict.
+// Post-fix: both backends ok.
+
+fn eq_bytes(&a: u8, alen: u64, b: ptr, blen: u64) -> u32 {
+    if alen != blen { return 0; };
+    let i: u64 = 0;
+    while i < alen {
+        let x = SLA_BYTE_AT(a, i);
+        let y = SLA_BYTE_AT(b, i);
+        if x != y { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn fill_bytes(&a: u8, n: u64, v: u8) -> u32 {
+    let i: u64 = 0;
+    while i < n {
+        SLA_BYTE_PUT(a, i, v);
+        i = i + 1;
+    }
+    return 1;
+}
+
+@test "sab phistate byte_at on ref param in while loop"() {
+    let arr = [112u8, 114u8, 111u8, 103u8, 114u8, 97u8, 109u8];
+    if eq_bytes(&arr[0], 7, STR_PTR("program"), STR_LEN("program")) != 1 { panic(95101); };
+    if eq_bytes(&arr[0], 7, STR_PTR("prograx"), STR_LEN("prograx")) != 0 { panic(95102); };
+}
+
+@test "sab phistate byte_at on ref param zero iterations"() {
+    let arr = [112u8];
+    if eq_bytes(&arr[0], 0, STR_PTR(""), STR_LEN("")) != 1 { panic(95103); };
+}
+
+@test "sab phistate byte_put on ref param in while loop"() {
+    let arr = [0u8, 0u8, 0u8];
+    if fill_bytes(&arr[0], 3, 65u8) != 1 { panic(95104); };
+    if arr[0] != 65u8 { panic(95105); };
+    if arr[1] != 65u8 { panic(95106); };
+    if arr[2] != 65u8 { panic(95107); };
+}

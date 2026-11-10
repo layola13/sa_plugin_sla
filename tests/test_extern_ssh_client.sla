@@ -1,0 +1,265 @@
+// SSH extern carrier batch -- client group (12 names):
+// sa_std_ssh_supported, sa_std_ssh_client_connect,
+// sa_std_ssh_hostkey_fingerprint, sa_std_ssh_auth_keyfile,
+// sa_std_ssh_exec, sa_std_ssh_buffer_len, sa_std_ssh_buffer_data,
+// sa_std_ssh_buffer_free, sa_std_ssh_sftp_write, sa_std_ssh_sftp_stat,
+// sa_std_ssh_sftp_read, sa_std_ssh_session_close.
+// (sa_std_ssh_auth_password lives in test_extern_ssh_auth.sla.)
+// Substantive assertions over the generated thin wraps (sla_std_ssh_*).
+// Requires a live OpenSSH test instance at 127.0.0.1:55522 (root,
+// public-key auth with /tmp/sshtest/userkey, internal-sftp), set up by
+// the gate script; every test panics loudly when the server is
+// unreachable (no silent pass). Status codes per ssh.sai: 0 ok,
+// 1 invalid, 2 bad handle, 3 not found, 4 access, 6 io, 7 net,
+// 8 unsupported, 9 truncated (fingerprint buffer).
+// NOTE: ssh pointer handles are NOT registry-validated by the impl
+// (clientOf is a plain cast), so bogus/double close of pointer handles
+// is never exercised; only the null handle (2) is. Buffer handles ARE
+// registry-backed and get the full double-free treatment.
+@import "sla_std/wrap/ssh.sla"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn ssh_buf_eq(h: u64, lit: ptr, litn: u64) -> u32 {
+    let n: u64 = sla_std_ssh_buffer_len(h);
+    if n != litn { return 0; };
+    let sb = SshBuffer { raw: h };
+    let v = sla_std_ssh_buffer_data(&sb);
+    if v.len() != litn { return 0; };
+    let i: u64 = 0;
+    while i < litn {
+        let b = SLA_BYTE_AT(lit, i);
+        if v[i] != b { return 0; };
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn ssh_conn() -> u64 {
+    let s: u64 = 0;
+    let rc: i32 = sla_std_ssh_client_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 55522, &s);
+    if rc != 0 { panic(96001); };
+    if s == 0 { panic(96002); };
+    return s;
+}
+
+fn ssh_auth(s: u64) {
+    let sp: ptr = s as ptr;
+    let rc: i32 = sla_std_ssh_auth_keyfile(sp, STR_PTR("root"), STR_LEN("root"), STR_PTR(""), 0, STR_PTR("/tmp/sshtest/userkey"), STR_LEN("/tmp/sshtest/userkey"), STR_PTR(""), 0);
+    if rc != 0 { panic(96003); };
+}
+
+fn ssh_close(s: u64) {
+    let sp: ptr = s as ptr;
+    if sla_std_ssh_session_close(^sp) != 0 { panic(96004); };
+}
+
+fn ssh_exec6(s: u64) -> u64 {
+    // Runs "printf abcdef" and returns the stdout buffer handle.
+    let sp: ptr = s as ptr;
+    let so: u64 = 0;
+    let se: u64 = 0;
+    let ex: u64 = 0;
+    let rc: i32 = sla_std_ssh_exec(sp, STR_PTR("printf abcdef"), STR_LEN("printf abcdef"), &so, &se, &ex);
+    if rc != 0 { panic(96005); };
+    if ex != 0 { panic(96006); };
+    if sla_std_ssh_buffer_free(^se) != 0 { panic(96007); };
+    return so;
+}
+
+@test "extern ssh sa_std_ssh_supported"() {
+    let flags: u64 = 0;
+    let rc: i32 = sla_std_ssh_supported(&flags);
+    if rc != 0 { panic(96101); };
+    // Bit 1 = client (libssh2), bit 2 = server (libssh); both present.
+    if flags != 3 { panic(96102); };
+}
+
+@test "extern ssh sa_std_ssh_client_connect"() {
+    // Port 0 is invalid (1) before any network traffic.
+    let z: u64 = 0;
+    let zrc: i32 = sla_std_ssh_client_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 0, &z);
+    if zrc != 1 { panic(96201); };
+    if z != 0 { panic(96202); };
+    // Unreachable port: loud failure, no session issued.
+    let bad: u64 = 0;
+    let brc: i32 = sla_std_ssh_client_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 59998, &bad);
+    if brc == 0 { panic(96203); };
+    if bad != 0 { panic(96204); };
+    // Live connect issues a nonzero session handle.
+    let s: u64 = ssh_conn();
+    ssh_close(s);
+}
+
+@test "extern ssh sa_std_ssh_hostkey_fingerprint"() {
+    let s: u64 = ssh_conn();
+    let sp: ptr = s as ptr;
+    let buf = [0u8; 128];
+    let flen: u64 = 0;
+    let rc: i32 = sla_std_ssh_hostkey_fingerprint(sp, &buf[0], 128, &flen);
+    if rc != 0 { panic(96301); };
+    // SHA-256 fingerprint: base64 of 32 bytes = 44 chars, padded '='.
+    if flen != 44 { panic(96302); };
+    let bp: ptr = SLA_PTR_ADD(&buf[0], 0);
+    let last = SLA_BYTE_AT(bp, 43);
+    if last != 61 { panic(96303); };
+    // Truncation: cap too small returns 9, out_len stays full.
+    let tlen: u64 = 0;
+    let trc: i32 = sla_std_ssh_hostkey_fingerprint(sp, &buf[0], 10, &tlen);
+    if trc != 9 { panic(96304); };
+    if tlen != 44 { panic(96305); };
+    ssh_close(s);
+}
+
+@test "extern ssh sa_std_ssh_auth_keyfile"() {
+    // Good key (pub path empty -> derived): auth succeeds.
+    let s1: u64 = ssh_conn();
+    ssh_auth(s1);
+    ssh_close(s1);
+    // Wrong private key (the host key is not the user key): denied (4).
+    let s2: u64 = ssh_conn();
+    let sp2: ptr = s2 as ptr;
+    let rc2: i32 = sla_std_ssh_auth_keyfile(sp2, STR_PTR("root"), STR_LEN("root"), STR_PTR(""), 0, STR_PTR("/tmp/sshtest/hostkey"), STR_LEN("/tmp/sshtest/hostkey"), STR_PTR(""), 0);
+    if rc2 != 4 { panic(96401); };
+    ssh_close(s2);
+    // Nonexistent key path: loud failure, never success.
+    let s3: u64 = ssh_conn();
+    let sp3: ptr = s3 as ptr;
+    let rc3: i32 = sla_std_ssh_auth_keyfile(sp3, STR_PTR("root"), STR_LEN("root"), STR_PTR(""), 0, STR_PTR("/tmp/sshtest/nope"), STR_LEN("/tmp/sshtest/nope"), STR_PTR(""), 0);
+    if rc3 == 0 { panic(96402); };
+    ssh_close(s3);
+}
+
+@test "extern ssh sa_std_ssh_exec"() {
+    let s: u64 = ssh_conn();
+    ssh_auth(s);
+    let sp: ptr = s as ptr;
+    let so: u64 = 0;
+    let se: u64 = 0;
+    let ex: u64 = 0;
+    let rc: i32 = sla_std_ssh_exec(sp, STR_PTR("echo hello-from-sshd"), STR_LEN("echo hello-from-sshd"), &so, &se, &ex);
+    if rc != 0 { panic(96501); };
+    if ex != 0 { panic(96502); };
+    if ssh_buf_eq(so, STR_PTR("hello-from-sshd\n"), STR_LEN("hello-from-sshd\n")) != 1 { panic(96503); };
+    if sla_std_ssh_buffer_len(se) != 0 { panic(96504); };
+    if sla_std_ssh_buffer_free(^so) != 0 { panic(96505); };
+    if sla_std_ssh_buffer_free(^se) != 0 { panic(96506); };
+    // Exit status propagates: "exit 3" -> out_exit 3, empty stdout.
+    let so2: u64 = 0;
+    let se2: u64 = 0;
+    let ex2: u64 = 0;
+    let rc2: i32 = sla_std_ssh_exec(sp, STR_PTR("exit 3"), STR_LEN("exit 3"), &so2, &se2, &ex2);
+    if rc2 != 0 { panic(96507); };
+    if ex2 != 3 { panic(96508); };
+    if sla_std_ssh_buffer_len(so2) != 0 { panic(96509); };
+    if sla_std_ssh_buffer_free(^so2) != 0 { panic(96510); };
+    if sla_std_ssh_buffer_free(^se2) != 0 { panic(96511); };
+    ssh_close(s);
+}
+
+@test "extern ssh sa_std_ssh_buffer_len"() {
+    let s: u64 = ssh_conn();
+    ssh_auth(s);
+    let so: u64 = ssh_exec6(s);
+    if sla_std_ssh_buffer_len(so) != 6 { panic(96601); };
+    // Unknown and zero handles have length 0.
+    if sla_std_ssh_buffer_len(0) != 0 { panic(96602); };
+    if sla_std_ssh_buffer_len(424242) != 0 { panic(96603); };
+    if sla_std_ssh_buffer_free(^so) != 0 { panic(96604); };
+    ssh_close(s);
+}
+
+@test "extern ssh sa_std_ssh_buffer_data"() {
+    let s: u64 = ssh_conn();
+    ssh_auth(s);
+    let so: u64 = ssh_exec6(s);
+    // The data view carries the exact bytes "abcdef".
+    if ssh_buf_eq(so, STR_PTR("abcdef"), STR_LEN("abcdef")) != 1 { panic(96701); };
+    if sla_std_ssh_buffer_free(^so) != 0 { panic(96702); };
+    ssh_close(s);
+}
+
+@test "extern ssh sa_std_ssh_buffer_free"() {
+    let s: u64 = ssh_conn();
+    ssh_auth(s);
+    let so: u64 = ssh_exec6(s);
+    let so2: u64 = so;
+    if sla_std_ssh_buffer_free(^so) != 0 { panic(96801); };
+    // Registry-backed: a second free of the same handle is bad handle (2).
+    if sla_std_ssh_buffer_free(^so2) != 2 { panic(96802); };
+    // Zero and unknown handles are bad handles too.
+    let zh: u64 = 0;
+    if sla_std_ssh_buffer_free(^zh) != 2 { panic(96803); };
+    let uh: u64 = 424242;
+    if sla_std_ssh_buffer_free(^uh) != 2 { panic(96804); };
+    ssh_close(s);
+}
+
+@test "extern ssh sa_std_ssh_sftp_write"() {
+    let s: u64 = ssh_conn();
+    ssh_auth(s);
+    let sp: ptr = s as ptr;
+    let rc: i32 = sla_std_ssh_sftp_write(sp, STR_PTR("/tmp/sshtest/sftp_out.txt"), STR_LEN("/tmp/sshtest/sftp_out.txt"), STR_PTR("sftp-payload-123"), STR_LEN("sftp-payload-123"));
+    if rc != 0 { panic(96901); };
+    // The bytes landed: stat reports the exact size, not a directory.
+    let sz: u64 = 0;
+    let isd: u64 = 0;
+    let src: i32 = sla_std_ssh_sftp_stat(sp, STR_PTR("/tmp/sshtest/sftp_out.txt"), STR_LEN("/tmp/sshtest/sftp_out.txt"), &sz, &isd);
+    if src != 0 { panic(96902); };
+    if sz != 16 { panic(96903); };
+    if isd != 0 { panic(96904); };
+    ssh_close(s);
+}
+
+@test "extern ssh sa_std_ssh_sftp_stat"() {
+    let s: u64 = ssh_conn();
+    ssh_auth(s);
+    let sp: ptr = s as ptr;
+    if sla_std_ssh_sftp_write(sp, STR_PTR("/tmp/sshtest/sftp_stat.txt"), STR_LEN("/tmp/sshtest/sftp_stat.txt"), STR_PTR("sftp-payload-123"), STR_LEN("sftp-payload-123")) != 0 { panic(97001); };
+    let sz: u64 = 0;
+    let isd: u64 = 0;
+    if sla_std_ssh_sftp_stat(sp, STR_PTR("/tmp/sshtest/sftp_stat.txt"), STR_LEN("/tmp/sshtest/sftp_stat.txt"), &sz, &isd) != 0 { panic(97002); };
+    if sz != 16 { panic(97003); };
+    if isd != 0 { panic(97004); };
+    // A directory stats as a directory.
+    let dsz: u64 = 0;
+    let disd: u64 = 0;
+    if sla_std_ssh_sftp_stat(sp, STR_PTR("/tmp"), STR_LEN("/tmp"), &dsz, &disd) != 0 { panic(97005); };
+    if disd != 1 { panic(97006); };
+    // Missing path: not found (3).
+    let msz: u64 = 0;
+    let misd: u64 = 0;
+    let mrc: i32 = sla_std_ssh_sftp_stat(sp, STR_PTR("/tmp/sshtest/nope.txt"), STR_LEN("/tmp/sshtest/nope.txt"), &msz, &misd);
+    if mrc != 3 { panic(97007); };
+    ssh_close(s);
+}
+
+@test "extern ssh sa_std_ssh_sftp_read"() {
+    let s: u64 = ssh_conn();
+    ssh_auth(s);
+    let sp: ptr = s as ptr;
+    if sla_std_ssh_sftp_write(sp, STR_PTR("/tmp/sshtest/sftp_read.txt"), STR_LEN("/tmp/sshtest/sftp_read.txt"), STR_PTR("sftp-payload-123"), STR_LEN("sftp-payload-123")) != 0 { panic(97101); };
+    let h: u64 = 0;
+    let rc: i32 = sla_std_ssh_sftp_read(sp, STR_PTR("/tmp/sshtest/sftp_read.txt"), STR_LEN("/tmp/sshtest/sftp_read.txt"), &h);
+    if rc != 0 { panic(97102); };
+    if h == 0 { panic(97103); };
+    if ssh_buf_eq(h, STR_PTR("sftp-payload-123"), STR_LEN("sftp-payload-123")) != 1 { panic(97104); };
+    if sla_std_ssh_buffer_free(^h) != 0 { panic(97105); };
+    // Missing file: loud failure, no handle issued.
+    let mh: u64 = 0;
+    let mrc: i32 = sla_std_ssh_sftp_read(sp, STR_PTR("/tmp/sshtest/nope.txt"), STR_LEN("/tmp/sshtest/nope.txt"), &mh);
+    if mrc == 0 { panic(97106); };
+    if mh != 0 { panic(97107); };
+    ssh_close(s);
+}
+
+@test "extern ssh sa_std_ssh_session_close"() {
+    let s: u64 = ssh_conn();
+    let sp: ptr = s as ptr;
+    if sla_std_ssh_session_close(^sp) != 0 { panic(97201); };
+    // Null handle: bad handle (2). (Pointer handles are not
+    // registry-validated, so no bogus/double close is exercised.)
+    let z: u64 = 0;
+    let zp: ptr = z as ptr;
+    if sla_std_ssh_session_close(^zp) != 2 { panic(97202); };
+}

@@ -1,0 +1,384 @@
+@import "sa_std/net_info.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Declared-surface carriers for the ni_ helper cluster of
+// sa_std/net_info.sla (registry "declared, never probed" — Zig-162
+// census section 3, family-attack batch 1). Every @test asserts exact
+// behaviour (parsed values, byte contents, span coordinates), not
+// mere callability. All inputs are synthetic constants: no host
+// /sys or /proc dependence. The four cluster members that already
+// had carriers (ni_default_gateway, ni_vec_from_ptr, ni_parse_mac,
+// ni_read_interface) live in test_unit_reg2_net_sys.sla and
+// test_unit_def_ni_read_interface.sla and are not repeated here.
+
+fn vb(p: ptr, n: u64) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    let i: u64 = 0;
+    while i < n {
+        v.push(PTR_BYTE_AT(p, i));
+        i = i + 1;
+    }
+    return v;
+}
+
+fn vec_byte(v: &Vec<u8>, i: u64) -> u8 {
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let b: u8 = 0;
+    SLICE_GET(b, sl, i);
+    return b;
+}
+
+fn expect_vec(v: &Vec<u8>, want: ptr, want_len: u64, code: i32) {
+    if len(v) != want_len { panic(code); };
+    let i: u64 = 0;
+    while i < want_len {
+        if vec_byte(v, i) != PTR_BYTE_AT(want, i) { panic(code); };
+        i = i + 1;
+    }
+}
+
+@test "decl ni slice len and get u8"() {
+    let v = vb(STR_PTR("hello"), STR_LEN("hello") as u64);
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    if ni_slice_len(&sl) != 5 { panic(25401); };
+    if ni_get_u8(&sl, 0) != 104 { panic(25402); }; // h
+    if ni_get_u8(&sl, 1) != 101 { panic(25403); }; // e
+    if ni_get_u8(&sl, 4) != 111 { panic(25404); }; // o
+    let empty: Vec<u8> = Vec::new();
+    let esl: Slice<u8> = VEC_AS_SLICE(empty);
+    if ni_slice_len(&esl) != 0 { panic(25405); };
+    let w = vb(STR_PTR("Az0"), STR_LEN("Az0") as u64);
+    let wsl: Slice<u8> = VEC_AS_SLICE(w);
+    if ni_get_u8(&wsl, 0) != 65 { panic(25406); };
+    if ni_get_u8(&wsl, 1) != 122 { panic(25407); };
+    if ni_get_u8(&wsl, 2) != 48 { panic(25408); };
+}
+
+@test "decl ni bytes eq ptr"() {
+    let v = vb(STR_PTR("route"), STR_LEN("route") as u64);
+    if !ni_bytes_eq_ptr(&v, STR_PTR("route"), 5) { panic(25411); };
+    if ni_bytes_eq_ptr(&v, STR_PTR("routf"), 5) { panic(25412); };
+    if ni_bytes_eq_ptr(&v, STR_PTR("route"), 4) { panic(25413); };
+    if ni_bytes_eq_ptr(&v, STR_PTR("rout"), 4) { panic(25414); };
+    let empty: Vec<u8> = Vec::new();
+    if !ni_bytes_eq_ptr(&empty, STR_PTR(""), 0) { panic(25415); };
+}
+
+@test "decl ni hex val"() {
+    if ni_hex_val(48) != 0 { panic(25421); };  // 0
+    if ni_hex_val(57) != 9 { panic(25422); };  // 9
+    if ni_hex_val(97) != 10 { panic(25423); }; // a
+    if ni_hex_val(102) != 15 { panic(25424); }; // f
+    if ni_hex_val(65) != 10 { panic(25425); }; // A
+    if ni_hex_val(70) != 15 { panic(25426); }; // F
+    if ni_hex_val(103) != -1 { panic(25427); }; // g
+    if ni_hex_val(58) != -1 { panic(25428); }; // :
+    if ni_hex_val(32) != -1 { panic(25429); }; // space
+}
+
+@test "decl ni parse dec"() {
+    let v = vb(STR_PTR("123x"), STR_LEN("123x") as u64);
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    match ni_parse_dec(&sl, 0, 4) {
+        Some(n) => { if n != 123 { panic(25431); }; },
+        None => { panic(25432); },
+    };
+    match ni_parse_dec(&sl, 0, 2) {
+        Some(n) => { if n != 12 { panic(25433); }; },
+        None => { panic(25434); },
+    };
+    let w = vb(STR_PTR("ab1234cd"), STR_LEN("ab1234cd") as u64);
+    let wsl: Slice<u8> = VEC_AS_SLICE(w);
+    match ni_parse_dec(&wsl, 2, 4) {
+        Some(n) => { if n != 1234 { panic(25435); }; },
+        None => { panic(25436); },
+    };
+    let x = vb(STR_PTR("x12"), STR_LEN("x12") as u64);
+    let xsl: Slice<u8> = VEC_AS_SLICE(x);
+    match ni_parse_dec(&xsl, 0, 3) {
+        Some(n) => { panic(25437); },
+        None => {},
+    };
+    match ni_parse_dec(&xsl, 0, 0) {
+        Some(n) => { panic(25438); },
+        None => {},
+    };
+}
+
+@test "decl ni parse hex"() {
+    let v = vb(STR_PTR("ff"), STR_LEN("ff") as u64);
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    match ni_parse_hex(&sl, 0, 2) {
+        Some(n) => { if n != 255 { panic(25441); }; },
+        None => { panic(25442); },
+    };
+    let w = vb(STR_PTR("FF10"), STR_LEN("FF10") as u64);
+    let wsl: Slice<u8> = VEC_AS_SLICE(w);
+    match ni_parse_hex(&wsl, 0, 4) {
+        Some(n) => { if n != 65296 { panic(25443); }; },
+        None => { panic(25444); },
+    };
+    let x = vb(STR_PTR("zzdeadBEEF"), STR_LEN("zzdeadBEEF") as u64);
+    let xsl: Slice<u8> = VEC_AS_SLICE(x);
+    match ni_parse_hex(&xsl, 2, 8) {
+        Some(n) => { if n != 3735928559 { panic(25445); }; },
+        None => { panic(25446); },
+    };
+    let y = vb(STR_PTR("1g"), STR_LEN("1g") as u64);
+    let ysl: Slice<u8> = VEC_AS_SLICE(y);
+    match ni_parse_hex(&ysl, 0, 2) {
+        Some(n) => { if n != 1 { panic(25447); }; },
+        None => { panic(25448); },
+    };
+    let z = vb(STR_PTR("g1"), STR_LEN("g1") as u64);
+    let zsl: Slice<u8> = VEC_AS_SLICE(z);
+    match ni_parse_hex(&zsl, 0, 2) {
+        Some(n) => { panic(25449); },
+        None => {},
+    };
+}
+
+@test "decl ni parse sysfs flags"() {
+    let v = vb(STR_PTR("0x101"), STR_LEN("0x101") as u64);
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    match ni_parse_sysfs_flags(&sl) {
+        Some(n) => { if n != 257 { panic(25451); }; },
+        None => { panic(25452); },
+    };
+    let w = vb(STR_PTR("41"), STR_LEN("41") as u64);
+    let wsl: Slice<u8> = VEC_AS_SLICE(w);
+    match ni_parse_sysfs_flags(&wsl) {
+        Some(n) => { if n != 65 { panic(25453); }; },
+        None => { panic(25454); },
+    };
+    let x = vb(STR_PTR("0x1f\n"), 5);
+    let xsl: Slice<u8> = VEC_AS_SLICE(x);
+    match ni_parse_sysfs_flags(&xsl) {
+        Some(n) => { if n != 31 { panic(25455); }; },
+        None => { panic(25456); },
+    };
+    let y = vb(STR_PTR("0x"), STR_LEN("0x") as u64);
+    let ysl: Slice<u8> = VEC_AS_SLICE(y);
+    match ni_parse_sysfs_flags(&ysl) {
+        Some(n) => { panic(25457); },
+        None => {},
+    };
+}
+
+@test "decl ni byteswap32 and popcount32"() {
+    if ni_byteswap32(16909060) != 67305985 { panic(25461); }; // 0x01020304 -> 0x04030201
+    if ni_byteswap32(4278190080) != 255 { panic(25462); };    // 0xFF000000 -> 0x000000FF
+    if ni_byteswap32(0) != 0 { panic(25463); };
+    if ni_byteswap32(67305985) != 16909060 { panic(25464); }; // swaps back
+    if ni_popcount32(0) != 0 { panic(25465); };
+    if ni_popcount32(4294967295) != 32 { panic(25466); };
+    if ni_popcount32(2147483648) != 1 { panic(25467); };
+    if ni_popcount32(61680) != 8 { panic(25468); };           // 0xF0F0
+    if ni_popcount32(4294901760) != 16 { panic(25469); };     // 0xFFFF0000
+}
+
+@test "decl ni ipv6 zero and parse hex128"() {
+    let z = ni_ipv6_zero();
+    if z.hi != 0 || z.lo != 0 { panic(25471); };
+    if !ipv6_is_unspecified(z) { panic(25472); };
+    let v = vb(STR_PTR("20010db885a3000000008a2e03707334"), STR_LEN("20010db885a3000000008a2e03707334") as u64);
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let want = ipv6_from_segments(8193, 3512, 34211, 0, 0, 35374, 880, 29492);
+    match ni_parse_hex128(&sl, 0) {
+        Some(a) => {
+            if a.hi != want.hi { panic(25473); };
+            if a.lo != want.lo { panic(25474); };
+        },
+        None => { panic(25475); },
+    };
+    let bad = vb(STR_PTR("20010db885g3000000008a2e03707334"), STR_LEN("20010db885g3000000008a2e03707334") as u64);
+    let bsl: Slice<u8> = VEC_AS_SLICE(bad);
+    match ni_parse_hex128(&bsl, 0) {
+        Some(a) => { panic(25476); },
+        None => {},
+    };
+    let one = vb(STR_PTR("00000000000000000000000000000001"), STR_LEN("00000000000000000000000000000001") as u64);
+    let osl: Slice<u8> = VEC_AS_SLICE(one);
+    match ni_parse_hex128(&osl, 0) {
+        Some(a) => { if !ipv6_is_loopback(a) { panic(25477); }; },
+        None => { panic(25478); },
+    };
+}
+
+@test "decl ni is space"() {
+    if !ni_is_space(32) { panic(25481); };
+    if !ni_is_space(9) { panic(25482); };
+    if !ni_is_space(10) { panic(25483); };
+    if !ni_is_space(13) { panic(25484); };
+    if ni_is_space(11) { panic(25485); }; // vertical tab is not in the set
+    if ni_is_space(65) { panic(25486); };
+    if ni_is_space(0) { panic(25487); };
+}
+
+@test "decl ni fields and tokens"() {
+    let content = vb(STR_PTR("aa bb ccc dddd"), STR_LEN("aa bb ccc dddd") as u64);
+    let sl: Slice<u8> = VEC_AS_SLICE(content);
+    if ni_field_count(&sl, 0, 14) != 4 { panic(25491); };
+    let t0 = ni_field_at(&sl, 0, 14, 0);
+    if !t0.found || t0.start != 0 || t0.len != 2 || t0.next != 2 { panic(25492); };
+    let t1 = ni_field_at(&sl, 0, 14, 1);
+    if !t1.found || t1.start != 3 || t1.len != 2 || t1.next != 5 { panic(25493); };
+    let t2 = ni_field_at(&sl, 0, 14, 2);
+    if !t2.found || t2.start != 6 || t2.len != 3 || t2.next != 9 { panic(25494); };
+    let t3 = ni_field_at(&sl, 0, 14, 3);
+    if !t3.found || t3.start != 10 || t3.len != 4 || t3.next != 14 { panic(25495); };
+    let t4 = ni_field_at(&sl, 0, 14, 4);
+    if t4.found { panic(25496); };
+    if !ni_token_eq_literal(&sl, t0, STR_PTR("aa"), 2) { panic(25497); };
+    if ni_token_eq_literal(&sl, t0, STR_PTR("aB"), 2) { panic(25498); };
+    if !ni_token_eq_literal(&sl, t2, STR_PTR("ccc"), 3) { panic(25499); };
+    if ni_token_eq_literal(&sl, t4, STR_PTR("aa"), 2) { panic(25500); };
+    let b2 = ni_token_bytes(&sl, t2);
+    expect_vec(&b2, STR_PTR("ccc"), 3, 25501);
+    let b3 = ni_token_bytes(&sl, t3);
+    expect_vec(&b3, STR_PTR("dddd"), 4, 25502);
+    // Leading and repeated separators collapse.
+    let padded = vb(STR_PTR("  x  yz "), STR_LEN("  x  yz ") as u64);
+    let psl: Slice<u8> = VEC_AS_SLICE(padded);
+    if ni_field_count(&psl, 0, 8) != 2 { panic(25503); };
+    let p0 = ni_field_at(&psl, 0, 8, 0);
+    if !p0.found || p0.start != 2 || p0.len != 1 { panic(25504); };
+    let p1 = ni_field_at(&psl, 0, 8, 1);
+    if !p1.found || p1.start != 5 || p1.len != 2 { panic(25505); };
+}
+
+@test "decl ni line at"() {
+    let content = vb(STR_PTR("abc\nde\nfgh"), 10);
+    let sl: Slice<u8> = VEC_AS_SLICE(content);
+    let l0 = ni_line_at(&sl, 0);
+    if !l0.found || l0.start != 0 || l0.len != 3 || l0.next != 4 { panic(25511); };
+    let l1 = ni_line_at(&sl, l0.next);
+    if !l1.found || l1.start != 4 || l1.len != 2 || l1.next != 7 { panic(25512); };
+    let l2 = ni_line_at(&sl, l1.next);
+    if !l2.found || l2.start != 7 || l2.len != 3 || l2.next != 10 { panic(25513); };
+    let l3 = ni_line_at(&sl, l2.next);
+    if l3.found { panic(25514); };
+    // A position on the newline itself is an empty line.
+    let e = ni_line_at(&sl, 3);
+    if !e.found || e.start != 3 || e.len != 0 || e.next != 4 { panic(25515); };
+}
+
+@test "decl ni parse route v4 line"() {
+    let text = "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\neth0 00000000 01001CAC 0003 0 0 100 00000000 0 0 0\neth1 00001CAC 00000000 0001 0 0 50 00FFFFFF 0 0 0\n";
+    let content = vb(STR_PTR(text), STR_LEN(text) as u64);
+    let sl: Slice<u8> = VEC_AS_SLICE(content);
+    let header = ni_line_at(&sl, 0);
+    if !header.found { panic(25521); };
+    match ni_parse_route_v4_line(&sl, header) {
+        Some(r) => { panic(25522); },
+        None => {},
+    };
+    let la = ni_line_at(&sl, header.next);
+    if !la.found { panic(25523); };
+    match ni_parse_route_v4_line(&sl, la) {
+        Some(r) => {
+            expect_vec(&r.iface, STR_PTR("eth0"), 4, 25524);
+            if r.prefix.addr.tag != 4 { panic(25525); };
+            if r.prefix.addr.lo != 0 { panic(25526); };
+            if r.prefix.len != 0 { panic(25527); };
+            if r.gateway.lo != 2887516161 { panic(25528); }; // 172.28.0.1
+            if !r.has_gateway { panic(25529); };
+            if r.metric != 100 { panic(25530); };
+            if r.flags != 3 { panic(25531); };
+        },
+        None => { panic(25532); },
+    };
+    let lb = ni_line_at(&sl, la.next);
+    if !lb.found { panic(25533); };
+    match ni_parse_route_v4_line(&sl, lb) {
+        Some(r) => {
+            expect_vec(&r.iface, STR_PTR("eth1"), 4, 25534);
+            if r.prefix.addr.lo != 2887516160 { panic(25535); }; // 172.28.0.0
+            if r.prefix.len != 24 { panic(25536); };
+            if r.has_gateway { panic(25537); };
+            if r.metric != 50 { panic(25538); };
+            if r.flags != 1 { panic(25539); };
+        },
+        None => { panic(25540); },
+    };
+    // Too few fields is not a route.
+    let short = vb(STR_PTR("eth0 00000000"), STR_LEN("eth0 00000000") as u64);
+    let ssl: Slice<u8> = VEC_AS_SLICE(short);
+    let sl0 = ni_line_at(&ssl, 0);
+    match ni_parse_route_v4_line(&ssl, sl0) {
+        Some(r) => { panic(25541); },
+        None => {},
+    };
+}
+
+@test "decl ni parse route v6 line"() {
+    let text = "00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000064 00000000 00000000 00000001 eth0\n20010db8000000000000000000000000 20 00000000000000000000000000000000 00 00000000000000000000000000000000 00000020 00000000 00000000 00000000 lo\n";
+    let content = vb(STR_PTR(text), STR_LEN(text) as u64);
+    let sl: Slice<u8> = VEC_AS_SLICE(content);
+    let la = ni_line_at(&sl, 0);
+    if !la.found { panic(25551); };
+    match ni_parse_route_v6_line(&sl, la) {
+        Some(r) => {
+            expect_vec(&r.iface, STR_PTR("eth0"), 4, 25552);
+            if r.prefix.addr.tag != 6 { panic(25553); };
+            if r.prefix.len != 0 { panic(25554); };
+            let gw = ip_addr_from_ipv6(ipv6_from_segments(65152, 0, 0, 0, 0, 0, 0, 1));
+            if !ip_addr_eq(r.gateway, gw) { panic(25555); }; // fe80::1
+            if !r.has_gateway { panic(25556); };
+            if r.metric != 100 { panic(25557); };
+            if r.flags != 1 { panic(25558); };
+        },
+        None => { panic(25559); },
+    };
+    let lb = ni_line_at(&sl, la.next);
+    if !lb.found { panic(25560); };
+    match ni_parse_route_v6_line(&sl, lb) {
+        Some(r) => {
+            expect_vec(&r.iface, STR_PTR("lo"), 2, 25561);
+            let dst = ip_addr_from_ipv6(ipv6_from_segments(8193, 3512, 0, 0, 0, 0, 0, 0));
+            if !ip_addr_eq(r.prefix.addr, dst) { panic(25562); }; // 2001:db8::
+            if r.prefix.len != 32 { panic(25563); };
+            if r.has_gateway { panic(25564); };
+            if r.metric != 32 { panic(25565); };
+            if r.flags != 0 { panic(25566); };
+        },
+        None => { panic(25567); },
+    };
+    // A destination field that is not 32 hex chars is not a route.
+    let bad = vb(STR_PTR("0000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000064 0 0 00000001 eth0"), STR_LEN("0000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000064 0 0 00000001 eth0") as u64);
+    let bsl: Slice<u8> = VEC_AS_SLICE(bad);
+    let bl = ni_line_at(&bsl, 0);
+    match ni_parse_route_v6_line(&bsl, bl) {
+        Some(r) => { panic(25568); },
+        None => {},
+    };
+}
+
+@test "decl ni parse ip text"() {
+    match ni_parse_ip_text(vb(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1") as u64)) {
+        Some(a) => {
+            if a.tag != 4 { panic(25571); };
+            if a.lo != 2130706433 { panic(25572); };
+        },
+        None => { panic(25573); },
+    };
+    match ni_parse_ip_text(vb(STR_PTR("10.0.0.255"), STR_LEN("10.0.0.255") as u64)) {
+        Some(a) => {
+            if a.tag != 4 { panic(25574); };
+            if a.lo != 167772415 { panic(25575); };
+        },
+        None => { panic(25576); },
+    };
+    match ni_parse_ip_text(vb(STR_PTR("::1"), STR_LEN("::1") as u64)) {
+        Some(a) => {
+            if a.tag != 6 { panic(25577); };
+            if a.hi != 0 || a.lo != 1 { panic(25578); };
+        },
+        None => { panic(25579); },
+    };
+    match ni_parse_ip_text(vb(STR_PTR("example"), STR_LEN("example") as u64)) {
+        Some(a) => { panic(25580); },
+        None => {},
+    };
+}

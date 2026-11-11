@@ -1,0 +1,99 @@
+@import "sa_std/net_info.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// DEF-NI-READ-INTERFACE regression corpus.
+// Root cause: the SAB backend lowered a whole-array assignment to a
+// struct field (`out.bytes = vals` in sa_std net_info's ni_parse_mac)
+// as a single pointer-width store — primType maps an array to .ptr, so
+// the field's inline region received the source array block's address
+// bytes instead of its elements. ni_read_interface("lo") then read
+// back a non-zero "MAC" on SAB while the text backend (whose array
+// fields are pointer-indirect, making the single store correct there)
+// returned 00:00:00:00:00:00. Pre-fix, the SAB arm fails the @tests
+// below; the SA arm passes. Post-fix both arms pass. (The SAB deref
+// form `*p = vals` shared the defect and is fixed at the same layer;
+// it is not exercised here because the text backend has a separate
+// deref-of-borrowed-array defect — see the fix line's RESULT.md.)
+
+fn vb(p: ptr, n: u64) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    let i: u64 = 0;
+    while i < n {
+        v.push(PTR_BYTE_AT(p, i));
+        i = i + 1;
+    }
+    return v;
+}
+
+struct Pair {
+    bytes: [u8; 6],
+    ok: bool,
+}
+
+fn make_pair() -> Pair {
+    let out = Pair { bytes: [0u8; 6], ok: false };
+    let vals: [u8; 6] = [1u8, 35u8, 69u8, 103u8, 137u8, 171u8];
+    out.bytes = vals;
+    out.ok = true;
+    return out;
+}
+
+@test "def ni array field assign"() {
+    let p = make_pair();
+    if !p.ok { panic(101); };
+    let exp: [u8; 6] = [1u8, 35u8, 69u8, 103u8, 137u8, 171u8];
+    let i: u64 = 0;
+    while i < 6 {
+        if p.bytes[i] != exp[i] { panic(102); };
+        i = i + 1;
+    }
+    // Field-to-field whole-array assignment.
+    let q = Pair { bytes: [0u8; 6], ok: false };
+    q.bytes = p.bytes;
+    let j: u64 = 0;
+    while j < 6 {
+        if q.bytes[j] != exp[j] { panic(103); };
+        j = j + 1;
+    }
+}
+
+@test "def ni parse mac marker and zero"() {
+    let marker = vb(STR_PTR("01:23:45:67:89:ab\n"), 18);
+    let sl: Slice<u8> = VEC_AS_SLICE(marker);
+    let parsed: NiMac = ni_parse_mac(&sl);
+    if !parsed.ok { panic(105); };
+    let exp: [u8; 6] = [1u8, 35u8, 69u8, 103u8, 137u8, 171u8];
+    let i: u64 = 0;
+    while i < 6 {
+        if parsed.bytes[i] != exp[i] { panic(106); };
+        i = i + 1;
+    }
+    let zero = vb(STR_PTR("00:00:00:00:00:00\n"), 18);
+    let sl2: Slice<u8> = VEC_AS_SLICE(zero);
+    let parsed2: NiMac = ni_parse_mac(&sl2);
+    if !parsed2.ok { panic(107); };
+    let j: u64 = 0;
+    while j < 6 {
+        if parsed2.bytes[j] != 0 { panic(108); };
+        j = j + 1;
+    }
+}
+
+@test "def ni read interface lo"() {
+    let name = vb(STR_PTR("lo"), 2);
+    match ni_read_interface(STR_PTR("lo"), 2, name) {
+        Ok(iface) => {
+            if !net_name_eq(&iface.name, &vb(STR_PTR("lo"), 2)) { panic(109); };
+            if iface.index != 1 { panic(110); };
+            if iface.mtu != 65536 { panic(111); };
+            if !iface.has_mac { panic(112); };
+            let i: u64 = 0;
+            while i < 6 {
+                if iface.mac[i] != 0 { panic(25321); }; // the original census panic code
+                i = i + 1;
+            }
+        },
+        Err(e) => { panic(113); },
+    };
+}

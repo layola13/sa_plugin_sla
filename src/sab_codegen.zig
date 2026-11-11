@@ -12549,6 +12549,24 @@ pub const Codegen = struct {
             const target = try self.genExpr(source_expr);
             const value = try self.genExpr(assign.value);
             try self.emitOverwrittenPlaceDrop(node, assign.target, target, inner_ty);
+            if (inner_ty.* == .array) {
+                // DEF-NI-READ-INTERFACE (deref sibling of the field
+                // site): a fixed-array value is not a single primitive
+                // store — storagePrimType maps an array to .ptr, so the
+                // plain store landed the source block's address bytes
+                // at the target instead of its elements. Copy the
+                // elements; the source array cell is not retained by
+                // the target (DEF-ACL release semantics).
+                try self.storeArrayValueIntoStructField(target, 0, inner_ty.array, value);
+                try self.releaseCopiedArrayFieldSource(assign.value, value, inner_ty);
+                const target_lifecycle = lowering_rules.planDerefAssignmentTargetLifecycle(
+                    source_expr.* != .identifier,
+                    self.refcell_borrow_values.contains(target),
+                );
+                if (target_lifecycle.shouldRelease()) try self.emitRelease(target);
+                try self.emitReplaceSourceNull(node);
+                return;
+            }
             try self.emitStore(target, 0, value, try storagePrimType(inner_ty));
             const target_lifecycle = lowering_rules.planDerefAssignmentTargetLifecycle(
                 source_expr.* != .identifier,
@@ -12570,15 +12588,31 @@ pub const Codegen = struct {
             const target = try self.genFieldAddress(field);
             const value = try self.genExpr(assign.value);
             try self.emitOverwrittenPlaceDrop(node, assign.target, target.reg, field_ty);
-            try self.emitStore(target.reg, 0, value, try primType(field_ty));
-            // DEF-DB: route through the stored-value disposal, not a
-            // bare release. For a heap-handle field type the store
-            // placed the value's cell handle into the field, which
-            // owns the cell now; releasing the source register frees
-            // that cell and the field dangles (db pinned sessions:
-            // session_open's `out.session = DbSession{...}` killed
-            // every real session test with signal 11).
-            try self.releaseStoredExprResultIfNeeded(assign.value, value, field_ty);
+            if (field_ty.* == .array) {
+                // DEF-NI-READ-INTERFACE: a fixed-array field is not a
+                // single primitive store (the genStructLiteral rule).
+                // primType maps an array to .ptr, so the plain store
+                // landed the source array block's address bytes in the
+                // inline field region instead of its elements (std
+                // ni_parse_mac's `out.bytes = vals` read back pointer
+                // garbage on the SAB backend while the text backend's
+                // pointer-indirect field made its store correct). Copy
+                // the elements into the inline region; the source array
+                // cell is not retained by the field, so it keeps the
+                // copied-array source release semantics (DEF-ACL).
+                try self.storeArrayValueIntoStructField(target.reg, 0, field_ty.array, value);
+                try self.releaseCopiedArrayFieldSource(assign.value, value, field_ty);
+            } else {
+                try self.emitStore(target.reg, 0, value, try primType(field_ty));
+                // DEF-DB: route through the stored-value disposal, not a
+                // bare release. For a heap-handle field type the store
+                // placed the value's cell handle into the field, which
+                // owns the cell now; releasing the source register frees
+                // that cell and the field dangles (db pinned sessions:
+                // session_open's `out.session = DbSession{...}` killed
+                // every real session test with signal 11).
+                try self.releaseStoredExprResultIfNeeded(assign.value, value, field_ty);
+            }
             if (!self.isLocalReg(target.reg)) try self.emitRelease(target.reg);
             try self.markAssignmentMovedSourceWithType(assign.target, assign.value, field_ty);
             try self.emitReplaceSourceNull(node);

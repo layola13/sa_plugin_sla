@@ -1,0 +1,140 @@
+// DEF-WS-CLUSTER VERSION-TEXT minim: does the server websocket upgrade
+// reject Sec-WebSocket-Version: 99?
+// - v1 upgrade has NO version check in sa_http_server.zig (only
+//   upgrade/connection/key are validated); v2 upgrade checks version == "13".
+// - Expected: v1+99 must FAIL, v2+99 must FAIL, v1+13 must SUCCEED.
+// - Panic codes: 9620xx = peer-side setup; 9621xx = v1+99 verdict (rc must
+//   be != 0); 9622xx = v2+99 verdict (rc must be != 0); 9623xx = v1+13
+//   verdict (rc must be 0).
+// The upgrade rc is recorded in a global by the peer goroutine; the test
+// reads it after a sleep. (Pre-fix expectation: v1+99 FAILS this test —
+// upgrade succeeds and returns rc 0.)
+@import "sla_std/wrap/http_server.sla"
+@import "sla_std/wrap/net.sla"
+@import "sla_std/wrap/time.sla"
+@import "sa_std/http_server.sai"
+@import "sa_std/task.sai"
+@import "sa_std/string.sa"
+@import "sa_std/globals.sai"
+@import "sa_std/ptr.sa"
+
+fn vt_req_99() -> ptr {
+    return STR_PTR("GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 99\r\n\r\n");
+}
+
+fn vt_req_99_len() -> u64 {
+    return STR_LEN("GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 99\r\n\r\n");
+}
+
+fn vt_req_13() -> ptr {
+    return STR_PTR("GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+}
+
+fn vt_req_13_len() -> u64 {
+    return STR_LEN("GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+}
+
+fn vt_gset(name: ptr, name_len: u64, v: u64) -> void {
+    let dummy: u64 = 0;
+    let add_rc: i32 = sa_global_u64_add(name, name_len, v, &dummy);
+}
+
+fn vt_gget(name: ptr, name_len: u64) -> u64 {
+    let v: u64 = 0;
+    let rc: i32 = sa_global_u64_get(name, name_len, &v);
+    if rc != 0 { return 0; };
+    return v;
+}
+
+fn vt_peer_v1(port: u64, gname: ptr, gname_len: u64) -> void {
+    let sc = [0u64; 4];
+    if sla_http_server_new(&sc[0]) != 0 { panic(962001); };
+    let srv = (sc[0] as ptr);
+    if sla_http_server_start(srv, STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), port as u16) != 0 { panic(962002); };
+    let aq = [0u64; 4];
+    if sla_http_server_accept(srv, &aq[0]) != 0 { panic(962003); };
+    let req = (aq[0] as ptr);
+    let wc = [0u64; 4];
+    let rc: i32 = sla_http_server_websocket_upgrade(req, &wc[0]) as i32;
+    vt_gset(gname, gname_len, (rc + 1000) as u64);
+    if rc == 0 {
+        sla_http_server_websocket_free(wc[0] as ptr);
+    } else {
+        sla_http_server_req_free(req);
+    };
+    sla_http_server_free(srv);
+}
+
+fn vt_peer_v2(port: u64, gname: ptr, gname_len: u64) -> void {
+    let sc = [0u64; 4];
+    if sla_http_server_new_v2(&sc[0]) != 0 { panic(962011); };
+    let srv = (sc[0] as ptr);
+    if sla_http_server_start_v2(srv, STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), port as u16) != 0 { panic(962012); };
+    let aq = [0u64; 4];
+    if sla_http_server_accept_v2(srv, 30000, &aq[0]) != 0 { panic(962013); };
+    let req = (aq[0] as ptr);
+    let wc = [0u64; 4];
+    let rc: i32 = sla_http_server_websocket_upgrade_v2(req, &wc[0]) as i32;
+    vt_gset(gname, gname_len, (rc + 1000) as u64);
+    if rc == 0 {
+        sla_http_server_websocket_free_v2(wc[0] as ptr);
+    } else {
+        sla_http_server_req_free(req);
+    };
+    sla_http_server_free_v2(srv);
+}
+
+fn vt_raw_send(port: u64, reqp: ptr, reqlen: u64, code: i32) -> void {
+    let cli = [0u64; 4];
+    if sla_std_net_tcp_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), (port as u32), &cli[0]) != 0 { panic(code); };
+    sla_std_net_tcp_stream_set_read_timeout(cli[0], 3000000000);
+    let wr = [0u64; 4];
+    if sla_std_net_tcp_stream_write(cli[0], reqp, reqlen, &wr[0]) != 0 { panic(code + 1); };
+    sla_time_sleep_ms(300);
+    let scratch = [0u8; 512];
+    let rd = [0u64; 4];
+    let rrc = sla_std_net_tcp_stream_read(cli[0], &scratch[0], 512, &rd[0]);
+    // No tcp-stream close in the wrap; the handle is dropped with the test.
+}
+
+fn vt_peer_v1_99(_: ptr) -> void {
+    vt_peer_v1(61501, STR_PTR("vt.v1.99"), STR_LEN("vt.v1.99"));
+}
+
+fn vt_peer_v2_99(_: ptr) -> void {
+    vt_peer_v2(61502, STR_PTR("vt.v2.99"), STR_LEN("vt.v2.99"));
+}
+
+fn vt_peer_v1_13(_: ptr) -> void {
+    vt_peer_v1(61503, STR_PTR("vt.v1.13"), STR_LEN("vt.v1.13"));
+}
+
+@test "vt v1 upgrade rejects version 99"() {
+    let h = go vt_peer_v1_99(PTR_NULL());
+    sla_time_sleep_ms(200);
+    vt_raw_send(61501, vt_req_99(), vt_req_99_len(), 962101);
+    sla_time_sleep_ms(500);
+    let rc = vt_gget(STR_PTR("vt.v1.99"), STR_LEN("vt.v1.99"));
+    if rc == 0 { panic(962102); };
+    // rc is (upgrade_rc + 1000); 0 means the peer never recorded (setup fail).
+    if rc != 1002 { panic(962103); };
+}
+
+@test "vt v2 upgrade rejects version 99"() {
+    let h = go vt_peer_v2_99(PTR_NULL());
+    sla_time_sleep_ms(200);
+    vt_raw_send(61502, vt_req_99(), vt_req_99_len(), 962201);
+    sla_time_sleep_ms(500);
+    let rc = vt_gget(STR_PTR("vt.v2.99"), STR_LEN("vt.v2.99"));
+    if rc == 0 { panic(962202); };
+    if rc != 1005 { panic(962203); };
+}
+
+@test "vt v1 upgrade accepts version 13"() {
+    let h = go vt_peer_v1_13(PTR_NULL());
+    sla_time_sleep_ms(200);
+    vt_raw_send(61503, vt_req_13(), vt_req_13_len(), 962301);
+    sla_time_sleep_ms(500);
+    let rc = vt_gget(STR_PTR("vt.v1.13"), STR_LEN("vt.v1.13"));
+    if rc != 1000 { panic(962302); };
+}

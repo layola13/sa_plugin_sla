@@ -1,0 +1,31 @@
+// DEF-NET-V6-DTLS D1 regression (verdict A): the V6ONLY toggle, bound to
+// the wildcard :: where the kernel honours it. On a ::1-bound socket the
+// kernel pins V6ONLY to 1 at bind() and post-bind setsockopt returns
+// EINVAL, so set-to-0 can never read back 0 there; the carrier
+// test_extern_final_net6.sla asserts the same toggle on ::.
+@import "sla_std/wrap/net.sla"
+@import "sa_std/net.sai"
+@import "sa_std/string.sa"
+
+@test "probe v6 tcp toggle alone"() {
+    let rl = sla_net_tcp_listener_bind(STR_PTR("::"), STR_LEN("::"), 61472);
+    let lh: u64 = 0;
+    match rl {
+        Ok(h) => { lh = h; },
+        Err(e) => { panic(953201); },
+    };
+    if lh == 0 { panic(953202); };
+    if sla_std_net_tcp_listener_set_only_v6(lh, 1) != 0 { panic(953203); };
+    let e1: u64 = 0;
+    if sla_std_net_tcp_listener_only_v6(lh, &e1) != 0 { panic(953204); };
+    if e1 != 1 { panic(953205); };
+    if sla_std_net_tcp_listener_set_only_v6(lh, 0) != 0 { panic(953206); };
+    let e2: u64 = 0;
+    if sla_std_net_tcp_listener_only_v6(lh, &e2) != 0 { panic(953207); };
+    if e2 != 0 { panic(953208); };
+    let rc = sla_net_tcp_listener_close(lh);
+    match rc {
+        Ok(x) => {},
+        Err(e) => { panic(953209); },
+    };
+}

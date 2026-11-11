@@ -1,0 +1,72 @@
+// extern FINAL batch -- net group (3 names):
+// sa_std_net_tcp_listener_set_only_v6, sa_std_net_udp_set_only_v6,
+// sa_net_unix_addr_abstract_ptr.
+// The v6 toggles are asserted through their (already-booked)
+// readback getters on live sockets bound to the wildcard ::.
+// KERNEL PIN (DEF-NET-V6-DTLS D1, Jev verdict A): on a socket bound to a
+// specific IPv6 address (e.g. ::1), bind() itself forces V6ONLY to 1 and a
+// post-bind setsockopt returns EINVAL, so set-to-0 can never read back 0
+// there — the toggle is only honoured on ::, where V6ONLY=0 is also the
+// only semantically meaningful value (a ::1 socket cannot accept
+// IPv4-mapped connections the way :: can). See sala 06_stdlib
+// 16_api_externs (set_only_v6 rows). The abstract-addr
+// view is asserted against the (already-booked) abstract_len oracle
+// and the name bytes themselves.
+@import "sla_std/wrap/net.sla"
+@import "sa_std/net.sai"
+@import "sa_std/string.sa"
+
+@test "extern final net tcp_listener_set_only_v6"() {
+    let rl = sla_net_tcp_listener_bind(STR_PTR("::"), STR_LEN("::"), 61472);
+    let lh: u64 = 0;
+    match rl {
+        Ok(h) => { lh = h; },
+        Err(e) => { panic(953201); },
+    };
+    if lh == 0 { panic(953202); };
+    if sla_std_net_tcp_listener_set_only_v6(lh, 1) != 0 { panic(953203); };
+    let e1: u64 = 0;
+    if sla_std_net_tcp_listener_only_v6(lh, &e1) != 0 { panic(953204); };
+    if e1 != 1 { panic(953205); };
+    if sla_std_net_tcp_listener_set_only_v6(lh, 0) != 0 { panic(953206); };
+    let e2: u64 = 0;
+    if sla_std_net_tcp_listener_only_v6(lh, &e2) != 0 { panic(953207); };
+    if e2 != 0 { panic(953208); };
+    let rc = sla_net_tcp_listener_close(lh);
+    match rc {
+        Ok(x) => {},
+        Err(e) => { panic(953209); },
+    };
+}
+
+@test "extern final net udp_set_only_v6"() {
+    let s: u64 = 0;
+    if sa_std_net_udp_bind(STR_PTR("::"), STR_LEN("::"), 61473, &s) != 0 { panic(953211); };
+    if s == 0 { panic(953212); };
+    if sla_std_net_udp_set_only_v6(s, 1) != 0 { panic(953213); };
+    let e1: u64 = 0;
+    if sla_std_net_udp_only_v6(s, &e1) != 0 { panic(953214); };
+    if e1 != 1 { panic(953215); };
+    if sla_std_net_udp_set_only_v6(s, 0) != 0 { panic(953216); };
+    let e2: u64 = 0;
+    if sla_std_net_udp_only_v6(s, &e2) != 0 { panic(953217); };
+    if e2 != 0 { panic(953218); };
+    if sla_net_udp_close(s) != 0 { panic(953219); };
+}
+
+@test "extern final net unix_addr_abstract_ptr"() {
+    let a: u64 = 0;
+    if sla_std_net_unix_addr_from_abstract_name(STR_PTR("fin-abs-9"), STR_LEN("fin-abs-9"), &a) != 0 { panic(953221); };
+    if a == 0 { panic(953222); };
+    if sla_net_unix_addr_abstract_len(a) != 9 { panic(953223); };
+    let na = NetAddr { raw: a };
+    let view = sla_net_unix_addr_abstract_ptr(&na);
+    if view.len() != 9 { panic(953224); };
+    if view[0] != 102 { panic(953225); };
+    if view[8] != 57 { panic(953226); };
+    let rf = sla_net_unix_addr_free(^na);
+    match rf {
+        Ok(x) => {},
+        Err(e) => { panic(953227); },
+    };
+}

@@ -1,0 +1,92 @@
+// extern FINAL batch -- dtls group (5 names):
+// sa_std_dtls_server_accept, sa_std_dtls_server_ctx_free,
+// sa_std_dtls_buffer_data, sa_std_dtls_buffer_len,
+// sa_std_dtls_buffer_free.
+// The accept leg runs against the system openssl s_client
+// (-dtls1_2) driven by the batch harness (run_dtls.sh on the
+// box): the test process binds UDP 127.0.0.1:61484, the harness
+// connects openssl, sends "fin-dtls", and expects the echo.
+// The bound UDP socket's OS fd comes from sa_std_fd_into_raw.
+@import "sla_std/wrap/dtls.sla"
+@import "sla_std/wrap/task.sla"
+@import "sa_std/os/fd.sai"
+@import "sa_std/task.sai"
+@import "sa_std/net.sai"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/globals.sai"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+fn fin_dg(name: ptr, name_len: u64) -> u64 {
+    let v: u64 = 0;
+    let rc: i32 = sa_global_u64_get(name, name_len, &v);
+    if rc != 0 { return 0; };
+    return v;
+}
+
+fn fin_dput(name: ptr, name_len: u64, delta: u64) {
+    let dummy: u64 = 0;
+    let rc: i32 = sa_global_u64_add(name, name_len, delta, &dummy);
+}
+
+fn fin_dtls_worker(a0: u64, a1: u64) -> i32 {
+    let ctx: u64 = fin_dg(STR_PTR("fin.dtls.c"), STR_LEN("fin.dtls.c"));
+    let fd: i32 = fin_dg(STR_PTR("fin.dtls.fd"), STR_LEN("fin.dtls.fd")) as i32;
+    let ssl: u64 = 0;
+    let arc: i32 = sla_std_dtls_server_accept(ctx, fd, &ssl);
+    fin_dput(STR_PTR("fin.dtls.arc"), STR_LEN("fin.dtls.arc"), (arc + 1000) as u64);
+    if arc != 0 { return 0; };
+    let buf = [0u8; 64];
+    let n: u64 = 0;
+    let rrc: i32 = sla_std_dtls_server_read(ssl, &buf[0], 64, &n);
+    fin_dput(STR_PTR("fin.dtls.rn"), STR_LEN("fin.dtls.rn"), n);
+    if rrc != 0 { return 0; };
+    if n == 0 { return 0; };
+    let w: u64 = 0;
+    let bp: ptr = PTR_BYTE_ADD(&buf, 0);
+    let wrc: i32 = sla_std_dtls_server_write(ssl, bp, n, &w);
+    fin_dput(STR_PTR("fin.dtls.wn"), STR_LEN("fin.dtls.wn"), w);
+    let crc: i32 = sla_std_dtls_server_close(ssl);
+    return 0;
+}
+
+@test "extern final dtls accept echo vs openssl"() {
+    let ctx: u64 = 0;
+    if sla_std_dtls_server_ctx_create(STR_PTR("/tmp/fincert/cert.pem"), STR_LEN("/tmp/fincert/cert.pem"), STR_PTR("/tmp/fincert/key.pem"), STR_LEN("/tmp/fincert/key.pem"), &ctx) != 0 { panic(957001); };
+    if ctx == 0 { panic(957002); };
+    let u: u64 = 0;
+    if sa_std_net_udp_bind(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 61484, &u) != 0 { panic(957003); };
+    let cell = [0i32; 1];
+    if sa_std_fd_into_raw(u, &cell[0]) != 0 { panic(957004); };
+    if cell[0] < 3 { panic(957005); };
+    fin_dput(STR_PTR("fin.dtls.c"), STR_LEN("fin.dtls.c"), ctx);
+    fin_dput(STR_PTR("fin.dtls.fd"), STR_LEN("fin.dtls.fd"), cell[0] as u64);
+    // Readiness marker for the harness: 1 once the socket is bound
+    // and the worker is about to accept.
+    let th: u64 = 0;
+    if sa_task_spawn(fin_dtls_worker, 0, &th) != 0 { panic(957006); };
+    fin_dput(STR_PTR("fin.dtls.ready"), STR_LEN("fin.dtls.ready"), 1);
+    if sla_task_join(th) != 0 { panic(957007); };
+    if fin_dg(STR_PTR("fin.dtls.arc"), STR_LEN("fin.dtls.arc")) != 1000 { panic(957008); };
+    if fin_dg(STR_PTR("fin.dtls.rn"), STR_LEN("fin.dtls.rn")) != 8 { panic(957009); };
+    if fin_dg(STR_PTR("fin.dtls.wn"), STR_LEN("fin.dtls.wn")) != 8 { panic(957010); };
+}
+
+@test "extern final dtls ctx_free"() {
+    let ctx: u64 = 0;
+    if sla_std_dtls_server_ctx_create(STR_PTR("/tmp/fincert/cert.pem"), STR_LEN("/tmp/fincert/cert.pem"), STR_PTR("/tmp/fincert/key.pem"), STR_LEN("/tmp/fincert/key.pem"), &ctx) != 0 { panic(957021); };
+    if sla_std_dtls_server_ctx_free(ctx) != 0 { panic(957022); };
+}
+
+@test "extern final dtls buffer trio"() {
+    let h: u64 = 0;
+    if sla_std_dtls_status_json(&h) != 0 { panic(957031); };
+    if h == 0 { panic(957032); };
+    let n: u64 = sla_std_dtls_buffer_len(h);
+    if n == 0 { panic(957033); };
+    let db = DtlsBuffer { raw: h };
+    let view = sla_std_dtls_buffer_data(&db);
+    if view.len() != n { panic(957034); };
+    if view[0] != 123 { panic(957035); };
+    if sla_std_dtls_buffer_free(^h) != 0 { panic(957036); };
+}

@@ -1,0 +1,202 @@
+@import "sa_std/ip.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Recovery carrier for the four ip_prefix names that were blocked
+// by DEF-TEXT-SHIFT-WRAP (landed with that fix): ip_prefix_mask,
+// ip_mask_from_prefix_len, ip_prefix_last_addr, ip_summarize_range.
+// On the pre-fix text backend this file was SAB 6/6 green and text
+// red at exactly the four v4 assertions 25801/25821/25841/25871
+// (u32 mask shift kept unwrapped bits); the two remaining @tests
+// (masked/network, collapse) duplicate the reduced carrier
+// test_unit_decl_ip_prefix_mask.sla's coverage of already-booked
+// names and are kept so this file stays the full mask-family
+// carrier, in the exact form the DEF-DECL-IP-PREFIX line verified
+// as its probe4 (the two v6 /32 expectations in the corrected
+// decomposed form). Assertions are exact values throughout; all
+// inputs are synthetic constants.
+
+fn v4(lo: u64) -> IpAddr {
+    return ip_addr_from_ipv4(lo as u32);
+}
+
+fn v4p(lo: u64, len: u32) -> IpPrefix {
+    return ip_prefix_from(ip_addr_from_ipv4(lo as u32), len);
+}
+
+fn v6a(s0: u32, s1: u32, s2: u32, s7: u32) -> IpAddr {
+    return ip_addr_from_ipv6(ipv6_from_segments(s0, s1, s2, 0, 0, 0, 0, s7));
+}
+
+@test "decl ip prefix mask"() {
+    let m24 = ip_prefix_mask(v4p(0, 24));
+    if m24.tag != 4 || m24.hi != 0 || m24.lo != 4294967040 { panic(25801); }; // 255.255.255.0
+    let m0 = ip_prefix_mask(v4p(0, 0));
+    if m0.lo != 0 { panic(25802); };
+    let m32 = ip_prefix_mask(v4p(0, 32));
+    if m32.lo != 4294967295 { panic(25803); };
+    let m8 = ip_prefix_mask(v4p(0, 8));
+    if m8.lo != 4278190080 { panic(25804); }; // 255.0.0.0
+    let m25 = ip_prefix_mask(v4p(0, 25));
+    if m25.lo != 4294967168 { panic(25805); }; // 255.255.255.128
+    let m1 = ip_prefix_mask(v4p(0, 1));
+    if m1.lo != 2147483648 { panic(25806); }; // 128.0.0.0
+    let minv = ip_prefix_mask(v4p(0, 33)); // past family bits: zero mask
+    if minv.lo != 0 || minv.tag != 4 { panic(25807); };
+    let m32v6 = ip_prefix_mask(ip_prefix_from(v6a(0, 0, 0, 0), 32));
+    if (m32v6.hi >> 32) != 4294967295 || (m32v6.hi & 4294967295) != 0 || m32v6.lo != 0 { panic(25808); };
+    let m0v6 = ip_prefix_mask(ip_prefix_from(v6a(0, 0, 0, 0), 0));
+    if m0v6.hi != 0 || m0v6.lo != 0 { panic(25809); };
+    let m64 = ip_prefix_mask(ip_prefix_from(v6a(0, 0, 0, 0), 64));
+    if m64.hi != ip_u64_max() || m64.lo != 0 { panic(25810); };
+    let m128 = ip_prefix_mask(ip_prefix_from(v6a(0, 0, 0, 0), 128));
+    if m128.hi != ip_u64_max() || m128.lo != ip_u64_max() { panic(25811); };
+    let m65 = ip_prefix_mask(ip_prefix_from(v6a(0, 0, 0, 0), 65));
+    if m65.hi != ip_u64_max() { panic(25812); };
+    if (m65.lo >> 63) != 1 || (m65.lo & 9223372036854775807) != 0 { panic(25813); }; // lo = 1<<63
+    let m48 = ip_prefix_mask(ip_prefix_from(v6a(0, 0, 0, 0), 48));
+    if (m48.hi >> 16) != 281474976710655 || (m48.hi & 65535) != 0 || m48.lo != 0 { panic(25814); };
+}
+
+@test "decl ip mask from prefix len"() {
+    let a = ip_mask_from_prefix_len(4, 24);
+    if a.tag != 4 || a.lo != 4294967040 { panic(25821); };
+    let b = ip_mask_from_prefix_len(4, 0);
+    if b.lo != 0 { panic(25822); };
+    let c = ip_mask_from_prefix_len(4, 32);
+    if c.lo != 4294967295 { panic(25823); };
+    let d = ip_mask_from_prefix_len(6, 32);
+    if d.tag != 6 || (d.hi >> 32) != 4294967295 || (d.hi & 4294967295) != 0 || d.lo != 0 { panic(25824); };
+    let e = ip_mask_from_prefix_len(6, 128);
+    if e.hi != ip_u64_max() || e.lo != ip_u64_max() { panic(25825); };
+    // Consistency with the prefix-shaped entry point.
+    if !ip_addr_eq(ip_mask_from_prefix_len(4, 8), ip_prefix_mask(v4p(0, 8))) { panic(25826); };
+    if !ip_addr_eq(ip_mask_from_prefix_len(6, 48), ip_prefix_mask(ip_prefix_from(v6a(0, 0, 0, 0), 48))) { panic(25827); };
+}
+
+@test "decl ip prefix masked and network addr"() {
+    let m = ip_prefix_masked(v4p(3232235813, 24)); // 192.168.1.37/24
+    if m.addr.lo != 3232235776 || m.len != 24 { panic(25831); }; // 192.168.1.0/24
+    let n = ip_prefix_network_addr(v4p(3232235813, 24));
+    if n.tag != 4 || n.lo != 3232235776 { panic(25832); };
+    let m2 = ip_prefix_masked(v4p(184549375, 8)); // 10.255.255.255/8
+    if m2.addr.lo != 167772160 { panic(25833); };
+    let m3 = ip_prefix_masked(v4p(167772160, 8)); // already canonical
+    if m3.addr.lo != 167772160 || m3.len != 8 { panic(25834); };
+    let m4 = ip_prefix_masked(v4p(4294967295, 0));
+    if m4.addr.lo != 0 || m4.len != 0 { panic(25835); };
+    let m6 = ip_prefix_masked(ip_prefix_from(v6a(8193, 3512, 43981, 1), 32)); // 2001:db8:abcd::1/32
+    if !ip_addr_eq(m6.addr, v6a(8193, 3512, 0, 0)) { panic(25836); };
+    let n6 = ip_prefix_network_addr(ip_prefix_from(v6a(8193, 3512, 43981, 1), 32));
+    if !ip_addr_eq(n6, v6a(8193, 3512, 0, 0)) { panic(25837); };
+}
+
+@test "decl ip prefix last addr"() {
+    let l1 = ip_prefix_last_addr(v4p(3232235776, 24)); // 192.168.1.0/24
+    if l1.lo != 3232236031 { panic(25841); }; // 192.168.1.255
+    let l2 = ip_prefix_last_addr(v4p(3232235813, 24)); // host bits ignored
+    if l2.lo != 3232236031 { panic(25842); };
+    let l3 = ip_prefix_last_addr(v4p(167772160, 8));
+    if l3.lo != 184549375 { panic(25843); }; // 10.255.255.255
+    let l4 = ip_prefix_last_addr(v4p(16909060, 32)); // 1.2.3.4/32 is its own last
+    if l4.lo != 16909060 { panic(25844); };
+    let l5 = ip_prefix_last_addr(v4p(0, 0));
+    if l5.lo != 4294967295 { panic(25845); };
+    let want6 = ip_addr_from_ipv6(ipv6_from_segments(8193, 3512, 65535, 65535, 65535, 65535, 65535, 65535));
+    let l6 = ip_prefix_last_addr(ip_prefix_from(v6a(8193, 3512, 0, 0), 32)); // 2001:db8::/32
+    if !ip_addr_eq(l6, want6) { panic(25846); };
+    let l7 = ip_prefix_last_addr(ip_prefix_from(v6a(8193, 3512, 0, 1), 128));
+    if !ip_addr_eq(l7, v6a(8193, 3512, 0, 1)) { panic(25847); };
+}
+
+@test "decl ip prefixes collapse"() {
+    let sib = ip_prefix_list_new();
+    ip_prefix_list_push(&sib, v4p(167772160, 25)); // 10.0.0.0/25
+    ip_prefix_list_push(&sib, v4p(167772288, 25)); // 10.0.0.128/25
+    let c1 = ip_prefixes_collapse(&sib);
+    if ip_prefix_list_len(&c1) != 1 { panic(25851); };
+    let c1g = ip_prefix_list_get(&c1, 0);
+    if c1g.addr.lo != 167772160 || c1g.len != 24 { panic(25852); }; // merged to 10.0.0.0/24
+    if ip_prefix_list_len(&sib) != 2 { panic(25853); }; // input untouched
+    let cont = ip_prefix_list_new();
+    ip_prefix_list_push(&cont, v4p(167772160, 8));
+    ip_prefix_list_push(&cont, v4p(167837696, 16)); // contained
+    ip_prefix_list_push(&cont, v4p(167903232, 16)); // contained
+    let c2 = ip_prefixes_collapse(&cont);
+    if ip_prefix_list_len(&c2) != 1 { panic(25854); };
+    let dup = ip_prefix_list_new();
+    ip_prefix_list_push(&dup, v4p(167772160, 8));
+    ip_prefix_list_push(&dup, v4p(167772160, 8));
+    let c3 = ip_prefixes_collapse(&dup);
+    if ip_prefix_list_len(&c3) != 1 { panic(25855); };
+    let disj = ip_prefix_list_new();
+    ip_prefix_list_push(&disj, v4p(3232236032, 24)); // 192.168.2.0/24
+    ip_prefix_list_push(&disj, v4p(3232235776, 24)); // 192.168.1.0/24
+    let c4 = ip_prefixes_collapse(&disj);
+    if ip_prefix_list_len(&c4) != 2 { panic(25856); };
+    let c4g0 = ip_prefix_list_get(&c4, 0);
+    let c4g1 = ip_prefix_list_get(&c4, 1);
+    if c4g0.addr.lo != 3232235776 || c4g1.addr.lo != 3232236032 { panic(25857); }; // sorted output
+    let quad = ip_prefix_list_new();
+    ip_prefix_list_push(&quad, v4p(167772160, 26));
+    ip_prefix_list_push(&quad, v4p(167772224, 26));
+    ip_prefix_list_push(&quad, v4p(167772288, 26));
+    ip_prefix_list_push(&quad, v4p(167772352, 26));
+    let c5 = ip_prefixes_collapse(&quad); // four /26 chain-merge to one /24
+    if ip_prefix_list_len(&c5) != 1 { panic(25858); };
+    let c5g = ip_prefix_list_get(&c5, 0);
+    if c5g.addr.lo != 167772160 || c5g.len != 24 { panic(25859); };
+    let hosty = ip_prefix_list_new();
+    ip_prefix_list_push(&hosty, v4p(167772215, 25)); // 10.0.0.55/25
+    ip_prefix_list_push(&hosty, v4p(167772360, 25)); // 10.0.0.200/25
+    let c6 = ip_prefixes_collapse(&hosty); // masked first, then siblings merge
+    if ip_prefix_list_len(&c6) != 1 { panic(25860); };
+    let c6g = ip_prefix_list_get(&c6, 0);
+    if c6g.addr.lo != 167772160 || c6g.len != 24 { panic(25861); };
+    let mixed = ip_prefix_list_new();
+    ip_prefix_list_push(&mixed, v4p(167772160, 25));
+    ip_prefix_list_push(&mixed, v4p(167772288, 25));
+    ip_prefix_list_push(&mixed, ip_prefix_from(v6a(8193, 3512, 0, 0), 32));
+    let c7 = ip_prefixes_collapse(&mixed); // families never merge across
+    if ip_prefix_list_len(&c7) != 2 { panic(25862); };
+    let c7g1 = ip_prefix_list_get(&c7, 1);
+    if c7g1.addr.tag != 6 || c7g1.len != 32 { panic(25863); };
+    let empty = ip_prefix_list_new();
+    let c8 = ip_prefixes_collapse(&empty);
+    if ip_prefix_list_len(&c8) != 0 { panic(25864); };
+}
+
+@test "decl ip summarize range"() {
+    let r1 = ip_summarize_range(v4(167772160), v4(167772415)); // 10.0.0.0 - 10.0.0.255
+    if ip_prefix_list_len(&r1) != 1 { panic(25871); };
+    let r1g = ip_prefix_list_get(&r1, 0);
+    if r1g.addr.lo != 167772160 || r1g.len != 24 { panic(25872); };
+    let r2 = ip_summarize_range(v4(167772165), v4(167772165)); // single address
+    if ip_prefix_list_len(&r2) != 1 { panic(25873); };
+    let r2g = ip_prefix_list_get(&r2, 0);
+    if r2g.addr.lo != 167772165 || r2g.len != 32 { panic(25874); };
+    let r3 = ip_summarize_range(v4(167772161), v4(167772166)); // ragged: 1/32, 2/31, 4/31, 6/32
+    if ip_prefix_list_len(&r3) != 4 { panic(25875); };
+    let r3a = ip_prefix_list_get(&r3, 0);
+    if r3a.addr.lo != 167772161 || r3a.len != 32 { panic(25876); };
+    let r3b = ip_prefix_list_get(&r3, 1);
+    if r3b.addr.lo != 167772162 || r3b.len != 31 { panic(25877); };
+    let r3c = ip_prefix_list_get(&r3, 2);
+    if r3c.addr.lo != 167772164 || r3c.len != 31 { panic(25878); };
+    let r3d = ip_prefix_list_get(&r3, 3);
+    if r3d.addr.lo != 167772166 || r3d.len != 32 { panic(25879); };
+    let r4 = ip_summarize_range(v4(167772160), v4(184549375)); // the whole /8
+    if ip_prefix_list_len(&r4) != 1 { panic(25880); };
+    let r4g = ip_prefix_list_get(&r4, 0);
+    if r4g.len != 8 { panic(25881); };
+    let r5 = ip_summarize_range(v4(184549375), v4(167772160)); // reversed: empty
+    if ip_prefix_list_len(&r5) != 0 { panic(25882); };
+    let r6 = ip_summarize_range(v4(167772160), v6a(0, 0, 0, 1)); // cross-family: empty
+    if ip_prefix_list_len(&r6) != 0 { panic(25883); };
+    let last6 = ip_addr_from_ipv6(ipv6_from_segments(8193, 3512, 0, 0, 0, 0, 0, 65535));
+    let r7 = ip_summarize_range(v6a(8193, 3512, 0, 0), last6); // 2001:db8:: - 2001:db8::ffff
+    if ip_prefix_list_len(&r7) != 1 { panic(25884); };
+    let r7g = ip_prefix_list_get(&r7, 0);
+    if r7g.len != 112 { panic(25885); };
+    if !ip_addr_eq(r7g.addr, v6a(8193, 3512, 0, 0)) { panic(25886); };
+}

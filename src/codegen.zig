@@ -318,6 +318,12 @@ pub const Codegen = struct {
     /// emitted in the prologue; `va_end x` precedes every return).
     current_variadic_list: ?[]const u8 = null,
     current_async_return_ty: ?*const ast.Type,
+    /// DEF-TEXT-SHIFT-WRAP form G: return type of the function whose
+    /// body is being generated (set by genFuncDeclNamed), so return
+    /// statements can canonicalize the returned register to the
+    /// declared width. Declared types are locally known in every
+    /// compilation mode, unlike checker expr_types records.
+    current_fn_ret_ty: ?*const ast.Type = null,
     async_pending_return_emitted: bool,
     thread_helper_idx: usize,
     use_plain_time_sleep_ms_abi: bool,
@@ -410,6 +416,7 @@ pub const Codegen = struct {
             .current_expr_later_nodes = std.array_list.Managed(*const ast.Node).init(allocator),
             .current_async = false,
             .current_async_return_ty = null,
+            .current_fn_ret_ty = null,
             .async_pending_return_emitted = false,
             .thread_helper_idx = 0,
             .use_plain_time_sleep_ms_abi = false,
@@ -5045,6 +5052,168 @@ pub const Codegen = struct {
         return lowering_rules.scalarBinaryOpName(plan);
     }
 
+    /// DEF-TEXT-SHIFT-WRAP result type for a `<<` node: the checker's
+    /// record for the binary node itself, else the record for the left
+    /// operand (annotation propagation types a literal left operand
+    /// with the let's declared type, while resolvedTypeForExpr's
+    /// literal shortcut would fabricate i64), else the arm's resolved
+    /// left type. `.infer` records count as missing.
+    fn shiftResultType(self: *Codegen, expr: *const ast.Node, bin: *const ast.BinaryExpr, left_ty: *const ast.Type) *const ast.Type {
+        if (self.tc.expr_types.get(expr)) |ty| {
+            if (ty.* != .infer) return ty;
+        }
+        if (self.tc.expr_types.get(bin.left)) |ty| {
+            if (ty.* != .infer) return ty;
+        }
+        return left_ty;
+    }
+
+    /// DEF-TEXT-SHIFT-WRAP: SA registers are width-less 64-bit words and
+    /// sci executes `shl` as a plain 64-bit shift, so an SLA `<<` whose
+    /// result type is a narrow integer leaves unwrapped bits in the
+    /// result register (the SAB path's typed execution wraps at the
+    /// register's declared width, and typed loads/stores truncate --
+    /// a register-resident shift result has neither protection).
+    /// Canonicalize the raw shift result into a fresh register:
+    /// unsigned narrow types mask to their width; signed narrow types
+    /// use the shl/ashr pair that replicates the sign bit from the
+    /// type's width (the same idiom sab_codegen's emitShiftCanonicalize
+    /// uses for narrow loads). Returns null when the result type owes
+    /// no wrap (64-bit, float, non-primitive).
+    fn emitShiftResultWrap(self: *Codegen, raw_reg: []const u8, result_ty: *const ast.Type) CodegenError!?[]const u8 {
+        return self.emitWidthCanonicalize(raw_reg, result_ty, true);
+    }
+
+    /// DEF-TEXT-SHIFT-WRAP form G: canonicalize a register holding a
+    /// narrow-integer value to the declared type's width at a binding
+    /// or consumption boundary (let-init, assignment, return, struct
+    /// field init, call argument). Keyed ONLY on the locally-known
+    /// declared/expected type at the site -- never on checker
+    /// expr_types records, whose absence in decl-only test mode is
+    /// what defeated emission-site keying for literal operands. The
+    /// helper is op-agnostic: any possibly-dirty narrow result
+    /// (shift, add, sub, mul, call result, ...) bound or consumed at
+    /// a typed boundary is canonicalized by the same mechanism. It is
+    /// idempotent (masking / sign-extending an already-canonical
+    /// value is a semantic no-op) and returns null when the type owes
+    /// no wrap (64-bit, float, non-primitive). `release_raw` retires
+    /// the source register after the wrap; callers whose site keeps
+    /// its own retirement discipline for the source pass false.
+    fn emitWidthCanonicalize(self: *Codegen, raw_reg: []const u8, result_ty: *const ast.Type, release_raw: bool) CodegenError!?[]const u8 {
+        if (result_ty.* != .primitive) return null;
+        const bits: u32 = switch (result_ty.primitive) {
+            .u8, .i8 => 8,
+            .u16, .i16 => 16,
+            .u32, .i32 => 32,
+            else => return null,
+        };
+        const is_signed = switch (result_ty.primitive) {
+            .i8, .i16, .i32 => true,
+            else => false,
+        };
+        if (!is_signed) {
+            const mask: u64 = (@as(u64, 1) << @as(u6, @intCast(bits))) - 1;
+            const mask_reg = try self.newTmp();
+            try self.emitIntConst(mask_reg, @as(i64, @intCast(mask)));
+            const wrapped = try self.newTmp();
+            self.outPrint("    {s} = and {s}, {s}\n", .{ wrapped, raw_reg, mask_reg }) catch return CodegenError.CodegenError;
+            if (release_raw) try self.emitRelease(raw_reg);
+            try self.emitRelease(mask_reg);
+            return wrapped;
+        }
+        const shift: u32 = 64 - bits;
+        const amt_reg = try self.newTmp();
+        try self.emitIntConst(amt_reg, @as(i64, @intCast(shift)));
+        const shifted = try self.newTmp();
+        self.outPrint("    {s} = shl {s}, {s}\n", .{ shifted, raw_reg, amt_reg }) catch return CodegenError.CodegenError;
+        const wrapped = try self.newTmp();
+        self.outPrint("    {s} = ashr {s}, {s}\n", .{ wrapped, shifted, amt_reg }) catch return CodegenError.CodegenError;
+        if (release_raw) try self.emitRelease(raw_reg);
+        try self.emitRelease(shifted);
+        try self.emitRelease(amt_reg);
+        return wrapped;
+    }
+
+    /// Form G binding copy: like emitPrimitiveCopy, but a
+    /// narrow-integer value is written into the target THROUGH the
+    /// width canonicalization, so the binding never holds unwrapped
+    /// bits. The source register is not released here; the binding
+    /// site's existing retirement discipline for the source applies
+    /// unchanged. Non-narrow primitive types use the plain copy.
+    fn emitBindingPrimitiveCopy(self: *Codegen, target: []const u8, source: []const u8, ty: *const ast.Type) CodegenError!void {
+        if (ty.* == .primitive) {
+            const bits: u32 = switch (ty.primitive) {
+                .u8, .i8 => 8,
+                .u16, .i16 => 16,
+                .u32, .i32 => 32,
+                else => 0,
+            };
+            if (bits != 0) {
+                const is_signed = switch (ty.primitive) {
+                    .i8, .i16, .i32 => true,
+                    else => false,
+                };
+                if (!is_signed) {
+                    const mask: u64 = (@as(u64, 1) << @as(u6, @intCast(bits))) - 1;
+                    const mask_reg = try self.newTmp();
+                    try self.emitIntConst(mask_reg, @as(i64, @intCast(mask)));
+                    self.outPrint("    {s} = and {s}, {s}\n", .{ target, source, mask_reg }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(mask_reg);
+                } else {
+                    const shift: u32 = 64 - bits;
+                    const amt_reg = try self.newTmp();
+                    try self.emitIntConst(amt_reg, @as(i64, @intCast(shift)));
+                    const shifted = try self.newTmp();
+                    self.outPrint("    {s} = shl {s}, {s}\n", .{ shifted, source, amt_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = ashr {s}, {s}\n", .{ target, shifted, amt_reg }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(shifted);
+                    try self.emitRelease(amt_reg);
+                }
+                return;
+            }
+        }
+        return self.emitPrimitiveCopy(target, source, ty);
+    }
+
+    /// Form G return boundary: canonicalize the register headed for
+    /// the return slot to the function's declared return width. A
+    /// fresh result temp is retired by the wrap itself; a binding
+    /// register is wrapped without release (its own exit discipline
+    /// applies). Move (^) registers pass through untouched: the moved
+    /// binding was canonicalized at its own binding site.
+    fn canonicalizeReturnValue(self: *Codegen, value_expr: *const ast.Node, val_reg: []const u8, ret_ty: ?*const ast.Type) CodegenError![]const u8 {
+        const ty = ret_ty orelse return val_reg;
+        if (std.mem.startsWith(u8, val_reg, "^")) return val_reg;
+        const release_raw = self.exprResultRegNeedsRelease(value_expr);
+        if (try self.emitWidthCanonicalize(val_reg, ty, release_raw)) |wrapped| return wrapped;
+        return val_reg;
+    }
+
+    /// Form G call-argument boundary: canonicalize the lowered
+    /// argument register to the callee parameter's declared width.
+    /// Move-consumed, borrow (&), and explicitly-release-tracked
+    /// arguments pass through untouched -- their register discipline
+    /// is owned by the materialization plan. A disposable argument
+    /// temp (release_after_call) is retired by the wrap itself and
+    /// the wrapped temp takes its place in the post-call cleanup; a
+    /// kept register is wrapped without release and the wrapped temp
+    /// is registered for post-call release instead.
+    fn canonicalizeCallArg(self: *Codegen, lowered_arg: LoweredCallArg, param_ty: *const ast.Type) CodegenError!LoweredCallArg {
+        if (lowered_arg.consume_reg != null) return lowered_arg;
+        if (lowered_arg.release_reg != null) return lowered_arg;
+        const reg = lowered_arg.reg;
+        if (std.mem.startsWith(u8, reg, "^") or std.mem.startsWith(u8, reg, "&")) return lowered_arg;
+        if (try self.emitWidthCanonicalize(reg, param_ty, lowered_arg.release_after_call)) |wrapped| {
+            return .{
+                .reg = wrapped,
+                .release_after_call = true,
+                .release_reg = null,
+                .consume_reg = null,
+            };
+        }
+        return lowered_arg;
+    }
+
     fn asyncContinuationConditionOpName(op: ast.BinaryOp) ?[]const u8 {
         return lowering_rules.asyncContinuationConditionOpName(op);
     }
@@ -9284,6 +9453,9 @@ pub const Codegen = struct {
                 const reg = try self.newTmp();
                 const op = binaryOpName(bin.op, left_ty, right_ty) orelse return CodegenError.CodegenError;
                 self.outPrint("    {s} = {s} {s}, {s}\n", .{ reg, op, l, r }) catch return CodegenError.CodegenError;
+                if (bin.op == .shl) {
+                    if (try self.emitShiftResultWrap(reg, self.shiftResultType(expr, bin, left_ty))) |wrapped| return wrapped;
+                }
                 return reg;
             },
             else => return "tmp_macro_res",
@@ -9325,15 +9497,18 @@ pub const Codegen = struct {
     fn genFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl) CodegenError!void {
         const prev_async = self.current_async;
         const prev_async_return_ty = self.current_async_return_ty;
+        const prev_fn_ret_ty = self.current_fn_ret_ty;
         const prev_async_pending_return = self.async_pending_return_emitted;
         const prev_variadic_list = self.current_variadic_list;
         self.current_variadic_list = null;
         defer self.current_variadic_list = prev_variadic_list;
         self.current_async = f.is_async;
         self.current_async_return_ty = if (f.is_async) f.ret_ty else null;
+        self.current_fn_ret_ty = f.ret_ty;
         self.async_pending_return_emitted = false;
         defer self.current_async = prev_async;
         defer self.current_async_return_ty = prev_async_return_ty;
+        defer self.current_fn_ret_ty = prev_fn_ret_ty;
         defer self.async_pending_return_emitted = prev_async_pending_return;
         self.store_moved_bindings.clearRetainingCapacity();
         self.addressable_bindings.clearRetainingCapacity();
@@ -9562,6 +9737,9 @@ pub const Codegen = struct {
                 const tail_expr = f.body[f.body.len - 1].expr_stmt;
                 var tail_reg = try self.genExpr(tail_expr, &hoisted_allocs);
                 if (!self.async_pending_return_emitted) {
+                    // Form G: the tail expression is a return position;
+                    // canonicalize to the declared return width.
+                    tail_reg = try self.canonicalizeReturnValue(tail_expr, tail_reg, f.ret_ty);
                     if (async_return_plan.wrap_ready_future) {
                         tail_reg = try self.genReadyFutureI64(tail_reg);
                     }
@@ -12822,7 +13000,8 @@ pub const Codegen = struct {
             .shallow_copy_value = shallow_copy_value,
             .value_arg_transfers_ownership = self.valueArgTransfersOwnership(options.param, arg_ty),
         });
-        const lowered = try self.genCallArgFromMaterializationPlan(arg, options.param, materialization, hoisted_allocs);
+        var lowered = try self.genCallArgFromMaterializationPlan(arg, options.param, materialization, hoisted_allocs);
+        var promotion_applied = false;
         // Extern variadic batch: the checker recorded a C default
         // argument promotion for this trailing argument; materialise
         // the widening conversion now so the callee reads the promoted
@@ -12839,7 +13018,20 @@ pub const Codegen = struct {
                 }
                 const promoted = try self.newTmp();
                 self.outPrint("    {s} = {s} as {s}\n", .{ promoted, src_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
-                return .{ .reg = promoted, .release_after_call = lowered.release_after_call, .release_reg = lowered.release_reg, .consume_reg = lowered.consume_reg };
+                lowered = .{ .reg = promoted, .release_after_call = lowered.release_after_call, .release_reg = lowered.release_reg, .consume_reg = lowered.consume_reg };
+                promotion_applied = true;
+            }
+        }
+        // Form G: canonicalize the argument register to the callee
+        // parameter's declared width. Borrow parameters are skipped:
+        // their register carries an address (or a slot), not the
+        // value. Move parameters are skipped: the move consumes the
+        // register, and the moved binding was canonicalized at its
+        // own binding site. (A recorded C promotion above supersedes
+        // the parameter width for that call's ABI.)
+        if (options.param) |param| {
+            if (!promotion_applied and !param.is_borrow and !param.is_move) {
+                lowered = try self.canonicalizeCallArg(lowered, param.ty);
             }
         }
         return lowered;
@@ -14156,7 +14348,11 @@ pub const Codegen = struct {
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
                     if (let_ty.* == .primitive) {
-                        try self.emitPrimitiveCopy(let.name, val_reg, let_ty);
+                        // Form G: the binding copy canonicalizes a
+                        // narrow-integer value to the declared width,
+                        // so the binding never holds unwrapped bits
+                        // (in-function widening readbacks stay exact).
+                        try self.emitBindingPrimitiveCopy(let.name, val_reg, let_ty);
                         // DEF-batch2 card 10a: callArgNeedsRelease is the
                         // wrong predicate for the value temp here — it is
                         // false for every cast, so a cross-type cast bound
@@ -14618,7 +14814,17 @@ pub const Codegen = struct {
                         try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                         if (move_out_rebind) _ = self.consumed_bindings.remove(target_name);
                     } else if (move_out_rebind and (self.assigned_value_slots.contains(target_name) or self.addressable_bindings.contains(target_name) or self.stack_alloc_bindings.contains(target_name))) {
-                        self.outPrint("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
+                        if (target_ty.* == .primitive and assign.value.* != .move_expr) {
+                            // Form G: a register rebind of a primitive
+                            // goes through the canonicalizing copy, so
+                            // the revived binding never holds unwrapped
+                            // bits; the value temp is then retired
+                            // under the field/store discipline.
+                            try self.emitBindingPrimitiveCopy(target_name, stored_val_reg, target_ty);
+                            if (self.fieldBaseResultNeedsRelease(assign.value, stored_val_reg)) try self.emitRelease(stored_val_reg);
+                        } else {
+                            self.outPrint("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
+                        }
                         _ = self.consumed_bindings.remove(target_name);
                     } else if (self.assigned_value_slots.contains(target_name)) {
                         _ = try self.releaseResultSlotRefCellHandle(target_name, false);
@@ -14653,7 +14859,7 @@ pub const Codegen = struct {
                         try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                     } else {
                         try self.emitRelease(assign.target.identifier);
-                        if (assign.value.* == .identifier and target_ty.* == .primitive) {
+                        if (target_ty.* == .primitive and assign.value.* != .move_expr) {
                             // DEF-MANDEL: the inline float arm emitted
                             // `add val, 0.0` (integer add on a float
                             // register). The backend folds that as an
@@ -14663,9 +14869,18 @@ pub const Codegen = struct {
                             // never reaches the loop-carried binding's
                             // slot: reads at the loop head keep seeing
                             // the entry value (micro4 family). Route
-                            // through emitPrimitiveCopy, whose float
+                            // through the primitive copy, whose float
                             // arm materializes a real `fadd` copy.
-                            try self.emitPrimitiveCopy(target_name, val_reg, target_ty);
+                            // Form G: the copy is the canonicalizing
+                            // binding copy, applied to every primitive
+                            // value shape (not just identifiers): a
+                            // narrow-integer result is masked /
+                            // sign-extended into the target, and the
+                            // value temp is retired under the
+                            // field/store discipline (a plain register
+                            // move consumed it before).
+                            try self.emitBindingPrimitiveCopy(target_name, stored_val_reg, target_ty);
+                            if (self.fieldBaseResultNeedsRelease(assign.value, stored_val_reg)) try self.emitRelease(stored_val_reg);
                         } else {
                             self.outPrint("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
                         }
@@ -14699,6 +14914,12 @@ pub const Codegen = struct {
                     // borrow hands the caller a deep clone it truly owns.
                     val_reg = (try self.cloneBorrowedHandleFieldValue(v, raw_val_reg)) orelse raw_val_reg;
                     result_extract_cloned = val_reg != null and !std.mem.eql(u8, val_reg.?, raw_val_reg);
+                    // Form G: canonicalize the returned register to
+                    // the function's declared return width (locally
+                    // known in every mode, records or not).
+                    if (val_reg) |vr| {
+                        val_reg = try self.canonicalizeReturnValue(v, vr, self.current_fn_ret_ty);
+                    }
                 }
                 if (self.current_async) {
                     if (val_reg == null) {
@@ -15149,9 +15370,21 @@ pub const Codegen = struct {
                     const move_copied = try std.fmt.allocPrint(self.allocator, "^{s}", .{copied});
                     self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_copied, layout.ty_str }) catch return CodegenError.CodegenError;
                 } else {
-                    const val_reg = try self.genExpr(literal_field.value, hoisted_allocs);
-                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
-                    if (callArgNeedsRelease(literal_field.value)) try self.emitRelease(val_reg);
+                    const raw_val_reg = try self.genExpr(literal_field.value, hoisted_allocs);
+                    // Form G: canonicalize to the field's declared
+                    // width at the init boundary (see the main field
+                    // loop's direct arm).
+                    var store_reg = raw_val_reg;
+                    var wrapped_reg: ?[]const u8 = null;
+                    if (field_ty) |fty| {
+                        if (try self.emitWidthCanonicalize(raw_val_reg, fty, false)) |wrapped| {
+                            wrapped_reg = wrapped;
+                            store_reg = wrapped;
+                        }
+                    }
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, store_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                    if (wrapped_reg) |wrapped| try self.emitRelease(wrapped);
+                    if (callArgNeedsRelease(literal_field.value)) try self.emitRelease(raw_val_reg);
                 }
             }
             return;
@@ -15195,9 +15428,20 @@ pub const Codegen = struct {
                 self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_copied, layout.ty_str }) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(value)) try self.emitRelease(source_reg);
             } else if (transfer.isDirect()) {
-                const val_reg = try self.genExpr(value, hoisted_allocs);
-                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
-                if (callArgNeedsRelease(value)) try self.emitRelease(val_reg);
+                const raw_val_reg = try self.genExpr(value, hoisted_allocs);
+                // Form G: canonicalize the field value to the field's
+                // declared width at the init boundary (the typed store
+                // truncates too; canonicalizing the register first
+                // keeps every consumer of the value exact).
+                var store_reg = raw_val_reg;
+                var wrapped_reg: ?[]const u8 = null;
+                if (try self.emitWidthCanonicalize(raw_val_reg, decl_field.ty, false)) |wrapped| {
+                    wrapped_reg = wrapped;
+                    store_reg = wrapped;
+                }
+                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, store_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                if (wrapped_reg) |wrapped| try self.emitRelease(wrapped);
+                if (callArgNeedsRelease(value)) try self.emitRelease(raw_val_reg);
             } else if (transfer.isMove()) {
                 const val_reg = try self.genExpr(value, hoisted_allocs);
                 const move_reg = if (std.mem.startsWith(u8, val_reg, "^")) val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg});
@@ -17544,6 +17788,9 @@ pub const Codegen = struct {
                 self.outPrint("    {s} = {s} {s}, {s}\n", .{ reg, op, l, r }) catch return CodegenError.CodegenError;
                 if (self.exprResultRegNeedsRelease(bin.left)) try self.emitRelease(l);
                 if (self.exprResultRegNeedsRelease(bin.right)) try self.emitRelease(r);
+                if (bin.op == .shl) {
+                    if (try self.emitShiftResultWrap(reg, self.shiftResultType(expr, &bin, left_ty))) |wrapped| return wrapped;
+                }
                 return reg;
             },
             .borrow_expr => |borrow| {

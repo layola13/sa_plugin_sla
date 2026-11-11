@@ -1,0 +1,123 @@
+// DEF-TEXT-SHIFT-WRAP regression: on the SA-text backend, a left
+// shift whose result type is a narrow integer must wrap at the
+// operand width (SA registers are width-less 64-bit words; before
+// the fix the text codegen emitted the bare `shl` and kept the
+// unwrapped bits, e.g. u32 4294967295 << 8 read back as
+// 1099511627520 instead of 4294967040). SAB was always correct.
+// All operands pass through identity helpers so every value is a
+// runtime value (no constant folding). Assertions are exact.
+
+fn sw_id8(v: u8) -> u8 { return v; }
+fn sw_id16(v: u16) -> u16 { return v; }
+fn sw_id32(v: u32) -> u32 { return v; }
+fn sw_idi8(v: i8) -> i8 { return v; }
+fn sw_idi16(v: i16) -> i16 { return v; }
+fn sw_idi32(v: i32) -> i32 { return v; }
+fn sw_amt(v: u32) -> u32 { return v; }
+
+@test "def text shift wrap u32"() {
+    let x: u32 = sw_id32(4294967295) << sw_amt(8);
+    if (x as u64) != 4294967040 { panic(26401); }; // 0xFFFFFF00
+    let y: u32 = sw_id32(4294967295) << sw_amt(0);
+    if (y as u64) != 4294967295 { panic(26402); };
+    let z: u32 = sw_id32(255) << sw_amt(24);
+    if (z as u64) != 4278190080 { panic(26403); }; // 0xFF000000
+    let w: u32 = x << sw_amt(4);
+    if (w as u64) != 4294963200 { panic(26404); }; // 0xFFFFF000, chained wrap
+    // Control: right shift was always exact on both backends.
+    let s: u32 = sw_id32(4294967295) >> sw_amt(8);
+    if (s as u64) != 16777215 { panic(26405); };
+}
+
+@test "def text shift wrap u16"() {
+    let x: u16 = sw_id16(65535) << sw_amt(8);
+    if (x as u64) != 65280 { panic(26411); }; // 0xFF00
+    let y: u16 = sw_id16(32768) << sw_amt(1);
+    if (y as u64) != 0 { panic(26412); }; // the only bit shifts out
+    let z: u16 = sw_id16(257) << sw_amt(8);
+    if (z as u64) != 256 { panic(26413); }; // 0x0101 << 8 wraps to 0x0100
+}
+
+@test "def text shift wrap u8"() {
+    let x: u8 = sw_id8(255) << sw_amt(4);
+    if (x as u64) != 240 { panic(26421); }; // 0xF0
+    let y: u8 = sw_id8(128) << sw_amt(1);
+    if (y as u64) != 0 { panic(26422); };
+    let z: u8 = sw_id8(171) << sw_amt(4);
+    if (z as u64) != 176 { panic(26423); }; // 0xAB << 4 wraps to 0xB0
+}
+
+fn sw_lit_mask(p: u32) -> u64 {
+    let m: u32 = 4294967295 << (32 - p);
+    return m as u64;
+}
+
+@test "def text shift wrap literal left"() {
+    // Literal left operand (the sa_std/ip.sla mask shape): the let's
+    // copy preserves the raw register, so the widening cast below
+    // exposes any unwrapped bits. Return-slot truncation must not be
+    // what saves this case, so the value is read back in-function.
+    let x: u32 = 4294967295 << sw_amt(8);
+    if (x as u64) != 4294967040 { panic(26441); }; // 0xFFFFFF00
+    let y: u16 = 65535 << sw_amt(8);
+    if (y as u64) != 65280 { panic(26442); }; // 0xFF00
+    if sw_lit_mask(sw_amt(24)) != 4294967040 { panic(26443); };
+    if sw_lit_mask(sw_amt(16)) != 4294901760 { panic(26444); }; // 0xFFFF0000
+}
+
+@test "def text shift wrap signed"() {
+    let a: i32 = sw_idi32(1073741824) << sw_amt(1);
+    if (a as i64) != -2147483648 { panic(26431); }; // 0x40000000 << 1 wraps to i32 min
+    let b: i16 = sw_idi16(32767) << sw_amt(1);
+    if (b as i64) != -2 { panic(26432); };
+    let c: i8 = sw_idi8(127) << sw_amt(1);
+    if (c as i64) != -2 { panic(26433); };
+    let d: i32 = sw_idi32(-1) << sw_amt(8);
+    if (d as i64) != -256 { panic(26434); }; // agrees at both widths
+    let e: i16 = sw_idi16(-32768) >> sw_amt(8);
+    if (e as i64) != -128 { panic(26435); }; // ashr control, always exact
+}
+
+fn sw_widen32(v: u32) -> u64 { return v as u64; }
+fn sw_ret_shift() -> u32 { return 4294967295 << sw_amt(8); }
+
+struct SwCfg { mask: u32, level: u16 }
+
+@test "def text shift wrap boundaries"() {
+    // Form G boundary shapes: the literal-left shift has no usable
+    // type record at its emission site in test mode, so each case
+    // is saved (or not) by canonicalization at the consumption
+    // boundary, keyed on the locally-known declared type.
+    // Call argument: the shift is consumed at the callee's u32
+    // parameter boundary; the callee widens, exposing any
+    // unwrapped bits the argument register carried across.
+    if sw_widen32(4294967295 << sw_amt(8)) != 4294967040 { panic(26451); };
+    // Return position: the shift IS the returned value of a u32
+    // function, widened at the call site with no intervening
+    // narrow binding to save it.
+    if (sw_ret_shift() as u64) != 4294967040 { panic(26452); };
+    // Struct field init: shifts bound into declared field widths.
+    let cfg = SwCfg { mask: 4294967295 << sw_amt(8), level: sw_id16(65535) << sw_amt(8) };
+    if (cfg.mask as u64) != 4294967040 { panic(26453); };
+    if (cfg.level as u64) != 65280 { panic(26454); };
+    // Assignment: a literal-left shift rebound into an existing
+    // u32 binding (register rebind; no slot store truncates it).
+    let a: u32 = sw_amt(0);
+    a = 4294967295 << sw_amt(8);
+    if (a as u64) != 4294967040 { panic(26455); };
+}
+
+@test "def text narrow arith wrap at binding"() {
+    // Q2 (panel adjudication): the boundary canonicalization is
+    // op-agnostic -- narrow add/mul results bound at a typed let
+    // wrap by the same mechanism, with no per-op emission-site
+    // machinery. SAB was always exact for these too.
+    let a: u32 = sw_id32(4294967295) + sw_amt(2);
+    if (a as u64) != 1 { panic(26461); };
+    let m: u32 = sw_id32(65536) * sw_id32(65536);
+    if (m as u64) != 0 { panic(26462); };
+    let s: i32 = sw_idi32(2147483647) + sw_idi32(1);
+    if (s as i64) != -2147483648 { panic(26463); };
+    let h: u16 = sw_id16(1000) * sw_id16(1000);
+    if (h as u64) != 16960 { panic(26464); }; // 1000000 mod 65536
+}

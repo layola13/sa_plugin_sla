@@ -1,0 +1,29 @@
+@import "sa_std/http_proxy.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-HTTP-PROXY carrier, dial-through-proxy shapes. The
+// runner runs this file with exactly this process environment
+// (all other proxy variables removed):
+//   http_proxy=http://127.0.0.1:1
+//   https_proxy=http://127.0.0.1:1
+// Both scheme variables are set because dial reads the proxy
+// variable per target scheme (http targets read the http pair,
+// https targets the https pair); setting only http_proxy would
+// leave https targets to a direct connect. The configured proxy
+// sits on the loopback discard port, so dial's tunnel leg is
+// refused immediately; the target itself is never resolved or
+// contacted. Panic codes 628xx.
+
+@test "decl http proxy dial via proxy refused"() {
+    let t = http_proxy_dial(format("http://example.com/"), 0);
+    if t.status == SA_STD_OK { panic(62821); };
+    if t.handle != 0 { panic(62822); };
+    if t.http_status != 0 { panic(62823); };
+    // https target: dial composes tunnel_tls over the http proxy;
+    // the refused proxy connect propagates.
+    let t2 = http_proxy_dial(format("https://example.com/"), 0);
+    if t2.status == SA_STD_OK { panic(62824); };
+    if t2.handle != 0 { panic(62825); };
+}

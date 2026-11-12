@@ -1,0 +1,60 @@
+@import "sa_std/http_proxy.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-HTTP-PROXY carrier, environment file B (CGI guard and
+// trimming). The runner runs this file under exactly this process
+// environment (all other proxy variables removed):
+//   REQUEST_METHOD=GET
+//   HTTP_PROXY=http://upper.example:1111
+//   http_proxy=http://lower.example:2222
+//   HTTPS_PROXY=" http://padded.example:4444 "   (padded on purpose)
+//   NO_PROXY=   (set but empty)
+//   no_proxy=lower.example
+// With REQUEST_METHOD present, the uppercase HTTP_PROXY is
+// distrusted entirely (the CGI header-injection guard) and only the
+// lowercase variable is honored for http targets. Panic codes 626xx.
+
+fn hp_seq_b(s: String, lit: String) -> bool {
+    let ns: u64 = len(s) as u64;
+    let nl: u64 = len(lit) as u64;
+    if ns != nl { return false; };
+    let ps: ptr = STR_PTR(s);
+    let pl: ptr = STR_PTR(lit);
+    let i: u64 = 0;
+    while i < ns {
+        if PTR_BYTE_AT(ps, i) != PTR_BYTE_AT(pl, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+@test "decl http proxy env b cgi guard"() {
+    // CGI environment: uppercase HTTP_PROXY skipped, lowercase wins.
+    if !hp_seq_b(http_proxy_env_proxy_value(1), format("http://lower.example:2222")) { panic(62631); };
+    // The https path has no CGI guard; the padded uppercase value
+    // is honored after trimming.
+    if !hp_seq_b(http_proxy_env_proxy_value(2), format("http://padded.example:4444")) { panic(62632); };
+    // Set-but-empty NO_PROXY does not win; lowercase no_proxy does.
+    if !hp_seq_b(http_proxy_env_no_proxy_value(), format("lower.example")) { panic(62633); };
+}
+
+@test "decl http proxy env b for url"() {
+    // for_url inherits the guard: http targets use the lowercase
+    // proxy at port 2222.
+    match http_proxy_for_url(format("http://other.test/")) {
+        Ok(d) => {
+            if !http_proxy_decision_use_proxy(&d) { panic(62634); };
+            if d.proxy.port != 2222 { panic(62635); };
+        },
+        Err(e) => { panic(62636); },
+    };
+    // The lowercase no_proxy entry bypasses.
+    match http_proxy_for_url(format("http://lower.example/")) {
+        Ok(d) => {
+            if http_proxy_decision_reason(&d) != 3 { panic(62637); };
+        },
+        Err(e) => { panic(62638); },
+    };
+}

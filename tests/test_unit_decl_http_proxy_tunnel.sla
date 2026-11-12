@@ -1,0 +1,93 @@
+@import "sa_std/http_proxy.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-HTTP-PROXY carrier, tunnel failure shapes. Every case
+// here is deterministic without a live peer: the proxy endpoint is
+// 127.0.0.1:1 (discard port, nothing listens in the venue), so the
+// transport connect is refused immediately, or the shape is
+// rejected before any byte flows. Live-peer shapes live in the
+// companion live file. Panic codes 627xx.
+
+@test "decl http proxy tunnel http refused"() {
+    match http_proxy_parse(format("http://127.0.0.1:1")) {
+        Ok(px) => {
+            let t = http_proxy_tunnel(px, format("example.com"), 80);
+            if t.status == SA_STD_OK { panic(62701); };
+            if t.handle != 0 { panic(62702); };
+            if t.http_status != 0 { panic(62703); };
+            if t.socks_reply != 0 { panic(62704); };
+        },
+        Err(e) => { panic(62705); },
+    };
+    // Same shape with credentials in the proxy URL: the credential
+    // spans are decoded before the connect is attempted.
+    match http_proxy_parse(format("http://user:pass@127.0.0.1:1")) {
+        Ok(px) => {
+            let t = http_proxy_tunnel(px, format("example.com"), 80);
+            if t.status == SA_STD_OK { panic(62706); };
+            if t.handle != 0 { panic(62707); };
+        },
+        Err(e) => { panic(62708); },
+    };
+}
+
+@test "decl http proxy tunnel socks5 refused"() {
+    // http_proxy_tunnel dispatches a socks5 proxy to the SOCKS5
+    // handshake; the refused connect surfaces the same way.
+    match http_proxy_parse(format("socks5://127.0.0.1:1")) {
+        Ok(px) => {
+            let t = http_proxy_tunnel(px, format("example.com"), 80);
+            if t.status == SA_STD_OK { panic(62711); };
+            if t.handle != 0 { panic(62712); };
+            if t.socks_reply != 0 { panic(62713); };
+        },
+        Err(e) => { panic(62714); },
+    };
+    // The direct SOCKS5 entry on the same refused endpoint.
+    match http_proxy_parse(format("socks5://127.0.0.1:1")) {
+        Ok(px) => {
+            let t = http_proxy_tunnel_socks5(px, format("example.com"), 80);
+            if t.status == SA_STD_OK { panic(62715); };
+            if t.handle != 0 { panic(62716); };
+        },
+        Err(e) => { panic(62717); },
+    };
+}
+
+@test "decl http proxy tunnel tls shapes"() {
+    // TLS layering over an https proxy is rejected up front with
+    // SA_STD_ERR_UNSUPPORTED: no byte flows, the combination is
+    // stated rather than approximated (a TLS handle is not
+    // fd-detachable).
+    match http_proxy_parse(format("https://127.0.0.1:8443")) {
+        Ok(px) => {
+            let t = http_proxy_tunnel_tls(px, format("example.com"), 443, 0);
+            if t.status != SA_STD_ERR_UNSUPPORTED { panic(62721); };
+            if t.handle != 0 { panic(62722); };
+        },
+        Err(e) => { panic(62723); },
+    };
+    // Over a plain http proxy the inner tunnel runs first and its
+    // transport failure propagates unchanged (not the unsupported
+    // code, not success).
+    match http_proxy_parse(format("http://127.0.0.1:1")) {
+        Ok(px) => {
+            let t = http_proxy_tunnel_tls(px, format("example.com"), 443, 0);
+            if t.status == SA_STD_OK { panic(62724); };
+            if t.status == SA_STD_ERR_UNSUPPORTED { panic(62725); };
+            if t.handle != 0 { panic(62726); };
+        },
+        Err(e) => { panic(62727); },
+    };
+    // Over a socks5 proxy likewise: the SOCKS5 leg runs first.
+    match http_proxy_parse(format("socks5://127.0.0.1:1")) {
+        Ok(px) => {
+            let t = http_proxy_tunnel_tls(px, format("example.com"), 443, 0);
+            if t.status == SA_STD_OK { panic(62728); };
+            if t.handle != 0 { panic(62729); };
+        },
+        Err(e) => { panic(62730); },
+    };
+}

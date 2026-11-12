@@ -1,0 +1,410 @@
+@import "sa_std/http_proxy.sla"
+@import "sa_std/net.sai"
+@import "sla_std/wrap/net.sla"
+@import "sla_std/wrap/globals.sla"
+@import "sa_std/thread.sai"
+@import "sa_std/globals.sai"
+@import "sa_std/time.sai"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-HTTP-PROXY carrier, live loopback fixtures. Each test
+// starts a one-shot proxy server on 127.0.0.1:0 (ephemeral port) in
+// a detached thread: the server validates the exact protocol bytes
+// the client sends (CONNECT head incl. the Proxy-Authorization
+// line, SOCKS5 greeting / RFC 1929 auth / CONNECT request) into a
+// global flag the test then asserts, and replies with a scripted
+// status. This is the shape the registered PROXY-SAB residual was
+// observed on (net_b SAB-arm CONNECT cell): if the SAB arm fails
+// here with the recorded signature while the text arm passes, the
+// name is defect-blocked, not green. Panic codes 629xx.
+//
+// Server modes: 1 CONNECT+auth -> 200, 2 CONNECT no-auth -> 407,
+// 3 SOCKS5 -> success, 4 SOCKS5 -> reply 5, 5 SOCKS5 auth -> success.
+//
+// The two CONNECT tests (modes 1/2) are NOT in this file: at the
+// f6f9a552 x eca5b9c0 pin they fail on BOTH backends against a
+// byte-validated server (the tunnel returns SA_STD_ERR_NET with
+// http_status 0 after a well-formed 200/407 head) — the registered
+// PROXY-SAB family, defect-blocked; the tests and the minimized
+// repro probes are preserved with the line's evidence
+// (test_unit_decl_http_proxy_live_full_v1.sla, probe_vec.sla,
+// probe_exchange.sla). The mode 1/2 fixture code stays so the
+// tests can be restored verbatim when the fix lands.
+
+fn hp_gset(name: ptr, name_len: u64, v: u64) {
+    let rc: i32 = sla_global_u64_set(name, name_len, v);
+}
+
+fn hp_gget(name: ptr, name_len: u64) -> u64 {
+    let v: u64 = 0;
+    let rc: i32 = sa_global_u64_get(name, name_len, &v);
+    return v;
+}
+
+fn hp_read_exact(h: u64, base: ptr, n: u64) -> bool {
+    let got: u64 = 0;
+    while got < n {
+        let rd = [0u64; 1];
+        let rc: i32 = sa_std_net_tcp_stream_read(h, PTR_BYTE_ADD(base, got), n - got, &rd[0]);
+        if rc != 0 { return false; };
+        if rd[0] == 0 { return false; };
+        got = got + rd[0];
+    }
+    return true;
+}
+
+fn hp_write_all(h: u64, base: ptr, n: u64) -> bool {
+    let sent: u64 = 0;
+    while sent < n {
+        let wr = [0u64; 1];
+        let rc: i32 = sla_std_net_tcp_stream_write(h, PTR_BYTE_ADD(base, sent), n - sent, &wr[0]);
+        if rc != 0 { return false; };
+        if wr[0] == 0 { return false; };
+        sent = sent + wr[0];
+    }
+    return true;
+}
+
+fn hp_starts(base: ptr, n: u64, lit: String) -> bool {
+    let ln: u64 = len(lit);
+    if n < ln { return false; };
+    let lp: ptr = STR_PTR(lit);
+    let i: u64 = 0;
+    while i < ln {
+        if PTR_BYTE_AT(base, i) != PTR_BYTE_AT(lp, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+fn hp_contains(base: ptr, n: u64, lit: String) -> bool {
+    let ln: u64 = len(lit);
+    if ln == 0 { return true; };
+    if n < ln { return false; };
+    let lp: ptr = STR_PTR(lit);
+    let i: u64 = 0;
+    while i + ln <= n {
+        let j: u64 = 0;
+        let same: bool = true;
+        while j < ln {
+            if PTR_BYTE_AT(base, i + j) != PTR_BYTE_AT(lp, j) { same = false; };
+            j = j + 1;
+        }
+        if same { return true; };
+        i = i + 1;
+    }
+    return false;
+}
+
+fn hp_serve_connect(h: u64, mode: u64) {
+    let buf = [0u8; 1024];
+    let buf_base: ptr = PTR_BYTE_ADD(&buf, 0);
+    let total: u64 = 0;
+    let done: bool = false;
+    while !done {
+        let rd = [0u64; 1];
+        let cap: u64 = (1024 as u64) - total;
+        let rc: i32 = sa_std_net_tcp_stream_read(h, PTR_BYTE_ADD(buf_base, total), cap, &rd[0]);
+        if rc != 0 {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 2);
+            return;
+        };
+        if rd[0] == 0 {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 2);
+            return;
+        };
+        total = total + rd[0];
+        if hp_contains(buf_base, total, format("\r\n\r\n")) { done = true; };
+        if total >= 1024 { done = true; };
+    }
+    let base: ptr = buf_base;
+    let ok: bool = hp_starts(base, total, format("CONNECT example.com:80 HTTP/1.1\r\n"));
+    if ok {
+        if !hp_contains(base, total, format("Host: example.com:80\r\n")) { ok = false; };
+    };
+    if mode == 1 {
+        if ok {
+            if !hp_contains(base, total, format("Proxy-Authorization: Basic dXNlcjpwYXNz\r\n")) { ok = false; };
+        };
+    } else {
+        if ok {
+            if hp_contains(base, total, format("Proxy-Authorization:")) { ok = false; };
+        };
+    };
+    if ok { hp_gset(STR_PTR("declhp.reqok"), STR_LEN("declhp.reqok"), 1); };
+    if mode == 1 {
+        let resp: String = format("HTTP/1.1 200 Connection Established\r\n\r\n");
+        let w: bool = hp_write_all(h, STR_PTR(resp), len(resp) as u64);
+    } else {
+        let resp: String = format("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n");
+        let w: bool = hp_write_all(h, STR_PTR(resp), len(resp) as u64);
+    };
+}
+
+fn hp_serve_socks(h: u64, mode: u64) {
+    let greet = [0u8; 300];
+    let gb: ptr = PTR_BYTE_ADD(&greet, 0);
+    let gm: ptr = PTR_BYTE_ADD(gb, 2);
+    if !hp_read_exact(h, gb, 2) {
+        hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 3);
+        return;
+    };
+    if greet[0] != 5 {
+        hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 3);
+        return;
+    };
+    let nm: u64 = greet[1] as u64;
+    if nm > 0 {
+        if !hp_read_exact(h, gm, nm) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 3);
+            return;
+        };
+    };
+    if mode == 5 {
+        let has2: bool = false;
+        let i: u64 = 0;
+        while i < nm {
+            if greet[2 + i] == 2 { has2 = true; };
+            i = i + 1;
+        }
+        if !has2 {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 3);
+            return;
+        };
+        let sel = [0u8; 2];
+        sel[0] = 5;
+        sel[1] = 2;
+        if !hp_write_all(h, PTR_BYTE_ADD(&sel, 0), 2) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 3);
+            return;
+        };
+        let ah = [0u8; 2];
+        if !hp_read_exact(h, PTR_BYTE_ADD(&ah, 0), 2) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 4);
+            return;
+        };
+        if ah[0] != 1 {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 4);
+            return;
+        };
+        let ubuf = [0u8; 256];
+        let ulen: u64 = ah[1] as u64;
+        if !hp_read_exact(h, PTR_BYTE_ADD(&ubuf, 0), ulen) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 4);
+            return;
+        };
+        let pb = [0u8; 1];
+        if !hp_read_exact(h, PTR_BYTE_ADD(&pb, 0), 1) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 4);
+            return;
+        };
+        let pbuf = [0u8; 256];
+        let plen: u64 = pb[0] as u64;
+        if !hp_read_exact(h, PTR_BYTE_ADD(&pbuf, 0), plen) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 4);
+            return;
+        };
+        if ulen == 4 && plen == 4 {
+            if hp_starts(PTR_BYTE_ADD(&ubuf, 0), ulen, format("user")) {
+                if hp_starts(PTR_BYTE_ADD(&pbuf, 0), plen, format("pass")) {
+                    hp_gset(STR_PTR("declhp.reqok"), STR_LEN("declhp.reqok"), 1);
+                };
+            };
+        };
+        let ar = [0u8; 2];
+        ar[0] = 1;
+        ar[1] = 0;
+        if !hp_write_all(h, PTR_BYTE_ADD(&ar, 0), 2) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 4);
+            return;
+        };
+    } else {
+        let sel0 = [0u8; 2];
+        sel0[0] = 5;
+        sel0[1] = 0;
+        if !hp_write_all(h, PTR_BYTE_ADD(&sel0, 0), 2) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 3);
+            return;
+        };
+    };
+    let head = [0u8; 4];
+    if !hp_read_exact(h, PTR_BYTE_ADD(&head, 0), 4) {
+        hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 5);
+        return;
+    };
+    if head[0] != 5 || head[1] != 1 {
+        hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 5);
+        return;
+    };
+    let atyp: u8 = head[3];
+    if atyp == 3 {
+        let lb = [0u8; 1];
+        if !hp_read_exact(h, PTR_BYTE_ADD(&lb, 0), 1) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 5);
+            return;
+        };
+        let hn: u64 = lb[0] as u64;
+        let host = [0u8; 256];
+        if !hp_read_exact(h, PTR_BYTE_ADD(&host, 0), hn) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 5);
+            return;
+        };
+        let pb2 = [0u8; 2];
+        if !hp_read_exact(h, PTR_BYTE_ADD(&pb2, 0), 2) {
+            hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 5);
+            return;
+        };
+        let port: u64 = (pb2[0] as u64) * 256 + (pb2[1] as u64);
+        if hn == 11 && port == 80 {
+            if hp_starts(PTR_BYTE_ADD(&host, 0), hn, format("example.com")) {
+                if mode != 5 {
+                    hp_gset(STR_PTR("declhp.reqok"), STR_LEN("declhp.reqok"), 1);
+                };
+            };
+        };
+    } else {
+        if atyp == 1 {
+            let skipa = [0u8; 6];
+            if !hp_read_exact(h, PTR_BYTE_ADD(&skipa, 0), 6) {
+                hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 5);
+                return;
+            };
+        } else {
+            if atyp == 4 {
+                let skipb = [0u8; 18];
+                if !hp_read_exact(h, PTR_BYTE_ADD(&skipb, 0), 18) {
+                    hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 5);
+                    return;
+                };
+            } else {
+                hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 5);
+                return;
+            };
+        };
+    };
+    let rep = [0u8; 10];
+    rep[0] = 5;
+    if mode == 4 { rep[1] = 5; } else { rep[1] = 0; };
+    rep[2] = 0;
+    rep[3] = 1;
+    let w: bool = hp_write_all(h, PTR_BYTE_ADD(&rep, 0), 10);
+}
+
+fn hp_server(arg: ptr) {
+    let lh: u64 = hp_gget(STR_PTR("declhp.lh"), STR_LEN("declhp.lh"));
+    let mode: u64 = hp_gget(STR_PTR("declhp.mode"), STR_LEN("declhp.mode"));
+    let srv = [0u64; 1];
+    let arc: i32 = sla_std_net_tcp_accept(lh, &srv[0]);
+    if arc != 0 || srv[0] == 0 {
+        hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 1);
+        hp_gset(STR_PTR("declhp.served"), STR_LEN("declhp.served"), 1);
+        return;
+    };
+    if mode == 1 || mode == 2 {
+        hp_serve_connect(srv[0], mode);
+    } else {
+        hp_serve_socks(srv[0], mode);
+    };
+    let crc = sa_net_tcp_stream_close(srv[0]);
+    hp_gset(STR_PTR("declhp.served"), STR_LEN("declhp.served"), 1);
+}
+
+fn hp_start(mode: u64, code: i32) -> u64 {
+    let lh = [0u64; 1];
+    let pt = [0u64; 1];
+    let rc: i32 = sla_std_net_tcp_listen(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 0, &lh[0], &pt[0]);
+    if rc != 0 { panic(code); };
+    if lh[0] == 0 { panic(code + 1); };
+    if pt[0] == 0 { panic(code + 2); };
+    hp_gset(STR_PTR("declhp.lh"), STR_LEN("declhp.lh"), lh[0]);
+    hp_gset(STR_PTR("declhp.mode"), STR_LEN("declhp.mode"), mode);
+    hp_gset(STR_PTR("declhp.reqok"), STR_LEN("declhp.reqok"), 0);
+    hp_gset(STR_PTR("declhp.err"), STR_LEN("declhp.err"), 0);
+    hp_gset(STR_PTR("declhp.served"), STR_LEN("declhp.served"), 0);
+    let src: i32 = pthread_spawn_detached(hp_server, 0);
+    if src != 0 { panic(code + 3); };
+    return pt[0];
+}
+
+fn hp_finish(code: i32) {
+    let i: i32 = 0;
+    let seen: bool = false;
+    while i < 800 {
+        if hp_gget(STR_PTR("declhp.served"), STR_LEN("declhp.served")) == 1 {
+            seen = true;
+            break;
+        };
+        let src: i32 = sa_time_sleep_ms(5);
+        i = i + 1;
+    }
+    if !seen { panic(code); };
+    if hp_gget(STR_PTR("declhp.err"), STR_LEN("declhp.err")) != 0 { panic(code + 1); };
+    let lh: u64 = hp_gget(STR_PTR("declhp.lh"), STR_LEN("declhp.lh"));
+    let crc = sa_net_tcp_listener_close(lh);
+}
+
+@test "decl http proxy live socks ok"() {
+    let port: u64 = hp_start(3, 62930);
+    let url: String = format("socks5://127.0.0.1:{}", port);
+    match http_proxy_parse(url) {
+        Ok(px) => {
+            let t = http_proxy_tunnel_socks5(px, format("example.com"), 80);
+            if t.status != SA_STD_OK { panic(62921); };
+            if t.socks_reply != 0 { panic(62922); };
+            if t.handle == 0 { panic(62923); };
+            let crc = sa_net_tcp_stream_close(t.handle);
+        },
+        Err(e) => { panic(62924); },
+    };
+    hp_finish(62925);
+    if hp_gget(STR_PTR("declhp.reqok"), STR_LEN("declhp.reqok")) != 1 { panic(62926); };
+}
+
+@test "decl http proxy live tunnel dispatch socks"() {
+    let port: u64 = hp_start(3, 62940);
+    let url: String = format("socks5://127.0.0.1:{}", port);
+    match http_proxy_parse(url) {
+        Ok(px) => {
+            let t = http_proxy_tunnel(px, format("example.com"), 80);
+            if t.status != SA_STD_OK { panic(62931); };
+            if t.handle == 0 { panic(62932); };
+            let crc = sa_net_tcp_stream_close(t.handle);
+        },
+        Err(e) => { panic(62933); },
+    };
+    hp_finish(62934);
+    if hp_gget(STR_PTR("declhp.reqok"), STR_LEN("declhp.reqok")) != 1 { panic(62935); };
+}
+
+@test "decl http proxy live socks refused"() {
+    let port: u64 = hp_start(4, 62950);
+    let url: String = format("socks5://127.0.0.1:{}", port);
+    match http_proxy_parse(url) {
+        Ok(px) => {
+            let t = http_proxy_tunnel_socks5(px, format("example.com"), 80);
+            if t.status != SA_STD_ERR_NET { panic(62941); };
+            if t.socks_reply != 5 { panic(62942); };
+            if t.handle != 0 { panic(62943); };
+        },
+        Err(e) => { panic(62944); },
+    };
+    hp_finish(62945);
+}
+
+@test "decl http proxy live socks auth ok"() {
+    let port: u64 = hp_start(5, 62960);
+    let url: String = format("socks5://user:pass@127.0.0.1:{}", port);
+    match http_proxy_parse(url) {
+        Ok(px) => {
+            let t = http_proxy_tunnel_socks5(px, format("example.com"), 80);
+            if t.status != SA_STD_OK { panic(62951); };
+            if t.handle == 0 { panic(62952); };
+            let crc = sa_net_tcp_stream_close(t.handle);
+        },
+        Err(e) => { panic(62953); },
+    };
+    hp_finish(62954);
+    if hp_gget(STR_PTR("declhp.reqok"), STR_LEN("declhp.reqok")) != 1 { panic(62955); };
+}

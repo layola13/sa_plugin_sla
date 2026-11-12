@@ -1,0 +1,35 @@
+@import "sa_std/http_proxy.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-HTTP-PROXY carrier, dial shapes. The runner runs this
+// file with all proxy environment variables removed, so dial's
+// internal decision is always "no proxy configured" and the direct
+// leg is what executes. Targets are loopback discard-port URLs:
+// the direct connect is refused immediately. Panic codes 628xx.
+
+@test "decl http proxy dial direct refused"() {
+    let t = http_proxy_dial(format("http://127.0.0.1:1/"), 0);
+    if t.status == SA_STD_OK { panic(62801); };
+    if t.handle != 0 { panic(62802); };
+    if t.http_status != 0 { panic(62803); };
+    // https target, same refused direct connect (TLS never starts).
+    let t2 = http_proxy_dial(format("https://127.0.0.1:1/"), 0);
+    if t2.status == SA_STD_OK { panic(62804); };
+    if t2.handle != 0 { panic(62805); };
+}
+
+@test "decl http proxy dial malformed target"() {
+    // Malformed targets surface as the status, with no handle:
+    // the module header pins local-input errors to
+    // SA_STD_ERR_INVALID_ARGUMENT.
+    let t = http_proxy_dial(format("not-a-url"), 0);
+    if t.status != SA_STD_ERR_INVALID_ARGUMENT { panic(62811); };
+    if t.handle != 0 { panic(62812); };
+    // A well-formed non-web scheme surfaces as
+    // SA_STD_ERR_UNSUPPORTED (proxy_split_target's stated code).
+    let t2 = http_proxy_dial(format("ftp://example.com/"), 0);
+    if t2.status != SA_STD_ERR_UNSUPPORTED { panic(62813); };
+    if t2.handle != 0 { panic(62814); };
+}

@@ -1,0 +1,38 @@
+@import "sa_std/http_proxy.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-HTTP-PROXY carrier, environment file CLEAN. The runner
+// runs this file with HTTP_PROXY, http_proxy, HTTPS_PROXY,
+// https_proxy, NO_PROXY, no_proxy and REQUEST_METHOD all removed
+// from the process environment. Panic codes 626xx.
+
+@test "decl http proxy env clean values"() {
+    if len(http_proxy_env_proxy_value(1)) != 0 { panic(62651); };
+    if len(http_proxy_env_proxy_value(2)) != 0 { panic(62652); };
+    if len(http_proxy_env_no_proxy_value()) != 0 { panic(62653); };
+}
+
+@test "decl http proxy env clean for url"() {
+    match http_proxy_for_url(format("http://example.com/")) {
+        Ok(d) => {
+            if http_proxy_decision_use_proxy(&d) { panic(62654); };
+            if http_proxy_decision_reason(&d) != 2 { panic(62655); };
+        },
+        Err(e) => { panic(62656); },
+    };
+    match http_proxy_for_url(format("https://example.com/")) {
+        Ok(d) => {
+            if http_proxy_decision_reason(&d) != 2 { panic(62657); };
+        },
+        Err(e) => { panic(62658); },
+    };
+    // A well-formed non-web target scheme errors even with
+    // nothing configured: SA_STD_ERR_UNSUPPORTED, as stated by
+    // proxy_split_target.
+    match http_proxy_for_url(format("ftp://example.com/")) {
+        Ok(d) => { panic(62659); },
+        Err(e) => { if e != SA_STD_ERR_UNSUPPORTED { panic(62660); }; },
+    };
+}

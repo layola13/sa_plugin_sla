@@ -1,0 +1,190 @@
+@import "sa_std/http_proxy.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-HTTP-PROXY carrier, core file: the environment-free public
+// decision surface of sa_std/http_proxy.sla -- http_proxy_decide with
+// its decision matrix (reason constants 1 VIA_PROXY, 2
+// NO_PROXY_CONFIGURED, 3 BYPASSED_NO_PROXY, 4 BYPASSED_LOOPBACK, the
+// module's own numbering), the two decision accessors
+// http_proxy_decision_use_proxy / http_proxy_decision_reason read back
+// on every arm, and http_proxy_no_proxy_matches on its Go
+// x/net/http/httpproxy boundary cases. Panic codes 625xx.
+
+fn hp_seq(s: String, lit: String) -> bool {
+    let ns: u64 = len(s) as u64;
+    let nl: u64 = len(lit) as u64;
+    if ns != nl { return false; };
+    let ps: ptr = STR_PTR(s);
+    let pl: ptr = STR_PTR(lit);
+    let i: u64 = 0;
+    while i < ns {
+        if PTR_BYTE_AT(ps, i) != PTR_BYTE_AT(pl, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+@test "decl http proxy decide no config"() {
+    // Empty proxy value: no proxy configured, decision accessors agree.
+    match http_proxy_decide(format(""), format(""), format("http://example.com/")) {
+        Ok(d) => {
+            if http_proxy_decision_use_proxy(&d) { panic(62501); };
+            if http_proxy_decision_reason(&d) != 2 { panic(62502); };
+            if d.proxy.kind != 0 { panic(62503); };
+        },
+        Err(e) => { panic(62504); },
+    };
+    // Whitespace-only proxy value trims to unconfigured.
+    match http_proxy_decide(format("   "), format(""), format("http://example.com/")) {
+        Ok(d) => {
+            if http_proxy_decision_use_proxy(&d) { panic(62505); };
+            if http_proxy_decision_reason(&d) != 2 { panic(62506); };
+        },
+        Err(e) => { panic(62507); },
+    };
+}
+
+@test "decl http proxy decide via proxy"() {
+    // Plain http proxy: via, parsed kind/port ride in the decision.
+    match http_proxy_decide(format("http://proxy.local:8080"), format(""), format("http://example.com/")) {
+        Ok(d) => {
+            if !http_proxy_decision_use_proxy(&d) { panic(62511); };
+            if http_proxy_decision_reason(&d) != 1 { panic(62512); };
+            if d.proxy.kind != 1 { panic(62513); };
+            if d.proxy.port != 8080 { panic(62514); };
+        },
+        Err(e) => { panic(62515); },
+    };
+    // https proxy value: kind 2, default port 443.
+    match http_proxy_decide(format("https://proxy.local"), format(""), format("http://example.com/")) {
+        Ok(d) => {
+            if !http_proxy_decision_use_proxy(&d) { panic(62516); };
+            if d.proxy.kind != 2 { panic(62517); };
+            if d.proxy.port != 443 { panic(62518); };
+        },
+        Err(e) => { panic(62519); },
+    };
+    // socks5 proxy value: kind 3, default port 1080.
+    match http_proxy_decide(format("socks5://proxy.local"), format(""), format("https://example.com/")) {
+        Ok(d) => {
+            if !http_proxy_decision_use_proxy(&d) { panic(62520); };
+            if d.proxy.kind != 3 { panic(62521); };
+            if d.proxy.port != 1080 { panic(62522); };
+        },
+        Err(e) => { panic(62523); },
+    };
+}
+
+@test "decl http proxy decide bypass order"() {
+    // Loopback by literal name.
+    match http_proxy_decide(format("http://proxy.local:8080"), format(""), format("http://localhost:3000/")) {
+        Ok(d) => {
+            if http_proxy_decision_use_proxy(&d) { panic(62531); };
+            if http_proxy_decision_reason(&d) != 4 { panic(62532); };
+        },
+        Err(e) => { panic(62533); },
+    };
+    // Loopback by IP literal.
+    match http_proxy_decide(format("http://proxy.local:8080"), format(""), format("http://127.0.0.1:9000/")) {
+        Ok(d) => {
+            if http_proxy_decision_reason(&d) != 4 { panic(62534); };
+        },
+        Err(e) => { panic(62535); },
+    };
+    // Loopback outranks a NO_PROXY entry that would also match:
+    // the loopback check runs first and reports its own reason.
+    match http_proxy_decide(format("http://proxy.local:8080"), format("localhost"), format("http://localhost/")) {
+        Ok(d) => {
+            if http_proxy_decision_reason(&d) != 4 { panic(62536); };
+        },
+        Err(e) => { panic(62537); },
+    };
+    // NO_PROXY match bypasses; a non-matching host goes via.
+    match http_proxy_decide(format("http://proxy.local:8080"), format("example.com"), format("http://example.com/")) {
+        Ok(d) => {
+            if http_proxy_decision_use_proxy(&d) { panic(62538); };
+            if http_proxy_decision_reason(&d) != 3 { panic(62539); };
+        },
+        Err(e) => { panic(62540); },
+    };
+    match http_proxy_decide(format("http://proxy.local:8080"), format("example.com"), format("http://other.com/")) {
+        Ok(d) => {
+            if http_proxy_decision_reason(&d) != 1 { panic(62541); };
+        },
+        Err(e) => { panic(62542); },
+    };
+    // Target port participates: entry pinned to the target's
+    // explicit port bypasses, entry pinned to another port does not.
+    match http_proxy_decide(format("http://proxy.local:8080"), format("example.com:8080"), format("http://example.com:8080/x")) {
+        Ok(d) => {
+            if http_proxy_decision_reason(&d) != 3 { panic(62543); };
+        },
+        Err(e) => { panic(62544); },
+    };
+    match http_proxy_decide(format("http://proxy.local:8080"), format("example.com:9090"), format("http://example.com:8080/x")) {
+        Ok(d) => {
+            if http_proxy_decision_reason(&d) != 1 { panic(62545); };
+        },
+        Err(e) => { panic(62546); },
+    };
+    // https target's default port 443 is the port entries match on.
+    match http_proxy_decide(format("http://proxy.local:8080"), format("example.com:443"), format("https://example.com/")) {
+        Ok(d) => {
+            if http_proxy_decision_reason(&d) != 3 { panic(62547); };
+        },
+        Err(e) => { panic(62548); },
+    };
+}
+
+@test "decl http proxy decide malformed"() {
+    // A malformed configured proxy value is an error, never a
+    // silent direct connection; the header contract pins the code
+    // to SA_STD_ERR_INVALID_ARGUMENT.
+    match http_proxy_decide(format("://bad"), format(""), format("http://example.com/")) {
+        Ok(d) => { panic(62551); },
+        Err(e) => { if e != SA_STD_ERR_INVALID_ARGUMENT { panic(62552); }; },
+    };
+    // A malformed proxy value errors even for a loopback target:
+    // the proxy parse runs before the loopback bypass.
+    match http_proxy_decide(format("::bad::"), format(""), format("http://localhost/")) {
+        Ok(d) => { panic(62553); },
+        Err(e) => { if e != SA_STD_ERR_INVALID_ARGUMENT { panic(62554); }; },
+    };
+    // A non-web target URL is an error, not a decision: the
+    // scheme is well-formed but unsupported, stated by
+    // proxy_split_target as SA_STD_ERR_UNSUPPORTED.
+    match http_proxy_decide(format("http://proxy.local:8080"), format(""), format("ftp://example.com/")) {
+        Ok(d) => { panic(62555); },
+        Err(e) => { if e != SA_STD_ERR_UNSUPPORTED { panic(62556); }; },
+    };
+}
+
+@test "decl http proxy no proxy matches domains"() {
+    if !http_proxy_no_proxy_matches(format("example.com"), format("example.com"), 80) { panic(62561); };
+    if !http_proxy_no_proxy_matches(format("example.com"), format("sub.example.com"), 80) { panic(62562); };
+    if http_proxy_no_proxy_matches(format("example.com"), format("badexample.com"), 80) { panic(62563); };
+    if http_proxy_no_proxy_matches(format(".example.com"), format("example.com"), 80) { panic(62564); };
+    if !http_proxy_no_proxy_matches(format(".example.com"), format("www.example.com"), 80) { panic(62565); };
+    if !http_proxy_no_proxy_matches(format("*.example.com"), format("www.example.com"), 80) { panic(62566); };
+    if http_proxy_no_proxy_matches(format("*.example.com"), format("example.com"), 80) { panic(62567); };
+    if !http_proxy_no_proxy_matches(format("*"), format("anything.org"), 443) { panic(62568); };
+    if http_proxy_no_proxy_matches(format(""), format("example.com"), 80) { panic(62569); };
+    if !http_proxy_no_proxy_matches(format("EXAMPLE.com"), format("eXaMpLe.COM"), 80) { panic(62570); };
+    if !http_proxy_no_proxy_matches(format("  example.com , other.org "), format("other.org"), 80) { panic(62571); };
+    if http_proxy_no_proxy_matches(format("example.com"), format("other.org"), 80) { panic(62572); };
+}
+
+@test "decl http proxy no proxy matches ports and ips"() {
+    if !http_proxy_no_proxy_matches(format("example.com:8080"), format("example.com"), 8080) { panic(62581); };
+    if http_proxy_no_proxy_matches(format("example.com:8080"), format("example.com"), 80) { panic(62582); };
+    if !http_proxy_no_proxy_matches(format("10.0.0.0/8"), format("10.1.2.3"), 80) { panic(62583); };
+    if http_proxy_no_proxy_matches(format("10.0.0.0/8"), format("11.0.0.1"), 80) { panic(62584); };
+    if http_proxy_no_proxy_matches(format("10.0.0.0/8"), format("ten.example.com"), 80) { panic(62585); };
+    if !http_proxy_no_proxy_matches(format("192.168.1.1"), format("192.168.1.1"), 80) { panic(62586); };
+    if http_proxy_no_proxy_matches(format("192.168.1.1"), format("192.168.1.2"), 80) { panic(62587); };
+    if http_proxy_no_proxy_matches(format("example.com"), format("192.168.1.1"), 80) { panic(62588); };
+    if !http_proxy_no_proxy_matches(format("[::1]"), format("::1"), 80) { panic(62589); };
+    if !http_proxy_no_proxy_matches(format("127.0.0.1"), format("127.0.0.1"), 8080) { panic(62590); };
+}

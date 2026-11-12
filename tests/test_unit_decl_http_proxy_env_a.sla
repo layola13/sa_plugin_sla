@@ -1,0 +1,79 @@
+@import "sa_std/http_proxy.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-HTTP-PROXY carrier, environment file A. The runner runs
+// this file under exactly this process environment (all other proxy
+// variables removed):
+//   HTTP_PROXY=http://upper.example:1111
+//   http_proxy=http://lower.example:2222
+//   https_proxy=http://secure.example:3333   (HTTPS_PROXY unset)
+//   NO_PROXY=upper.example
+//   no_proxy=lower.example
+//   REQUEST_METHOD unset
+// Conventional lookup order: uppercase first, then lowercase; the
+// first non-empty value wins. Panic codes 626xx.
+
+fn hp_seq_a(s: String, lit: String) -> bool {
+    let ns: u64 = len(s) as u64;
+    let nl: u64 = len(lit) as u64;
+    if ns != nl { return false; };
+    let ps: ptr = STR_PTR(s);
+    let pl: ptr = STR_PTR(lit);
+    let i: u64 = 0;
+    while i < ns {
+        if PTR_BYTE_AT(ps, i) != PTR_BYTE_AT(pl, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+@test "decl http proxy env a values"() {
+    // Uppercase wins for http targets when both cases are set.
+    if !hp_seq_a(http_proxy_env_proxy_value(1), format("http://upper.example:1111")) { panic(62601); };
+    // https falls through to the lowercase variable.
+    if !hp_seq_a(http_proxy_env_proxy_value(2), format("http://secure.example:3333")) { panic(62602); };
+    // Non-web kinds have no variable and read as unset.
+    if len(http_proxy_env_proxy_value(3)) != 0 { panic(62603); };
+    if len(http_proxy_env_proxy_value(0)) != 0 { panic(62604); };
+    // NO_PROXY: uppercase wins.
+    if !hp_seq_a(http_proxy_env_no_proxy_value(), format("upper.example")) { panic(62605); };
+}
+
+@test "decl http proxy env a for url"() {
+    // Ordinary host goes via the uppercase-configured http proxy.
+    match http_proxy_for_url(format("http://other.test/")) {
+        Ok(d) => {
+            if !http_proxy_decision_use_proxy(&d) { panic(62611); };
+            if http_proxy_decision_reason(&d) != 1 { panic(62612); };
+            if d.proxy.kind != 1 { panic(62613); };
+            if d.proxy.port != 1111 { panic(62614); };
+        },
+        Err(e) => { panic(62615); },
+    };
+    // The NO_PROXY list (uppercase) bypasses its own entry.
+    match http_proxy_for_url(format("http://upper.example/")) {
+        Ok(d) => {
+            if http_proxy_decision_use_proxy(&d) { panic(62616); };
+            if http_proxy_decision_reason(&d) != 3 { panic(62617); };
+        },
+        Err(e) => { panic(62618); },
+    };
+    // https targets read the https variables: lowercase proxy at 3333.
+    match http_proxy_for_url(format("https://other.test/")) {
+        Ok(d) => {
+            if !http_proxy_decision_use_proxy(&d) { panic(62619); };
+            if http_proxy_decision_reason(&d) != 1 { panic(62620); };
+            if d.proxy.port != 3333 { panic(62621); };
+        },
+        Err(e) => { panic(62622); },
+    };
+    // Loopback bypass applies under a configured environment too.
+    match http_proxy_for_url(format("http://localhost:8080/")) {
+        Ok(d) => {
+            if http_proxy_decision_reason(&d) != 4 { panic(62623); };
+        },
+        Err(e) => { panic(62624); },
+    };
+}

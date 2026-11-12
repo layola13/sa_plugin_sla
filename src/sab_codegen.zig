@@ -17562,6 +17562,23 @@ pub const Codegen = struct {
             // caller on both backends).
             if (self.tc.expr_types.get(call.args[0])) |value_ty| {
                 if (!self.typeIsCopyValue(value_ty)) {
+                    // DEF-NETSVC-NAMEBYPORT-SAB: a payload loaded out of
+                    // a named struct field (`Ok(hit.name)`) moves the
+                    // field's cell into the enum, but nothing records
+                    // the partial move for the parent binding: its later
+                    // deep drop loads the same cell handle out of the
+                    // field slot and frees the buffer the enum now owns
+                    // (signal 11 / free(): invalid pointer in the
+                    // caller). Unlike a `let` binding move or a plain
+                    // call argument, the builtin constructor path never
+                    // enters the move in the checker's drop taint, so
+                    // substitute an empty cell into the source field
+                    // slot: the parent's drop then frees the empty cell
+                    // (the same husk an unused Vec::new() drops) and
+                    // the moved cell is owned solely by the enum.
+                    if (call.args[0].* == .field_expr and lowering_rules.rootIdentifier(call.args[0]) != null) {
+                        try self.neutralizeMovedOutField(call.args[0].field_expr, value_ty);
+                    }
                     try self.markConsumed(value_reg);
                     return dst;
                 }
@@ -17597,6 +17614,39 @@ pub const Codegen = struct {
             });
         }
         return dst;
+    }
+
+    /// DEF-NETSVC-NAMEBYPORT-SAB: substitute a fresh zeroed (empty)
+    /// cell into a struct field slot whose cell was just moved out
+    /// into a builtin enum constructor payload, so the parent
+    /// binding's deep drop frees the empty cell instead of the moved
+    /// one. Only buffer-plan field types (Vec / String / GrowVec)
+    /// qualify: their empty form is a zeroed cell of the type's size.
+    /// Any other shape keeps the previous behavior.
+    fn neutralizeMovedOutField(self: *Codegen, field: ast.FieldExpr, field_ty: *const ast.Type) anyerror!void {
+        const plan = self.tc.planValueDrop(field_ty) catch return;
+        switch (plan.*) {
+            .buffer, .buffer_growvec => {},
+            else => return,
+        }
+        const size = typeSize(field_ty);
+        if (size == 0 or size % 8 != 0) return;
+        const source = try self.genFieldAddress(field);
+        const cell = try self.intern(try self.newTmp());
+        try self.recordReg(cell);
+        try self.emitAlloc(cell, size);
+        const zero = try self.intern(try self.newTmp());
+        try self.recordReg(zero);
+        try self.emitAssignImm(zero, 0);
+        var off: usize = 0;
+        while (off < size) : (off += 8) {
+            try self.emitStore(cell, off, zero, .u64);
+        }
+        try self.emitRelease(zero);
+        try self.emitStore(source.reg, 0, cell, .ptr);
+        try self.emitConsumedMarker(cell);
+        try self.markConsumed(cell);
+        try self.releaseAddressSource(source);
     }
 
     fn genResultOptionQueryCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {

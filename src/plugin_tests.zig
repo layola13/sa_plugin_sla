@@ -468,6 +468,24 @@ fn expectSlaCheckNamedDiagnostic(file: []const u8, expected: []const u8) !void {
     try stderr_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, expected));
 }
+fn expectSlaCheckLabelDiagnostic(file: []const u8, label: []const u8, expected: []const u8) !void {
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", file };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
+
+    try std.testing.expectEqual(@as(?u8, 1), code);
+    try stderr_fw.writer().flush();
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, label));
+    try stderr_fw.writer().flush();
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, expected));
+}
 
 test "sla check reports redeclared symbol names" {
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration.sla", "symbol `value`");
@@ -484,6 +502,13 @@ test "sla check reports redeclared symbol names" {
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_macro.sla", "macro `repeated_macro`");
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_method.sla", "method `score` for `RepeatedMethod`");
     try expectSlaCheckSyntaxDiagnostic("tests/test_error_bare_overload.sla", "found 'overload'");
+}
+test "sla check reports monomorphization conflicts" {
+    // The MonomorphizeError set surfaces under the prose label
+    // "Monomorphization Error", not a "Type Check Error" header, so it
+    // is asserted through the label-based helper. The same carrier is
+    // also judged in test form by tools/run_diag_checks.sh.
+    try expectSlaCheckLabelDiagnostic("tests/test_error_overload_generic_mix.sla", "Monomorphization Error", "GenericOverloadConflict");
 }
 
 test "sla check enforces typed macro parameter declarations (J-3)" {

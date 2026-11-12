@@ -1,0 +1,11 @@
+// expect: LoweringFailed
+// Judged by tools/run_diag_checks.sh via `sla build` (text path): a
+// channel send produces no value and cannot be a let initializer.
+@import "sa_std/task.sai"
+
+fn main() -> i32 {
+    let ch: Chan<u64> = Chan::new(1);
+    let x = ch.send(1);
+    ch.destroy();
+    return 0;
+}

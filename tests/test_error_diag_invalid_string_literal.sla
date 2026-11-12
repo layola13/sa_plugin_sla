@@ -1,0 +1,7 @@
+// expect: InvalidStringLiteral
+// Judged by tools/run_diag_checks.sh via `sla sab build`: the checker
+// accepts the unknown escape; the SAB string decoder rejects it.
+fn main() -> i32 {
+    let s = "\q";
+    return 0;
+}

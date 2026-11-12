@@ -1,0 +1,5 @@
+// Positive control for tools/run_diag_checks.sh: a legal program that
+// every judging frontend used there must accept (exit code 0).
+fn main() -> i32 {
+    return 42;
+}

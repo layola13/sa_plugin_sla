@@ -1,0 +1,13 @@
+// expect: CoopUnsupported
+// Judged by tools/run_diag_checks.sh via `sla build-wasm`: cooperative
+// (wasm) builds require a top-level `main` function; this file has none.
+@import "sa_std/task.sai"
+
+fn task() {
+}
+
+fn launch() -> i32 {
+    let h = go task();
+    let st = sa_task_join(h);
+    return st;
+}

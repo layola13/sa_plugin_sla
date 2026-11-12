@@ -1,0 +1,77 @@
+@import "sa_std/smtp.sla"
+@import "sa_std/net.sai"
+@import "sa_std/vec.sa"
+@import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-REST carriers: SAB registry declared entries
+// smtp_transport_close / smtp_transport_read_chunk /
+// smtp_transport_write_all from sa_std/smtp.sla (transport layer
+// under the already-carried smtp client calls). Two surfaces:
+// the invalid-handle arms pin the measured SA_STD_ERR_INVALID_HANDLE
+// (2) on both backends, and the live arms run against the line's
+// loopback stub (venue/smtp_stub.py on 127.0.0.1:18225), which
+// greets with "220 stub\r\n", records every received byte, and
+// answers "221 Bye\r\n" to a QUIT-terminated chunk; the stub's
+// byte count (5019) and sha256 are cross-checked in the line's
+// RESULT evidence. Panic codes 684xx.
+
+fn bytes_of(s: String) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    let p: ptr = STR_PTR(s);
+    let n: u64 = len(s) as u64;
+    let i: u64 = 0;
+    while i < n {
+        v.push(PTR_BYTE_AT(p, i));
+        i = i + 1;
+    }
+    return v;
+}
+
+fn veq(v: &Vec<u8>, s: String) -> bool {
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let n: u64 = 0;
+    SLICE_GET_LEN(n, sl);
+    if n != (len(s) as u64) { return false; };
+    let p: ptr = STR_PTR(s);
+    let i: u64 = 0;
+    while i < n {
+        let b: u8 = 0;
+        SLICE_GET(b, sl, i);
+        if b != PTR_BYTE_AT(p, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+@test "decl smtp transport invalid handle"() {
+    if smtp_transport_close(0, false) != 2 { panic(68401); };
+    if smtp_transport_write_all(0, false, bytes_of("x")) != 2 { panic(68402); };
+    let chunk = smtp_transport_read_chunk(0, false);
+    if chunk.status != 2 { panic(68403); };
+    if (len(chunk.data) as u64) != 0 { panic(68404); };
+}
+
+@test "decl smtp transport live roundtrip"() {
+    let handle: u64 = 0;
+    let cst: i32 = sa_std_net_tcp_connect(STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), 18225, &handle);
+    if cst != 0 { panic(68411); };
+    let g = smtp_transport_read_chunk(handle, false);
+    if g.status != 0 { panic(68412); };
+    if !veq(&g.data, "220 stub\r\n") { panic(68413); };
+    if smtp_transport_write_all(handle, false, bytes_of("EHLO tester\r\n")) != 0 { panic(68414); };
+    let big: Vec<u8> = Vec::new();
+    let i: u64 = 0;
+    while i < 5000 {
+        big.push(65);
+        i = i + 1;
+    }
+    if smtp_transport_write_all(handle, false, big) != 0 { panic(68415); };
+    if smtp_transport_write_all(handle, false, bytes_of("QUIT\r\n")) != 0 { panic(68416); };
+    let bye = smtp_transport_read_chunk(handle, false);
+    if bye.status != 0 { panic(68417); };
+    if !veq(&bye.data, "221 Bye\r\n") { panic(68418); };
+    if smtp_transport_close(handle, false) != 0 { panic(68419); };
+}

@@ -1,0 +1,49 @@
+@import "sa_std/async.sla"
+
+// DEF-DECL-REST carriers: SAB registry declared entries
+// sched_get / sched_set / sched_bump / sched_new_pipe from
+// sa_std/async.sla (previously referenced only by std-surface
+// probe rows). The pipe roundtrip runs inside a plain helper fn
+// with the holder retired by mem::forget on every path: at @test
+// scope the SAB exit scan otherwise reports the pipe's live chan
+// register (MemoryLeak 1012, measured in this line's probes).
+// Panic codes 682xx.
+
+@test "decl sched cell get set bump"() {
+    let cell = Arc::new(Mutex::new(7));
+    if sched_get(cell.clone()) != 7 { panic(68201); };
+    sched_set(cell.clone(), 41);
+    if sched_get(cell.clone()) != 41 { panic(68202); };
+    if sched_bump(cell.clone()) != 42 { panic(68203); };
+    if sched_get(cell.clone()) != 42 { panic(68204); };
+    if sched_bump(cell.clone()) != 43 { panic(68205); };
+    sched_set(cell.clone(), -100);
+    if sched_get(cell.clone()) != -100 { panic(68206); };
+    if sched_bump(cell.clone()) != -99 { panic(68207); };
+}
+
+fn pipe_roundtrip() -> i32 {
+    let p = sched_new_pipe();
+    p.tx.send(42);
+    let v: i32 = 0;
+    match p.rx.recv() {
+        Ok(x) => { v = x; },
+        Err(e) => { mem::forget(p); return -1; },
+    };
+    p.tx.send(-7);
+    match p.rx.recv() {
+        Ok(x) => { if x != -7 { mem::forget(p); return -2; }; },
+        Err(e) => { mem::forget(p); return -3; },
+    };
+    p.tx.send(1000000);
+    match p.rx.recv() {
+        Ok(x) => { if x != 1000000 { mem::forget(p); return -4; }; },
+        Err(e) => { mem::forget(p); return -5; },
+    };
+    mem::forget(p);
+    return v;
+}
+
+@test "decl sched new pipe roundtrip"() {
+    if pipe_roundtrip() != 42 { panic(68211); };
+}

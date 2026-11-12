@@ -1,0 +1,234 @@
+@import "sa_std/dns.sla"
+@import "sa_std/vec.sa"
+@import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-REST carriers: SAB registry declared entries
+// dns_read_name / dns_read_record / dns_read_records /
+// dns_decode_message from sa_std/dns.sla (wire-format readers;
+// previously exercised only inside dns_decode_message's own
+// internals and the reg1 decoder carrier's truncated arms).
+// Fixtures are built byte-by-byte; statuses and offsets are the
+// exact values the pinned std produces (measured on both
+// backends). Panic codes 681xx.
+
+fn veq(v: &Vec<u8>, s: String) -> bool {
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let n: u64 = 0;
+    SLICE_GET_LEN(n, sl);
+    if n != (len(s) as u64) { return false; };
+    let p: ptr = STR_PTR(s);
+    let i: u64 = 0;
+    while i < n {
+        let b: u8 = 0;
+        SLICE_GET(b, sl, i);
+        if b != PTR_BYTE_AT(p, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+// Wire name for www.example.com, built byte-by-byte; appended
+// into fixtures with the std's own dns_put_bytes (the by-value
+// chain shape the std itself uses).
+fn wire_name() -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    v.push(3); v.push(119); v.push(119); v.push(119);
+    v.push(7); v.push(101); v.push(120); v.push(97); v.push(109); v.push(112); v.push(108); v.push(101);
+    v.push(3); v.push(99); v.push(111); v.push(109);
+    v.push(0);
+    return v;
+}
+
+// A complete response message: header(12) + question(21) +
+// A answer via compression pointer(16) = 49 bytes total.
+fn msg_a() -> Vec<u8> {
+    let m: Vec<u8> = Vec::new();
+    m.push(0x12); m.push(0x34);
+    m.push(0x81); m.push(0x80);
+    m.push(0); m.push(1);
+    m.push(0); m.push(1);
+    m.push(0); m.push(0);
+    m.push(0); m.push(0);
+    let nm = wire_name();
+    let nsl: Slice<u8> = VEC_AS_SLICE(nm);
+    let m2 = dns_put_bytes(m, &nsl, 0, 17);
+    m2.push(0); m2.push(1);
+    m2.push(0); m2.push(1);
+    m2.push(192); m2.push(12);
+    m2.push(0); m2.push(1);
+    m2.push(0); m2.push(1);
+    m2.push(0); m2.push(0); m2.push(1); m2.push(44);
+    m2.push(0); m2.push(4);
+    m2.push(1); m2.push(2); m2.push(3); m2.push(4);
+    return m2;
+}
+
+@test "decl dns read name pointer and root"() {
+    let msg = msg_a();
+    let sl: Slice<u8> = VEC_AS_SLICE(msg);
+    let via_ptr = dns_read_name(&sl, 33);
+    if via_ptr.status != 0 { panic(68101); };
+    if via_ptr.next != 35 { panic(68102); };
+    if !veq(&via_ptr.name, "www.example.com") { panic(68103); };
+    let root: Vec<u8> = Vec::new();
+    root.push(0);
+    let rsl: Slice<u8> = VEC_AS_SLICE(root);
+    let rd = dns_read_name(&rsl, 0);
+    if rd.status != 0 { panic(68104); };
+    if rd.next != 1 { panic(68105); };
+    if (len(rd.name) as u64) != 0 { panic(68106); };
+}
+
+@test "decl dns read name error arms"() {
+    let msg = msg_a();
+    let sl: Slice<u8> = VEC_AS_SLICE(msg);
+    let oob = dns_read_name(&sl, 400);
+    if oob.status != 9 { panic(68111); };
+    let bad_label: Vec<u8> = Vec::new();
+    bad_label.push(64); bad_label.push(3); bad_label.push(0);
+    let bsl: Slice<u8> = VEC_AS_SLICE(bad_label);
+    let bl = dns_read_name(&bsl, 0);
+    if bl.status != 1 { panic(68112); };
+    // compression pointer pointing at itself: jump guard trips
+    let loop_msg: Vec<u8> = Vec::new();
+    loop_msg.push(192); loop_msg.push(0);
+    let lsl: Slice<u8> = VEC_AS_SLICE(loop_msg);
+    let lp = dns_read_name(&lsl, 0);
+    if lp.status != 1 { panic(68113); };
+    // pointer at the last byte: missing second pointer byte
+    let trunc: Vec<u8> = Vec::new();
+    trunc.push(192);
+    let tsl: Slice<u8> = VEC_AS_SLICE(trunc);
+    let tr = dns_read_name(&tsl, 0);
+    if tr.status != 9 { panic(68114); };
+}
+
+@test "decl dns read record arms"() {
+    let msg = msg_a();
+    let sl: Slice<u8> = VEC_AS_SLICE(msg);
+    let one = dns_read_record(&sl, 33);
+    if one.status != 0 { panic(68121); };
+    if one.next != 49 { panic(68122); };
+    if one.record.addr_v4 != 16909060 { panic(68123); };
+    if one.record.ttl != 300 { panic(68124); };
+    if one.record.record_type != 1 { panic(68125); };
+    // short header after the name: truncated
+    let cut = dns_read_record(&sl, 45);
+    if cut.status != 9 { panic(68126); };
+    if cut.next != 45 { panic(68127); };
+    // CNAME record with a plain-label target
+    let cn: Vec<u8> = Vec::new();
+    cn.push(3);
+    cn.push(119); cn.push(119); cn.push(119);
+    cn.push(0);
+    cn.push(0); cn.push(5);
+    cn.push(0); cn.push(1);
+    cn.push(0); cn.push(0); cn.push(0); cn.push(60);
+    cn.push(0); cn.push(6);
+    cn.push(4);
+    cn.push(114); cn.push(101); cn.push(97); cn.push(108);
+    cn.push(0);
+    let csl: Slice<u8> = VEC_AS_SLICE(cn);
+    let crec = dns_read_record(&csl, 0);
+    if crec.status != 0 { panic(68128); };
+    if crec.record.record_type != 5 { panic(68129); };
+    if !veq(&crec.record.target, "real") { panic(68130); };
+    if (len(crec.record.name) as u64) != 3 { panic(68131); };
+}
+
+// Two consecutive A records built on one name at offset 0.
+fn two_records() -> Vec<u8> {
+    let r: Vec<u8> = Vec::new();
+    r.push(1);
+    r.push(97);
+    r.push(0);
+    r.push(0); r.push(1);
+    r.push(0); r.push(1);
+    r.push(0); r.push(0); r.push(0); r.push(60);
+    r.push(0); r.push(4);
+    r.push(10); r.push(0); r.push(0); r.push(1);
+    r.push(1);
+    r.push(98);
+    r.push(0);
+    r.push(0); r.push(1);
+    r.push(0); r.push(1);
+    r.push(0); r.push(0); r.push(0); r.push(61);
+    r.push(0); r.push(4);
+    r.push(10); r.push(0); r.push(0); r.push(2);
+    return r;
+}
+
+@test "decl dns read records batch"() {
+    let buf = two_records();
+    let sl: Slice<u8> = VEC_AS_SLICE(buf);
+    let all = dns_read_records(&sl, 0, 2);
+    if all.status != 0 { panic(68141); };
+    if (len(all.records) as u64) != 2 { panic(68142); };
+    if all.next != 34 { panic(68143); };
+    let r0 = all.records[0];
+    if r0.addr_v4 != 167772161 { panic(68144); };
+    if r0.ttl != 60 { panic(68145); };
+    let r1 = all.records[1];
+    if r1.addr_v4 != 167772162 { panic(68146); };
+    if r1.ttl != 61 { panic(68147); };
+    // count 0: no records, next untouched
+    let none = dns_read_records(&sl, 5, 0);
+    if none.status != 0 { panic(68148); };
+    if none.next != 5 { panic(68149); };
+    if (len(none.records) as u64) != 0 { panic(68150); };
+    // count 3 but the buffer holds 2: second read fails at 38
+    let over = dns_read_records(&sl, 0, 3);
+    if over.status != 9 { panic(68151); };
+    if over.next != 34 { panic(68152); };
+}
+
+@test "decl dns decode message sections"() {
+    let msg = msg_a();
+    match dns_decode_message(msg) {
+        Ok(m) => {
+            if m.id != 4660 { panic(68161); };
+            if m.is_response != true { panic(68162); };
+            if m.opcode != 0 { panic(68163); };
+            if m.authoritative_answer != false { panic(68164); };
+            if m.truncation != false { panic(68165); };
+            if m.recursion_desired != true { panic(68166); };
+            if m.recursion_available != true { panic(68167); };
+            if m.rcode != 0 { panic(68168); };
+            if (len(m.questions) as u64) != 1 { panic(68169); };
+            let q0 = m.questions[0];
+            if q0.qtype != 1 { panic(68170); };
+            if q0.qclass != 1 { panic(68171); };
+            if !veq(&q0.name, "www.example.com") { panic(68172); };
+            if (len(m.answers) as u64) != 1 { panic(68173); };
+            let a0 = m.answers[0];
+            if a0.addr_v4 != 16909060 { panic(68174); };
+            if a0.ttl != 300 { panic(68175); };
+            if (len(m.authorities) as u64) != 0 { panic(68176); };
+            if (len(m.additionals) as u64) != 0 { panic(68177); };
+        },
+        Err(e) => { panic(68160); },
+    };
+}
+
+@test "decl dns decode message error arms"() {
+    match dns_decode_message(Vec::new()) {
+        Ok(m) => { panic(68181); },
+        Err(e) => { if e != 9 { panic(68182); }; },
+    };
+    // header claims one question but the name is truncated
+    let bad: Vec<u8> = Vec::new();
+    bad.push(0); bad.push(1);
+    bad.push(0x81); bad.push(0x80);
+    bad.push(0); bad.push(1);
+    bad.push(0); bad.push(0);
+    bad.push(0); bad.push(0);
+    bad.push(0); bad.push(0);
+    bad.push(5); bad.push(97); bad.push(98);
+    match dns_decode_message(bad) {
+        Ok(m) => { panic(68183); },
+        Err(e) => { if e != 9 { panic(68184); }; },
+    };
+}

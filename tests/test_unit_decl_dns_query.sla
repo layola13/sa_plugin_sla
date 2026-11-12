@@ -1,0 +1,83 @@
+@import "sa_std/dns.sla"
+@import "sa_std/vec.sa"
+@import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/status.sla"
+
+// DEF-DECL-REST carriers: SAB registry declared entries
+// dns_query / dns_query_system from sa_std/dns.sla (live UDP
+// resolution; previously covered only for their failure surface
+// by the reg1 client carriers). The Ok arm runs against the
+// line's loopback stub (venue/dns_stub.py on 127.0.0.1:18253,
+// which echoes the query id/question and answers one A record
+// 1.2.3.4 TTL 300); the stub's own query log is byte-compared in
+// the line's RESULT evidence. The refused-port arm pins the
+// measured SA_STD_ERR_NET (7) status. dns_query_system depends
+// on the host resolver file, so its arm is coherence-only (an Ok
+// must be a response message; an Err must carry a nonzero
+// status) -- on this line's venue it measured Ok with rcode 3.
+// Panic codes 683xx.
+
+fn bytes_of(s: String) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    let p: ptr = STR_PTR(s);
+    let n: u64 = len(s) as u64;
+    let i: u64 = 0;
+    while i < n {
+        v.push(PTR_BYTE_AT(p, i));
+        i = i + 1;
+    }
+    return v;
+}
+
+fn veq(v: &Vec<u8>, s: String) -> bool {
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let n: u64 = 0;
+    SLICE_GET_LEN(n, sl);
+    if n != (len(s) as u64) { return false; };
+    let p: ptr = STR_PTR(s);
+    let i: u64 = 0;
+    while i < n {
+        let b: u8 = 0;
+        SLICE_GET(b, sl, i);
+        if b != PTR_BYTE_AT(p, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+@test "decl dns query stub ok"() {
+    match dns_query(bytes_of("127.0.0.1"), 18253, bytes_of("www.example.com"), 1, 1) {
+        Ok(m) => {
+            if m.is_response != true { panic(68301); };
+            if m.rcode != 0 { panic(68302); };
+            if (len(m.answers) as u64) != 1 { panic(68303); };
+            let a0 = m.answers[0];
+            if a0.addr_v4 != 16909060 { panic(68304); };
+            if a0.ttl != 300 { panic(68305); };
+            if !veq(&a0.name, "www.example.com") { panic(68306); };
+            if (len(m.questions) as u64) != 1 { panic(68307); };
+            let q0 = m.questions[0];
+            if q0.qtype != 1 { panic(68308); };
+            if q0.qclass != 1 { panic(68309); };
+        },
+        Err(e) => { panic(68300); },
+    };
+}
+
+@test "decl dns query refused port"() {
+    match dns_query(bytes_of("127.0.0.1"), 18254, bytes_of("www.example.com"), 1, 1) {
+        Ok(m) => { panic(68311); },
+        Err(e) => { if e != 7 { panic(68312); }; },
+    };
+}
+
+@test "decl dns query system coherence"() {
+    match dns_query_system(bytes_of("localhost"), 1) {
+        Ok(m) => {
+            if m.is_response != true { panic(68321); };
+        },
+        Err(e) => { if e == 0 { panic(68322); }; },
+    };
+}

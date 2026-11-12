@@ -1,0 +1,176 @@
+@import "sa_std/sse.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/vec.sa"
+
+// DEF-DECL-SSE carrier, lines file: sse_extract_lines driven
+// directly on staged parsers (LF / CRLF / lone-CR termination, the
+// held-trailing-CR rule in non-final mode, final-mode settlement of
+// the last unterminated line) and sse_settle_bom (full BOM strip,
+// strict-prefix parking, mismatch-is-data, already-settled no-op).
+// Panic codes 638xx.
+
+fn sb_lit(v: Vec<u8>, s: String) -> Vec<u8> {
+    let o: Vec<u8> = v;
+    let sp: ptr = STR_PTR(s);
+    let n: u64 = len(s) as u64;
+    let i: u64 = 0;
+    while i < n {
+        o.push(PTR_BYTE_AT(sp, i));
+        i = i + 1;
+    }
+    return o;
+}
+
+fn sb_byte(v: Vec<u8>, b: u8) -> Vec<u8> {
+    let o: Vec<u8> = v;
+    o.push(b);
+    return o;
+}
+
+// Staging note: a root test file cannot write an SseParser struct
+// literal (the parser rejects imported-struct literals in every
+// position tried -- return, let, parenthesised, argument, typed
+// let), so staged parsers are built from sse_parser_new() plus
+// field assignment, which parses and runs on both backends.
+fn parser_with(pend: Vec<u8>, bom: bool) -> SseParser {
+    let p = sse_parser_new();
+    p.pending = pend;
+    p.bom_pending = bom;
+    return p;
+}
+
+fn vec_eq_lit(v: &Vec<u8>, s: String) -> bool {
+    let n: u64 = len(s) as u64;
+    if len(v) as u64 != n { return false; };
+    let sp: ptr = STR_PTR(s);
+    let i: u64 = 0;
+    while i < n {
+        if v[i] != PTR_BYTE_AT(sp, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+@test "decl sse extract lf and crlf dispatch"() {
+    // LF-terminated blank line dispatches inside extract itself.
+    let p = parser_with(sb_lit(Vec::new(), "data: a\n\n"), false);
+    let q = sse_extract_lines(p, false);
+    if sse_parser_event_count(&q) != 1 { panic(63801); };
+    let ev = sse_parser_event_at(&q, 0);
+    if !vec_eq_lit(&ev.data, "a") { panic(63802); };
+    if len(q.pending) != 0 { panic(63803); };
+    // CRLF pairs terminate the same way.
+    let p2 = parser_with(sb_lit(Vec::new(), "data: b\r\n\r\n"), false);
+    let q2 = sse_extract_lines(p2, false);
+    if sse_parser_event_count(&q2) != 1 { panic(63804); };
+    let ev2 = sse_parser_event_at(&q2, 0);
+    if !vec_eq_lit(&ev2.data, "b") { panic(63805); };
+    if len(q2.pending) != 0 { panic(63806); };
+}
+
+@test "decl sse extract held trailing cr"() {
+    // Non-final: a CR in the last position is not yet a terminator;
+    // the whole line stays parked in pending.
+    let buf: Vec<u8> = sb_byte(sb_lit(Vec::new(), "data: a"), 13);
+    let p = parser_with(buf, false);
+    let q = sse_extract_lines(p, false);
+    if sse_parser_event_count(&q) != 0 { panic(63811); };
+    if len(q.pending) != 8 { panic(63812); };
+    if len(q.data_buf) != 0 { panic(63813); };
+    // Final: the same CR terminates the line (data staged, dispatch
+    // is the caller's step).
+    let buf2: Vec<u8> = sb_byte(sb_lit(Vec::new(), "data: a"), 13);
+    let p2 = parser_with(buf2, false);
+    let q2 = sse_extract_lines(p2, true);
+    if len(q2.pending) != 0 { panic(63814); };
+    if len(q2.data_buf) != 2 { panic(63815); };
+    let q3 = sse_dispatch(q2);
+    if sse_parser_event_count(&q3) != 1 { panic(63816); };
+    let ev = sse_parser_event_at(&q3, 0);
+    if !vec_eq_lit(&ev.data, "a") { panic(63817); };
+}
+
+@test "decl sse extract partial line residue"() {
+    // Non-final: bytes after the last terminator stay in pending.
+    let p = parser_with(sb_lit(Vec::new(), "data: a\npart"), false);
+    let q = sse_extract_lines(p, false);
+    if sse_parser_event_count(&q) != 0 { panic(63821); };
+    if !vec_eq_lit(&q.pending, "part") { panic(63822); };
+    if len(q.data_buf) != 2 { panic(63823); };
+    // Final: the residue line is processed too (an unknown field
+    // here, so it leaves no trace beyond the staged data).
+    let p2 = parser_with(sb_lit(Vec::new(), "data: a\npart"), false);
+    let q2 = sse_extract_lines(p2, true);
+    if len(q2.pending) != 0 { panic(63824); };
+    let q3 = sse_dispatch(q2);
+    if sse_parser_event_count(&q3) != 1 { panic(63825); };
+    // Empty input is a no-op in both modes.
+    let p3 = parser_with(Vec::new(), false);
+    let q4 = sse_extract_lines(p3, true);
+    if sse_parser_event_count(&q4) != 0 { panic(63826); };
+    if len(q4.pending) != 0 { panic(63827); };
+}
+
+@test "decl sse extract lone cr separators"() {
+    // Lone CRs separate lines mid-stream: two data lines and a
+    // blank line, all CR-terminated, dispatch one joined event.
+    let buf: Vec<u8> = sb_lit(Vec::new(), "data: a\rdata: b\r\r");
+    let p = parser_with(buf, false);
+    let q = sse_extract_lines(p, true);
+    if sse_parser_event_count(&q) != 1 { panic(63831); };
+    let ev = sse_parser_event_at(&q, 0);
+    let want: Vec<u8> = sb_byte(sb_lit(Vec::new(), "a"), 10);
+    let want2: Vec<u8> = sb_lit(want, "b");
+    if len(ev.data) != len(want2) { panic(63832); };
+    let i: u64 = 0;
+    while i < len(want2) {
+        if ev.data[i] != want2[i] { panic(63833); };
+        i = i + 1;
+    }
+    if len(q.pending) != 0 { panic(63834); };
+}
+
+@test "decl sse settle bom arms"() {
+    // Nothing fed yet: undecidable, stays pending.
+    let q = sse_settle_bom(parser_with(Vec::new(), true));
+    if !q.bom_pending { panic(63841); };
+    // Strict BOM prefixes park untouched.
+    let b1: Vec<u8> = sb_byte(Vec::new(), 239);
+    let q1 = sse_settle_bom(parser_with(b1, true));
+    if !q1.bom_pending { panic(63842); };
+    if len(q1.pending) != 1 { panic(63843); };
+    let b2: Vec<u8> = sb_byte(sb_byte(Vec::new(), 239), 187);
+    let q2 = sse_settle_bom(parser_with(b2, true));
+    if !q2.bom_pending { panic(63844); };
+    if len(q2.pending) != 2 { panic(63845); };
+    // A full BOM is stripped, with and without following bytes.
+    let b3: Vec<u8> = sb_byte(sb_byte(sb_byte(Vec::new(), 239), 187), 191);
+    let q3 = sse_settle_bom(parser_with(b3, true));
+    if q3.bom_pending { panic(63846); };
+    if len(q3.pending) != 0 { panic(63847); };
+    let b4: Vec<u8> = sb_lit(sb_byte(sb_byte(sb_byte(Vec::new(), 239), 187), 191), "data: x");
+    let q4 = sse_settle_bom(parser_with(b4, true));
+    if q4.bom_pending { panic(63848); };
+    if !vec_eq_lit(&q4.pending, "data: x") { panic(63849); };
+}
+
+@test "decl sse settle bom mismatch is data"() {
+    // A first byte that cannot start a BOM settles immediately and
+    // keeps every byte as data.
+    let q = sse_settle_bom(parser_with(sb_lit(Vec::new(), "AB"), true));
+    if q.bom_pending { panic(63851); };
+    if !vec_eq_lit(&q.pending, "AB") { panic(63852); };
+    // A mismatch on the second BOM byte also settles, bytes kept.
+    let b: Vec<u8> = sb_byte(sb_byte(Vec::new(), 239), 65);
+    let q2 = sse_settle_bom(parser_with(b, true));
+    if q2.bom_pending { panic(63853); };
+    if len(q2.pending) != 2 { panic(63854); };
+    if q2.pending[0] != 239 { panic(63855); };
+    if q2.pending[1] != 65 { panic(63856); };
+    // Already settled: a leading BOM is data and is NOT stripped.
+    let b3: Vec<u8> = sb_byte(sb_byte(sb_byte(Vec::new(), 239), 187), 191);
+    let q3 = sse_settle_bom(parser_with(b3, false));
+    if q3.bom_pending { panic(63857); };
+    if len(q3.pending) != 3 { panic(63858); };
+}

@@ -1,0 +1,175 @@
+@import "sa_std/sse.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/vec.sa"
+
+// DEF-DECL-SSE carrier, core file: the line-level surface of
+// sa_std/sse.sla -- sse_process_line (field splitting, the one-space
+// rule, comment / unknown / no-colon arms, case-insensitive field
+// names), sse_dispatch (emit on non-empty data buffer, drop exactly
+// one trailing newline, clear data+type buffers), and
+// sse_event_is_message (empty type, exact "message", case matters).
+// Panic codes 634xx.
+
+fn sb_lit(v: Vec<u8>, s: String) -> Vec<u8> {
+    let o: Vec<u8> = v;
+    let sp: ptr = STR_PTR(s);
+    let n: u64 = len(s) as u64;
+    let i: u64 = 0;
+    while i < n {
+        o.push(PTR_BYTE_AT(sp, i));
+        i = i + 1;
+    }
+    return o;
+}
+
+fn sb_byte(v: Vec<u8>, b: u8) -> Vec<u8> {
+    let o: Vec<u8> = v;
+    o.push(b);
+    return o;
+}
+
+// Feed one already-staged line (no terminator) through
+// sse_process_line over the whole buffer.
+fn stage_line(p: SseParser, line: Vec<u8>) -> SseParser {
+    let n: u64 = len(line) as u64;
+    let sl: Slice<u8> = VEC_AS_SLICE(line);
+    return sse_process_line(p, &sl, 0, n);
+}
+
+fn vec_eq_lit(v: &Vec<u8>, s: String) -> bool {
+    let n: u64 = len(s) as u64;
+    if len(v) as u64 != n { return false; };
+    let sp: ptr = STR_PTR(s);
+    let i: u64 = 0;
+    while i < n {
+        if v[i] != PTR_BYTE_AT(sp, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+@test "decl sse process line data then dispatch"() {
+    let p = sse_parser_new();
+    p = stage_line(p, sb_lit(Vec::new(), "data: hello"));
+    // The data buffer holds the value plus its appended newline.
+    if len(p.data_buf) != 6 { panic(63401); };
+    p = sse_dispatch(p);
+    if sse_parser_event_count(&p) != 1 { panic(63402); };
+    let ev = sse_parser_event_at(&p, 0);
+    if !vec_eq_lit(&ev.data, "hello") { panic(63403); };
+    if len(ev.event_type) != 0 { panic(63404); };
+    if !sse_event_is_message(&ev) { panic(63405); };
+    if ev.has_id { panic(63406); };
+    if ev.retry_ms != -1 { panic(63407); };
+    // Dispatch cleared the data buffer: a second dispatch emits none.
+    p = sse_dispatch(p);
+    if sse_parser_event_count(&p) != 1 { panic(63408); };
+}
+
+@test "decl sse process line subrange and spacing"() {
+    // begin/end select a subrange of a larger buffer.
+    let buf: Vec<u8> = sb_lit(Vec::new(), "XXdata:  spacedYY");
+    let sl: Slice<u8> = VEC_AS_SLICE(buf);
+    let p = sse_process_line(sse_parser_new(), &sl, 2, 15);
+    let q = sse_dispatch(p);
+    if sse_parser_event_count(&q) != 1 { panic(63411); };
+    let ev = sse_parser_event_at(&q, 0);
+    // Exactly one leading space is stripped from the value.
+    if !vec_eq_lit(&ev.data, " spaced") { panic(63412); };
+    // No space after the colon: nothing stripped.
+    let p2 = stage_line(sse_parser_new(), sb_lit(Vec::new(), "data:nospace"));
+    let q2 = sse_dispatch(p2);
+    let ev2 = sse_parser_event_at(&q2, 0);
+    if !vec_eq_lit(&ev2.data, "nospace") { panic(63413); };
+}
+
+@test "decl sse process line no colon comment unknown"() {
+    // A line without ':' is a field name with an empty value: bare
+    // "data" appends just the newline, so dispatch emits an event
+    // whose data is empty (buffer was non-empty).
+    let p = stage_line(sse_parser_new(), sb_lit(Vec::new(), "data"));
+    if len(p.data_buf) != 1 { panic(63421); };
+    let q = sse_dispatch(p);
+    if sse_parser_event_count(&q) != 1 { panic(63422); };
+    let ev = sse_parser_event_at(&q, 0);
+    if len(ev.data) != 0 { panic(63423); };
+    // Comment lines are ignored outright.
+    let p2 = stage_line(sse_parser_new(), sb_lit(Vec::new(), ": a comment"));
+    let q2 = sse_dispatch(p2);
+    if sse_parser_event_count(&q2) != 0 { panic(63424); };
+    // Unknown fields are ignored, value and all.
+    let p3 = stage_line(sse_parser_new(), sb_lit(Vec::new(), "unknown: value"));
+    let q3 = sse_dispatch(p3);
+    if sse_parser_event_count(&q3) != 0 { panic(63425); };
+    // Bare "event" sets an empty type buffer: still the default.
+    let p4 = stage_line(sse_parser_new(), sb_lit(Vec::new(), "event"));
+    let p5 = stage_line(p4, sb_lit(Vec::new(), "data: x"));
+    let q4 = sse_dispatch(p5);
+    let ev4 = sse_parser_event_at(&q4, 0);
+    if !sse_event_is_message(&ev4) { panic(63426); };
+}
+
+@test "decl sse process line field case and event type"() {
+    // Field names match case-insensitively.
+    let p = stage_line(sse_parser_new(), sb_lit(Vec::new(), "EVENT: Custom"));
+    let p2 = stage_line(p, sb_lit(Vec::new(), "DaTa: x"));
+    let q = sse_dispatch(p2);
+    if sse_parser_event_count(&q) != 1 { panic(63431); };
+    let ev = sse_parser_event_at(&q, 0);
+    if !vec_eq_lit(&ev.event_type, "Custom") { panic(63432); };
+    if sse_event_is_message(&ev) { panic(63433); };
+    if !vec_eq_lit(&ev.data, "x") { panic(63434); };
+    // An explicit "message" type is a message.
+    let r = stage_line(sse_parser_new(), sb_lit(Vec::new(), "event: message"));
+    let r2 = stage_line(r, sb_lit(Vec::new(), "data: y"));
+    let rq = sse_dispatch(r2);
+    let rev = sse_parser_event_at(&rq, 0);
+    if !sse_event_is_message(&rev) { panic(63435); };
+    // Case matters for the type value itself.
+    let s = stage_line(sse_parser_new(), sb_lit(Vec::new(), "event: Message"));
+    let s2 = stage_line(s, sb_lit(Vec::new(), "data: z"));
+    let sq = sse_dispatch(s2);
+    let sev = sse_parser_event_at(&sq, 0);
+    if sse_event_is_message(&sev) { panic(63436); };
+    // A near-miss type is not a message either.
+    let t = stage_line(sse_parser_new(), sb_lit(Vec::new(), "event: msg"));
+    let t2 = stage_line(t, sb_lit(Vec::new(), "data: w"));
+    let tq = sse_dispatch(t2);
+    let tev = sse_parser_event_at(&tq, 0);
+    if sse_event_is_message(&tev) { panic(63437); };
+}
+
+@test "decl sse dispatch clears type and accumulates data"() {
+    // The type buffer is cleared by dispatch: the second event,
+    // staged with data only, falls back to the default type.
+    let p = stage_line(sse_parser_new(), sb_lit(Vec::new(), "event: once"));
+    let p2 = stage_line(p, sb_lit(Vec::new(), "data: a"));
+    let q = sse_dispatch(p2);
+    let q2 = stage_line(q, sb_lit(Vec::new(), "data: b"));
+    let q3 = sse_dispatch(q2);
+    if sse_parser_event_count(&q3) != 2 { panic(63441); };
+    let ev0 = sse_parser_event_at(&q3, 0);
+    if !vec_eq_lit(&ev0.event_type, "once") { panic(63442); };
+    let ev1 = sse_parser_event_at(&q3, 1);
+    if len(ev1.event_type) != 0 { panic(63443); };
+    if !sse_event_is_message(&ev1) { panic(63444); };
+    // Multiple data lines join with single newlines; dispatch drops
+    // exactly one trailing newline, so a trailing empty data line
+    // leaves one behind in the emitted data.
+    let r = stage_line(sse_parser_new(), sb_lit(Vec::new(), "data: a"));
+    let r2 = stage_line(r, sb_lit(Vec::new(), "data: b"));
+    let r3 = stage_line(r2, sb_lit(Vec::new(), "data:"));
+    let rq = sse_dispatch(r3);
+    let rev = sse_parser_event_at(&rq, 0);
+    let want: Vec<u8> = sb_lit(Vec::new(), "a");
+    let want2: Vec<u8> = sb_byte(want, 10);
+    let want3: Vec<u8> = sb_lit(want2, "b");
+    let want4: Vec<u8> = sb_byte(want3, 10);
+    if len(rev.data) != len(want4) { panic(63445); };
+    let i: u64 = 0;
+    while i < len(want4) {
+        if rev.data[i] != want4[i] { panic(63446); };
+        i = i + 1;
+    }
+}

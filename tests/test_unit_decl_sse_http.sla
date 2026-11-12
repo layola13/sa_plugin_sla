@@ -1,0 +1,146 @@
+@import "sa_std/sse.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/vec.sa"
+@import "sa_std/time.sai"
+
+// DEF-DECL-SSE carrier, http file: sse_parser_feed_http_sse, the
+// composition of the parser with a live sa_http_client_sse_* stream
+// (fixture: this line's sse_stub.py on 127.0.0.1:18237, started by
+// the batch script; /events serves a fixed 70-byte two-event body
+// in two chunks, /missing answers 404 with an empty body).
+// Behaviour pinned at the pin by probes (evidence/probe_http*.sla):
+// the post is asynchronous -- it returns 0 even for a refused port,
+// and a connect error surfaces as a non-zero feed status on a
+// later round (the exact code is the http surface's own and
+// differs by backend, so it is asserted non-zero only). feed's
+// http_status reads 0 until the response status is known and the
+// real status by the done round. done arrives only once the
+// caller yields wall-clock time between rounds, hence the 5 ms
+// sleeps in the drain loops. Panic codes 664xx.
+
+fn sb_lit(v: Vec<u8>, s: String) -> Vec<u8> {
+    let o: Vec<u8> = v;
+    let sp: ptr = STR_PTR(s);
+    let n: u64 = len(s) as u64;
+    let i: u64 = 0;
+    while i < n {
+        o.push(PTR_BYTE_AT(sp, i));
+        i = i + 1;
+    }
+    return o;
+}
+
+fn vec_eq_lit(v: &Vec<u8>, s: String) -> bool {
+    let n: u64 = len(s) as u64;
+    if len(v) as u64 != n { return false; };
+    let sp: ptr = STR_PTR(s);
+    let i: u64 = 0;
+    while i < n {
+        if v[i] != PTR_BYTE_AT(sp, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+// Open an SSE stream against url, staged through a stack array in
+// the sci loopback test's proven shape. Returns (status, handle).
+fn open_stream(url: String) -> (u32, ptr) {
+    let uv: Vec<u8> = sb_lit(Vec::new(), url);
+    let arr: [u8; 256] = [0u8; 256];
+    let i: u64 = 0;
+    let n: u64 = len(uv) as u64;
+    while i < n {
+        arr[i] = uv[i];
+        i = i + 1;
+    }
+    let url_ptr: ptr = PTR_BYTE_ADD(&arr, 0);
+    let empty: [u8; 1] = [0u8; 1];
+    let empty_ptr: ptr = PTR_BYTE_ADD(&empty, 0);
+    let handle: ptr = PTR_NULL();
+    let st: u32 = sa_http_client_sse_post(url_ptr, n, empty_ptr, 0, empty_ptr, 0, &handle);
+    return (st, handle);
+}
+
+// Drain one stream to done, yielding between rounds. Returns
+// (parser, total_bytes_read, http_status_at_done). bad_status /
+// bad_hs / no_done select which contract breach panics, with the
+// caller's codes.
+fn drain(handle: ptr, want_hs: u16, c_status: u64, c_hs: u64, c_done: u64) -> (SseParser, u64, u16) {
+    let p = sse_parser_new();
+    let done: bool = false;
+    let hs: u16 = 0;
+    let total: u64 = 0;
+    let guard: u64 = 0;
+    while done == false && guard < 2000 {
+        let feed = sse_parser_feed_http_sse(p, handle);
+        p = feed.parser;
+        if feed.status != 0 { panic(c_status); };
+        if feed.http_status != 0 && feed.http_status != want_hs { panic(c_hs); };
+        hs = feed.http_status;
+        total = total + feed.bytes_read;
+        done = feed.done;
+        guard = guard + 1;
+        if done == false {
+            let _s: i32 = sa_time_sleep_ms(5);
+        };
+    }
+    if done == false { panic(c_done); };
+    return (p, total, hs);
+}
+
+@test "decl sse http feed events stream"() {
+    let opened = open_stream("http://127.0.0.1:18237/events");
+    if opened.0 != 0 { panic(66401); };
+    let drained = drain(opened.1, 200, 66402, 66403, 66404);
+    if drained.2 != 200 { panic(66413); };
+    if drained.1 != 70 { panic(66405); };
+    let q = sse_parser_finish(drained.0);
+    if sse_parser_event_count(&q) != 2 { panic(66406); };
+    let ev0 = sse_parser_event_at(&q, 0);
+    if !vec_eq_lit(&ev0.event_type, "greet") { panic(66407); };
+    if !vec_eq_lit(&ev0.data, "hello") { panic(66408); };
+    if !vec_eq_lit(&ev0.id, "42") { panic(66409); };
+    if ev0.retry_ms != -1 { panic(66414); };
+    let ev1 = sse_parser_event_at(&q, 1);
+    if len(ev1.data) != 11 { panic(66410); };
+    if ev1.data[5] != 10 { panic(66415); };
+    if ev1.retry_ms != 1500 { panic(66411); };
+    if !vec_eq_lit(&ev1.id, "42") { panic(66416); };
+    let fr: u32 = sa_http_client_sse_free(opened.1);
+    if fr != 0 { panic(66412); };
+}
+
+@test "decl sse http feed missing stream"() {
+    let opened = open_stream("http://127.0.0.1:18237/missing");
+    if opened.0 != 0 { panic(66421); };
+    let drained = drain(opened.1, 404, 66422, 66423, 66424);
+    if drained.2 != 404 { panic(66427); };
+    if drained.1 != 0 { panic(66425); };
+    if sse_parser_event_count(&drained.0) != 0 { panic(66426); };
+    let fr: u32 = sa_http_client_sse_free(opened.1);
+    if fr != 0 { panic(66428); };
+}
+
+@test "decl sse http feed refused surfaces error"() {
+    // The post itself succeeds (async connect); the refusal must
+    // surface as a non-zero feed status, never as done.
+    let opened = open_stream("http://127.0.0.1:18299/events");
+    if opened.0 != 0 { panic(66431); };
+    let p = sse_parser_new();
+    let surfaced: bool = false;
+    let guard: u64 = 0;
+    while surfaced == false && guard < 2000 {
+        let feed = sse_parser_feed_http_sse(p, opened.1);
+        p = feed.parser;
+        if feed.done { panic(66432); };
+        if feed.status != 0 {
+            surfaced = true;
+        } else {
+            let _s: i32 = sa_time_sleep_ms(5);
+        };
+        guard = guard + 1;
+    }
+    if surfaced == false { panic(66433); };
+    if sse_parser_event_count(&p) != 0 { panic(66434); };
+}

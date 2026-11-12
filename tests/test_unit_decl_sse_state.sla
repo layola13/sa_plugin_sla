@@ -1,0 +1,134 @@
+@import "sa_std/sse.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/vec.sa"
+
+// DEF-DECL-SSE carrier, state file: the parser's session state as
+// read through its getters -- sse_parser_has_id / sse_parser_last_id
+// (id replacement, persistence across events, empty-id distinction,
+// NUL-carrying id ignored) and sse_parser_retry_ms (-1 before any
+// retry field, valid values, invalid values ignored, the value in
+// effect rides on each dispatched event). Panic codes 641xx.
+
+fn sb_lit(v: Vec<u8>, s: String) -> Vec<u8> {
+    let o: Vec<u8> = v;
+    let sp: ptr = STR_PTR(s);
+    let n: u64 = len(s) as u64;
+    let i: u64 = 0;
+    while i < n {
+        o.push(PTR_BYTE_AT(sp, i));
+        i = i + 1;
+    }
+    return o;
+}
+
+fn sb_byte(v: Vec<u8>, b: u8) -> Vec<u8> {
+    let o: Vec<u8> = v;
+    o.push(b);
+    return o;
+}
+
+// One LF-terminated line as a feed chunk.
+fn line_chunk(s: String) -> Vec<u8> {
+    return sb_byte(sb_lit(Vec::new(), s), 10);
+}
+
+fn vec_eq_lit(v: &Vec<u8>, s: String) -> bool {
+    let n: u64 = len(s) as u64;
+    if len(v) as u64 != n { return false; };
+    let sp: ptr = STR_PTR(s);
+    let i: u64 = 0;
+    while i < n {
+        if v[i] != PTR_BYTE_AT(sp, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+@test "decl sse id lifecycle"() {
+    let p = sse_parser_new();
+    if sse_parser_has_id(&p) { panic(64101); };
+    if len(sse_parser_last_id(&p)) != 0 { panic(64102); };
+    // The id is visible through the getters before any event.
+    p = sse_parser_feed(p, line_chunk("id: abc"));
+    if !sse_parser_has_id(&p) { panic(64103); };
+    let lid = sse_parser_last_id(&p);
+    if !vec_eq_lit(&lid, "abc") { panic(64104); };
+    if sse_parser_event_count(&p) != 0 { panic(64105); };
+    // It rides on the dispatched event.
+    p = sse_parser_feed(p, line_chunk("data: x"));
+    p = sse_parser_feed(p, line_chunk(""));
+    if sse_parser_event_count(&p) != 1 { panic(64106); };
+    let ev = sse_parser_event_at(&p, 0);
+    if !ev.has_id { panic(64107); };
+    if !vec_eq_lit(&ev.id, "abc") { panic(64108); };
+    // And persists into the next event until replaced.
+    p = sse_parser_feed(p, line_chunk("data: y"));
+    p = sse_parser_feed(p, line_chunk(""));
+    let ev1 = sse_parser_event_at(&p, 1);
+    if !vec_eq_lit(&ev1.id, "abc") { panic(64109); };
+    p = sse_parser_feed(p, line_chunk("id: z9"));
+    p = sse_parser_feed(p, line_chunk("data: w"));
+    p = sse_parser_feed(p, line_chunk(""));
+    let ev2 = sse_parser_event_at(&p, 2);
+    if !vec_eq_lit(&ev2.id, "z9") { panic(64110); };
+    let lid2 = sse_parser_last_id(&p);
+    if !vec_eq_lit(&lid2, "z9") { panic(64111); };
+}
+
+@test "decl sse id empty versus nul"() {
+    // An explicitly empty id still counts as having an id.
+    let p = sse_parser_new();
+    p = sse_parser_feed(p, line_chunk("id:"));
+    if !sse_parser_has_id(&p) { panic(64121); };
+    if len(sse_parser_last_id(&p)) != 0 { panic(64122); };
+    p = sse_parser_feed(p, line_chunk("data: x"));
+    p = sse_parser_feed(p, line_chunk(""));
+    let ev = sse_parser_event_at(&p, 0);
+    if !ev.has_id { panic(64123); };
+    if len(ev.id) != 0 { panic(64124); };
+    // An id value carrying a NUL byte is ignored wholesale.
+    let q = sse_parser_new();
+    let chunk: Vec<u8> = sb_lit(Vec::new(), "id: a");
+    let chunk2: Vec<u8> = sb_byte(chunk, 0);
+    let chunk3: Vec<u8> = sb_lit(chunk2, "b");
+    let chunk4: Vec<u8> = sb_byte(chunk3, 10);
+    q = sse_parser_feed(q, chunk4);
+    if sse_parser_has_id(&q) { panic(64125); };
+    q = sse_parser_feed(q, line_chunk("data: x"));
+    q = sse_parser_feed(q, line_chunk(""));
+    let qev = sse_parser_event_at(&q, 0);
+    if qev.has_id { panic(64126); };
+}
+
+@test "decl sse retry lifecycle"() {
+    let p = sse_parser_new();
+    if sse_parser_retry_ms(&p) != -1 { panic(64131); };
+    p = sse_parser_feed(p, line_chunk("data: q"));
+    p = sse_parser_feed(p, line_chunk(""));
+    let ev0 = sse_parser_event_at(&p, 0);
+    if ev0.retry_ms != -1 { panic(64132); };
+    // A valid retry takes effect and rides on later events.
+    p = sse_parser_feed(p, line_chunk("retry: 2500"));
+    if sse_parser_retry_ms(&p) != 2500 { panic(64133); };
+    p = sse_parser_feed(p, line_chunk("data: x"));
+    p = sse_parser_feed(p, line_chunk(""));
+    let ev1 = sse_parser_event_at(&p, 1);
+    if ev1.retry_ms != 2500 { panic(64134); };
+    // Non-digit and empty retry values are ignored.
+    p = sse_parser_feed(p, line_chunk("retry: 12x"));
+    if sse_parser_retry_ms(&p) != 2500 { panic(64135); };
+    p = sse_parser_feed(p, line_chunk("retry:"));
+    if sse_parser_retry_ms(&p) != 2500 { panic(64136); };
+    p = sse_parser_feed(p, line_chunk("retry: -5"));
+    if sse_parser_retry_ms(&p) != 2500 { panic(64137); };
+    // Zero is a real value, and leading zeros parse plainly.
+    p = sse_parser_feed(p, line_chunk("retry: 0"));
+    if sse_parser_retry_ms(&p) != 0 { panic(64138); };
+    p = sse_parser_feed(p, line_chunk("retry: 007"));
+    if sse_parser_retry_ms(&p) != 7 { panic(64139); };
+    p = sse_parser_feed(p, line_chunk("data: y"));
+    p = sse_parser_feed(p, line_chunk(""));
+    let ev2 = sse_parser_event_at(&p, 2);
+    if ev2.retry_ms != 7 { panic(64140); };
+}

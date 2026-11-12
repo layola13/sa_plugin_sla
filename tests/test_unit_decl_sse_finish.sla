@@ -1,0 +1,189 @@
+@import "sa_std/sse.sla"
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/vec.sa"
+
+// DEF-DECL-SSE carrier, finish file: sse_parser_finish end-of-stream
+// semantics (unterminated final line processed, held trailing CR
+// terminates, pending non-empty event dispatched, nothing extra on
+// an already-settled stream, an undecided BOM prefix at finish is
+// data) plus the surface's chunking invariant: the same stream fed
+// whole, byte by byte, and in odd-sized chunks yields identical
+// events once finished. Panic codes 661xx.
+
+fn sb_lit(v: Vec<u8>, s: String) -> Vec<u8> {
+    let o: Vec<u8> = v;
+    let sp: ptr = STR_PTR(s);
+    let n: u64 = len(s) as u64;
+    let i: u64 = 0;
+    while i < n {
+        o.push(PTR_BYTE_AT(sp, i));
+        i = i + 1;
+    }
+    return o;
+}
+
+fn sb_byte(v: Vec<u8>, b: u8) -> Vec<u8> {
+    let o: Vec<u8> = v;
+    o.push(b);
+    return o;
+}
+
+fn vec_eq_lit(v: &Vec<u8>, s: String) -> bool {
+    let n: u64 = len(s) as u64;
+    if len(v) as u64 != n { return false; };
+    let sp: ptr = STR_PTR(s);
+    let i: u64 = 0;
+    while i < n {
+        if v[i] != PTR_BYTE_AT(sp, i) { return false; };
+        i = i + 1;
+    }
+    return true;
+}
+
+@test "decl sse finish unterminated and held cr"() {
+    // No terminator at all: finish processes the pending line and
+    // dispatches the event it completes.
+    let p = sse_parser_feed(sse_parser_new(), sb_lit(Vec::new(), "data: x"));
+    if sse_parser_event_count(&p) != 0 { panic(66101); };
+    let q = sse_parser_finish(p);
+    if sse_parser_event_count(&q) != 1 { panic(66102); };
+    let ev = sse_parser_event_at(&q, 0);
+    if !vec_eq_lit(&ev.data, "x") { panic(66103); };
+    // A held trailing CR counts as a terminator at finish.
+    let p2 = sse_parser_feed(sse_parser_new(), sb_byte(sb_lit(Vec::new(), "data: y"), 13));
+    if sse_parser_event_count(&p2) != 0 { panic(66104); };
+    let q2 = sse_parser_finish(p2);
+    if sse_parser_event_count(&q2) != 1 { panic(66105); };
+    let ev2 = sse_parser_event_at(&q2, 0);
+    if !vec_eq_lit(&ev2.data, "y") { panic(66106); };
+    // Several staged lines, the last one unterminated.
+    let p3 = sse_parser_feed(sse_parser_new(), sb_lit(Vec::new(), "data: a\n"));
+    let p4 = sse_parser_feed(p3, sb_lit(Vec::new(), "data: b"));
+    let q3 = sse_parser_finish(p4);
+    if sse_parser_event_count(&q3) != 1 { panic(66107); };
+    let ev3 = sse_parser_event_at(&q3, 0);
+    let want: Vec<u8> = sb_byte(sb_lit(Vec::new(), "a"), 10);
+    let want2: Vec<u8> = sb_lit(want, "b");
+    if len(ev3.data) != len(want2) { panic(66108); };
+    let i: u64 = 0;
+    while i < len(want2) {
+        if ev3.data[i] != want2[i] { panic(66109); };
+        i = i + 1;
+    }
+}
+
+@test "decl sse finish settled and empty streams"() {
+    // Finish on an already-dispatched stream adds nothing.
+    let p = sse_parser_feed(sse_parser_new(), sb_lit(Vec::new(), "data: z\n\n"));
+    if sse_parser_event_count(&p) != 1 { panic(66111); };
+    let q = sse_parser_finish(p);
+    if sse_parser_event_count(&q) != 1 { panic(66112); };
+    // Finish on a fresh parser is a no-op.
+    let q2 = sse_parser_finish(sse_parser_new());
+    if sse_parser_event_count(&q2) != 0 { panic(66113); };
+    // A stream holding only a comment dispatches nothing at finish.
+    let p2 = sse_parser_feed(sse_parser_new(), sb_lit(Vec::new(), ": ping\n"));
+    let q3 = sse_parser_finish(p2);
+    if sse_parser_event_count(&q3) != 0 { panic(66114); };
+}
+
+@test "decl sse finish bom split and prefix"() {
+    // A BOM split across three feeds is still stripped.
+    let p = sse_parser_feed(sse_parser_new(), sb_byte(Vec::new(), 239));
+    let p2 = sse_parser_feed(p, sb_byte(Vec::new(), 187));
+    let p3 = sse_parser_feed(p2, sb_byte(sb_lit(Vec::new(), ""), 191));
+    let p4 = sse_parser_feed(p3, sb_lit(Vec::new(), "data: bom\n\n"));
+    if sse_parser_event_count(&p4) != 1 { panic(66121); };
+    let ev = sse_parser_event_at(&p4, 0);
+    if !vec_eq_lit(&ev.data, "bom") { panic(66122); };
+    let q = sse_parser_finish(p4);
+    if sse_parser_event_count(&q) != 1 { panic(66123); };
+    // Only a BOM prefix ever arrives: at finish those bytes are
+    // data (a colon-less line, hence an ignored field), no event.
+    let r = sse_parser_feed(sse_parser_new(), sb_byte(sb_byte(Vec::new(), 239), 187));
+    let rq = sse_parser_finish(r);
+    if sse_parser_event_count(&rq) != 0 { panic(66124); };
+}
+
+// The composite stream: BOM, a typed event with an id, a CRLF event
+// carrying a retry, a comment, and an unterminated final data line.
+fn composite_stream() -> Vec<u8> {
+    let b: Vec<u8> = Vec::new();
+    let b1: Vec<u8> = sb_byte(sb_byte(sb_byte(b, 239), 187), 191);
+    let b2: Vec<u8> = sb_lit(b1, "event: e1\n");
+    let b3: Vec<u8> = sb_lit(b2, "data: one\n");
+    let b4: Vec<u8> = sb_lit(b3, "id: 7\n");
+    let b5: Vec<u8> = sb_lit(b4, "\n");
+    let b6: Vec<u8> = sb_lit(b5, "data: two\r\n");
+    let b7: Vec<u8> = sb_lit(b6, "retry: 40\r\n");
+    let b8: Vec<u8> = sb_lit(b7, "\r\n");
+    let b9: Vec<u8> = sb_lit(b8, ": note\n");
+    let b10: Vec<u8> = sb_lit(b9, "data: three");
+    return b10;
+}
+
+// Returns 0 when the finished parser holds exactly the composite
+// stream's three events with every field as expected, else the
+// 1-based index of the failed check.
+fn check_composite(p: &SseParser) -> u64 {
+    if sse_parser_event_count(p) != 3 { return 1; };
+    let ev0 = sse_parser_event_at(p, 0);
+    if !vec_eq_lit(&ev0.event_type, "e1") { return 2; };
+    if !vec_eq_lit(&ev0.data, "one") { return 3; };
+    if !vec_eq_lit(&ev0.id, "7") { return 4; };
+    if !ev0.has_id { return 5; };
+    if ev0.retry_ms != -1 { return 6; };
+    let ev1 = sse_parser_event_at(p, 1);
+    if len(ev1.event_type) != 0 { return 7; };
+    if !vec_eq_lit(&ev1.data, "two") { return 8; };
+    if !vec_eq_lit(&ev1.id, "7") { return 9; };
+    if ev1.retry_ms != 40 { return 10; };
+    let ev2 = sse_parser_event_at(p, 2);
+    if !vec_eq_lit(&ev2.data, "three") { return 11; };
+    if !vec_eq_lit(&ev2.id, "7") { return 12; };
+    if ev2.retry_ms != 40 { return 13; };
+    return 0;
+}
+
+@test "decl sse chunking equivalence whole"() {
+    let p = sse_parser_feed(sse_parser_new(), composite_stream());
+    let q = sse_parser_finish(p);
+    let rc = check_composite(&q);
+    if rc != 0 { panic(66130 + rc); };
+}
+
+@test "decl sse chunking equivalence bytewise"() {
+    let full: Vec<u8> = composite_stream();
+    let p = sse_parser_new();
+    let n: u64 = len(full) as u64;
+    let i: u64 = 0;
+    while i < n {
+        let chunk: Vec<u8> = sb_byte(Vec::new(), full[i]);
+        p = sse_parser_feed(p, chunk);
+        i = i + 1;
+    }
+    let q = sse_parser_finish(p);
+    let rc = check_composite(&q);
+    if rc != 0 { panic(66150 + rc); };
+}
+
+@test "decl sse chunking equivalence odd chunks"() {
+    let full: Vec<u8> = composite_stream();
+    let p = sse_parser_new();
+    let n: u64 = len(full) as u64;
+    let i: u64 = 0;
+    while i < n {
+        let chunk: Vec<u8> = Vec::new();
+        let j: u64 = 0;
+        while j < 7 && i + j < n {
+            chunk.push(full[i + j]);
+            j = j + 1;
+        }
+        p = sse_parser_feed(p, chunk);
+        i = i + j;
+    }
+    let q = sse_parser_finish(p);
+    let rc = check_composite(&q);
+    if rc != 0 { panic(66170 + rc); };
+}

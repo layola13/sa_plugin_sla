@@ -1,0 +1,241 @@
+@import "sa_std/slice_pool.sla"
+
+// Declared-surface carriers for the slice_pool cluster of
+// sa_std/slice_pool.sla (registry "declared, never probed" —
+// Zig-162 census section 3, family-attack batch 3). There is no
+// sla_std/wrap for this surface (the wrap layer covers .sai
+// externs only) and slice_pool.sla is a pure-SLA surface, so —
+// exactly like the neighbouring ni_/ip_ carriers — this file
+// imports "sa_std/slice_pool.sla" directly.
+//
+// Every one of the 12 cluster members is exercised with exact
+// semantic assertions, not mere callability: packed span-word
+// encodings, raw span-table words, first-fit in registration
+// order, exact-fit reuse, split remainders, successor and
+// predecessor merges on free, free-count returns, and byte-level
+// arena contents through the arena pointer.
+// All inputs are synthetic constants; no host state is touched.
+// Panic codes 26611-26727 are this file's assertion ids.
+//
+// slice_pool_view is NOT carried here: storing through the
+// pointer it returns segfaults on the SA-text backend (signal
+// 11; SAB is fully correct, including read-back through
+// re-taken views). That is a genuine text-backend defect
+// candidate, registered by this line as DEF-TEXT-VIEW-STORE
+// with minimized probes; the ready-made view carrier is
+// preserved in the line's evidence (carrier_with_view_v1.sla)
+// for the fix line. slice_pool_arena_ptr IS carried below in
+// the arena-bytes test: the same byte traffic through the
+// arena pointer is green on both backends.
+
+@test "decl slice pool span word pack"() {
+    if slice_pool_span_word(0, 0) != 0 { panic(26611); };
+    if slice_pool_span_word(16, 0) != 16 { panic(26612); };
+    if slice_pool_span_word(0, 16) != 68719476736 { panic(26613); };
+    if slice_pool_span_word(5, 7) != 30064771077 { panic(26614); };
+    if slice_pool_span_word(8, 24) != 103079215112 { panic(26615); };
+    // The all-ones word cannot be written as a bare literal;
+    // assert it decomposed into its two halves.
+    let w: u64 = slice_pool_span_word(4294967295, 4294967295);
+    if (w >> 32) != 4294967295 { panic(26616); };
+    if (w & 4294967295) != 4294967295 { panic(26617); };
+    // Roundtrip through the two halves independently.
+    let w2: u64 = slice_pool_span_word(305419776, 2596069109);
+    if (w2 >> 32) != 2596069109 { panic(26618); };
+    if (w2 & 4294967295) != 305419776 { panic(26619); };
+}
+
+@test "decl slice pool new and append alloc"() {
+    let p0 = slice_pool_new();
+    if slice_pool_nspans(&p0) != 0 { panic(26621); };
+    let (p1, o1) = slice_pool_alloc(p0, 16);
+    if o1 != 0 { panic(26622); };
+    if slice_pool_nspans(&p1) != 1 { panic(26623); };
+    if slice_pool_span_off(&p1, 0) != 0 { panic(26624); };
+    if slice_pool_span_len(&p1, 0) != 16 { panic(26625); };
+    if !slice_pool_span_used(&p1, 0) { panic(26626); };
+    // Raw span table: word 0 packs (off | len << 32), word 1 is
+    // the used flag.
+    if p1.spans[0] != 68719476736 { panic(26627); };
+    if p1.spans[1] != 1 { panic(26628); };
+    // The arena is word storage: 16 bytes occupy 2 words.
+    if len(p1.data) != 2 { panic(26629); };
+    let (p2, o2) = slice_pool_alloc(p1, 8);
+    if o2 != 16 { panic(26630); };
+    if slice_pool_nspans(&p2) != 2 { panic(26631); };
+    if slice_pool_span_off(&p2, 1) != 16 { panic(26632); };
+    if slice_pool_span_len(&p2, 1) != 8 { panic(26633); };
+    if p2.spans[2] != 34359738384 { panic(26634); };
+    if p2.spans[3] != 1 { panic(26635); };
+    if len(p2.data) != 3 { panic(26636); };
+    // alloc(0) returns off 0 and registers nothing.
+    let (p3, o3) = slice_pool_alloc(p2, 0);
+    if o3 != 0 { panic(26637); };
+    if slice_pool_nspans(&p3) != 2 { panic(26638); };
+    if len(p3.data) != 3 { panic(26639); };
+}
+
+@test "decl slice pool exact fit reuse"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 16);
+    if a != 0 { panic(26641); };
+    let (p2, b) = slice_pool_alloc(p1, 8);
+    if b != 16 { panic(26642); };
+    let (p3, fc) = slice_pool_free(p2, 0, 16);
+    if fc != 1 { panic(26643); };
+    if slice_pool_span_used(&p3, 0) { panic(26644); };
+    if slice_pool_nspans(&p3) != 2 { panic(26645); };
+    // An exact fit is marked used in place: no split, no append.
+    let (p4, c) = slice_pool_alloc(p3, 16);
+    if c != 0 { panic(26646); };
+    if slice_pool_nspans(&p4) != 2 { panic(26647); };
+    if !slice_pool_span_used(&p4, 0) { panic(26648); };
+    if slice_pool_span_len(&p4, 0) != 16 { panic(26649); };
+    if slice_pool_span_off(&p4, 0) != 0 { panic(26650); };
+}
+
+@test "decl slice pool split remainder"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 24);
+    if a != 0 { panic(26651); };
+    let (p2, fc) = slice_pool_free(p1, 0, 24);
+    if fc != 1 { panic(26652); };
+    // A larger fit is split: the used part keeps the span's
+    // slot, the free remainder is appended as a new span.
+    let (p3, b) = slice_pool_alloc(p2, 8);
+    if b != 0 { panic(26653); };
+    if slice_pool_nspans(&p3) != 2 { panic(26654); };
+    if slice_pool_span_off(&p3, 0) != 0 { panic(26655); };
+    if slice_pool_span_len(&p3, 0) != 8 { panic(26656); };
+    if !slice_pool_span_used(&p3, 0) { panic(26657); };
+    if slice_pool_span_off(&p3, 1) != 8 { panic(26658); };
+    if slice_pool_span_len(&p3, 1) != 16 { panic(26659); };
+    if slice_pool_span_used(&p3, 1) { panic(26660); };
+    // The remainder then serves an exact-fit request.
+    let (p4, c) = slice_pool_alloc(p3, 16);
+    if c != 8 { panic(26661); };
+    if slice_pool_nspans(&p4) != 2 { panic(26662); };
+    // No fit anywhere: append at the high-water mark (24) and
+    // grow the arena to 64 bytes = 8 words.
+    let (p5, d) = slice_pool_alloc(p4, 40);
+    if d != 24 { panic(26663); };
+    if slice_pool_nspans(&p5) != 3 { panic(26664); };
+    if slice_pool_span_off(&p5, 2) != 24 { panic(26665); };
+    if slice_pool_span_len(&p5, 2) != 40 { panic(26666); };
+    if len(p5.data) != 8 { panic(26667); };
+}
+
+@test "decl slice pool first fit registration order"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 8);
+    if a != 0 { panic(26671); };
+    let (p2, b) = slice_pool_alloc(p1, 32);
+    if b != 8 { panic(26672); };
+    let (p3, c) = slice_pool_alloc(p2, 8);
+    if c != 40 { panic(26673); };
+    let (p4, f1) = slice_pool_free(p3, 0, 8);
+    if f1 != 1 { panic(26674); };
+    // Span 2's predecessor (span 1) is still used, so this free
+    // merges nothing and the free count rises to 2.
+    let (p5, f2) = slice_pool_free(p4, 40, 8);
+    if f2 != 2 { panic(26675); };
+    if slice_pool_nspans(&p5) != 3 { panic(26676); };
+    // Two free spans of equal length: first-fit takes the one
+    // registered first (span 0 at off 0), not span 2.
+    let (p6, r1) = slice_pool_alloc(p5, 8);
+    if r1 != 0 { panic(26677); };
+    let (p7, r2) = slice_pool_alloc(p6, 8);
+    if r2 != 40 { panic(26678); };
+    if slice_pool_nspans(&p7) != 3 { panic(26679); };
+}
+
+@test "decl slice pool free merges neighbours"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 8);
+    if a != 0 { panic(26681); };
+    let (p2, b) = slice_pool_alloc(p1, 8);
+    if b != 8 { panic(26682); };
+    let (p3, c) = slice_pool_alloc(p2, 8);
+    if c != 16 { panic(26683); };
+    // Free the middle span: no free neighbour yet, table keeps
+    // all three spans and the free count is 1.
+    let (p4, f1) = slice_pool_free(p3, 8, 8);
+    if f1 != 1 { panic(26684); };
+    if slice_pool_nspans(&p4) != 3 { panic(26685); };
+    // Free span 0: its free successor (span 1) merges into it
+    // and is removed from the table.
+    let (p5, f2) = slice_pool_free(p4, 0, 8);
+    if f2 != 1 { panic(26686); };
+    if slice_pool_nspans(&p5) != 2 { panic(26687); };
+    if slice_pool_span_off(&p5, 0) != 0 { panic(26688); };
+    if slice_pool_span_len(&p5, 0) != 16 { panic(26689); };
+    if slice_pool_span_used(&p5, 0) { panic(26690); };
+    if slice_pool_span_off(&p5, 1) != 16 { panic(26691); };
+    if slice_pool_span_len(&p5, 1) != 8 { panic(26692); };
+    if !slice_pool_span_used(&p5, 1) { panic(26693); };
+    // Free the last span: it merges into its free predecessor
+    // and is removed, leaving one span covering the arena.
+    let (p6, f3) = slice_pool_free(p5, 16, 8);
+    if f3 != 1 { panic(26694); };
+    if slice_pool_nspans(&p6) != 1 { panic(26695); };
+    if slice_pool_span_off(&p6, 0) != 0 { panic(26696); };
+    if slice_pool_span_len(&p6, 0) != 24 { panic(26697); };
+    // free(_, 0) is the no-op pair of alloc(0): it reports the
+    // current free-span count and changes nothing.
+    let (p7, f4) = slice_pool_free(p6, 0, 0);
+    if f4 != 1 { panic(26698); };
+    if slice_pool_nspans(&p7) != 1 { panic(26699); };
+    if slice_pool_span_len(&p7, 0) != 24 { panic(26700); };
+}
+
+@test "decl slice pool arena bytes"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 16);
+    if a != 0 { panic(26701); };
+    let ap: ptr = slice_pool_arena_ptr(&p1.data);
+    // Fresh arena bytes are zero.
+    if PTR_BYTE_AT(ap, 5) != 0 { panic(26702); };
+    PTR_WRITE_U8(ap, 65);
+    let b1: ptr = PTR_BYTE_ADD(ap, 1);
+    PTR_WRITE_U8(b1, 66);
+    // One full word at byte offset 8, read back byte by byte.
+    let a8: ptr = PTR_BYTE_ADD(ap, 8);
+    PTR_WRITE_U64(a8, 72623859790382856);
+    if PTR_BYTE_AT(ap, 0) != 65 { panic(26703); };
+    if PTR_BYTE_AT(ap, 1) != 66 { panic(26704); };
+    // 72623859790382856 = 0x0102030405060708, stored
+    // little-endian: bytes 08 07 06 05 04 03 02 01.
+    if PTR_BYTE_AT(ap, 8) != 8 { panic(26705); };
+    if PTR_BYTE_AT(ap, 9) != 7 { panic(26706); };
+    if PTR_BYTE_AT(ap, 10) != 6 { panic(26707); };
+    if PTR_BYTE_AT(ap, 11) != 5 { panic(26708); };
+    if PTR_BYTE_AT(ap, 12) != 4 { panic(26709); };
+    if PTR_BYTE_AT(ap, 13) != 3 { panic(26710); };
+    if PTR_BYTE_AT(ap, 14) != 2 { panic(26711); };
+    if PTR_BYTE_AT(ap, 15) != 1 { panic(26712); };
+}
+
+@test "decl slice pool spans ptr and store"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 8);
+    if a != 0 { panic(26721); };
+    // spans_ptr and arena_ptr are the same VEC_AS_PTR surface
+    // applied to a Vec<u64>; on the same Vec they must agree.
+    let sp: ptr = slice_pool_spans_ptr(&p1.spans);
+    let ap: ptr = slice_pool_arena_ptr(&p1.spans);
+    if sp != ap { panic(26722); };
+    // Span words are written through this pointer (the surface
+    // never assigns through spans[i] = w). Flip span 0's used
+    // flag off and on again through slice_pool_span_store.
+    slice_pool_span_store(sp, 1, 0);
+    if slice_pool_span_used(&p1, 0) { panic(26723); };
+    slice_pool_span_store(sp, 1, 1);
+    if !slice_pool_span_used(&p1, 0) { panic(26724); };
+    // Rewrite span 0's packed word and read it back through
+    // the surface accessors. This is the end of this pool's
+    // life: no later alloc/free depends on the old coordinates.
+    slice_pool_span_store(sp, 0, slice_pool_span_word(3, 9));
+    if slice_pool_span_off(&p1, 0) != 3 { panic(26725); };
+    if slice_pool_span_len(&p1, 0) != 9 { panic(26726); };
+    if p1.spans[0] != 38654705667 { panic(26727); };
+}

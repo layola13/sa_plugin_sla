@@ -1,0 +1,136 @@
+@import "sa_std/slice_pool.sla"
+
+// DEF-TEXT-VIEW-STORE regression corpus (text backend).
+//
+// Defect: a tuple-destructure component binding that the storage
+// plan marks addressable (a later use takes its address, e.g. as
+// an imported-macro arg) was bound into a plain register, while
+// every value read of an addressable binding loads through its
+// stack cell. Each read therefore dereferenced the component
+// value itself: a ptr component was consumed as *ptr, so storing
+// through a slice_pool_view pointer wrote through the arena's
+// first word (0 on a fresh arena) and segfaulted (signal 11) on
+// the SA-text backend; SAB was correct throughout.
+//
+// Pre-fix text-backend verdicts for this file: the view-store
+// test dies with signal 11 and the four value-anatomy tests panic
+// on their `vp != ap` assertions; post-fix all tests pass on both
+// backends. Panic codes 282xx are this file's assertion ids.
+
+fn vs_pass_through(p: ptr, n: u64) -> (ptr, u64) {
+    return (p, n);
+}
+
+fn vs_add_inside(p: ptr, off: u64) -> ptr {
+    return PTR_BYTE_ADD(p, off);
+}
+
+fn vs_my_view(p: &SlicePool, off: u32, n: u32) -> (ptr, u64) {
+    let base: ptr = slice_pool_arena_ptr(&p.data);
+    let o: u64 = off as u64;
+    let vp: ptr = PTR_BYTE_ADD(base, o);
+    return (vp, n as u64);
+}
+
+fn vs_view_noarith(p: &SlicePool) -> (ptr, u64) {
+    let base: ptr = slice_pool_arena_ptr(&p.data);
+    return (base, 16);
+}
+
+// The registered minim (probe_view_ptr4 E2): one view, one write
+// through the view pointer, read back through the same pointer.
+@test "def view store write through view ptr"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 16);
+    if a != 0 { panic(28200); };
+    let (vp, vn) = slice_pool_view(&p1, 0, 16);
+    if vn != 16 { panic(28201); };
+    PTR_WRITE_U8(vp, 93);
+    if PTR_BYTE_AT(vp, 0) != 93 { panic(28202); };
+}
+
+// Tuple return from a local function, ptr component passed
+// through untouched: value-compared and stored through.
+@test "def view store tuple passthrough ptr"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 16);
+    if a != 0 { panic(28210); };
+    let ap: ptr = slice_pool_arena_ptr(&p1.data);
+    let (vp, vn) = vs_pass_through(ap, 16);
+    if vn != 16 { panic(28211); };
+    if vp != ap { panic(28212); };
+    PTR_WRITE_U8(vp, 51);
+    if PTR_BYTE_AT(ap, 0) != 51 { panic(28213); };
+}
+
+// Exact local clone of slice_pool_view (same body, local
+// function): the std function's compiled form was never the
+// problem, the destructure binding was.
+@test "def view store local view clone"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 16);
+    if a != 0 { panic(28220); };
+    let ap: ptr = slice_pool_arena_ptr(&p1.data);
+    let (vp, vn) = vs_my_view(&p1, 0, 16);
+    if vn != 16 { panic(28221); };
+    if vp != ap { panic(28222); };
+    PTR_WRITE_U8(vp, 54);
+    if PTR_BYTE_AT(ap, 0) != 54 { panic(28223); };
+}
+
+// Tuple built and destructured locally, no call boundary at all.
+@test "def view store local tuple destructure"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 16);
+    if a != 0 { panic(28230); };
+    let ap: ptr = slice_pool_arena_ptr(&p1.data);
+    let t = (ap, 16u64);
+    let (vp, vn) = t;
+    if vn != 16 { panic(28231); };
+    if vp != ap { panic(28232); };
+    PTR_WRITE_U8(vp, 55);
+    if PTR_BYTE_AT(ap, 0) != 55 { panic(28233); };
+}
+
+// Tuple whose ptr component is a nested helper call's result
+// inside the callee, no arithmetic anywhere.
+@test "def view store tuple helper ptr noarith"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 16);
+    if a != 0 { panic(28240); };
+    let ap: ptr = slice_pool_arena_ptr(&p1.data);
+    let (vp, vn) = vs_view_noarith(&p1);
+    if vn != 16 { panic(28241); };
+    if vp != ap { panic(28242); };
+    PTR_WRITE_U8(vp, 56);
+    if PTR_BYTE_AT(ap, 0) != 56 { panic(28243); };
+}
+
+// Controls (green before and after the fix): a single-ptr return
+// consumed the same way, and a read-only value anatomy of the
+// real view result.
+@test "def view store ptr only return control"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 16);
+    if a != 0 { panic(28250); };
+    let ap: ptr = slice_pool_arena_ptr(&p1.data);
+    let vp: ptr = vs_add_inside(ap, 0);
+    if vp != ap { panic(28251); };
+    PTR_WRITE_U8(vp, 52);
+    if PTR_BYTE_AT(ap, 0) != 52 { panic(28252); };
+    let w: ptr = vs_add_inside(ap, 8);
+    PTR_WRITE_U8(w, 53);
+    if PTR_BYTE_AT(ap, 8) != 53 { panic(28253); };
+}
+
+@test "def view store value anatomy control"() {
+    let p0 = slice_pool_new();
+    let (p1, a) = slice_pool_alloc(p0, 16);
+    if a != 0 { panic(28260); };
+    let ap: ptr = slice_pool_arena_ptr(&p1.data);
+    let ap0: ptr = PTR_BYTE_ADD(ap, 0);
+    if ap0 != ap { panic(28261); };
+    let (vp, vn) = slice_pool_view(&p1, 0, 16);
+    if vn != 16 { panic(28262); };
+    if vp != ap { panic(28263); };
+}

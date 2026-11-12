@@ -13,20 +13,19 @@
 // encodings, raw span-table words, first-fit in registration
 // order, exact-fit reuse, split remainders, successor and
 // predecessor merges on free, free-count returns, and byte-level
-// arena contents through the arena pointer.
+// arena contents read back through re-taken views (the surface
+// contract says a view is invalidated by any later alloc, so
+// reads always go through a fresh view or the arena pointer).
 // All inputs are synthetic constants; no host state is touched.
 // Panic codes 26611-26727 are this file's assertion ids.
 //
-// slice_pool_view is NOT carried here: storing through the
-// pointer it returns segfaults on the SA-text backend (signal
-// 11; SAB is fully correct, including read-back through
-// re-taken views). That is a genuine text-backend defect
-// candidate, registered by this line as DEF-TEXT-VIEW-STORE
-// with minimized probes; the ready-made view carrier is
-// preserved in the line's evidence (carrier_with_view_v1.sla)
-// for the fix line. slice_pool_arena_ptr IS carried below in
-// the arena-bytes test: the same byte traffic through the
-// arena pointer is green on both backends.
+// slice_pool_view is carried here since the DEF-TEXT-VIEW-STORE
+// fix: storing through the pointer it returns segfaulted on the
+// SA-text backend (signal 11) because a tuple-destructure binding
+// the storage plan marks addressable was bound to a plain
+// register while value reads load through the binding's stack
+// cell. The dedicated regression corpus for that defect lives in
+// test_unit_def_text_view_store.sla.
 
 @test "decl slice pool span word pack"() {
     if slice_pool_span_word(0, 0) != 0 { panic(26611); };
@@ -188,31 +187,40 @@
     if slice_pool_span_len(&p7, 0) != 24 { panic(26700); };
 }
 
-@test "decl slice pool arena bytes"() {
+@test "decl slice pool view and arena bytes"() {
     let p0 = slice_pool_new();
     let (p1, a) = slice_pool_alloc(p0, 16);
     if a != 0 { panic(26701); };
     let ap: ptr = slice_pool_arena_ptr(&p1.data);
+    let (vp, vn) = slice_pool_view(&p1, 0, 16);
+    if vn != 16 { panic(26702); };
+    // The view at off 0 is the arena base itself.
+    if vp != ap { panic(26703); };
     // Fresh arena bytes are zero.
-    if PTR_BYTE_AT(ap, 5) != 0 { panic(26702); };
-    PTR_WRITE_U8(ap, 65);
-    let b1: ptr = PTR_BYTE_ADD(ap, 1);
+    if PTR_BYTE_AT(vp, 5) != 0 { panic(26704); };
+    PTR_WRITE_U8(vp, 65);
+    let b1: ptr = PTR_BYTE_ADD(vp, 1);
     PTR_WRITE_U8(b1, 66);
-    // One full word at byte offset 8, read back byte by byte.
-    let a8: ptr = PTR_BYTE_ADD(ap, 8);
-    PTR_WRITE_U64(a8, 72623859790382856);
-    if PTR_BYTE_AT(ap, 0) != 65 { panic(26703); };
-    if PTR_BYTE_AT(ap, 1) != 66 { panic(26704); };
+    // Write one full word through the off-8 view, then read
+    // everything back through a freshly taken view (a view is
+    // invalidated by any later alloc, so reads re-take it).
+    let (vq, vn2) = slice_pool_view(&p1, 8, 8);
+    if vn2 != 8 { panic(26705); };
+    PTR_WRITE_U64(vq, 72623859790382856);
+    let (vr, vn3) = slice_pool_view(&p1, 0, 16);
+    if vn3 != 16 { panic(26706); };
+    if PTR_BYTE_AT(vr, 0) != 65 { panic(26707); };
+    if PTR_BYTE_AT(vr, 1) != 66 { panic(26708); };
     // 72623859790382856 = 0x0102030405060708, stored
     // little-endian: bytes 08 07 06 05 04 03 02 01.
-    if PTR_BYTE_AT(ap, 8) != 8 { panic(26705); };
-    if PTR_BYTE_AT(ap, 9) != 7 { panic(26706); };
-    if PTR_BYTE_AT(ap, 10) != 6 { panic(26707); };
-    if PTR_BYTE_AT(ap, 11) != 5 { panic(26708); };
-    if PTR_BYTE_AT(ap, 12) != 4 { panic(26709); };
-    if PTR_BYTE_AT(ap, 13) != 3 { panic(26710); };
-    if PTR_BYTE_AT(ap, 14) != 2 { panic(26711); };
-    if PTR_BYTE_AT(ap, 15) != 1 { panic(26712); };
+    if PTR_BYTE_AT(vr, 8) != 8 { panic(26709); };
+    if PTR_BYTE_AT(vr, 9) != 7 { panic(26710); };
+    if PTR_BYTE_AT(vr, 11) != 5 { panic(26711); };
+    if PTR_BYTE_AT(vr, 13) != 3 { panic(26712); };
+    if PTR_BYTE_AT(vr, 15) != 1 { panic(26713); };
+    // The same bytes are visible through the arena pointer.
+    if PTR_BYTE_AT(ap, 0) != 65 { panic(26714); };
+    if PTR_BYTE_AT(ap, 15) != 1 { panic(26715); };
 }
 
 @test "decl slice pool spans ptr and store"() {

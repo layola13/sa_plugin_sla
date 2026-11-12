@@ -14549,7 +14549,28 @@ pub const Codegen = struct {
                     if (value_ty.* != .tuple) return CodegenError.CodegenError;
                     for (let.names, 0..) |name, i| {
                         const layout = tupleFieldLayout(value_ty.tuple, i) orelse return CodegenError.CodegenError;
-                        self.outPrint("    {s} = load {s}+{} as {s}\n", .{ name, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                        const elem_ty = value_ty.tuple.elems[i];
+                        if (!isDiscardName(name) and self.bindingNeedsAddressableStorage(name, elem_ty)) {
+                            // DEF-TEXT-VIEW-STORE: a component binding the
+                            // storage plan marks addressable (a later use
+                            // takes its address, e.g. an imported-macro
+                            // arg slot) must live in a stack cell exactly
+                            // like the plain-let arm materializes it:
+                            // every value read of an addressable binding
+                            // loads through the cell, so binding the
+                            // loaded component into a plain register made
+                            // each read dereference the component value
+                            // itself (a ptr component was read as *ptr --
+                            // the view-store signal 11).
+                            const comp_reg = try self.newTmp();
+                            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ comp_reg, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                            self.stack_alloc_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+                            self.outPrint("    {s} = stack_alloc {}\n", .{ name, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
+                            self.outPrint("    store {s}+0, {s} as {s}\n", .{ name, comp_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+                            try self.emitSlotTransferredRetire(elem_ty, comp_reg);
+                        } else {
+                            self.outPrint("    {s} = load {s}+{} as {s}\n", .{ name, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                        }
                     }
                 }
                 if (!let.is_slice) {

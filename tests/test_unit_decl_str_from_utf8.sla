@@ -1,0 +1,366 @@
+@import "sa_std/string.sai"
+@import "sa_std/str.sla"
+@import "sa_std/vec.sa"
+@import "sa_std/core/slice.sa"
+@import "sa_std/ptr.sa"
+
+// DEF-STR-UTF8-VALIDATE regression carrier for the declared
+// str_from_utf8 surface (sa_std/str.sla).
+//
+// Layered truth this file pins:
+//  * The sa_str_utf8_validate extern itself is correct on its
+//    contract input -- a packed byte buffer (ptr, len). The
+//    "utf8 validate" matrix below feeds it packed stack arrays
+//    and pins the verdict for every boundary class: lead ranges,
+//    continuation edges, overlong forms, surrogate halves,
+//    truncation, and position discriminators.
+//  * str_from_utf8 took a std byte slice (element-addressed; a
+//    Vec-backed slice's raw buffer is word-slot strided per the
+//    sa_std/vec_packed.sla contract) and handed that raw buffer
+//    both to the packed extern (STR_IS_UTF8) and to a raw
+//    mem_copy (STRING_BUF_FROM_UTF8_UNCHECKED). Valid multi-byte
+//    text was rejected, ASCII-led invalid text was accepted, and
+//    an accepted String carried the slots' padding bytes. The
+//    "str from utf8" tests below build their slices from Vec<u8>
+//    pushes -- the blocked producer -- and pin Ok/Err plus the
+//    exact returned bytes.
+
+fn valid_packed(p: ptr, n: u64) -> bool {
+    let st: i32 = sa_str_utf8_validate(p, n);
+    return st == 0;
+}
+
+@test "utf8 validate empty"() {
+    let a: [u8; 1] = [0];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 0) != true { panic(67401); };
+}
+
+@test "utf8 validate ascii_a"() {
+    let a: [u8; 1] = [97];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 1) != true { panic(67402); };
+}
+
+@test "utf8 validate ascii_abc"() {
+    let a: [u8; 3] = [97, 98, 99];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != true { panic(67403); };
+}
+
+@test "utf8 validate ascii_max"() {
+    let a: [u8; 1] = [127];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 1) != true { panic(67404); };
+}
+
+@test "utf8 validate min2_c280"() {
+    let a: [u8; 2] = [194, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 2) != true { panic(67405); };
+}
+
+@test "utf8 validate e_acute_c3a9"() {
+    let a: [u8; 2] = [195, 169];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 2) != true { panic(67406); };
+}
+
+@test "utf8 validate max2_dfbf"() {
+    let a: [u8; 2] = [223, 191];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 2) != true { panic(67407); };
+}
+
+@test "utf8 validate min3_e0a080"() {
+    let a: [u8; 3] = [224, 160, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != true { panic(67408); };
+}
+
+@test "utf8 validate euro_e282ac"() {
+    let a: [u8; 3] = [226, 130, 172];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != true { panic(67409); };
+}
+
+@test "utf8 validate below_surr_ed9fbf"() {
+    let a: [u8; 3] = [237, 159, 191];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != true { panic(67410); };
+}
+
+@test "utf8 validate above_surr_ee8080"() {
+    let a: [u8; 3] = [238, 128, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != true { panic(67411); };
+}
+
+@test "utf8 validate max3_efbfbf"() {
+    let a: [u8; 3] = [239, 191, 191];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != true { panic(67412); };
+}
+
+@test "utf8 validate min4_f0908080"() {
+    let a: [u8; 4] = [240, 144, 128, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 4) != true { panic(67413); };
+}
+
+@test "utf8 validate emoji_f09f9880"() {
+    let a: [u8; 4] = [240, 159, 152, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 4) != true { panic(67414); };
+}
+
+@test "utf8 validate max4_f48fbfbf"() {
+    let a: [u8; 4] = [244, 143, 191, 191];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 4) != true { panic(67415); };
+}
+
+@test "utf8 validate ascii_then_e9"() {
+    let a: [u8; 3] = [97, 195, 169];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != true { panic(67416); };
+}
+
+@test "utf8 validate e9_then_ascii"() {
+    let a: [u8; 3] = [195, 169, 98];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != true { panic(67417); };
+}
+
+@test "utf8 validate mixed_a_e9_b"() {
+    let a: [u8; 4] = [97, 195, 169, 98];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 4) != true { panic(67418); };
+}
+
+@test "utf8 validate lone_cont_80"() {
+    let a: [u8; 1] = [128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 1) != false { panic(67419); };
+}
+
+@test "utf8 validate lone_cont_bf"() {
+    let a: [u8; 1] = [191];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 1) != false { panic(67420); };
+}
+
+@test "utf8 validate lone_ff"() {
+    let a: [u8; 1] = [255];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 1) != false { panic(67421); };
+}
+
+@test "utf8 validate lone_fe"() {
+    let a: [u8; 1] = [254];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 1) != false { panic(67422); };
+}
+
+@test "utf8 validate a_ff"() {
+    let a: [u8; 2] = [97, 255];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 2) != false { panic(67423); };
+}
+
+@test "utf8 validate a_ff_b"() {
+    let a: [u8; 3] = [97, 255, 98];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != false { panic(67424); };
+}
+
+@test "utf8 validate ff_a"() {
+    let a: [u8; 2] = [255, 97];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 2) != false { panic(67425); };
+}
+
+@test "utf8 validate ab_ff"() {
+    let a: [u8; 3] = [97, 98, 255];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != false { panic(67426); };
+}
+
+@test "utf8 validate e9_then_ff"() {
+    let a: [u8; 3] = [195, 169, 255];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != false { panic(67427); };
+}
+
+@test "utf8 validate ascii_then_cont"() {
+    let a: [u8; 2] = [97, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 2) != false { panic(67428); };
+}
+
+@test "utf8 validate overlong_c080"() {
+    let a: [u8; 2] = [192, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 2) != false { panic(67429); };
+}
+
+@test "utf8 validate overlong_c1bf"() {
+    let a: [u8; 2] = [193, 191];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 2) != false { panic(67430); };
+}
+
+@test "utf8 validate lead_f5"() {
+    let a: [u8; 4] = [245, 128, 128, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 4) != false { panic(67431); };
+}
+
+@test "utf8 validate trunc_c2"() {
+    let a: [u8; 1] = [194];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 1) != false { panic(67432); };
+}
+
+@test "utf8 validate badcont_c241"() {
+    let a: [u8; 2] = [194, 65];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 2) != false { panic(67433); };
+}
+
+@test "utf8 validate trunc_e282"() {
+    let a: [u8; 2] = [226, 130];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 2) != false { panic(67434); };
+}
+
+@test "utf8 validate badcont1_e241ac"() {
+    let a: [u8; 3] = [226, 65, 172];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != false { panic(67435); };
+}
+
+@test "utf8 validate badcont2_e28241"() {
+    let a: [u8; 3] = [226, 130, 65];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != false { panic(67436); };
+}
+
+@test "utf8 validate trunc_f09f98"() {
+    let a: [u8; 3] = [240, 159, 152];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != false { panic(67437); };
+}
+
+@test "utf8 validate overlong3_e08080"() {
+    let a: [u8; 3] = [224, 128, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != false { panic(67438); };
+}
+
+@test "utf8 validate overlong3_e09fbf"() {
+    let a: [u8; 3] = [224, 159, 191];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != false { panic(67439); };
+}
+
+@test "utf8 validate surrogate_d800"() {
+    let a: [u8; 3] = [237, 160, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != false { panic(67440); };
+}
+
+@test "utf8 validate surrogate_dfff"() {
+    let a: [u8; 3] = [237, 191, 191];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 3) != false { panic(67441); };
+}
+
+@test "utf8 validate overlong4_f0808080"() {
+    let a: [u8; 4] = [240, 128, 128, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 4) != false { panic(67442); };
+}
+
+@test "utf8 validate overlong4_f08fbfbf"() {
+    let a: [u8; 4] = [240, 143, 191, 191];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 4) != false { panic(67443); };
+}
+
+@test "utf8 validate toobig_f4908080"() {
+    let a: [u8; 4] = [244, 144, 128, 128];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    if valid_packed(p, 4) != false { panic(67444); };
+}
+
+fn b0() -> Vec<u8> { return Vec::new(); }
+fn b2(x: u8, y: u8) -> Vec<u8> { let v: Vec<u8> = Vec::new(); v.push(x); v.push(y); return v; }
+fn b3(x: u8, y: u8, z: u8) -> Vec<u8> { let v: Vec<u8> = Vec::new(); v.push(x); v.push(y); v.push(z); return v; }
+fn b4(w: u8, x: u8, y: u8, z: u8) -> Vec<u8> { let v: Vec<u8> = Vec::new(); v.push(w); v.push(x); v.push(y); v.push(z); return v; }
+
+fn from_utf8_string(v: Vec<u8>) -> String {
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let res: Result<String, i32> = str_from_utf8(sl);
+    match res {
+        Ok(s) => { return s; },
+        Err(e) => { panic(67500 + e); },
+    }
+}
+
+fn from_utf8_err(v: Vec<u8>) -> i32 {
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let res: Result<String, i32> = str_from_utf8(sl);
+    match res {
+        Ok(s) => { return 0 - 1; },
+        Err(e) => { return e; },
+    }
+}
+
+@test "str from utf8 e acute ok"() {
+    let s: String = from_utf8_string(b2(195, 169));
+    let bs = s.as_bytes();
+    if len(bs) != 2 { panic(67511); };
+    if bs[0] != 195 { panic(67512); };
+    if bs[1] != 169 { panic(67513); };
+}
+
+@test "str from utf8 emoji ok"() {
+    let s: String = from_utf8_string(b4(240, 159, 152, 128));
+    let bs = s.as_bytes();
+    if len(bs) != 4 { panic(67514); };
+    if bs[0] != 240 { panic(67515); };
+    if bs[3] != 128 { panic(67516); };
+}
+
+@test "str from utf8 ascii ok"() {
+    let s: String = from_utf8_string(b3(97, 98, 99));
+    let bs = s.as_bytes();
+    if len(bs) != 3 { panic(67517); };
+    if bs[1] != 98 { panic(67518); };
+}
+
+@test "str from utf8 empty ok"() {
+    let s: String = from_utf8_string(b0());
+    let bs = s.as_bytes();
+    if len(bs) != 0 { panic(67519); };
+}
+
+@test "str from utf8 a ff err"() {
+    if from_utf8_err(b2(97, 255)) != 1 { panic(67520); };
+}
+
+@test "str from utf8 surrogate err"() {
+    if from_utf8_err(b3(237, 160, 128)) != 1 { panic(67521); };
+}
+
+@test "str from utf8 overlong err"() {
+    if from_utf8_err(b2(192, 128)) != 1 { panic(67522); };
+}
+
+@test "utf8 char count packed"() {
+    let a: [u8; 3] = [97, 195, 169];
+    let p: ptr = PTR_BYTE_ADD(&a, 0);
+    let c: u64 = sa_str_utf8_char_count(p, 3);
+    if c != 2 { panic(67523); };
+}

@@ -18434,6 +18434,37 @@ pub const Codegen = struct {
         return arg.identifier;
     }
 
+    /// DEF-PROXY-TUNNEL: the destination register for an imported
+    /// macro's leading output argument. bindingReg invents a fresh
+    /// temporary for a name bound more than once in the function,
+    /// but a stack-homed current binding's slot was allocated with
+    /// the register genLet obtained from its own bindingReg call,
+    /// so the fresh temporary is never the slot register: the
+    /// stack_alloc_emitted check in genImportedMacroLeadingOutputArg
+    /// missed, the output fell through to the rebind path, and the
+    /// expansion's assigned value never reached the slot that all
+    /// reads of the binding go through (SLICE_GET into a shadowed
+    /// `let b` read back as the slot's stale value -- the assigned
+    /// store was silently dropped). When the current (most recent)
+    /// local is stack-homed, its slot register is the destination;
+    /// anything else keeps the bindingReg route. Macro-expansion
+    /// contexts keep the bindingReg route: their target names are
+    /// expansion aliases, not function locals.
+    fn leadingOutputDst(self: *Codegen, name: []const u8, ctx: ?*MacroExpansionContext) !u32 {
+        if (ctx == null) {
+            var i = self.locals.items.len;
+            while (i > 0) {
+                i -= 1;
+                const local = self.locals.items[i];
+                if (std.mem.eql(u8, local.name, name)) {
+                    if (local.stack_ty != null or local.is_stack_alloc) return local.reg;
+                    break;
+                }
+            }
+        }
+        return try self.bindingReg(name);
+    }
+
     fn genImportedMacroLeadingOutputArg(
         self: *Codegen,
         plan: lowering_rules.ImportedMacroCallPlan,
@@ -18444,7 +18475,7 @@ pub const Codegen = struct {
     ) anyerror!?SabLoweredCallArg {
         if (plan.expression_output or call_arg_index >= plan.leading_outputs) return null;
         const name = self.importedMacroOutputTargetName(arg, ctx) orelse return null;
-        const dst = try self.bindingReg(name);
+        const dst = try self.leadingOutputDst(name, ctx);
         if (self.stack_alloc_emitted.contains(dst)) {
             // Address-slot output macros (for example PIN_AS_REF) write into an
             // existing stack allocation. Passing an uninitialized temporary and

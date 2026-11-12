@@ -23,15 +23,14 @@
 // Server modes: 1 CONNECT+auth -> 200, 2 CONNECT no-auth -> 407,
 // 3 SOCKS5 -> success, 4 SOCKS5 -> reply 5, 5 SOCKS5 auth -> success.
 //
-// The two CONNECT tests (modes 1/2) are NOT in this file: at the
-// f6f9a552 x eca5b9c0 pin they fail on BOTH backends against a
-// byte-validated server (the tunnel returns SA_STD_ERR_NET with
-// http_status 0 after a well-formed 200/407 head) — the registered
-// PROXY-SAB family, defect-blocked; the tests and the minimized
-// repro probes are preserved with the line's evidence
-// (test_unit_decl_http_proxy_live_full_v1.sla, probe_vec.sla,
-// probe_exchange.sla). The mode 1/2 fixture code stays so the
-// tests can be restored verbatim when the fix lands.
+// The two CONNECT tests (modes 1/2) are restored: the PROXY-SAB
+// defect that blocked them (SAB codegen dropped the assigned
+// output store of an imported-macro call whose target name was
+// already bound earlier in the function -- SLICE_GET into
+// proxy_read_head's shadowed `b` read back stale, so the tunnel
+// returned SA_STD_ERR_NET with http_status 0 on the SAB backend
+// only) is fixed in sab_codegen's leadingOutputDst; the minimized
+// regression shape lives in test_unit_sab_macro_out_shadowed.sla.
 
 fn hp_gset(name: ptr, name_len: u64, v: u64) {
     let rc: i32 = sla_global_u64_set(name, name_len, v);
@@ -343,6 +342,39 @@ fn hp_finish(code: i32) {
     if hp_gget(STR_PTR("declhp.err"), STR_LEN("declhp.err")) != 0 { panic(code + 1); };
     let lh: u64 = hp_gget(STR_PTR("declhp.lh"), STR_LEN("declhp.lh"));
     let crc = sa_net_tcp_listener_close(lh);
+}
+
+@test "decl http proxy live connect auth ok"() {
+    let port: u64 = hp_start(1, 62910);
+    let url: String = format("http://user:pass@127.0.0.1:{}", port);
+    match http_proxy_parse(url) {
+        Ok(px) => {
+            let t = http_proxy_tunnel(px, format("example.com"), 80);
+            if t.status != SA_STD_OK { panic(62901); };
+            if t.http_status != 200 { panic(62902); };
+            if t.handle == 0 { panic(62903); };
+            let crc = sa_net_tcp_stream_close(t.handle);
+        },
+        Err(e) => { panic(62904); },
+    };
+    hp_finish(62905);
+    if hp_gget(STR_PTR("declhp.reqok"), STR_LEN("declhp.reqok")) != 1 { panic(62906); };
+}
+
+@test "decl http proxy live connect refused 407"() {
+    let port: u64 = hp_start(2, 62920);
+    let url: String = format("http://127.0.0.1:{}", port);
+    match http_proxy_parse(url) {
+        Ok(px) => {
+            let t = http_proxy_tunnel(px, format("example.com"), 80);
+            if t.status != SA_STD_ERR_NET { panic(62911); };
+            if t.http_status != 407 { panic(62912); };
+            if t.handle != 0 { panic(62913); };
+        },
+        Err(e) => { panic(62914); },
+    };
+    hp_finish(62915);
+    if hp_gget(STR_PTR("declhp.reqok"), STR_LEN("declhp.reqok")) != 1 { panic(62916); };
 }
 
 @test "decl http proxy live socks ok"() {

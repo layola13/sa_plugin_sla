@@ -1,0 +1,44 @@
+// EXTERNS-PROBE carrier for sa_mem_free (sci sa_std/fmt.sai:19),
+// proposed by DIAG-EVIDENCE EVIDENCE.md S8.1: the never-tried direct
+// carrier -- a Box handed to Box::into_raw yields the allocation base
+// (Box_value offset is +0, sa_std/core/box.sal), and the native `alloc`
+// block is a libc malloc block (runtime note on sa_mem_free itself),
+// so releasing it through the sla_std thin wrap sla_mem_free
+// (sla_std/wrap/fmt.sla:68) is the documented use. Two roundtrips with
+// distinct payloads: the second allocation + store + readback after
+// the first free is the allocator-health assertion (a bad free would
+// corrupt the heap and surface here or as a signal).
+// Control (same .sai family, already green in the fmt corpus):
+// sa_fmt_i64 buffer lifecycle ending in sla_fmt_buffer_free.
+//
+// Simular run correction (2026-11-13, diag rounds V1-V4 in RESULT):
+// Box::into_raw's result is integer-typed at the checker, so it is
+// cast `(raw as ptr)` before use, and the wrap's consuming parameter
+// (^ptr) is fed with the move marker: sla_mem_free(^p). The carrier
+// semantics are unchanged (same allocation base, same wrap, same
+// two roundtrips, same panic codes).
+@import "sla_std/wrap/fmt.sla"
+@import "sa_std/ptr.sa"
+@import "sa_std/core/box.sa"
+
+@test "extern probe sa_mem_free box into_raw roundtrip"() {
+    let b1 = Box::new(424242);
+    let raw1 = Box::into_raw(b1);
+    let p1 = (raw1 as ptr);
+    if p1 == PTR_NULL() { panic(971001); };
+    if PTR_READ_U64(p1) != 424242 { panic(971002); };
+    sla_mem_free(^p1);
+    let b2 = Box::new(777);
+    let raw2 = Box::into_raw(b2);
+    let p2 = (raw2 as ptr);
+    if p2 == PTR_NULL() { panic(971003); };
+    if PTR_READ_U64(p2) != 777 { panic(971004); };
+    sla_mem_free(^p2);
+}
+
+@test "extern probe control fmt buffer lifecycle"() {
+    let buf = sla_fmt_i64(-12345, 10);
+    if buf == 0 { panic(971011); };
+    if sla_fmt_buffer_len(buf) != 6 { panic(971012); };
+    if sla_fmt_buffer_free(^buf) != 0 { panic(971013); };
+}

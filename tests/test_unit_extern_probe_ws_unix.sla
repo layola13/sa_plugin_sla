@@ -1,0 +1,100 @@
+// Simular run correction (2026-11-13, see RESULT): added the two
+// imports the green sibling carrier test_extern_final_ws.sla carries
+// -- "sa_std/string.sa" (STR_PTR/STR_LEN macros; without it the file
+// fails check with UndefinedVariable STR_PTR) and "sa_std/task.sai"
+// (declares sa_task_spawn for the `go` peer; without it text codegen
+// traps UnknownRegister on @sa_task_spawn). Carrier semantics are
+// unchanged (same error path, same assertions, same panic codes).
+// EXTERNS-PROBE carriers for the two unix-domain websocket connect
+// externs (sci sa_std/http_client.sai:83/85), proposed by DIAG-EVIDENCE
+// EVIDENCE.md S8.2/S8.3: the never-tried error-path carrier -- connect
+// to a nonexistent socket path with a short timeout and assert a
+// nonzero v2 status (0 ok, 1 would_block, 2 closed, 3 timeout,
+// 4 too_large, 5 invalid, 6 io_error), out_ws left 0, and the process
+// exiting normally (no hang, no signal). The exact measured codes are
+// recorded in the line RESULT (probe_unix_rc.sla, exit-code encoded);
+// the corpus asserts the durable contract: a valid nonzero status.
+// Control (same family, already green in test_extern_final_ws.sla):
+// the TCP form sa_http_client_websocket_connect_v2 against a local
+// v2 echo peer, full write/poll/read roundtrip.
+@import "sla_std/wrap/http_server.sla"
+@import "sla_std/wrap/http_client.sla"
+@import "sla_std/wrap/time.sla"
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+@import "sa_std/task.sai"
+
+fn extprobe_ws_peer(port: u64) -> void {
+    let sc = [0u64; 4];
+    if sla_http_server_new_v2(&sc[0]) != 0 { panic(972020); };
+    let srv = (sc[0] as ptr);
+    if sla_http_server_start_v2(srv, STR_PTR("127.0.0.1"), STR_LEN("127.0.0.1"), port as u16) != 0 { panic(972021); };
+    let aq = [0u64; 4];
+    if sla_http_server_accept_v2(srv, 30000, &aq[0]) != 0 { panic(972022); };
+    let req = (aq[0] as ptr);
+    let wc = [0u64; 4];
+    if sla_http_server_websocket_upgrade_v2(req, &wc[0]) != 0 { panic(972023); };
+    let ws = (wc[0] as ptr);
+    let op = [0u64; 4];
+    let dp = [0u64; 4];
+    let dl = [0u64; 4];
+    let pev = [0u64; 4];
+    if sla_http_server_websocket_poll_v2(ws, 1, 5000, &pev[0]) != 0 { panic(972024); };
+    if sla_http_server_websocket_read_v2(ws, 4096, &op[0], &dp[0], &dl[0]) != 0 { panic(972024); };
+    let wr = [0u64; 4];
+    if sla_http_server_websocket_write_v2(ws, op[0] as u8, dp[0] as ptr, dl[0], &wr[0]) != 0 { panic(972025); };
+    sla_http_server_websocket_free_v2(ws);
+    sla_http_server_free_v2(srv);
+}
+
+@test "extern probe websocket connect unix error path"() {
+    let cl = [0u64; 4];
+    if sla_http_client_new_v2(0, PTR_NULL(), 0, &cl[0]) != 0 { panic(972101); };
+    let client = (cl[0] as ptr);
+    let wc = [0u64; 4];
+    let rc = sla_http_client_websocket_connect_unix_v2(client, STR_PTR("/nonexistent/extprobe.sock"), STR_LEN("/nonexistent/extprobe.sock"), STR_PTR("ws://localhost/extprobe"), STR_LEN("ws://localhost/extprobe"), 2000, &wc[0]);
+    if rc == 0 { panic(972102); };
+    if rc > 6 { panic(972103); };
+    if wc[0] != 0 { panic(972104); };
+    sla_http_client_free(client);
+}
+
+@test "extern probe req websocket connect unix error path"() {
+    let cl = [0u64; 4];
+    if sla_http_client_new_v2(0, PTR_NULL(), 0, &cl[0]) != 0 { panic(972111); };
+    let client = (cl[0] as ptr);
+    let rq = [0u64; 4];
+    if sla_http_client_req_new_v2(client, 1, STR_PTR("ws://localhost/extprobe"), STR_LEN("ws://localhost/extprobe"), &rq[0]) != 0 { panic(972112); };
+    if rq[0] == 0 { panic(972113); };
+    let wc = [0u64; 4];
+    let rc = sla_http_client_req_websocket_connect_unix_v2((rq[0] as ptr), STR_PTR("/nonexistent/extprobe.sock"), STR_LEN("/nonexistent/extprobe.sock"), 2000, &wc[0]);
+    if rc == 0 { panic(972114); };
+    if rc > 6 { panic(972115); };
+    if wc[0] != 0 { panic(972116); };
+    sla_http_client_req_free((rq[0] as ptr));
+    sla_http_client_free(client);
+}
+
+@test "extern probe control websocket connect v2 tcp"() {
+    let h = go extprobe_ws_peer(61591);
+    sla_time_sleep_ms(150);
+    let cl = [0u64; 4];
+    if sla_http_client_new_v2(0, PTR_NULL(), 0, &cl[0]) != 0 { panic(972121); };
+    let client = (cl[0] as ptr);
+    let wc = [0u64; 4];
+    if sla_http_client_websocket_connect_v2(client, STR_PTR("ws://127.0.0.1:61591/fin"), STR_LEN("ws://127.0.0.1:61591/fin"), 10000, &wc[0]) != 0 { panic(972122); };
+    if wc[0] == 0 { panic(972123); };
+    let ws = (wc[0] as ptr);
+    let wr = [0u64; 4];
+    if sla_http_websocket_write_v2(ws, 1, STR_PTR("extprobe"), STR_LEN("extprobe"), &wr[0]) != 0 { panic(972124); };
+    let op = [0u64; 4];
+    let dp = [0u64; 4];
+    let dl = [0u64; 4];
+    let pev2 = [0u64; 4];
+    if sla_http_websocket_poll_v2(ws, 1, 5000, &pev2[0]) != 0 { panic(972125); };
+    if sla_http_websocket_read_v2(ws, 4096, &op[0], &dp[0], &dl[0]) != 0 { panic(972125); };
+    if op[0] != 1 { panic(972126); };
+    if dl[0] != 8 { panic(972127); };
+    if sla_http_websocket_free_v2(ws) != 0 { panic(972128); };
+    sla_http_client_free(client);
+}

@@ -3504,6 +3504,17 @@ pub const Codegen = struct {
     /// Mirrors the F-perf-2 helper of the same name.
     fn emitOwnedBufferFree(self: *Codegen, reg: u32, ty: ?*const ast.Type) !void {
         if (self.released_regs.contains(reg)) return;
+        // DEF-IDX-D: a non-owning borrowed view (e.g. a String extracted
+        // by indexing a macro-produced Vec whose elements alias the
+        // map key buffers) must be forgotten, never deep-freed: the
+        // owner still frees the buffer. Mirrors emitRelease non_owning
+        // handling; without this the view scope-end cleanup frees the
+        // buffer and the owner drop frees it again (double free,
+        // signal 6).
+        if (self.non_owning_regs.fetchRemove(reg)) |_| {
+            try self.emitMove(reg);
+            return;
+        }
         // GrowVec's reservation is released by munmap of the whole VA
         // range (@sa_growvec_free); String/Vec keep @sa_vec_free.
         if (ty) |t| {
@@ -21867,9 +21878,10 @@ pub const Codegen = struct {
     /// raw payload) for BTreeMap. A miss panics 404 in both, matching SA.
     fn genMapIndex(self: *Codegen, idx: ast.IndexExpr, target_ty: *const ast.Type, plan: lowering_rules.MapIndexPlan) anyerror!u32 {
         const value_ty = if (lowering_rules.hashMapTypes(target_ty)) |hm| hm.value else (lowering_rules.btreeMapTypes(target_ty) orelse return Error.UnsupportedSabDirectFeature).value;
+        const key_ty: ?*const ast.Type = if (lowering_rules.hashMapTypes(target_ty)) |hm| hm.key else if (lowering_rules.btreeMapTypes(target_ty)) |bm| bm.key else null;
         const load_ty = try storagePrimType(value_ty);
         const map_reg = try self.genExpr(idx.target);
-        const key_reg = try self.genMapKeyReg(idx.index);
+        const key_reg = try self.genMapKeyReg(idx.index, key_ty);
         try self.ensureStdDeps(plan.import_path, &.{plan.dep_symbol});
         const hit_label = try self.newLabel("L_MAP_INDEX_HIT");
         const miss_label = try self.newLabel("L_MAP_INDEX_MISS");
@@ -21904,15 +21916,56 @@ pub const Codegen = struct {
         }
         try self.releaseNonLocalTemps(&.{map_reg});
         try self.releaseExprResultIfNeeded(idx.index, key_reg);
+        if (keyRegIsOwnedLiteralString(idx.index, key_ty)) try self.emitOwnedBufferFree(key_reg, key_ty);
         return dst;
+    }
+
+    /// DEF-IDX-B (codegen half): owned-String materialization of a string
+    /// literal, mirroring the text backend's genOwnedStringLiteral and this
+    /// file's DEF-2/BM-D2 path in genPlannedSabCallArgInner. A bare Slice
+    /// {ptr,len} misreads as a String handle (String consumers read len at
+    /// the Vec offset +16) and segfaults; the _STR map macros take the key
+    /// by address and read a 24-byte String handle.
+    fn genOwnedStringLiteral(self: *Codegen, value: []const u8) anyerror!u32 {
+        // The conversion chain (WITH_CAPACITY + PUSH_STR) calls vec
+        // allocation/copy std functions; declare them exactly like the
+        // format-buffer path does (genPlannedSabCallArgInner), or the
+        // fragment's callees are undeclared at SAB load (UnknownRegister).
+        try self.ensureStdDeps("sa_std/string_format.sa", &.{ "sa_vec_with_capacity", "sa_vec_reserve", "sa_mem_copy" });
+        const slice_reg = try self.genStringLiteral(value);
+        const string_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_FROM_UTF8_UNCHECKED", &.{ self.symbols.items[string_reg], self.symbols.items[slice_reg] });
+        return string_reg;
+    }
+
+    /// DEF-IDX-B (codegen half): true when the key register was materialized
+    /// from a string literal into an owned String handle for a String-keyed
+    /// map. The caller must retire such a register explicitly: a consumed
+    /// marker after an adopting call (insert — the map owns the handle now)
+    /// or emitOwnedBufferFree after a read-only call (get/contains/remove/
+    /// index — the temp owns a heap buffer). releaseExprResultIfNeeded is a
+    /// no-op for literals, so without this the temp would leak on reads and
+    /// be deep-freed under the map on inserts.
+    fn keyRegIsOwnedLiteralString(arg: *const ast.Node, key_ty: ?*const ast.Type) bool {
+        if (key_ty) |kt| {
+            return lowering_rules.isStringType(kt) and arg.* == .literal and arg.literal == .string_val;
+        }
+        return false;
     }
 
     /// Map key register shared by insert and index: string literals reuse one
     /// cached slice slot per function, mirroring the SA-text emitter's
     /// `hashmap_key_slots`. The std map probe compares keys by pointer, so a
     /// fresh slot per call would never hit keys stored by an earlier call.
-    fn genMapKeyReg(self: *Codegen, arg: *const ast.Node) anyerror!u32 {
+    /// DEF-IDX-B (codegen half): the cached-slice rule holds only for
+    /// non-String keys. A literal against a String key is materialized as a
+    /// fresh owned String per call site (never cached: an insert adopts it,
+    /// so a cached register would be adopted twice) via genOwnedStringLiteral.
+    fn genMapKeyReg(self: *Codegen, arg: *const ast.Node, key_ty: ?*const ast.Type) anyerror!u32 {
         if (arg.* == .literal and arg.literal == .string_val) {
+            if (key_ty) |kt| {
+                if (lowering_rules.isStringType(kt)) return try self.genOwnedStringLiteral(arg.literal.string_val);
+            }
             if (self.hashmap_key_slots.get(arg.literal.string_val)) |reg| return reg;
             const reg = try self.genStringLiteral(arg.literal.string_val);
             try self.hashmap_key_slots.put(arg.literal.string_val, reg);
@@ -21965,9 +22018,10 @@ pub const Codegen = struct {
         if (!lowering_rules.isInsertCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         const plan = lowering_rules.mapInsertPlan(receiver_ty) orelse return null;
+        const key_ty: ?*const ast.Type = if (lowering_rules.hashMapTypes(receiver_ty)) |hm| hm.key else if (lowering_rules.btreeMapTypes(receiver_ty)) |bm| bm.key else null;
         const recv_reg = try self.genExpr(@constCast(call.args[0]));
         const key_arg = call.args[1];
-        const key_reg = try self.genMapKeyReg(key_arg);
+        const key_reg = try self.genMapKeyReg(key_arg, key_ty);
         const value_reg = try self.genExpr(@constCast(call.args[2]));
         const value_arg_ty = self.tc.expr_types.get(call.args[2]);
         const value_u64 = try self.intern(try self.newTmp());
@@ -22087,7 +22141,7 @@ pub const Codegen = struct {
             try self.emitConsumedMarker(value_reg);
             try self.markConsumed(value_reg);
         }
-        if (self.insertArgCheckerConsumed(call.args[0], key_arg)) {
+        if (self.insertArgCheckerConsumed(call.args[0], key_arg) or keyRegIsOwnedLiteralString(key_arg, key_ty)) {
             try self.emitConsumedMarker(key_reg);
             try self.markConsumed(key_reg);
         } else {
@@ -22108,7 +22162,7 @@ pub const Codegen = struct {
         if (lowering_rules.hashMapTypes(receiver_ty) == null) return null;
         const recv_reg = try self.genExpr(@constCast(call.args[0]));
         const key_arg = call.args[1];
-        const key_reg = try self.genMapKeyReg(key_arg);
+        const key_reg = try self.genMapKeyReg(key_arg, lowering_rules.hashMapTypes(receiver_ty).?.key);
         // Route through the shared index plan so String-keyed maps use the
         // content-keyed MAP_TRY_GET_STR variant, matching insert and the
         // index path (DEF-INSERT-GETMISS). Hardcoding the generic
@@ -22159,6 +22213,7 @@ pub const Codegen = struct {
         try self.emitLabel(end_label);
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
         try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        if (keyRegIsOwnedLiteralString(key_arg, lowering_rules.hashMapTypes(receiver_ty).?.key)) try self.emitOwnedBufferFree(key_reg, lowering_rules.hashMapTypes(receiver_ty).?.key);
         return option_reg;
     }
 
@@ -22174,7 +22229,7 @@ pub const Codegen = struct {
         if (lowering_rules.btreeMapTypes(receiver_ty) == null) return null;
         const recv_reg = try self.genExpr(@constCast(call.args[0]));
         const key_arg = call.args[1];
-        const key_reg = try self.genMapKeyReg(key_arg);
+        const key_reg = try self.genMapKeyReg(key_arg, lowering_rules.btreeMapTypes(receiver_ty).?.key);
         try self.ensureStdDeps("sa_std/btree_map.sa", &.{"sa_btree_map_try_get"});
         const ok_reg = try self.intern(try self.newTmp());
         const val_reg = try self.intern(try self.newTmp());
@@ -22266,7 +22321,7 @@ pub const Codegen = struct {
         const hm = lowering_rules.hashMapTypes(receiver_ty) orelse return null;
         const recv_reg = try self.genExpr(@constCast(call.args[0]));
         const key_arg = call.args[1];
-        const key_reg = try self.genMapKeyReg(key_arg);
+        const key_reg = try self.genMapKeyReg(key_arg, hm.key);
         const result_reg = try self.intern(try self.newTmp());
         try self.recordReg(result_reg);
         if (lowering_rules.isStringType(hm.key)) {
@@ -22282,6 +22337,7 @@ pub const Codegen = struct {
         }
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
         try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        if (keyRegIsOwnedLiteralString(key_arg, hm.key)) try self.emitOwnedBufferFree(key_reg, hm.key);
         return result_reg;
     }
 
@@ -22392,7 +22448,7 @@ pub const Codegen = struct {
         const hm = lowering_rules.hashMapTypes(receiver_ty) orelse return null;
         const recv_reg = try self.genExpr(@constCast(call.args[0]));
         const key_arg = call.args[1];
-        const key_reg = try self.genMapKeyReg(key_arg);
+        const key_reg = try self.genMapKeyReg(key_arg, hm.key);
         const string_key = lowering_rules.isStringType(hm.key);
         const ok_reg = try self.intern(try self.newTmp());
         const cell_reg = try self.intern(try self.newTmp());
@@ -22461,6 +22517,7 @@ pub const Codegen = struct {
         try self.emitLabel(end_label);
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
         try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        if (keyRegIsOwnedLiteralString(key_arg, hm.key)) try self.emitOwnedBufferFree(key_reg, hm.key);
         return option_reg;
     }
 
@@ -22560,7 +22617,7 @@ pub const Codegen = struct {
         if (lowering_rules.btreeMapTypes(receiver_ty) == null) return null;
         const recv_reg = try self.genExpr(@constCast(call.args[0]));
         const key_arg = call.args[1];
-        const key_reg = try self.genMapKeyReg(key_arg);
+        const key_reg = try self.genMapKeyReg(key_arg, lowering_rules.btreeMapTypes(receiver_ty).?.key);
         try self.ensureStdDeps("sa_std/btree_map.sa", &.{ "sa_btree_map_try_get", "sa_btree_map_remove" });
         const ok_reg = try self.intern(try self.newTmp());
         const val_reg = try self.intern(try self.newTmp());

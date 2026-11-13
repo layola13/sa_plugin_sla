@@ -1,0 +1,37 @@
+@import "sa_std/vec.sa"
+@import "sa_std/hashmap.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// DEF-IDX-B regression corpus, HashSet half.
+// Same root cause as test_unit_def_idx_literal_keys.sla: a string
+// literal used as a HashSet key was typed `.raw_ptr` (checker half)
+// and materialized as a bare Slice instead of an owned String handle
+// (codegen half), segfaulting both backends. The fix refines the
+// literal to String against a String key slot and materializes an
+// owned String per call site, forgotten after insert and freed after
+// read-only uses.
+// NOTE: set remove with a fresh (literal or distinct-variable) key is NOT
+// asserted here: std has no content-keyed SET_REMOVE_STR — SET_REMOVE
+// calls the generic @sa_set_remove, which probes by key identity, so a
+// fresh equal-content key misses a stored entry (same family as
+// DEF-INSERT-GETMISS; the registry SET_REMOVE name belongs to PROBE-B).
+// Insert/contains below are content-keyed and are this file's scope.
+// Panic codes 689xx.
+
+@test "def idx literal set keys insert and contains"() {
+    let s: HashSet<String> = HashSet::new();
+    s.insert("a");
+    s.insert("b");
+    if s.contains("a") != true { panic(68901); };
+    if s.contains("b") != true { panic(68902); };
+    if s.contains("zz") != false { panic(68903); };
+}
+
+@test "def idx literal set keys insert twice"() {
+    // Each insert must adopt a FRESH owned String, as with maps.
+    let s: HashSet<String> = HashSet::new();
+    s.insert("a");
+    s.insert("a");
+    if s.contains("a") != true { panic(68911); };
+}

@@ -13879,9 +13879,35 @@ pub const Codegen = struct {
         return true;
     }
 
-    fn genHashMapKeyReg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
+    /// DEF-IDX-B (codegen half): true when the key register was materialized
+    /// from a string literal into an owned String handle for a String-keyed
+    /// map/set. The caller must retire such a register explicitly: forget it
+    /// after an adopting call (insert — the map owns the handle now) or
+    /// release it after a read-only call (get/contains/remove/index — the
+    /// temp owns a heap buffer that must be freed). `callArgNeedsRelease`
+    /// returns false for string literals, so without this the temp would
+    /// leak on reads and be deep-freed under the map on inserts.
+    fn keyRegIsOwnedLiteralString(arg: *ast.Node, key_ty: ?*const ast.Type) bool {
+        if (key_ty) |kt| {
+            return lowering_rules.isStringType(kt) and arg.* == .literal and arg.literal == .string_val;
+        }
+        return false;
+    }
+
+    fn genHashMapKeyReg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8), key_ty: ?*const ast.Type) CodegenError![]const u8 {
         if (arg.* == .literal and arg.literal == .string_val) {
             const value = arg.literal.string_val;
+            // DEF-IDX-B (codegen half): a string literal used as a key in a
+            // String-keyed map/set must be materialized as an owned String
+            // handle {ptr,len,cap}. The Slice form {ptr,len} misreads as a
+            // String handle (cap = stack garbage) and the _STR macros
+            // segfault on it. Never cached: each call site gets a fresh
+            // owned String (an insert adopts it, so a cached reg would be
+            // adopted twice). BTree keys stay on the Slice form: their key
+            // model is raw_ptr/slice by design (isStringType is false).
+            if (key_ty) |kt| {
+                if (lowering_rules.isStringType(kt)) return try self.genOwnedStringLiteral(value, hoisted_allocs);
+            }
             if (self.hashmap_key_slots.get(value)) |slot| return slot;
 
             const slot = try self.newTmp();
@@ -18382,7 +18408,7 @@ pub const Codegen = struct {
                 const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
                 if (hashMapTypes(target_ty)) |hm| {
                     const map_reg = try self.genExpr(idx.target, hoisted_allocs);
-                    const key_reg = try self.genHashMapKeyReg(idx.index, hoisted_allocs);
+                    const key_reg = try self.genHashMapKeyReg(idx.index, hoisted_allocs, hm.key);
                     const value_ptr = try self.newTmp();
                     const found = try self.newTmp();
                     const hit_label = try self.newLabel("L_HASHMAP_INDEX_HIT");
@@ -18400,11 +18426,12 @@ pub const Codegen = struct {
                     const reg = try self.genLoadSlotValue(value_ptr, value_ty);
                     try self.emitRelease(value_ptr);
                     if (callArgNeedsRelease(idx.index)) try self.emitRelease(key_reg);
+                    if (keyRegIsOwnedLiteralString(idx.index, hm.key)) try self.emitRelease(key_reg);
                     return reg;
                 }
                 if (btreeMapTypes(target_ty)) |bm| {
                     const map_reg = try self.genExpr(idx.target, hoisted_allocs);
-                    const key_reg = try self.genHashMapKeyReg(idx.index, hoisted_allocs);
+                    const key_reg = try self.genHashMapKeyReg(idx.index, hoisted_allocs, bm.key);
                     const raw_value = try self.newTmp();
                     const found = try self.newTmp();
                     const hit_label = try self.newLabel("L_BTREE_MAP_INDEX_HIT");
@@ -20497,7 +20524,7 @@ pub const Codegen = struct {
                             if (lowering_rules.isInsertCall(call)) {
                                 if (call.args.len != 3) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, hashMapTypes(ty).?.key);
                                 const value_slot = try self.genHashMapValueSlot(call.args[2], hoisted_allocs, self.insertArgCheckerConsumed(call.args[0], call.args[2]));
                                 const reg = try self.newTmp();
                                 const map_insert_macro = if (lowering_rules.isStringType(hashMapTypes(ty).?.key)) "SLA_MAP_INSERT_STR_OPTION_U64" else "SLA_MAP_INSERT_OPTION_U64";
@@ -20510,24 +20537,25 @@ pub const Codegen = struct {
                                 try self.emitForgetMovedValue(value_slot);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
-                                if (self.insertArgCheckerConsumed(call.args[0], call.args[1])) try self.emitForgetMovedValue(key_reg);
+                                if (self.insertArgCheckerConsumed(call.args[0], call.args[1]) or keyRegIsOwnedLiteralString(call.args[1], hashMapTypes(ty).?.key)) try self.emitForgetMovedValue(key_reg);
                                 return reg;
                             }
                             if (lowering_rules.isGetCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, hashMapTypes(ty).?.key);
                                 const reg = try self.newTmp();
                                 const map_get_macro = if (lowering_rules.isStringType(hashMapTypes(ty).?.key)) "SLA_MAP_TRY_GET_STR_OPTION" else "SLA_MAP_TRY_GET_OPTION";
                                 self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ map_get_macro, reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
+                                if (keyRegIsOwnedLiteralString(call.args[1], hashMapTypes(ty).?.key)) try self.emitRelease(key_reg);
                                 return reg;
                             }
                             if (std.mem.eql(u8, call.func_name, "contains_key")) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, hashMapTypes(ty).?.key);
                                 const reg = try self.newTmp();
                                 if (lowering_rules.isStringType(hashMapTypes(ty).?.key)) {
                                     // Content-addressed probe; the
@@ -20539,15 +20567,17 @@ pub const Codegen = struct {
                                 }
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
+                                if (keyRegIsOwnedLiteralString(call.args[1], hashMapTypes(ty).?.key)) try self.emitRelease(key_reg);
                                 return reg;
                             }
                             if (std.mem.eql(u8, call.func_name, "remove") or std.mem.eql(u8, call.func_name, "del")) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, hashMapTypes(ty).?.key);
                                 const reg = try self.genHashMapRemoveText(recv_reg, key_reg, hashMapTypes(ty).?.key, hashMapTypes(ty).?.value);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
+                                if (keyRegIsOwnedLiteralString(call.args[1], hashMapTypes(ty).?.key)) try self.emitRelease(key_reg);
                                 return reg;
                             }
                             if (std.mem.eql(u8, call.func_name, "keys")) {
@@ -20583,7 +20613,7 @@ pub const Codegen = struct {
                             if (lowering_rules.isInsertCall(call)) {
                                 if (call.args.len != 3) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, btreeMapTypes(ty).?.key);
                                 const value_reg = try self.genExpr(call.args[2], hoisted_allocs);
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND SLA_BTREE_MAP_INSERT_OPTION_U64 {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg, value_reg }) catch return CodegenError.CodegenError;
@@ -20597,7 +20627,7 @@ pub const Codegen = struct {
                             if (lowering_rules.isGetCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, btreeMapTypes(ty).?.key);
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND SLA_BTREE_MAP_TRY_GET_OPTION {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
@@ -20607,7 +20637,7 @@ pub const Codegen = struct {
                             if (std.mem.eql(u8, call.func_name, "remove")) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, btreeMapTypes(ty).?.key);
                                 // Fold the value out first (entries
                                 // store plain words, no cells), then
                                 // remove; the Option comes from the
@@ -20657,34 +20687,36 @@ pub const Codegen = struct {
                             if (lowering_rules.isInsertCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, hashSetTypes(ty).?.key);
                                 const reg = try self.newTmp();
                                 const set_insert_macro = if (lowering_rules.isStringType(hashSetTypes(ty).?.key)) "SET_INSERT_STR" else "SET_INSERT";
                                 self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ set_insert_macro, reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
-                                if (self.insertArgCheckerConsumed(call.args[0], call.args[1])) try self.emitForgetMovedValue(key_reg);
+                                if (self.insertArgCheckerConsumed(call.args[0], call.args[1]) or keyRegIsOwnedLiteralString(call.args[1], hashSetTypes(ty).?.key)) try self.emitForgetMovedValue(key_reg);
                                 return reg;
                             }
                             if (lowering_rules.isContainsCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, hashSetTypes(ty).?.key);
                                 const reg = try self.newTmp();
                                 const set_contains_macro = if (lowering_rules.isStringType(hashSetTypes(ty).?.key)) "SET_CONTAINS_STR" else "SET_CONTAINS";
                                 self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ set_contains_macro, reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
+                                if (keyRegIsOwnedLiteralString(call.args[1], hashSetTypes(ty).?.key)) try self.emitRelease(key_reg);
                                 return reg;
                             }
                             if (std.mem.eql(u8, call.func_name, "remove")) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, hashSetTypes(ty).?.key);
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND SET_REMOVE {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
+                                if (keyRegIsOwnedLiteralString(call.args[1], hashSetTypes(ty).?.key)) try self.emitRelease(key_reg);
                                 return reg;
                             }
                             if (std.mem.eql(u8, call.func_name, "union")) {
@@ -20702,7 +20734,7 @@ pub const Codegen = struct {
                             if (lowering_rules.isInsertCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, btreeSetTypes(ty).?.key);
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND BTREE_SET_INSERT {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
@@ -20713,7 +20745,7 @@ pub const Codegen = struct {
                             if (lowering_rules.isContainsCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, btreeSetTypes(ty).?.key);
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND BTREE_SET_CONTAINS {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);

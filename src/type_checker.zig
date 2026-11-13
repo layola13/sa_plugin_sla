@@ -5419,6 +5419,23 @@ pub const TypeChecker = struct {
         return ty;
     }
 
+    /// DEF-IDX-B: a string literal is typed `.raw_ptr` standalone, but
+    /// against a String (or still-inferred) HashMap/HashSet key or value
+    /// slot it denotes a String. Refine the checked arg type so key-slot
+    /// checks (insert / get / contains / remove / map index) both
+    /// typecheck against a concrete String slot and bind `.infer` slots
+    /// to String (mirrors the declared-param leniency at the call-arg
+    /// matching sites). Unrelated slots are untouched.
+    /// BTree arms are deliberately NOT refined: their key model is
+    /// raw_ptr/slice by design (btreeSetKeySupported), so a literal
+    /// key binds correctly there already.
+    fn refineStringLiteralArg(self: *TypeChecker, arg: *const ast.Node, arg_ty: *ast.Type, slot_ty: *const ast.Type) TypeError!*ast.Type {
+        if (arg.* == .literal and arg.literal == .string_val and (slot_ty.* == .infer or isStringType(slot_ty))) {
+            return try self.makeStringType();
+        }
+        return arg_ty;
+    }
+
     fn makeFileType(self: *TypeChecker) TypeError!*ast.Type {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .user_defined = .{ .name = "File", .generics = &.{} } };
@@ -8555,15 +8572,17 @@ pub const TypeChecker = struct {
             },
             .index_expr => |idx| {
                 const target_ty = try self.checkExpr(idx.target, scope);
-                const index_ty = try self.checkExpr(idx.index, scope);
+                const raw_index_ty = try self.checkExpr(idx.index, scope);
 
                 if (target_ty.* == .infer) return try self.makeInferType();
 
                 if (hashMapTypes(target_ty)) |hm| {
+                    const index_ty = try self.refineStringLiteralArg(idx.index, raw_index_ty, hm.key);
                     if (!self.typesEqual(hm.key, index_ty)) return TypeError.TypeMismatch;
                     return hm.value;
                 }
 
+                const index_ty = raw_index_ty;
                 if (btreeMapTypes(target_ty)) |bm| {
                     if (!self.typesEqual(bm.key, index_ty)) return TypeError.TypeMismatch;
                     return bm.value;
@@ -9967,8 +9986,8 @@ pub const TypeChecker = struct {
                     if (hashMapTypes(recv_ty)) |hm| {
                         if (lowering_rules.isInsertCall(call)) {
                             if (call.args.len != 3) return TypeError.InvalidArgsCount;
-                            const key_ty = try self.checkExpr(call.args[1], scope);
-                            const value_ty = try self.checkExpr(call.args[2], scope);
+                            const key_ty = try self.refineStringLiteralArg(call.args[1], try self.checkExpr(call.args[1], scope), hm.key);
+                            const value_ty = try self.refineStringLiteralArg(call.args[2], try self.checkExpr(call.args[2], scope), hm.value);
                             if (!self.typesEqual(hm.key, key_ty) or !self.typesEqual(hm.value, value_ty)) return TypeError.TypeMismatch;
                             if (rootIdentifier(call.args[0])) |recv_name| {
                                 if (scope.lookup(recv_name)) |sym| {
@@ -9985,7 +10004,7 @@ pub const TypeChecker = struct {
                         }
                         if (lowering_rules.isGetCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
-                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            const key_ty = try self.refineStringLiteralArg(call.args[1], try self.checkExpr(call.args[1], scope), hm.key);
                             if (!self.typesEqual(hm.key, key_ty)) return TypeError.TypeMismatch;
                             return try self.makeOptionType(try self.makeBorrowType(hm.value));
                         }
@@ -10001,7 +10020,7 @@ pub const TypeChecker = struct {
                         // sa_std/hashmap.sa; the SLA method face was missing).
                         if (std.mem.eql(u8, call.func_name, "contains_key")) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
-                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            const key_ty = try self.refineStringLiteralArg(call.args[1], try self.checkExpr(call.args[1], scope), hm.key);
                             if (!self.typesEqual(hm.key, key_ty)) return TypeError.TypeMismatch;
                             const ty = try self.allocator.create(ast.Type);
                             ty.* = .{ .primitive = .boolean };
@@ -10009,7 +10028,7 @@ pub const TypeChecker = struct {
                         }
                         if (std.mem.eql(u8, call.func_name, "remove") or std.mem.eql(u8, call.func_name, "del")) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
-                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            const key_ty = try self.refineStringLiteralArg(call.args[1], try self.checkExpr(call.args[1], scope), hm.key);
                             if (!self.typesEqual(hm.key, key_ty)) return TypeError.TypeMismatch;
                             return try self.makeOptionType(hm.value);
                         }
@@ -10026,7 +10045,7 @@ pub const TypeChecker = struct {
                     if (hashSetTypes(recv_ty)) |hs| {
                         if (lowering_rules.isInsertCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
-                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            const key_ty = try self.refineStringLiteralArg(call.args[1], try self.checkExpr(call.args[1], scope), hs.key);
                             if (!self.typesEqual(hs.key, key_ty)) return TypeError.TypeMismatch;
                             if (rootIdentifier(call.args[0])) |recv_name| {
                                 if (scope.lookup(recv_name)) |sym| {
@@ -10044,7 +10063,7 @@ pub const TypeChecker = struct {
                         }
                         if (lowering_rules.isContainsCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
-                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            const key_ty = try self.refineStringLiteralArg(call.args[1], try self.checkExpr(call.args[1], scope), hs.key);
                             if (!self.typesEqual(hs.key, key_ty)) return TypeError.TypeMismatch;
                             const ty = try self.allocator.create(ast.Type);
                             ty.* = .{ .primitive = .boolean };
@@ -10053,7 +10072,7 @@ pub const TypeChecker = struct {
                         // P1 HashSet surface: remove (bool) / union (new set).
                         if (std.mem.eql(u8, call.func_name, "remove")) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
-                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            const key_ty = try self.refineStringLiteralArg(call.args[1], try self.checkExpr(call.args[1], scope), hs.key);
                             if (!self.typesEqual(hs.key, key_ty)) return TypeError.TypeMismatch;
                             const ty = try self.allocator.create(ast.Type);
                             ty.* = .{ .primitive = .boolean };

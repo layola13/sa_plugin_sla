@@ -1,0 +1,81 @@
+@import "sa_std/vec.sa"
+@import "sa_std/hashmap.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// DEF-IDX-B regression corpus.
+// Root cause (checker half): a string literal used as a HashMap/HashSet
+// key was typed `.raw_ptr`, so inserting it into a String-keyed map
+// failed the checker with TypeMismatch. The checker fix refines a
+// literal against a String (or still-inferred) key slot to String.
+// Root cause (codegen half): both emitters then materialized the
+// literal key as a bare Slice {ptr,len}, but the _STR macros take the
+// key by address and read a 24-byte String handle {ptr,len,cap} — cap
+// came from stack garbage and both backends segfaulted (signal 11).
+// The fix materializes a literal against a String key as an owned
+// String handle per call site (never cached: an insert adopts it),
+// forgets it after insert, and frees it after read-only uses.
+// Panic codes 688xx.
+
+@test "def idx literal keys insert and map_keys index"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let ks = MAP_KEYS(m);
+    if len(ks) != 2 { panic(68801); };
+    let k0 = ks[0];
+    if len(k0) != 1 { panic(68802); };
+}
+
+@test "def idx literal keys annotated map insert and get"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("a", 10);
+    m.insert("b", 20);
+    match m.get("a") {
+        Some(v) => { if *v != 10 { panic(68811); }; },
+        None => { panic(68812); },
+    };
+    match m.get("zz") {
+        Some(v) => { panic(68813); },
+        None => {},
+    }
+}
+
+@test "def idx literal keys same literal twice"() {
+    // Each insert must adopt a FRESH owned String: reusing one cached
+    // register would adopt the same handle twice (double free).
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("a", 1);
+    m.insert("a", 2);
+    match m.get("a") {
+        Some(v) => { if *v != 2 { panic(68821); }; },
+        None => { panic(68822); },
+    };
+    let ks = MAP_KEYS(m);
+    if len(ks) != 1 { panic(68823); };
+    let k0 = ks[0];
+    if len(k0) != 1 { panic(68824); };
+}
+
+@test "def idx literal keys contains and index read"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("a", 7);
+    if m.contains_key("a") != true { panic(68831); };
+    if m.contains_key("zz") != false { panic(68832); };
+    if m["a"] != 7 { panic(68833); };
+}
+
+@test "def idx literal keys remove"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("a", 5);
+    m.insert("b", 6);
+    match m.remove("a") {
+        Some(v) => { if v != 5 { panic(68841); }; },
+        None => { panic(68842); },
+    };
+    // NOTE: no contains_key / MAP_KEYS tail here: probing a map for a
+    // removed key segfaults on both backends (contains_key after remove
+    // walks the tombstoned slot), for literal AND variable keys alike —
+    // a separate pre-existing defect, registered from the DEF-IDX
+    // discriminating probes (disc_post_remove.sla), not this fix's scope.
+}

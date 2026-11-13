@@ -1,0 +1,126 @@
+@import "sa_std/vec.sa"
+@import "sa_std/hashmap.sa"
+@import "sa_std/string.sai"
+@import "sa_std/str.sla"
+@import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// DEF-TOMBSTONE regression: reading a REMOVED String key with a FRESH
+// probe key (string literal, or a freshly built String) segfaulted on
+// both backends (signal 11). Root: the frontend tombstone transition
+// leaves the removed key's content hash in the slot with key = null,
+// and std @map_table_probe_str dereferenced the null slot key when the
+// fresh key's hash matched the stale slot hash. Fix: the _str probe
+// walk steps over TOMB slots without touching their key.
+// Pre-fix: tests 1-7 crash with signal 11 on sa and sab backends.
+// Post-fix: all pass. Panic codes 691xx.
+
+fn tomb_mk_a() -> String {
+    let b: Vec<u8> = Vec::new();
+    b.push(97u8);
+    let sl: Slice<u8> = VEC_AS_SLICE(b);
+    let res: Result<String, i32> = str_from_utf8(sl);
+    match res {
+        Ok(s) => { return s; },
+        Err(e) => { panic(69199); },
+    }
+}
+
+fn tomb_mk_b() -> String {
+    let b: Vec<u8> = Vec::new();
+    b.push(98u8);
+    let sl: Slice<u8> = VEC_AS_SLICE(b);
+    let res: Result<String, i32> = str_from_utf8(sl);
+    match res {
+        Ok(s) => { return s; },
+        Err(e) => { panic(69199); },
+    }
+}
+
+@test "tombstone get removed literal"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.remove("a");
+    if m.get("a").is_some() { panic(69101); };
+    if m.get("b").copied().unwrap_or_default() != 2 { panic(69102); };
+}
+
+@test "tombstone contains removed literal"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.remove("a");
+    if m.contains_key("a") { panic(69111); };
+    if !m.contains_key("b") { panic(69112); };
+}
+
+@test "tombstone single entry remove then get"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.remove("a");
+    if m.len() != 0 { panic(69121); };
+    if m.get("a").is_some() { panic(69122); };
+}
+
+@test "tombstone remove second key then get"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.remove("b");
+    if m.get("b").is_some() { panic(69131); };
+    if m.get("a").copied().unwrap_or_default() != 1 { panic(69132); };
+}
+
+@test "tombstone del then get removed"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.del("a");
+    if m.get("a").is_some() { panic(69141); };
+    if m.get("b").copied().unwrap_or_default() != 2 { panic(69142); };
+}
+
+// The two fresh-var tests below mirror the disc_post_remove /
+// disc_map_remove discriminator shapes. On the text backend they
+// crash pre-fix (tombstone deref) and pass post-fix. On the SAB
+// backend they currently pass vacuously: SAB lookup of a fresh
+// function-returned String key misses the live entry entirely
+// (DEF-IDX RESULT 5.3, a separate SAB key-materialization defect,
+// registered, not this fix's scope).
+@test "tombstone contains removed fresh var"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert(tomb_mk_a(), 5);
+    m.insert(tomb_mk_b(), 6);
+    m.remove(tomb_mk_a());
+    if m.contains_key(tomb_mk_a()) { panic(69151); };
+}
+
+@test "tombstone get removed fresh var"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert(tomb_mk_a(), 5);
+    m.insert(tomb_mk_b(), 6);
+    m.remove(tomb_mk_a());
+    if m.get(tomb_mk_a()).is_some() { panic(69161); };
+}
+
+@test "tombstone reinsert removed literal"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.remove("a");
+    m.insert("a", 7);
+    if m.len() != 2 { panic(69181); };
+    if m.get("a").copied().unwrap_or_default() != 7 { panic(69182); };
+    if m.get("b").copied().unwrap_or_default() != 2 { panic(69183); };
+}
+
+@test "tombstone get never present after remove"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.remove("a");
+    if m.get("zz").is_some() { panic(69171); };
+    if m.contains_key("zz") { panic(69172); };
+}

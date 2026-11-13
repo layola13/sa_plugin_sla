@@ -1339,6 +1339,27 @@ pub fn isHeapHandleType(ty: *const ast.Type) bool {
     };
 }
 
+/// DEFECT-A F-form: user-defined type names that never receive an
+/// aggregate stack home. These are runtime handle / cell types whose
+/// bindings are not plain record values: string and collection headers
+/// are served by their buffer registries, Cell/RefCell/Atomic* live in
+/// heap cells by design (their addresses may escape into owners), and
+/// the channel/concurrency handles are copyable runtime words. The
+/// aggregate-home class is plain struct values and tuples only.
+pub fn isExcludedAggregateHomeName(name: []const u8) bool {
+    const excluded = [_][]const u8{
+        "String",    "Vec",      "GrowVec",   "VecDeque", "HashMap",
+        "HashSet",   "BTreeMap", "BTreeSet",  "Cell",     "RefCell",
+        "AtomicI32", "AtomicUsize", "AtomicPtr", "AtomicBool",
+        "ManuallyDrop", "Chan",  "Sender",    "Receiver", "Mutex",
+        "RwLock",
+    };
+    for (excluded) |ex| {
+        if (std.mem.eql(u8, name, ex)) return true;
+    }
+    return false;
+}
+
 /// Y-SHARE: unified identifier-use scan over expressions, statements and
 /// blocks (nested if/match/switch/loop/closure/unsafe fully covered).
 /// SA-text (`fnPtrInlineCandidateExpr`) and SAB share this fact so a use

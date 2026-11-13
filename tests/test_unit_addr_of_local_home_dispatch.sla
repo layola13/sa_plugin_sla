@@ -1,0 +1,75 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/ptr.sa"
+@import "sa_std/core/box.sa"
+
+// DEFECT-A A1 home dispatch (v3/K2): the '&local' call-argument split.
+// Bindings WITH a materialized home (pointer / primitive locals, whose
+// let/param sites emit a stack slot under planBorrowedBindingStorage)
+// must keep the stock delivery — the callee's out-param write has to
+// land in the local's own cell. Bindings WITHOUT a home (aggregates)
+// take the home-cell path (see test_unit_addr_of_local_raw_ptr_param).
+// This file pins the has-home side: if the dispatch ever routes these
+// through a fresh cell storing the binding's VALUE, the write-back
+// assertions below fail (the m6 / ZOZI-5 regression shape).
+fn set_pp(pp: **i32, value: *i32) -> void {
+    unsafe { *pp = value; };
+}
+
+extern "C" {
+    fn set_pp_c(pp: **i32, value: *i32) -> void;
+}
+
+@no_mangle pub extern "C" fn set_pp_c(pp: **i32, value: *i32) -> void {
+    unsafe { *pp = value; };
+}
+
+fn set_i32(p: *i32, v: i32) -> void {
+    unsafe { *p = v; };
+}
+
+fn read_i32(p: *i32) -> i32 {
+    return *p;
+}
+
+// A pointer-typed PARAMETER re-borrowed onward: the param site also
+// materializes a home, so &slot inside the callee must write back into
+// the parameter's own cell and be observed by the final read.
+fn replace_param(slot: *i32, value: *i32) -> i32 {
+    set_pp(&slot, value);
+    return *slot;
+}
+
+@test "ptr typed local out param write back"() {
+    let target = Box::into_raw(Box::new(42));
+    let slot: *i32 = ptr::null::<i32>();
+    set_pp(&slot, target);
+    if slot != target { panic(960); };
+    if *slot != 42 { panic(961); };
+    let _reclaim = unsafe { Box::from_raw(target) };
+}
+
+@test "ptr typed local out param write back extern"() {
+    let target = Box::into_raw(Box::new(43));
+    let slot: *i32 = ptr::null::<i32>();
+    unsafe { set_pp_c(&slot, target) };
+    if slot != target { panic(962); };
+    if *slot != 43 { panic(963); };
+    let _reclaim = unsafe { Box::from_raw(target) };
+}
+
+@test "primitive local addr read and write back"() {
+    let x: i32 = 41;
+    let got = read_i32(&x);
+    if got != 41 { panic(964); };
+    set_i32(&x, 42);
+    if x != 42 { panic(965); };
+}
+
+@test "ptr typed param reborrow write back"() {
+    let target = Box::into_raw(Box::new(44));
+    let start: *i32 = ptr::null::<i32>();
+    let seen = replace_param(start, target);
+    if seen != 44 { panic(966); };
+    let _reclaim = unsafe { Box::from_raw(target) };
+}

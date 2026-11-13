@@ -420,6 +420,11 @@ pub const Codegen = struct {
     // stack_alloc_bindings. Checked in emitRelease before the non-owning
     // move_ branch so stack slots die with their scope silently.
     stack_alloc_regs: std.AutoHashMap(u32, void),
+    // DEFECT-A F-form: value-aggregate bindings that received a true
+    // stack home at their binding point (binding register -> home cell
+    // register). The home is an 8-byte stack_alloc cell whose content
+    // is the binding's record address; see emitAggregateHome.
+    aggregate_home_regs: std.AutoHashMap(u32, u32),
     borrow_result_regs: std.AutoHashMap(u32, void),
     // DEF-SAB-BORROW-WRITE-NULL: registers whose runtime content is the
     // pointee object pointer ITSELF, not the address of a cell holding
@@ -573,6 +578,7 @@ pub const Codegen = struct {
             .non_owning_regs = std.AutoHashMap(u32, void).init(allocator),
             .field_handle_view_regs = std.AutoHashMap(u32, void).init(allocator),
             .stack_alloc_regs = std.AutoHashMap(u32, void).init(allocator),
+            .aggregate_home_regs = std.AutoHashMap(u32, u32).init(allocator),
             .borrow_result_regs = std.AutoHashMap(u32, void).init(allocator),
             .object_ptr_regs = std.AutoHashMap(u32, void).init(allocator),
             .future_state_vtables = std.AutoHashMap(u32, []const u8).init(allocator),
@@ -676,6 +682,7 @@ pub const Codegen = struct {
         self.non_owning_regs.deinit();
         self.field_handle_view_regs.deinit();
         self.stack_alloc_regs.deinit();
+        self.aggregate_home_regs.deinit();
         self.borrow_result_regs.deinit();
         self.object_ptr_regs.deinit();
         self.future_state_vtables.deinit();
@@ -2638,6 +2645,51 @@ pub const Codegen = struct {
         return lowering_rules.planBorrowedBindingStorage(self.borrowed_bindings.contains(name), ty).materialize_stack_slot;
     }
 
+    // DEFECT-A F-form (SAB): the aggregate class that receives a true
+    // stack home at the binding point — plain struct values and tuples
+    // whose register holds the record address. Unlike the SA-text
+    // backend, smart-pointer bindings (Box/Rc/Arc) are included: the
+    // SAB callee projection for a *Box/*Rc parameter is modeled
+    // correctly, so delivering the home cell fixes their stock SAB
+    // failure instead of disturbing a working delivery. Runtime handle
+    // / cell types are excluded by the shared name list (see
+    // lowering_rules.isExcludedAggregateHomeName).
+    fn isAggregateHomeType(self: *Codegen, ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .tuple => true,
+            .user_defined => self.structDeclForType(ty) != null and
+                !lowering_rules.isExcludedAggregateHomeName(ty.user_defined.name),
+            else => false,
+        };
+    }
+
+    // DEFECT-A F-form: materialize the binding's true stack home — an
+    // 8-byte stack_alloc cell whose content is the binding's record
+    // address, created once at the binding point and living exactly as
+    // long as the binding. A by-value raw-pointer argument is then
+    // delivered as the cell itself (the slot convention: the callee
+    // loads the pointer out of the cell), with an address that is
+    // stable across the binding's whole lifetime; per-call cells made
+    // the delivered address depend on allocator reuse and broke
+    // pointer identity (ptr_typed_eq). Bindings that already own a
+    // stack local (entry slots) keep theirs.
+    fn emitAggregateHome(self: *Codegen, name: []const u8, body_reg: u32) anyerror!void {
+        const home_name = try std.fmt.allocPrint(self.allocator, "{s}__agg_home", .{name});
+        const home = try self.intern(home_name);
+        try self.emitStackAlloc(home, 8);
+        try self.emitStore(home, 0, body_reg, .ptr);
+        try self.pushStackAllocLocal(home_name, home);
+        try self.aggregate_home_regs.put(body_reg, home);
+    }
+
+    fn emitAggregateHomeIfNeeded(self: *Codegen, name: []const u8, ty: *const ast.Type) anyerror!void {
+        if (!self.isAggregateHomeType(ty)) return;
+        if (self.stackLocal(name) != null) return;
+        const reg = self.localReg(name) orelse return;
+        if (self.aggregate_home_regs.contains(reg)) return;
+        try self.emitAggregateHome(name, reg);
+    }
+
     fn stackAllocSize(self: *Codegen, call: ast.CallExpr) !usize {
         if (call.args.len > 0) {
             const value = lowering_rules.intConstantExprValue(call.args[0], self.global_scalar_consts) orelse return 16;
@@ -2817,6 +2869,7 @@ pub const Codegen = struct {
         self.field_handle_view_regs.clearRetainingCapacity();
         self.object_ptr_regs.clearRetainingCapacity();
         self.stack_alloc_regs.clearRetainingCapacity();
+        self.aggregate_home_regs.clearRetainingCapacity();
         self.hashmap_key_slots.clearRetainingCapacity();
         self.future_state_vtables.clearRetainingCapacity();
         self.future_readiness.clearRetainingCapacity();
@@ -7222,6 +7275,13 @@ pub const Codegen = struct {
             }
             try self.pushStackLocal(param.name, slot, param.ty);
         }
+        // DEFECT-A F-form: by-value aggregate parameters that did not
+        // receive an entry stack slot receive their true stack home at
+        // the binding point, exactly like let bindings.
+        for (params) |param| {
+            if (param.is_borrow) continue;
+            try self.emitAggregateHomeIfNeeded(param.name, param.ty);
+        }
     }
 
     fn genAsyncSingleAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncSingleAwaitContinuationPlan) !void {
@@ -8809,6 +8869,11 @@ pub const Codegen = struct {
         // for a String/Vec field binds a deep clone, not the aliased view.
         const bound_src = (try self.cloneBorrowedHandleFieldValue(let.value, src)) orelse src;
         try self.genLetFromValue(let.name, let.ty, let.value, bound_src);
+        // DEFECT-A F-form: every value-aggregate binding gets its true
+        // stack home at the binding point, unconditionally (no borrow
+        // analysis at the use sites).
+        const home_ty = if (let.ty) |ty| ty else try self.exprTypeOrFallback(let.value);
+        if (home_ty) |ty| try self.emitAggregateHomeIfNeeded(let.name, ty);
     }
 
     fn consumeDiscardedLocalBinding(self: *Codegen, name: []const u8) !bool {
@@ -20437,6 +20502,32 @@ pub const Codegen = struct {
         return lowered;
     }
 
+    // DEFECT-A F-form: an identifier borrow of a home-class aggregate
+    // passed to a by-value raw-pointer parameter is delivered as the
+    // binding's home cell (a bare register operand — the slot
+    // convention), never as a borrow of the address-value temporary.
+    // Returns null when the shape is outside the family; an in-class
+    // binding without a home is a loud failure, never a silent
+    // delivery.
+    fn genAggregateHomeCallArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param) anyerror!?SabLoweredCallArg {
+        const target_param = param orelse return null;
+        if (!lowering_rules.byValueRawPointerParam(target_param)) return null;
+        if (arg.* != .borrow_expr) return null;
+        const inner = arg.borrow_expr.expr;
+        if (inner.* != .identifier) return null;
+        const name = inner.identifier;
+        const binding_ty = self.tc.expr_types.get(inner) orelse return null;
+        if (!self.isAggregateHomeType(binding_ty)) return null;
+        const reg = self.localReg(name) orelse return Error.UnsupportedSabDirectFeature;
+        if (self.aggregate_home_regs.get(reg)) |home| {
+            return .{ .operand = self.symbols.items[home], .release_reg = null };
+        }
+        if (self.stackLocal(name)) |slot| {
+            return .{ .operand = self.symbols.items[slot.reg], .release_reg = null };
+        }
+        return Error.UnsupportedSabDirectFeature;
+    }
+
     fn genPlannedSabCallArgInner(
         self: *Codegen,
         arg: *const ast.Node,
@@ -20616,6 +20707,11 @@ pub const Codegen = struct {
             return blk: {
                 const abi_move_prefix: ?u8 = if (abi_move_auto_move and arg.* != .move_expr) '^' else null;
                 if (call_plan.argPrefix(arg) orelse abi_move_prefix) |prefix| {
+                    if (prefix == '&') {
+                        if (try self.genAggregateHomeCallArg(arg, param)) |home_arg| {
+                            break :blk home_arg;
+                        }
+                    }
                     if (try self.genPrefixedBorrowAddressCallArg(arg, prefix)) |borrowed| {
                         var effective = borrowed;
                         if (prefix == '&' and abi_borrow_auto_borrow) {

@@ -1,0 +1,74 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/box.sa"
+
+// Regression: &-of-local argument delivered to a raw-pointer (*T) parameter.
+// The call-arg delivery was keyed on the argument expression's '&' prefix
+// instead of the parameter's ABI kind, so the callee dereferenced the
+// struct's first field as a pointer (SIGSEGV, both backends). Source shape:
+// demos/rosetta/186_sqlite_c_api_binding (DEFECT-A family, raw-ptr instance).
+struct Row { id: i32, count: i32, pad: i32 }
+
+fn get_count(row: *Row) -> i32 {
+    return row.count;
+}
+
+fn get_count_deref(row: *Row) -> i32 {
+    return (*row).count;
+}
+
+extern "C" {
+    fn sqlite_insert_probe(row: *Row) -> i32;
+}
+
+@no_mangle pub extern "C" fn sqlite_insert_probe(row: *Row) -> i32 {
+    return row.count;
+}
+
+struct Big { a: i64, b: i64, c: i64, d: i64, e: i64 }
+
+fn get_e(p: *Big) -> i64 {
+    return p.e;
+}
+
+fn get_count_borrow(row: &Row) -> i32 {
+    return row.count;
+}
+
+@test "addr of local to raw ptr param field read"() {
+    let row = Row { id: 7, count: 1, pad: 0 };
+    let code = get_count(&row);
+    if code != 1 { panic(921); };
+    if row.count != 1 { panic(922); };
+}
+
+@test "addr of local to raw ptr param explicit deref"() {
+    let row = Row { id: 7, count: 1, pad: 0 };
+    let code = get_count_deref(&row);
+    if code != 1 { panic(923); };
+}
+
+@test "addr of local to extern c raw ptr param"() {
+    let row = Row { id: 7, count: 1, pad: 0 };
+    let code = unsafe { sqlite_insert_probe(&row) };
+    if code != 1 { panic(924); };
+}
+
+@test "addr of big local to raw ptr param"() {
+    let big = Big { a: 1, b: 2, c: 3, d: 4, e: 55 };
+    let v = get_e(&big);
+    if v != 55 { panic(925); };
+}
+
+@test "pointer variable to raw ptr param control"() {
+    let boxed = Box::new(Row { id: 7, count: 1, pad: 0 });
+    let raw = Box::into_raw(boxed);
+    let code = get_count(raw);
+    if code != 1 { panic(926); };
+}
+
+@test "addr of local to borrow param control"() {
+    let row = Row { id: 7, count: 1, pad: 0 };
+    let code = get_count_borrow(&row);
+    if code != 1 { panic(927); };
+}

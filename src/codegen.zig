@@ -218,6 +218,11 @@ pub const Codegen = struct {
     closure_bindings: std.StringHashMap(*const ast.ClosureLiteral),
     closure_param_regs: std.StringHashMap([]const u8),
     stack_alloc_bindings: std.StringHashMap(void),
+    // DEFECT-A F-form: value-aggregate bindings that received a true
+    // stack home at their binding point (resolved register name -> home
+    // cell register name). The home is an 8-byte stack_alloc cell whose
+    // content is the binding's record address; see emitAggregateHome.
+    aggregate_home_cells: std.StringHashMap([]const u8),
     // DEF-PLACE-LOAD: bindings created by a `stack_alloc()` call, whose
     // SA register IS the pointer value (the buffer address itself).
     // Unlike a var slot, the binding stores nothing into the cell, so a
@@ -361,6 +366,7 @@ pub const Codegen = struct {
             .closure_bindings = std.StringHashMap(*const ast.ClosureLiteral).init(allocator),
             .closure_param_regs = std.StringHashMap([]const u8).init(allocator),
             .stack_alloc_bindings = std.StringHashMap(void).init(allocator),
+            .aggregate_home_cells = std.StringHashMap([]const u8).init(allocator),
             .stack_alloc_ptr_bindings = std.StringHashMap(void).init(allocator),
             .addressable_bindings = std.StringHashMap(void).init(allocator),
             .assigned_bindings = std.StringHashMap(void).init(allocator),
@@ -436,6 +442,7 @@ pub const Codegen = struct {
         self.closure_bindings.deinit();
         self.closure_param_regs.deinit();
         self.stack_alloc_bindings.deinit();
+        self.aggregate_home_cells.deinit();
         self.stack_alloc_ptr_bindings.deinit();
         self.addressable_bindings.deinit();
         self.assigned_bindings.deinit();
@@ -3932,6 +3939,66 @@ pub const Codegen = struct {
         return self.assigned_bindings.contains(name) and
             !self.typeIsCopyValue(ty) and
             self.typeIsShallowCopyCallArgValue(ty, 0);
+    }
+
+    // DEFECT-A F-form (SA-text): the aggregate class that receives a true
+    // stack home at the binding point — plain struct values and tuples
+    // whose register holds the record address. Smart-pointer bindings
+    // are excluded on this backend: the text callee projection for a
+    // *Box/*Rc parameter drops one load level and the stock `&`
+    // delivery accidentally compensates for it, so their stock delivery
+    // is preserved verbatim (the SAB backend models the projection
+    // correctly and includes them). Runtime handle / cell types are
+    // excluded by name: their bindings are not plain record values and
+    // their address semantics belong to their own materialization
+    // paths (heap cells, buffer registries, atomic cells).
+    fn isAggregateHomeType(self: *Codegen, ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .tuple => true,
+            .user_defined => self.structDeclForType(ty) != null and
+                lowering_rules.smartPointerDerefType(ty) == null and
+                !lowering_rules.isExcludedAggregateHomeName(ty.user_defined.name),
+            else => false,
+        };
+    }
+
+    // DEFECT-A F-form: materialize the binding's true stack home — an
+    // 8-byte stack_alloc cell whose content is the binding's record
+    // address, created once at the binding point and living exactly as
+    // long as the binding. A by-value raw-pointer argument can then be
+    // delivered as the cell itself (the SA slot convention: the callee
+    // loads the pointer out of the cell), with an address that is
+    // stable across the binding's whole lifetime — per-call cells made
+    // the delivered address depend on allocator reuse and broke
+    // pointer identity (ptr_typed_eq). Bindings that already own an
+    // equivalent cell (assigned-value slots, stack-alloc registrations)
+    // keep theirs; the interceptor delivers those registers directly.
+    fn emitAggregateHomeIfNeeded(self: *Codegen, name: []const u8, ty: *const ast.Type, is_hoisted: bool) CodegenError!void {
+        if (is_hoisted) return;
+        if (!self.isAggregateHomeType(ty)) return;
+        const resolved = self.resolveBindingName(name);
+        if (self.assigned_value_slots.contains(resolved)) return;
+        if (self.stack_alloc_bindings.contains(resolved)) return;
+        if (self.aggregate_home_cells.contains(resolved)) return;
+        const home = std.fmt.allocPrint(self.allocator, "{s}__agg_home", .{resolved}) catch return CodegenError.OutOfMemory;
+        self.aggregate_home_cells.put(resolved, home) catch return CodegenError.OutOfMemory;
+        self.stack_alloc_bindings.put(home, {}) catch return CodegenError.OutOfMemory;
+        self.outPrint("    {s} = stack_alloc 8\n", .{home}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as ptr\n", .{ home, resolved }) catch return CodegenError.CodegenError;
+    }
+
+    // DEFECT-A F-form: the type of the binding borrowed by a `&ident`
+    // call argument — the binding-type registry first, the borrow
+    // expression's pointee as fallback (parameter bindings may not be
+    // in the registry on every path).
+    fn aggregateArgBindingType(self: *Codegen, arg: *const ast.Node, name: []const u8) ?*const ast.Type {
+        if (self.localBindingTypeForName(name)) |ty| return ty;
+        const arg_ty = self.tc.expr_types.get(arg) orelse return null;
+        return switch (arg_ty.*) {
+            .borrow => |b| b,
+            .pointer => |p| p,
+            else => null,
+        };
     }
 
     fn collectAssignedBindings(self: *Codegen, block: []const *ast.Node) CodegenError!void {
@@ -9514,6 +9581,7 @@ pub const Codegen = struct {
         self.addressable_bindings.clearRetainingCapacity();
         self.assigned_bindings.clearRetainingCapacity();
         self.assigned_value_slots.clearRetainingCapacity();
+        self.aggregate_home_cells.clearRetainingCapacity();
         self.repeated_let_bindings.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
         self.stack_alloc_ptr_bindings.clearRetainingCapacity();
@@ -9726,6 +9794,15 @@ pub const Codegen = struct {
             }
         }
 
+        // DEFECT-A F-form: by-value aggregate parameters receive their
+        // true stack home at the function-entry binding point, exactly
+        // like let bindings (their register holds the record address of
+        // the caller's copy; the home cell points at it for the whole
+        // body lifetime).
+        for (f.params) |p| {
+            try self.emitAggregateHomeIfNeeded(p.name, p.ty, false);
+        }
+
         // 2. Compile body statements
         const tail_expr_return = !isVoidType(f.ret_ty) and f.body.len > 0 and f.body[f.body.len - 1].* == .expr_stmt and !blockTerminates(f.body);
         if (tail_expr_return) {
@@ -9779,6 +9856,7 @@ pub const Codegen = struct {
         self.addressable_bindings.clearRetainingCapacity();
         self.assigned_bindings.clearRetainingCapacity();
         self.assigned_value_slots.clearRetainingCapacity();
+        self.aggregate_home_cells.clearRetainingCapacity();
         self.repeated_let_bindings.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
         self.stack_alloc_ptr_bindings.clearRetainingCapacity();
@@ -12790,6 +12868,31 @@ pub const Codegen = struct {
             return blk: {
                 if (lowering_rules.borrowedIdentifierName(arg)) |borrowed_name| {
                     if (self.addressable_bindings.contains(borrowed_name)) {
+                        // DEFECT-A F-form: for a by-value raw-pointer
+                        // parameter, an aggregate argument is delivered
+                        // as its binding-point home cell (the SA slot
+                        // convention), never as `&` of the address-value
+                        // temporary — that temporary has no storage, so
+                        // the callee loaded the record's first field as
+                        // the pointer. A binding whose register already
+                        // IS an assigned-value cell delivers that register
+                        // directly. An aggregate of the home class with
+                        // no home is a loud error, never a silent
+                        // delivery.
+                        if (param != null and lowering_rules.byValueRawPointerParam(param.?)) {
+                            if (self.aggregateArgBindingType(arg, borrowed_name)) |binding_ty| {
+                                if (self.isAggregateHomeType(binding_ty)) {
+                                    const resolved_name = self.resolveBindingName(borrowed_name);
+                                    if (self.assigned_value_slots.contains(resolved_name)) {
+                                        break :blk .{ .reg = resolved_name, .release_after_call = false };
+                                    }
+                                    if (self.aggregate_home_cells.get(resolved_name)) |home| {
+                                        break :blk .{ .reg = home, .release_after_call = false };
+                                    }
+                                    return CodegenError.CodegenError;
+                                }
+                            }
+                        }
                         const addr_reg = try self.genExpr(arg, hoisted_allocs);
                         const call_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{addr_reg}) catch return CodegenError.OutOfMemory;
                         break :blk .{
@@ -14428,6 +14531,10 @@ pub const Codegen = struct {
                         self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }
                 }
+                // DEFECT-A F-form: every value-aggregate binding gets its
+                // true stack home at the binding point, unconditionally
+                // (no borrow analysis at the use sites).
+                try self.emitAggregateHomeIfNeeded(let.name, let_ty, is_hoisted);
             },
             .var_stmt => |v| {
                 try self.rememberLocalBindingType(v.name, v.ty);
@@ -14435,6 +14542,17 @@ pub const Codegen = struct {
                 self.stack_alloc_bindings.put(slot_name, {}) catch return CodegenError.OutOfMemory;
                 self.addressable_bindings.put(slot_name, {}) catch return CodegenError.OutOfMemory;
                 self.outPrint("    {s} = stack_alloc {}\n", .{ slot_name, typeSize(v.ty) }) catch return CodegenError.CodegenError;
+                // DEFECT-A F-form: a var aggregate's register is its body
+                // region itself; give it the same home cell as a let
+                // binding (the cell holds the region address, which is
+                // constant because var writes go through the region).
+                if (self.isAggregateHomeType(v.ty) and !self.aggregate_home_cells.contains(slot_name)) {
+                    const home = std.fmt.allocPrint(self.allocator, "{s}__agg_home", .{slot_name}) catch return CodegenError.OutOfMemory;
+                    self.aggregate_home_cells.put(slot_name, home) catch return CodegenError.OutOfMemory;
+                    self.stack_alloc_bindings.put(home, {}) catch return CodegenError.OutOfMemory;
+                    self.outPrint("    {s} = stack_alloc 8\n", .{home}) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+0, {s} as ptr\n", .{ home, slot_name }) catch return CodegenError.CodegenError;
+                }
             },
             .let_else_stmt => |let| {
                 const value_reg = try self.genExpr(let.value, hoisted_allocs);

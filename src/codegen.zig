@@ -9812,7 +9812,10 @@ pub const Codegen = struct {
             }
             if (!self.async_pending_return_emitted) {
                 const tail_expr = f.body[f.body.len - 1].expr_stmt;
-                var tail_reg = try self.genExpr(tail_expr, &hoisted_allocs);
+                var tail_reg = if (lowering_rules.isStringType(f.ret_ty) and tail_expr.* == .literal and tail_expr.literal == .string_val)
+                    try self.genOwnedStringLiteral(tail_expr.literal.string_val, &hoisted_allocs)
+                else
+                    try self.genExpr(tail_expr, &hoisted_allocs);
                 if (!self.async_pending_return_emitted) {
                     // Form G: the tail expression is a return position;
                     // canonicalize to the declared return width.
@@ -14763,7 +14766,10 @@ pub const Codegen = struct {
                         self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }
                 } else if (self.bindingNeedsAddressableStorage(let.name, let_ty) and !isStackAllocCall(let.value)) {
-                    const val_reg = try self.genExpr(let.value, hoisted_allocs);
+                    const val_reg = if (lowering_rules.isStringType(let_ty) and let.value.* == .literal and let.value.literal == .string_val)
+                        try self.genOwnedStringLiteral(let.value.literal.string_val, hoisted_allocs)
+                    else
+                        try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.outPrint("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
@@ -14784,7 +14790,10 @@ pub const Codegen = struct {
                     // (emitSlotTransferredRetire, DEF-R8PIN).
                     if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitSlotTransferredRetire(let_ty, val_reg);
                 } else if (self.bindingNeedsAssignedValueSlot(let.name, let_ty) and !isStackAllocCall(let.value)) {
-                    const raw_val_reg = try self.genExpr(let.value, hoisted_allocs);
+                    const raw_val_reg = if (lowering_rules.isStringType(let_ty) and let.value.* == .literal and let.value.literal == .string_val)
+                        try self.genOwnedStringLiteral(let.value.literal.string_val, hoisted_allocs)
+                    else
+                        try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
                     // DEF-5 clone_on_extract: the slot must hold an owned
                     // clone, not the borrowed field view.
@@ -14804,15 +14813,26 @@ pub const Codegen = struct {
                     self.stack_alloc_ptr_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.outPrint("    {s} = stack_alloc {}\n", .{ let.name, self.stackAllocSize(&let.value.call_expr) }) catch return CodegenError.CodegenError;
                 } else if (let.value.* == .literal and let.value.literal == .string_val) {
-                    const value = let.value.literal.string_val;
-                    const label = try self.newStringConst();
-                    self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
-                    const len_reg = try self.newTmp();
-                    try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(value))));
-                    self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
-                    self.outPrint("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ let.name, label, len_reg }) catch return CodegenError.CodegenError;
-                    try self.emitRelease(len_reg);
+                    if (lowering_rules.isStringType(let_ty)) {
+                        // String-typed binding: the literal denotes an
+                        // owned String handle {ptr,len,cap}, not the
+                        // Slice view {ptr,len} materialized below (its
+                        // missing cap slot is read out of bounds by
+                        // String consumers, and the stack cell cannot
+                        // be moved out by value).
+                        const val_reg = try self.genOwnedStringLiteral(let.value.literal.string_val, hoisted_allocs);
+                        self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                    } else {
+                        const value = let.value.literal.string_val;
+                        const label = try self.newStringConst();
+                        self.outPrint("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
+                        const len_reg = try self.newTmp();
+                        try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(value))));
+                        self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                        self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ let.name, label, len_reg }) catch return CodegenError.CodegenError;
+                        try self.emitRelease(len_reg);
+                    }
                 } else if (let.value.* == .closure_literal) {
                     try self.closure_bindings.put(let.name, &let.value.closure_literal);
                     self.outPrint("    {s} = 0\n", .{let.name}) catch return CodegenError.CodegenError;
@@ -14839,6 +14859,14 @@ pub const Codegen = struct {
                     try self.genTupleCopyValueInto(let.name, source_reg, let_ty);
                 } else if (lowering_rules.planDynCoercion(self.tc, let.value)) |plan| {
                     const val_reg = try self.genDynCoercionExpr(let.value, plan, hoisted_allocs);
+                    self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                } else if (lowering_rules.isStringType(let_ty) and let.value.* == .literal and let.value.literal == .string_val) {
+                    // A string literal bound into a String-typed let
+                    // must materialize as an owned String handle
+                    // {ptr,len,cap}; the generic path emits the Slice
+                    // view {ptr,len}, whose cap slot is read out of
+                    // bounds by String consumers downstream.
+                    const val_reg = try self.genOwnedStringLiteral(let.value.literal.string_val, hoisted_allocs);
                     self.outPrint("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const raw_val_reg = try self.genExpr(let.value, hoisted_allocs);
@@ -15231,6 +15259,9 @@ pub const Codegen = struct {
                     // instead of aliasing the source register.
                     const source_reg = try self.genExpr(c.value, hoisted_allocs);
                     try self.genTupleCopyValueInto(c.name, source_reg, const_ty);
+                } else if (lowering_rules.isStringType(const_ty) and c.value.* == .literal and c.value.literal == .string_val) {
+                    const val_reg = try self.genOwnedStringLiteral(c.value.literal.string_val, hoisted_allocs);
+                    self.outPrint("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
                 } else if (lowering_rules.planDynCoercion(self.tc, c.value)) |plan| {
                     const val_reg = try self.genDynCoercionExpr(c.value, plan, hoisted_allocs);
                     self.outPrint("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
@@ -15420,7 +15451,10 @@ pub const Codegen = struct {
                         _ = self.consumed_bindings.remove(target_name);
                         return;
                     }
-                    const raw_val_reg = try self.genExpr(assign.value, hoisted_allocs);
+                    const raw_val_reg = if (lowering_rules.isStringType(target_ty) and assign.value.* == .literal and assign.value.literal == .string_val)
+                        try self.genOwnedStringLiteral(assign.value.literal.string_val, hoisted_allocs)
+                    else
+                        try self.genExpr(assign.value, hoisted_allocs);
                     // DEF-5 clone_on_extract: `u = b.field` through a
                     // borrow assigns a deep clone both phi arms own.
                     const val_reg = (try self.cloneBorrowedHandleFieldValue(assign.value, raw_val_reg)) orelse raw_val_reg;
@@ -15538,7 +15572,10 @@ pub const Codegen = struct {
                 var val_reg: ?[]const u8 = null;
                 var result_extract_cloned = false;
                 if (ret.value) |v| {
-                    const raw_val_reg = try self.genExpr(v, hoisted_allocs);
+                    const raw_val_reg = if (self.current_fn_ret_ty != null and lowering_rules.isStringType(self.current_fn_ret_ty.?) and v.* == .literal and v.literal == .string_val)
+                        try self.genOwnedStringLiteral(v.literal.string_val, hoisted_allocs)
+                    else
+                        try self.genExpr(v, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
                     // DEF-5 clone_on_extract: `return q.field` through a
                     // borrow hands the caller a deep clone it truly owns.

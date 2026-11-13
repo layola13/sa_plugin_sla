@@ -7482,7 +7482,10 @@ pub const Codegen = struct {
                 const old_result_escapes = self.current_expr_result_escapes;
                 self.current_expr_result_escapes = true;
                 defer self.current_expr_result_escapes = old_result_escapes;
-                var value = try self.genExpr(tail);
+                var value = if (lowering_rules.isStringType(f.ret_ty) and tail.* == .literal and tail.literal == .string_val)
+                    try self.genOwnedStringLiteral(tail.literal.string_val)
+                else
+                    try self.genExpr(tail);
                 if (async_plan.wrap_ready_future) value = try self.genReadyFuture(value);
                 if (!self.lastIsTerminator()) {
                     try self.releaseOpenLocals(value);
@@ -8850,6 +8853,8 @@ pub const Codegen = struct {
         }
         const src = if (string_materialization == .inferred_slice)
             try self.genStringLiteral(let.value.literal.string_val)
+        else if (let.ty != null and lowering_rules.isStringType(let.ty.?) and let.value.* == .literal and let.value.literal == .string_val)
+            try self.genOwnedStringLiteral(let.value.literal.string_val)
         else
             self.genExpr(let.value) catch |err| {
                 self.traceUnsupported("let {s} value {s} failed: {s}\n", .{ let.name, @tagName(let.value.*), @errorName(err) });
@@ -12347,10 +12352,14 @@ pub const Codegen = struct {
                     const old_result_escapes = self.current_expr_result_escapes;
                     self.current_expr_result_escapes = true;
                     defer self.current_expr_result_escapes = old_result_escapes;
-                    value = self.genExpr(v) catch |err| {
-                        self.traceUnsupported("return value {s} failed: {s}\n", .{ @tagName(v.*), @errorName(err) });
-                        return err;
-                    };
+                    if (v.* == .literal and v.literal == .string_val and self.tc.expr_types.get(v) != null and lowering_rules.isStringType(self.tc.expr_types.get(v).?)) {
+                        value = try self.genOwnedStringLiteral(v.literal.string_val);
+                    } else {
+                        value = self.genExpr(v) catch |err| {
+                            self.traceUnsupported("return value {s} failed: {s}\n", .{ @tagName(v.*), @errorName(err) });
+                            return err;
+                        };
+                    }
                 }
                 if (self.lastIsTerminator()) return;
                 // DEF-5 clone_on_extract: `return q.field` through a
@@ -12738,7 +12747,10 @@ pub const Codegen = struct {
 
         if (assign.target.* != .identifier) return Error.UnsupportedSabDirectFeature;
         const name = assign.target.identifier;
-        const raw_value = try self.genExpr(assign.value);
+        const raw_value = if (assign.value.* == .literal and assign.value.literal == .string_val and self.localType(name) != null and lowering_rules.isStringType(self.localType(name).?))
+            try self.genOwnedStringLiteral(assign.value.literal.string_val)
+        else
+            try self.genExpr(assign.value);
         // DEF-5 clone_on_extract: `u = b.field` through a borrow assigns
         // a deep clone so both phi arms hold owned values.
         var value = (try self.cloneBorrowedHandleFieldValue(assign.value, raw_value)) orelse raw_value;

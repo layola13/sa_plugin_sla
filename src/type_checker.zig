@@ -5436,6 +5436,17 @@ pub const TypeChecker = struct {
         return arg_ty;
     }
 
+    /// Value-flow companion to refineStringLiteralArg (let / const /
+    /// assign / return / tail positions): when a string literal is
+    /// refined to String for a value slot, record the refined type on
+    /// the node so codegen materializes an owned String handle
+    /// instead of the literal's Slice view.
+    fn refineStringLiteralForSlot(self: *TypeChecker, node: *const ast.Node, ty: *ast.Type, slot_ty: *const ast.Type) TypeError!*ast.Type {
+        const refined = try self.refineStringLiteralArg(node, ty, slot_ty);
+        if (refined != ty) self.expr_types.put(node, refined) catch return TypeError.OutOfMemory;
+        return refined;
+    }
+
     fn makeFileType(self: *TypeChecker) TypeError!*ast.Type {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .user_defined = .{ .name = "File", .generics = &.{} } };
@@ -6757,8 +6768,9 @@ pub const TypeChecker = struct {
             if (decl.* == .const_stmt) {
                 const c = &decl.const_stmt;
                 try self.ensureTopLevelNameUnused(c.name, "const");
-                const val_ty = try self.checkExpr(c.value, global_scope);
-                const declared_ty = c.ty orelse val_ty;
+                const raw_val_ty = try self.checkExpr(c.value, global_scope);
+                const declared_ty = c.ty orelse raw_val_ty;
+                const val_ty = try self.refineStringLiteralForSlot(c.value, raw_val_ty, declared_ty);
                 if (c.ty != null and val_ty.* == .array and declared_ty.* == .array) {
                     self.expr_types.put(c.value, declared_ty) catch return TypeError.OutOfMemory;
                 }
@@ -7223,7 +7235,8 @@ pub const TypeChecker = struct {
         if (!isPrimitiveType(func.ret_ty, .void_type) and func.body.len > 0) {
             const last = func.body[func.body.len - 1];
             if (last.* == .expr_stmt and !stmtTerminates(last)) {
-                const tail_ty = self.expr_types.get(last.expr_stmt) orelse return TypeError.CompileError;
+                const raw_tail_ty = self.expr_types.get(last.expr_stmt) orelse return TypeError.CompileError;
+                const tail_ty = try self.refineStringLiteralForSlot(last.expr_stmt, raw_tail_ty, func.ret_ty);
                 if (!self.valueAssignableTo(func.ret_ty, tail_ty)) {
                     self.setError("TypeMismatch in function tail expression: expected {s}, actual {s}", .{ typeDesc(func.ret_ty), typeDesc(tail_ty) });
                     return TypeError.TypeMismatch;
@@ -7464,12 +7477,13 @@ pub const TypeChecker = struct {
                     try self.chan_new_pending.put(let.value, payload_ty);
                     try self.chan_new_validated.put(let.value, {});
                 }
-                const val_ty = try self.checkExpr(let.value, scope);
-                if (typeIsVaListValue(val_ty) or (let.ty != null and typeIsVaListValue(let.ty.?))) {
+                const raw_val_ty = try self.checkExpr(let.value, scope);
+                if (typeIsVaListValue(raw_val_ty) or (let.ty != null and typeIsVaListValue(let.ty.?))) {
                     self.setError("VaList is not copyable: it cannot be bound to a new name, stored, or returned; pass the variadic parameter itself to va_next_*", .{});
                     return TypeError.TypeMismatch;
                 }
-                const declared_ty = let.ty orelse val_ty;
+                const declared_ty = let.ty orelse raw_val_ty;
+                const val_ty = try self.refineStringLiteralForSlot(let.value, raw_val_ty, declared_ty);
                 // F2-A C1: the value flowing into the new binding must
                 // belong to the binding's ownership domain (R2/R3/R6).
                 try self.checkArenaStoreFlow(let.value, scope, self.currentArenaDomain());
@@ -7601,8 +7615,9 @@ pub const TypeChecker = struct {
                 }
             },
             .const_stmt => |c| {
-                const val_ty = try self.checkExpr(c.value, scope);
-                const declared_ty = c.ty orelse val_ty;
+                const raw_val_ty = try self.checkExpr(c.value, scope);
+                const declared_ty = c.ty orelse raw_val_ty;
+                const val_ty = try self.refineStringLiteralForSlot(c.value, raw_val_ty, declared_ty);
                 // F2-A C1: same domain flow rule as let (R2/R3/R6).
                 try self.checkArenaStoreFlow(c.value, scope, self.currentArenaDomain());
                 if (c.ty != null and val_ty.* == .array and declared_ty.* == .array) {
@@ -7668,13 +7683,14 @@ pub const TypeChecker = struct {
                     self.assign_rhs_target_name = assign.target.identifier;
                     self.assign_rhs_value = assign.value;
                 }
-                const val_ty = self.checkExpr(assign.value, scope) catch |err| {
+                const raw_val_ty = self.checkExpr(assign.value, scope) catch |err| {
                     self.assign_rhs_target_name = prev_assign_target;
                     self.assign_rhs_value = prev_assign_value;
                     return err;
                 };
                 self.assign_rhs_target_name = prev_assign_target;
                 self.assign_rhs_value = prev_assign_value;
+                const val_ty = try self.refineStringLiteralForSlot(assign.value, raw_val_ty, target_ty);
                 // E_res: storing a view into a field/element escapes
                 // it; rebinding a view binding to a different origin
                 // merges two origins, which v1 forbids.
@@ -7783,11 +7799,12 @@ pub const TypeChecker = struct {
                     // this depth (see the field declaration).
                     const prev_return_value_depth = self.return_value_depth;
                     self.return_value_depth += 1;
-                    const val_ty = self.checkExpr(val, scope) catch |err| {
+                    const raw_val_ty = self.checkExpr(val, scope) catch |err| {
                         self.return_value_depth = prev_return_value_depth;
                         return err;
                     };
                     self.return_value_depth = prev_return_value_depth;
+                    const val_ty = try self.refineStringLiteralForSlot(val, raw_val_ty, ret_ty);
                     // E_res: a view may leave the function only through
                     // an origin-annotated return naming the same root.
                     if (self.viewOriginOfExpr(val)) |view_origin| {

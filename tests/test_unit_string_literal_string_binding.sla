@@ -1,0 +1,37 @@
+@import "sa_std/string.sa"
+@import "sa_std/ptr.sa"
+
+// Regression (closing A group, reg1 dns_client_a root cause): a string
+// literal denotes an owned String in value positions -- annotated let,
+// assignment, return statement, and tail expression. Before the fix the
+// checker rejected the annotated forms with TypeMismatch (declared
+// tag=user_defined, val tag=primitive: the literal's standalone type is
+// raw_ptr and only call-argument positions refined it), and codegen
+// emitted the literal's Slice view {ptr, len} into String slots, whose
+// cap slot String consumers read out of bounds (BorrowConflict on the
+// text backend, signal 11 on SAB).
+
+fn expect_len(s: String, want: u64, code: i32) {
+    if STR_LEN(s) != want { panic(code); };
+}
+
+fn ret_lit() -> String {
+    return "via-return";
+}
+
+fn tail_lit() -> String {
+    "tail-literal"
+}
+
+@test "string literal binds to String in let assign return tail"() {
+    let a: String = "annotated";
+    expect_len(a, 9, 601);
+    let b: String = "x";
+    b = "assigned-literal";
+    expect_len(b, 16, 602);
+    expect_len(ret_lit(), 10, 603);
+    expect_len(tail_lit(), 12, 604);
+    let c: String = "/tmp/some path.txt";
+    if STR_LEN(c) != 18 { panic(605); };
+    if STR_PTR(c) == 0 as ptr { panic(606); };
+}

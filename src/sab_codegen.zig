@@ -19205,7 +19205,650 @@ pub const Codegen = struct {
         return dst;
     }
 
+    // DEF-REG12-BRIDGE-KEY (panel verdict form A): the SAB twin of the
+    // SA-text bridge in codegen.zig. Imported MAP_*/SET_* macros on
+    // HashMap/HashSet receivers materialize by the method-surface
+    // discipline of THIS backend (genMapKeyReg / genMapInsertCall /
+    // genMapContainsKeyCall / genMapRemoveCall), never by the generic
+    // imported-macro slot materialization, which passes stack-slot
+    // addresses as identity keys and leaves value cell pointers in
+    // output registers. Unclassifiable key/value kinds on a typed
+    // receiver are a loud UnsupportedSabDirectFeature.
+    const SabMapMacroBridgeKind = enum {
+        put,
+        get,
+        del,
+        contains_key,
+        try_get,
+        insert,
+        remove_entry,
+        set_insert,
+        set_contains,
+        set_remove,
+    };
+
+    const SabMapMacroBridge = struct {
+        kind: SabMapMacroBridgeKind,
+        string_key: bool,
+        key_ty: *const ast.Type,
+        value_ty: ?*const ast.Type,
+        recv_index: usize,
+        key_index: usize,
+        value_index: ?usize = null,
+        value_output_index: ?usize = null,
+    };
+
+    fn sabBridgeWordKind(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| p != .void_type and p != .va_list,
+            // Unpinned `.infer` K/V (macro-first programs whose
+            // types no method signature ever pinned): word
+            // materialization is the sound classification — see the
+            // text backend's bridgeWordKind.
+            .infer => true,
+            .pointer, .borrow, .fn_ptr => true,
+            // `str` handle word: identity routing, method parity
+            // (only `String` is content-keyed).
+            .user_defined => |ud| std.mem.eql(u8, ud.name, "str"),
+            else => false,
+        };
+    }
+
+    fn sabMapMacroBridge(self: *Codegen, call: ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan) anyerror!?SabMapMacroBridge {
+        const import_path = plan.import_path orelse return null;
+        const is_hashmap_unit = std.mem.endsWith(u8, import_path, "hashmap.sa");
+        const is_hashset_unit = std.mem.endsWith(u8, import_path, "hashset.sa");
+        if (!is_hashmap_unit and !is_hashset_unit) return null;
+        const name = plan.macro_name;
+        var kind: SabMapMacroBridgeKind = undefined;
+        if (is_hashmap_unit) {
+            if (std.mem.eql(u8, name, "MAP_PUT")) {
+                kind = .put;
+            } else if (std.mem.eql(u8, name, "MAP_GET")) {
+                kind = .get;
+            } else if (std.mem.eql(u8, name, "MAP_DEL")) {
+                kind = .del;
+            } else if (std.mem.eql(u8, name, "MAP_CONTAINS_KEY")) {
+                kind = .contains_key;
+            } else if (std.mem.eql(u8, name, "MAP_TRY_GET")) {
+                kind = .try_get;
+            } else if (std.mem.eql(u8, name, "MAP_INSERT")) {
+                kind = .insert;
+            } else if (std.mem.eql(u8, name, "MAP_REMOVE_ENTRY")) {
+                kind = .remove_entry;
+            } else return null;
+        } else {
+            if (std.mem.eql(u8, name, "SET_INSERT")) {
+                kind = .set_insert;
+            } else if (std.mem.eql(u8, name, "SET_CONTAINS")) {
+                kind = .set_contains;
+            } else if (std.mem.eql(u8, name, "SET_REMOVE")) {
+                kind = .set_remove;
+            } else return null;
+        }
+        var recv_index: usize = 0;
+        var key_index: usize = 0;
+        var value_index: ?usize = null;
+        var value_output_index: ?usize = null;
+        if (plan.expression_output) {
+            if (call.args.len != 2) return null;
+            recv_index = 0;
+            key_index = 1;
+        } else {
+            switch (kind) {
+                .put => {
+                    if (call.args.len != 3) return null;
+                    recv_index = 0;
+                    key_index = 1;
+                    value_index = 2;
+                },
+                .try_get => {
+                    if (call.args.len != 4) return null;
+                    recv_index = 2;
+                    key_index = 3;
+                    value_output_index = 1;
+                },
+                .insert => {
+                    if (call.args.len != 5) return null;
+                    recv_index = 2;
+                    key_index = 3;
+                    value_index = 4;
+                    value_output_index = 1;
+                },
+                .remove_entry => {
+                    if (call.args.len != 5) return null;
+                    recv_index = 3;
+                    key_index = 4;
+                    value_output_index = 2;
+                },
+                else => return null,
+            }
+        }
+        const recv_ty = self.tc.expr_types.get(call.args[recv_index]) orelse return null;
+        if (is_hashset_unit) {
+            const elem = lowering_rules.hashSetElementType(recv_ty) orelse return null;
+            const string_key = lowering_rules.isStringType(elem);
+            if (!string_key and !sabBridgeWordKind(elem)) {
+                self.traceUnsupported("map macro bridge: unclassifiable set element kind for {s}\n", .{name});
+                return Error.UnsupportedSabDirectFeature;
+            }
+            return .{
+                .kind = kind,
+                .string_key = string_key,
+                .key_ty = elem,
+                .value_ty = null,
+                .recv_index = recv_index,
+                .key_index = key_index,
+            };
+        }
+        const mt = lowering_rules.hashMapTypes(recv_ty) orelse return null;
+        const string_key = lowering_rules.isStringType(mt.key);
+        if (!string_key and !sabBridgeWordKind(mt.key)) {
+            self.traceUnsupported("map macro bridge: unclassifiable key kind for {s}\n", .{name});
+            return Error.UnsupportedSabDirectFeature;
+        }
+        if (!lowering_rules.isStringType(mt.value) and !sabBridgeWordKind(mt.value)) {
+            self.traceUnsupported("map macro bridge: unclassifiable value kind for {s}\n", .{name});
+            return Error.UnsupportedSabDirectFeature;
+        }
+        return .{
+            .kind = kind,
+            .string_key = string_key,
+            .key_ty = mt.key,
+            .value_ty = mt.value,
+            .recv_index = recv_index,
+            .key_index = key_index,
+            .value_index = value_index,
+            .value_output_index = value_output_index,
+        };
+    }
+
+    /// Register the direct callees of a std macro the bridge rewrites
+    /// to (e.g. MAP_DEL -> MAP_DEL_STR), mirroring the dep pull in
+    /// genImportedMacroCall's fragment path.
+    fn ensureBridgeMacroDeps(self: *Codegen, import_path: []const u8, macro_name: []const u8) anyerror!void {
+        if (self.imported_macro_deps_seen.contains(macro_name)) return;
+        try self.imported_macro_deps_seen.put(try self.allocator.dupe(u8, macro_name), {});
+        if (self.tc.imported_macros.get(macro_name)) |macro| {
+            if (macro.direct_callees.len != 0) {
+                try self.ensureStdDeps(import_path, macro.direct_callees);
+            }
+        }
+    }
+
+    /// Branch-unbox a value cell pointer into `dst` (defined in both
+    /// arms): taken arm loads the cell's contents (optionally freeing
+    /// the cell, entry-removing forms), other arm assigns 0. The
+    /// condition always precedes the load. Mirrors the branch/release
+    /// accounting of genMapRemoveCall.
+    /// Bridge-private temp with a module-unique name: registers whose
+    /// names are printed into call bodies (the @sa_mem_free argument)
+    /// must not use the plain tmp_N namespace, because module assembly
+    /// remaps symbol ids by name across merged decoded modules, whose
+    /// own tmp_N registers would shadow the bridge's.
+    fn newBridgeTmpSab(self: *Codegen) ![]const u8 {
+        const name = try std.fmt.allocPrint(self.allocator, "__bridge_tmp_{}", .{self.tmp_idx});
+        self.tmp_idx += 1;
+        return name;
+    }
+
+    fn emitBridgeCellUnboxSab(
+        self: *Codegen,
+        dst: u32,
+        cell: u32,
+        cond: u32,
+        value_ty: *const ast.Type,
+        free_cell: bool,
+    ) anyerror!void {
+        const some_label = try self.newLabel("L_BRIDGE_UNBOX_SOME");
+        const none_label = try self.newLabel("L_BRIDGE_UNBOX_NONE");
+        const end_label = try self.newLabel("L_BRIDGE_UNBOX_END");
+        try self.emitBranch(cond, some_label, none_label);
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        try self.emitLabel(some_label);
+        try self.emitBranchRelease(cond);
+        // An unpinned (`.infer`) value type has no primitive view;
+        // the cell already carries the word representation, so the
+        // unbox is a plain u64 load (genBridgeValueCellSab's boxing
+        // fallback in reverse).
+        const vprim = if (value_ty.* == .infer) sig.PrimType.u64 else try primType(value_ty);
+        if (vprim == .u64) {
+            try self.emitLoad(dst, cell, 0, .u64);
+        } else {
+            const loaded = try self.intern(try self.newTmp());
+            try self.recordReg(loaded);
+            try self.emitLoad(loaded, cell, 0, .u64);
+            try self.emitOp(dst, try opKindForCast(.u64, vprim), .{ .reg = loaded }, .{ .ty = @intFromEnum(vprim) });
+            try self.emitRelease(loaded);
+        }
+        if (free_cell) {
+            try self.ensureStdDeps("sa_std/alloc/vec.sa", &.{"sa_mem_free"});
+            // Free through an op-defined alias register: passing the
+            // call-result register itself by name as a ^ argument
+            // trips the SAB verifier's register accounting
+            // (UnknownRegister at the free), while a register defined
+            // by an op (the shape the MAP fragment's old-cell free
+            // takes after expansion, where the cell comes from a
+            // load) verifies.
+            const alias = try self.intern(try self.newTmp());
+            try self.recordReg(alias);
+            try self.emitOp(alias, .bitcast, .{ .reg = cell }, .{ .ty = @intFromEnum(sig.PrimType.ptr) });
+            try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_mem_free(^{s})", .{self.symbols.items[alias]}));
+        }
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.emitLabel(none_label);
+        try self.emitBranchRelease(cond);
+        try self.emitAssignImm(dst, 0);
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+        try self.emitLabel(end_label);
+    }
+
+    /// Box a value expression into a per-entry heap cell, mirroring
+    /// genMapInsertCall's by-slot path (cast to u64 bits, alloc 8,
+    /// store). Returns the cell register (consumed-markered by the
+    /// caller once the insert fragment lands) and the source register
+    /// (for the checker-consumed epilogue marker).
+    fn genBridgeValueCellSab(self: *Codegen, value_arg: *const ast.Node, value_ty_hint: ?*const ast.Type) anyerror!struct { cell: u32, src: u32 } {
+        const value_reg = try self.genExpr(@constCast(value_arg));
+        const value_arg_ty = self.tc.expr_types.get(value_arg);
+        const value_u64 = try self.intern(try self.newTmp());
+        // Cast by the first primitive view available: the argument's
+        // own type, else the map's declared value type. An unpinned
+        // (`.infer` / abstract-integer) argument has no primitive
+        // view; its register already carries the word representation,
+        // so a plain bitcast is correct (genMapInsertCall's no-type
+        // fallback shape).
+        const arg_prim: ?sig.PrimType = if (value_arg_ty) |t| (primType(t) catch null) else null;
+        const hint_prim: ?sig.PrimType = if (value_ty_hint) |t| (primType(t) catch null) else null;
+        if (arg_prim orelse hint_prim) |vprim| {
+            if (vprim != .u64) {
+                try self.emitOp(value_u64, try opKindForCast(vprim, .u64), .{ .reg = value_reg }, .{ .ty = @intFromEnum(sig.PrimType.u64) });
+            } else {
+                try self.emitOp(value_u64, .bitcast, .{ .reg = value_reg }, .{ .ty = @intFromEnum(sig.PrimType.u64) });
+            }
+        } else {
+            try self.emitOp(value_u64, .bitcast, .{ .reg = value_reg }, .{ .ty = @intFromEnum(sig.PrimType.u64) });
+        }
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        const value_slot = try self.intern(try self.newBridgeTmpSab());
+        try self.recordReg(value_slot);
+        try self.emitAlloc(value_slot, 8);
+        try self.emitStore(value_slot, 0, value_u64, .u64);
+        try self.emitRelease(value_u64);
+        return .{ .cell = value_slot, .src = value_reg };
+    }
+
+    fn genMapMacroBridgeCall(
+        self: *Codegen,
+        call: ast.CallExpr,
+        plan: lowering_rules.ImportedMacroCallPlan,
+        ctx: ?*MacroExpansionContext,
+        result_ty: ?*const ast.Type,
+    ) anyerror!?u32 {
+        _ = result_ty;
+        const bridge = (try self.sabMapMacroBridge(call, plan)) orelse return null;
+        const recv_arg = call.args[bridge.recv_index];
+        const key_arg = call.args[bridge.key_index];
+        const recv_reg = try self.genExpr(@constCast(recv_arg));
+
+        // Multi-output forms: lower the output arguments through the
+        // generic machinery (bindings/stores are honored by the
+        // epilogue replica below); the value output's operand is
+        // replaced by a bridge temp the std macro fills with a cell
+        // pointer, unboxed before the epilogue runs.
+        var out_release_regs = std.array_list.Managed(u32).init(self.allocator);
+        defer out_release_regs.deinit();
+        var out_consume_regs = std.array_list.Managed(u32).init(self.allocator);
+        defer out_consume_regs.deinit();
+        var out_forget_regs = std.array_list.Managed(u32).init(self.allocator);
+        defer out_forget_regs.deinit();
+        var out_rebindings = std.array_list.Managed(struct { name: []const u8, reg: u32, ty: *const ast.Type, assigned: bool }).init(self.allocator);
+        defer out_rebindings.deinit();
+        var out_stores = std.array_list.Managed(struct { slot: u32, value: u32, ty: sig.PrimType, forget: bool, ast_ty: ?*const ast.Type }).init(self.allocator);
+        defer out_stores.deinit();
+        var out_operand_names = std.array_list.Managed([]const u8).init(self.allocator);
+        defer out_operand_names.deinit();
+        var value_temp: ?u32 = null;
+        if (bridge.value_output_index) |voi| {
+            const n_outputs = bridge.recv_index;
+            var oi: usize = 0;
+            while (oi < n_outputs) : (oi += 1) {
+                const lowered_arg = self.genImportedMacroArg(plan, oi, call.args[oi], ctx) catch |err| {
+                    self.traceUnsupported("map macro bridge output {} failed: {s}\n", .{ oi, @errorName(err) });
+                    return err;
+                };
+                if (oi == voi) {
+                    value_temp = try self.intern(try self.newBridgeTmpSab());
+                    try self.recordReg(value_temp.?);
+                    try out_operand_names.append(self.symbols.items[value_temp.?]);
+                } else {
+                    try out_operand_names.append(lowered_arg.operand);
+                }
+                // The value output's lowered operand is never defined
+                // by the bridge expansion (value_temp takes its place),
+                // so its release/consume/forget entries must not be
+                // honored; value_temp is retired by the bridge itself.
+                if (oi != voi) {
+                    if (self.plannedCallArgReleaseReg(lowered_arg.release_reg)) |reg| try out_release_regs.append(reg);
+                    if (lowered_arg.release_regs.len != 0) {
+                        try out_release_regs.appendSlice(lowered_arg.release_regs);
+                        self.allocator.free(lowered_arg.release_regs);
+                    }
+                    if (lowered_arg.consume_reg) |reg| try out_consume_regs.append(reg);
+                    if (lowered_arg.forget_reg) |reg| try out_forget_regs.append(reg);
+                }
+                if (lowered_arg.restore_slot) |_| {
+                    self.traceUnsupported("map macro bridge: restore-slot output unsupported\n", .{});
+                    return Error.UnsupportedSabDirectFeature;
+                }
+                if (lowered_arg.output_bind_name) |bind_name| {
+                    const reg = if (oi == voi) value_temp.? else try self.intern(lowered_arg.operand);
+                    try out_rebindings.append(.{ .name = bind_name, .reg = reg, .ty = lowered_arg.output_bind_ty orelse return Error.MissingType, .assigned = plan.callArgIsAssignedOutput(oi) });
+                }
+                if (lowered_arg.output_store_slot) |slot| {
+                    const value = if (oi == voi) value_temp.? else try self.intern(lowered_arg.operand);
+                    try out_stores.append(.{ .slot = slot, .value = value, .ty = lowered_arg.output_store_ty orelse return Error.MissingType, .forget = plan.callArgIsAssignedOutput(oi), .ast_ty = try self.importedMacroArgType(call.args[oi], ctx) });
+                }
+            }
+        }
+
+        const key_reg = try self.genMapKeyReg(key_arg, bridge.key_ty);
+        var result_reg: ?u32 = null;
+        var bridge_value_src: ?u32 = null;
+        switch (bridge.kind) {
+            .get, .del => {
+                const dst = try self.intern(try self.newTmp());
+                try self.recordReg(dst);
+                // Direct calls, not macro fragments: MAP_GET /
+                // MAP_DEL (and their _str forms) are single-call
+                // wrappers over these std functions, and the SAB
+                // fragment path's register retirement leaks the
+                // fragment's `map` register for exactly these two
+                // read/removal shapes (the same leak the pure method
+                // surface shows for contains_key). The string-key
+                // contains below already uses the direct-call form
+                // (method-surface parity).
+                const func_name: []const u8 = if (bridge.kind == .get)
+                    (if (bridge.string_key) "sa_map_get_str" else "sa_map_get")
+                else
+                    (if (bridge.string_key) "sa_map_del_str" else "sa_map_del");
+                try self.ensureStdDeps("sa_std/hashmap.sa", &.{func_name});
+                const cell = try self.intern(try self.newBridgeTmpSab());
+                try self.recordReg(cell);
+                try self.emitCallBody(cell, try std.fmt.allocPrint(self.allocator, "@{s}(&{s}, &{s})", .{ func_name, self.symbols.items[recv_reg], self.symbols.items[key_reg] }));
+                const nz = try self.intern(try self.newTmp());
+                try self.recordReg(nz);
+                try self.emitOp(nz, .ne, .{ .reg = cell }, .{ .imm_i64 = 0 });
+                try self.emitBridgeCellUnboxSab(dst, cell, nz, bridge.value_ty.?, bridge.kind == .del);
+                try self.emitRelease(cell);
+                result_reg = dst;
+            },
+            .contains_key => {
+                const dst = try self.intern(try self.newTmp());
+                try self.recordReg(dst);
+                if (bridge.string_key) {
+                    try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_contains_key_str"});
+                    try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sa_map_contains_key_str(&{s}, &{s})", .{ self.symbols.items[recv_reg], self.symbols.items[key_reg] }));
+                } else {
+                    // Direct call (the MAP_CONTAINS_KEY macro is a
+                    // single-call wrapper): the fragment form leaks
+                    // its `map` register at function exit on this
+                    // backend, for the method surface as much as for
+                    // the bridge.
+                    try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_contains_key"});
+                    try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sa_map_contains_key(&{s}, &{s})", .{ self.symbols.items[recv_reg], self.symbols.items[key_reg] }));
+                }
+                result_reg = dst;
+            },
+            .put, .insert => {
+                const value_arg = call.args[bridge.value_index.?];
+                const boxed = try self.genBridgeValueCellSab(value_arg, bridge.value_ty);
+                const cell = boxed.cell;
+                bridge_value_src = boxed.src;
+                const macro_name: []const u8 = if (bridge.string_key) "MAP_INSERT_STR" else "MAP_INSERT";
+                try self.ensureBridgeMacroDeps("sa_std/hashmap.sa", macro_name);
+                const replaced = if (bridge.kind == .insert) try self.intern(out_operand_names.items[0]) else try self.intern(try self.newTmp());
+                if (bridge.kind == .put) try self.recordReg(replaced);
+                const old_cell = if (bridge.kind == .insert) value_temp.? else try self.intern(try self.newBridgeTmpSab());
+                if (bridge.kind == .put) try self.recordReg(old_cell);
+                try self.emitStdMacroFragment("sa_std/hashmap.sa", macro_name, &.{
+                    self.symbols.items[replaced],
+                    self.symbols.items[old_cell],
+                    self.symbols.items[recv_reg],
+                    self.symbols.items[key_reg],
+                    self.symbols.items[cell],
+                });
+                // The insert fragment stored the heap cell's pointer
+                // into the table; the cell is consumed by the map.
+                try self.emitConsumedMarker(cell);
+                try self.markConsumed(cell);
+                if (bridge.kind == .insert) {
+                    const value_reg = try self.intern(try self.newTmp());
+                    try self.recordReg(value_reg);
+                    // SAB method-insert parity: the replaced entry's
+                    // cell is freed on BOTH key families once its
+                    // value has been copied out. Branch on a copy of
+                    // the replaced flag: the flag register itself is
+                    // the caller's output and stays live.
+                    const flag_copy = try self.intern(try self.newTmp());
+                    try self.recordReg(flag_copy);
+                    try self.emitAssignReg(flag_copy, replaced);
+                    try self.emitBridgeCellUnboxSab(value_reg, old_cell, flag_copy, bridge.value_ty.?, true);
+                    try self.emitRelease(old_cell);
+                    // Substitute the unboxed value for the value
+                    // output's operand in the epilogue lists.
+                    for (out_rebindings.items) |*binding| {
+                        if (binding.reg == value_temp.?) binding.reg = value_reg;
+                    }
+                    for (out_stores.items) |*store| {
+                        if (store.value == value_temp.?) store.value = value_reg;
+                    }
+                } else {
+                    // MAP_PUT discards the replaced entry; free its
+                    // cell when the insert replaced one (branch on the
+                    // replaced flag, mirroring genMapInsertCall).
+                    const rep_label = try self.newLabel("L_BRIDGE_PUT_REPLACED");
+                    const none_label = try self.newLabel("L_BRIDGE_PUT_NONE");
+                    const end_label = try self.newLabel("L_BRIDGE_PUT_END");
+                    try self.emitBranch(replaced, rep_label, none_label);
+                    const branch_locals_len = self.locals.items.len;
+                    var pre_released = try self.released_regs.clone();
+                    defer pre_released.deinit();
+                    try self.emitLabel(rep_label);
+                    try self.emitBranchRelease(replaced);
+                    try self.ensureStdDeps("sa_std/alloc/vec.sa", &.{"sa_mem_free"});
+                    try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_mem_free(^{s})", .{self.symbols.items[old_cell]}));
+                    try self.emitBranchRelease(old_cell);
+                    try self.emitJmp(end_label);
+                    var then_released = try self.released_regs.clone();
+                    defer then_released.deinit();
+                    self.popLocalsTo(branch_locals_len);
+                    try self.restoreReleased(&pre_released);
+                    try self.emitLabel(none_label);
+                    try self.emitBranchRelease(replaced);
+                    try self.emitBranchRelease(old_cell);
+                    try self.emitJmp(end_label);
+                    var else_released = try self.released_regs.clone();
+                    defer else_released.deinit();
+                    self.popLocalsTo(branch_locals_len);
+                    try self.restoreReleased(&pre_released);
+                    try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+                    try self.emitLabel(end_label);
+                }
+            },
+            .try_get => {
+                const cell = value_temp.?;
+                const macro_name: []const u8 = if (bridge.string_key) "MAP_TRY_GET_STR" else "MAP_TRY_GET";
+                try self.ensureBridgeMacroDeps("sa_std/hashmap.sa", macro_name);
+                try self.emitStdMacroFragment("sa_std/hashmap.sa", macro_name, &.{
+                    out_operand_names.items[0],
+                    self.symbols.items[cell],
+                    self.symbols.items[recv_reg],
+                    self.symbols.items[key_reg],
+                });
+                const value_reg = try self.intern(try self.newTmp());
+                try self.recordReg(value_reg);
+                const ok_reg = try self.intern(out_operand_names.items[0]);
+                const flag_copy = try self.intern(try self.newTmp());
+                try self.recordReg(flag_copy);
+                try self.emitAssignReg(flag_copy, ok_reg);
+                try self.emitBridgeCellUnboxSab(value_reg, cell, flag_copy, bridge.value_ty.?, false);
+                try self.emitRelease(cell);
+                for (out_rebindings.items) |*binding| {
+                    if (binding.reg == value_temp.?) binding.reg = value_reg;
+                }
+                for (out_stores.items) |*store| {
+                    if (store.value == value_temp.?) store.value = value_reg;
+                }
+            },
+            .remove_entry => {
+                const cell = value_temp.?;
+                const macro_name: []const u8 = if (bridge.string_key) "MAP_REMOVE_ENTRY_STR" else "MAP_REMOVE_ENTRY";
+                try self.ensureBridgeMacroDeps("sa_std/hashmap.sa", macro_name);
+                try self.emitStdMacroFragment("sa_std/hashmap.sa", macro_name, &.{
+                    out_operand_names.items[0],
+                    out_operand_names.items[1],
+                    self.symbols.items[cell],
+                    self.symbols.items[recv_reg],
+                    self.symbols.items[key_reg],
+                });
+                const value_reg = try self.intern(try self.newTmp());
+                try self.recordReg(value_reg);
+                const ok_reg = try self.intern(out_operand_names.items[0]);
+                const flag_copy = try self.intern(try self.newTmp());
+                try self.recordReg(flag_copy);
+                try self.emitAssignReg(flag_copy, ok_reg);
+                try self.emitBridgeCellUnboxSab(value_reg, cell, flag_copy, bridge.value_ty.?, true);
+                try self.emitRelease(cell);
+                for (out_rebindings.items) |*binding| {
+                    if (binding.reg == value_temp.?) binding.reg = value_reg;
+                }
+                for (out_stores.items) |*store| {
+                    if (store.value == value_temp.?) store.value = value_reg;
+                }
+            },
+            .set_insert, .set_contains => {
+                const dst = try self.intern(try self.newTmp());
+                try self.recordReg(dst);
+                const macro_name: []const u8 = if (bridge.kind == .set_insert)
+                    (if (bridge.string_key) "SET_INSERT_STR" else "SET_INSERT")
+                else
+                    (if (bridge.string_key) "SET_CONTAINS_STR" else "SET_CONTAINS");
+                try self.ensureBridgeMacroDeps("sa_std/hashset.sa", macro_name);
+                try self.emitStdMacroFragment("sa_std/hashset.sa", macro_name, &.{
+                    self.symbols.items[dst],
+                    self.symbols.items[recv_reg],
+                    self.symbols.items[key_reg],
+                });
+                result_reg = dst;
+            },
+            .set_remove => {
+                const dst = try self.intern(try self.newTmp());
+                try self.recordReg(dst);
+                if (bridge.string_key) {
+                    // Compose @sa_set_remove's body over the _str
+                    // delete: length before/after around
+                    // @sa_map_del_str (plain calls, no fragment
+                    // registration needed); the removed sentinel cell
+                    // is retired, not freed (std parity).
+                    try self.ensureStdDeps("sa_std/hashset.sa", &.{"sa_set_len"});
+                    try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_del_str"});
+                    const len_before = try self.intern(try self.newTmp());
+                    try self.emitCallBody(len_before, try std.fmt.allocPrint(self.allocator, "@sa_set_len(&{s})", .{self.symbols.items[recv_reg]}));
+                    const removed = try self.intern(try self.newTmp());
+                    try self.emitCallBody(removed, try std.fmt.allocPrint(self.allocator, "@sa_map_del_str(&{s}, &{s})", .{ self.symbols.items[recv_reg], self.symbols.items[key_reg] }));
+                    const len_after = try self.intern(try self.newTmp());
+                    try self.emitCallBody(len_after, try std.fmt.allocPrint(self.allocator, "@sa_set_len(&{s})", .{self.symbols.items[recv_reg]}));
+                    try self.emitOp(dst, .ne, .{ .reg = len_after }, .{ .reg = len_before });
+                    try self.emitRelease(removed);
+                    try self.emitRelease(len_after);
+                    try self.emitRelease(len_before);
+                } else {
+                    try self.ensureBridgeMacroDeps("sa_std/hashset.sa", "SET_REMOVE");
+                    try self.emitStdMacroFragment("sa_std/hashset.sa", "SET_REMOVE", &.{
+                        self.symbols.items[dst],
+                        self.symbols.items[recv_reg],
+                        self.symbols.items[key_reg],
+                    });
+                }
+                result_reg = dst;
+            },
+        }
+
+        // Epilogue replica for multi-output forms (generic path's
+        // rebindings/stores, with the value substitution applied).
+        for (out_rebindings.items) |binding| {
+            if (binding.assigned) {
+                if (try self.genDeepCloneValue(binding.reg, binding.ty)) |cloned| {
+                    try self.emitForgetMovedValue(binding.reg);
+                    try self.pushTypedLocal(binding.name, cloned, false, binding.ty);
+                    continue;
+                }
+            }
+            try self.pushTypedLocal(binding.name, binding.reg, false, binding.ty);
+        }
+        for (out_stores.items) |store| {
+            var value = store.value;
+            if (store.forget) {
+                if (store.ast_ty) |ast_ty| {
+                    if (try self.genDeepCloneValue(store.value, ast_ty)) |cloned| {
+                        try self.emitForgetMovedValue(store.value);
+                        value = cloned;
+                    }
+                }
+            }
+            try self.emitStore(store.slot, 0, value, store.ty);
+            if (store.forget) {
+                try self.emitForgetMovedValue(value);
+            } else {
+                try self.emitRelease(value);
+            }
+        }
+        try self.releaseNonLocalTemps(out_release_regs.items);
+        for (out_consume_regs.items) |reg| try self.emitMove(reg);
+        for (out_forget_regs.items) |reg| try self.emitMove(reg);
+
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        switch (bridge.kind) {
+            .put, .insert => {
+                // genMapInsertCall epilogue parity: checker-consumed
+                // value/key handles were adopted by the map and take a
+                // consumed marker; anything else follows the normal
+                // expr-result rule.
+                if (self.insertArgCheckerConsumed(recv_arg, call.args[bridge.value_index.?])) {
+                    if (bridge_value_src) |src| {
+                        try self.emitConsumedMarker(src);
+                        try self.markConsumed(src);
+                    }
+                }
+                if (self.insertArgCheckerConsumed(recv_arg, key_arg)) {
+                    try self.emitConsumedMarker(key_reg);
+                    try self.markConsumed(key_reg);
+                } else {
+                    try self.releaseExprResultIfNeeded(key_arg, key_reg);
+                }
+            },
+            else => try self.releaseExprResultIfNeeded(key_arg, key_reg),
+        }
+        if (result_reg) |reg| return reg;
+        const sentinel = try self.intern(try self.newTmp());
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
+    }
+
     fn genImportedMacroCall(self: *Codegen, call: ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, ctx: ?*MacroExpansionContext, result_ty: ?*const ast.Type) anyerror!u32 {
+        if (try self.genMapMacroBridgeCall(call, plan, ctx, result_ty)) |reg| return reg;
         const import_path = plan.import_path orelse return Error.UnsupportedSabDirectFeature;
         const dst = if (plan.expression_output) blk: {
             const reg = try self.intern(try self.newTmp());

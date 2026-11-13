@@ -1,0 +1,232 @@
+@import "sa_std/hashmap.sa"
+@import "sa_std/hashset.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// DEF-REG12-BRIDGE-KEY: SLA imported MAP_*/SET_* macros on HashMap /
+// HashSet receivers must materialize arguments by the method-surface
+// discipline (panel verdict form A): scalar keys pass the value
+// register itself, String keys route to the content-keyed _str
+// function family, values are boxed into per-entry HEAP cells, and
+// macro outputs are unboxed (MAP_GET/MAP_DEL return the value, never
+// the cell pointer). Before the bridge fix, the generic imported-
+// macro materialization passed stack-slot addresses as keys (the
+// identity hash then necessarily missed) and left cell pointers in
+// the output registers. Every test below fails on the pre-fix
+// codegen and passes after the bridge fix, on both backends.
+//
+// The first group mirrors the SAB-audit registry probes (inferred
+// map types, literal keys); the second group covers annotated
+// HashMap<String, _> / HashSet<String> receivers, whose keys are
+// content-keyed and must be materialized as String handles.
+
+@test "bridge map_put macro string key"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    MAP_PUT(m, "c", 3);
+    if len(m) != 3 { panic(84101); };
+    if m.get("c").copied().unwrap_or(0) != 3 { panic(84102); };
+    if m.get("a").copied().unwrap_or(0) != 1 { panic(84103); };
+}
+
+@test "bridge map_del macro string key"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let old = MAP_DEL(m, "a");
+    if old != 1 { panic(84111); };
+    if len(m) != 1 { panic(84112); };
+    if m.get("a").is_some() { panic(84113); };
+    if m.get("b").copied().unwrap_or(0) != 2 { panic(84114); };
+    let miss = MAP_DEL(m, "zz");
+    if miss != 0 { panic(84115); };
+}
+
+@test "bridge map_contains macro string key"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    if MAP_CONTAINS_KEY(m, "a") == false { panic(84121); };
+    if MAP_CONTAINS_KEY(m, "zz") { panic(84122); };
+}
+
+@test "bridge map_get macro string key"() {
+    let m = HashMap::new();
+    m.insert("a", 11);
+    m.insert("b", 22);
+    if MAP_GET(m, "a") != 11 { panic(84131); };
+    if MAP_GET(m, "b") != 22 { panic(84132); };
+    if MAP_GET(m, "zz") != 0 { panic(84133); };
+}
+
+@test "bridge set_remove macro int key"() {
+    let s = HashSet::new();
+    s.insert(5);
+    s.insert(9);
+    let ok = SET_REMOVE(s, 5);
+    if ok == false { panic(84141); };
+    if len(s) != 1 { panic(84142); };
+    // Statement form for the repeat removal: a second let-bound
+    // macro result in one function trips the registered
+    // macro-result double-release family (see RESULT); the bridge
+    // behavior under test is identical.
+    SET_REMOVE(s, 5);
+    if len(s) != 1 { panic(84143); };
+    if s.contains(9) == false { panic(84144); };
+}
+
+@test "bridge int key method insert macro del"() {
+    let m = HashMap::new();
+    m.insert(5, 100);
+    let old = MAP_DEL(m, 5);
+    if old != 100 { panic(84151); };
+    if len(m) != 0 { panic(84152); };
+}
+
+@test "bridge int key pure macro put del get"() {
+    let m = HashMap::new();
+    MAP_PUT(m, 7, 200);
+    if len(m) != 1 { panic(84161); };
+    MAP_PUT(m, 7, 300);
+    if len(m) != 1 { panic(84162); };
+    if MAP_GET(m, 7) != 300 { panic(84163); };
+    let old = MAP_DEL(m, 7);
+    if old != 300 { panic(84164); };
+    if len(m) != 0 { panic(84165); };
+}
+
+@test "bridge int key method insert macro contains"() {
+    let m = HashMap::new();
+    m.insert(5, 100);
+    if MAP_CONTAINS_KEY(m, 5) == false { panic(84171); };
+    if MAP_CONTAINS_KEY(m, 6) { panic(84172); };
+}
+
+@test "bridge int key method insert macro get"() {
+    let m = HashMap::new();
+    m.insert(5, 100);
+    if MAP_GET(m, 5) != 100 { panic(84181); };
+    if MAP_GET(m, 6) != 0 { panic(84182); };
+}
+
+@test "bridge pure macro string put method read"() {
+    let m = HashMap::new();
+    MAP_PUT(m, "x", 11);
+    MAP_PUT(m, "y", 22);
+    if len(m) != 2 { panic(84191); };
+    if m.get("x").copied().unwrap_or(0) != 11 { panic(84192); };
+    if m.get("y").copied().unwrap_or(0) != 22 { panic(84193); };
+}
+
+@test "bridge set int pure macro roundtrip"() {
+    let s = HashSet::new();
+    let ins = SET_INSERT(s, 42);
+    if ins == false { panic(84231); };
+    if SET_CONTAINS(s, 42) == false { panic(84232); };
+    if len(s) != 1 { panic(84233); };
+}
+
+@test "bridge string map macro put variable key"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    let k: String = format("same-key");
+    MAP_PUT(m, k, 5);
+    let probe: String = format("same-key");
+    if m.get(probe).copied().unwrap_or(0) != 5 { panic(84211); };
+    let probe2: String = format("same-key");
+    if MAP_CONTAINS_KEY(m, probe2) == false { panic(84212); };
+    let probe3: String = format("same-key");
+    if MAP_GET(m, probe3) != 5 { panic(84213); };
+    let probe4: String = format("same-key");
+    let old = MAP_DEL(m, probe4);
+    if old != 5 { panic(84214); };
+    if len(m) != 0 { panic(84215); };
+}
+
+fn bridge_put_away(m: &HashMap<String, i64>) {
+    let k: String = format("deep");
+    MAP_PUT(m, k, 777);
+}
+
+@test "bridge value survives helper return"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    bridge_put_away(&m);
+    let probe: String = format("deep");
+    if m.get(probe).copied().unwrap_or(0) != 777 { panic(84201); };
+    let probe2: String = format("deep");
+    if MAP_GET(m, probe2) != 777 { panic(84202); };
+}
+
+@test "bridge set string remove and contains"() {
+    let s: HashSet<String> = HashSet::new();
+    let p: String = format("p");
+    s.insert(p);
+    let q: String = format("q");
+    s.insert(q);
+    let pr: String = format("p");
+    let ok = SET_REMOVE(s, pr);
+    if ok == false { panic(84221); };
+    if len(s) != 1 { panic(84222); };
+    let qr: String = format("q");
+    if SET_CONTAINS(s, qr) == false { panic(84223); };
+    let pr2: String = format("p");
+    if SET_CONTAINS(s, pr2) { panic(84224); };
+}
+
+@test "bridge map insert form miss"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    let rep: bool = false;
+    let oldv: i64 = 0;
+    let k1: String = format("n");
+    MAP_INSERT(rep, oldv, m, k1, 9);
+    if rep { panic(84241); };
+    if len(m) != 1 { panic(84251); };
+}
+
+@test "bridge map insert form hit"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    let k0: String = format("n");
+    m.insert(k0, 9);
+    let rep: bool = false;
+    let oldv: i64 = 0;
+    let k2: String = format("n");
+    MAP_INSERT(rep, oldv, m, k2, 10);
+    if rep == false { panic(84242); };
+    if oldv != 9 { panic(84243); };
+}
+
+@test "bridge map try_get form hit"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    let k0: String = format("n");
+    m.insert(k0, 10);
+    let ok2: bool = false;
+    let v2: i64 = 0;
+    let k3: String = format("n");
+    MAP_TRY_GET(ok2, v2, m, k3);
+    if ok2 == false { panic(84244); };
+    if v2 != 10 { panic(84245); };
+}
+
+@test "bridge map try_get form miss"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    let ok2: bool = false;
+    let v2: i64 = 0;
+    let k4: String = format("zz");
+    MAP_TRY_GET(ok2, v2, m, k4);
+    if ok2 { panic(84246); };
+}
+
+@test "bridge map remove_entry form"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    let k0: String = format("n");
+    m.insert(k0, 10);
+    let ok3: bool = false;
+    let kout: String = format("");
+    let v3: i64 = 0;
+    let k5: String = format("n");
+    MAP_REMOVE_ENTRY(ok3, kout, v3, m, k5);
+    if ok3 == false { panic(84247); };
+    if v3 != 10 { panic(84248); };
+    if len(kout) != 1 { panic(84249); };
+    if len(m) != 0 { panic(84250); };
+}

@@ -13470,8 +13470,385 @@ pub const Codegen = struct {
         copy_into_slot: []const u8,
     };
 
+    // DEF-REG12-BRIDGE-KEY (panel verdict form A): imported MAP_*/SET_*
+    // macros on HashMap/HashSet receivers must materialize arguments by
+    // the method-surface discipline, not the generic imported-macro
+    // discipline. The generic path passes stack-slot addresses as keys
+    // (the std table hashes/compares key POINTER identity, so a slot
+    // address necessarily misses and stored key/value words dangle
+    // into dead stack slots) and leaves value CELL pointers in output
+    // registers un-unboxed. The bridge below classifies key/value
+    // kinds explicitly from the receiver's static type: string keys
+    // route to the content-keyed _str function family, word-scalar
+    // keys pass the value register itself, values are boxed into
+    // per-entry heap cells via genHashMapValueSlot, and cell-pointer
+    // outputs are unboxed (null-checked first) before the caller sees
+    // them. An unclassifiable key/value kind on a HashMap/HashSet
+    // receiver is a loud CodegenError -- never a default routing.
+    const MapMacroBridgeKind = enum {
+        put,
+        get,
+        del,
+        contains_key,
+        try_get,
+        insert,
+        remove_entry,
+        set_insert,
+        set_contains,
+        set_remove,
+    };
+
+    const MapMacroBridge = struct {
+        kind: MapMacroBridgeKind,
+        string_key: bool,
+        key_ty: *const ast.Type,
+        value_ty: ?*const ast.Type,
+        recv_index: usize,
+        key_index: usize,
+        value_index: ?usize = null,
+        value_output_index: ?usize = null,
+    };
+
+    fn bridgeWordKind(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| p != .void_type and p != .va_list,
+            // An unpinned `.infer` K/V reaches codegen only when no
+            // use in the program pinned the map's type parameters
+            // (macro-first programs: imported-macro contracts do not
+            // pin inference the way method signatures do). Such a
+            // map is only ever touched through type-agnostic macro
+            // expansions and word-represented literals, so word
+            // materialization is the sound classification; a use
+            // that pins the type to `String` would have made the
+            // type concrete here instead.
+            .infer => true,
+            .pointer, .borrow, .fn_ptr => true,
+            // A `str` key/value is a handle word; the method surface
+            // identity-routes it (only `String` is content-keyed), so
+            // the bridge passes its register as the identity word.
+            .user_defined => |ud| std.mem.eql(u8, ud.name, "str"),
+            else => false,
+        };
+    }
+
+    fn mapMacroBridge(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan) CodegenError!?MapMacroBridge {
+        const import_path = plan.import_path orelse return null;
+        const is_hashmap_unit = std.mem.endsWith(u8, import_path, "hashmap.sa");
+        const is_hashset_unit = std.mem.endsWith(u8, import_path, "hashset.sa");
+        if (!is_hashmap_unit and !is_hashset_unit) return null;
+        const name = plan.macro_name;
+        var kind: MapMacroBridgeKind = undefined;
+        if (is_hashmap_unit) {
+            if (std.mem.eql(u8, name, "MAP_PUT")) {
+                kind = .put;
+            } else if (std.mem.eql(u8, name, "MAP_GET")) {
+                kind = .get;
+            } else if (std.mem.eql(u8, name, "MAP_DEL")) {
+                kind = .del;
+            } else if (std.mem.eql(u8, name, "MAP_CONTAINS_KEY")) {
+                kind = .contains_key;
+            } else if (std.mem.eql(u8, name, "MAP_TRY_GET")) {
+                kind = .try_get;
+            } else if (std.mem.eql(u8, name, "MAP_INSERT")) {
+                kind = .insert;
+            } else if (std.mem.eql(u8, name, "MAP_REMOVE_ENTRY")) {
+                kind = .remove_entry;
+            } else return null;
+        } else {
+            if (std.mem.eql(u8, name, "SET_INSERT")) {
+                kind = .set_insert;
+            } else if (std.mem.eql(u8, name, "SET_CONTAINS")) {
+                kind = .set_contains;
+            } else if (std.mem.eql(u8, name, "SET_REMOVE")) {
+                kind = .set_remove;
+            } else return null;
+        }
+        var recv_index: usize = 0;
+        var key_index: usize = 0;
+        var value_index: ?usize = null;
+        var value_output_index: ?usize = null;
+        if (plan.expression_output) {
+            // Expression forms carry no output arguments: (recv, key).
+            if (call.args.len != 2) return null;
+            recv_index = 0;
+            key_index = 1;
+        } else {
+            switch (kind) {
+                .put => {
+                    if (call.args.len != 3) return null;
+                    recv_index = 0;
+                    key_index = 1;
+                    value_index = 2;
+                },
+                .try_get => {
+                    if (call.args.len != 4) return null;
+                    recv_index = 2;
+                    key_index = 3;
+                    value_output_index = 1;
+                },
+                .insert => {
+                    if (call.args.len != 5) return null;
+                    recv_index = 2;
+                    key_index = 3;
+                    value_index = 4;
+                    value_output_index = 1;
+                },
+                .remove_entry => {
+                    if (call.args.len != 5) return null;
+                    recv_index = 3;
+                    key_index = 4;
+                    value_output_index = 2;
+                },
+                else => return null,
+            }
+        }
+        const recv_ty = self.tc.expr_types.get(call.args[recv_index]) orelse return null;
+        if (is_hashset_unit) {
+            const elem = lowering_rules.hashSetElementType(recv_ty) orelse return null;
+            const string_key = lowering_rules.isStringType(elem);
+            if (!string_key and !bridgeWordKind(elem)) return CodegenError.CodegenError;
+            return .{
+                .kind = kind,
+                .string_key = string_key,
+                .key_ty = elem,
+                .value_ty = null,
+                .recv_index = recv_index,
+                .key_index = key_index,
+            };
+        }
+        const mt = lowering_rules.hashMapTypes(recv_ty) orelse return null;
+        const string_key = lowering_rules.isStringType(mt.key);
+        if (!string_key and !bridgeWordKind(mt.key)) return CodegenError.CodegenError;
+        if (!lowering_rules.isStringType(mt.value) and !bridgeWordKind(mt.value)) return CodegenError.CodegenError;
+        return .{
+            .kind = kind,
+            .string_key = string_key,
+            .key_ty = mt.key,
+            .value_ty = mt.value,
+            .recv_index = recv_index,
+            .key_index = key_index,
+            .value_index = value_index,
+            .value_output_index = value_output_index,
+        };
+    }
+
+    /// Branch-unbox a value cell pointer into `dst`: on the taken arm
+    /// `dst` receives the cell's contents, on the other arm 0. The
+    /// null/flag check always precedes the load (a miss must never be
+    /// dereferenced). `free_cell` frees the heap cell on the taken arm
+    /// (entry-removing forms; mirrors genHashMapRemoveText).
+    fn emitBridgeCellUnbox(
+        self: *Codegen,
+        dst: []const u8,
+        cell: []const u8,
+        cond: []const u8,
+        value_ty: *const ast.Type,
+        free_cell: bool,
+        release_cond_in_arms: bool,
+    ) CodegenError!void {
+        const some_label = try self.newLabel("L_BRIDGE_UNBOX_SOME");
+        const none_label = try self.newLabel("L_BRIDGE_UNBOX_NONE");
+        const end_label = try self.newLabel("L_BRIDGE_UNBOX_END");
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ cond, some_label, none_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
+        if (release_cond_in_arms) try self.emitRelease(cond);
+        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ dst, cell, typeString(value_ty) }) catch return CodegenError.CodegenError;
+        if (free_cell) {
+            const free_reg = try self.newTmp();
+            self.outPrint("    {s} = add {s}, 0\n", .{ free_reg, cell }) catch return CodegenError.CodegenError;
+            self.outPrint("    call @sa_mem_free(^{s})\n", .{free_reg}) catch return CodegenError.CodegenError;
+        }
+        self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+        if (release_cond_in_arms) try self.emitRelease(cond);
+        try self.emitIntConst(dst, 0);
+        self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+    }
+
+    /// Hand an unboxed bridge value to a multi-output caller's binding.
+    /// Slot-backed bindings are written by the generic store-back
+    /// epilogue, so the bridge only swaps the register it will store
+    /// (and the register the release loop will retire). Plain register
+    /// bindings are rebound here, mirroring the aggregate writeback's
+    /// rebind arm; a deep-cloneable value is cloned first so the
+    /// binding never aliases storage the container still owns
+    /// (REG3-DEF-2 parity).
+    fn bridgeValueOutputWriteback(
+        self: *Codegen,
+        call: *const ast.CallExpr,
+        arg_idx: usize,
+        value_reg_in: []const u8,
+        arg_regs: *std.array_list.Managed([]const u8),
+        release_regs: *std.array_list.Managed(?[]const u8),
+    ) CodegenError!void {
+        const arg = call.args[arg_idx];
+        const arg_ty = try self.importedMacroArgType(arg);
+        var value_reg = value_reg_in;
+        if (try self.genDeepCloneValue(value_reg, arg_ty)) |cloned| {
+            try self.emitRelease(value_reg);
+            value_reg = cloned;
+        }
+        if (self.importedMacroExistingAddressableSymbol(arg)) |slot| {
+            if (!std.mem.eql(u8, slot, value_reg)) {
+                arg_regs.items[arg_idx] = value_reg;
+                release_regs.items[arg_idx] = value_reg;
+            }
+            return;
+        }
+        if (arg.* != .identifier) return CodegenError.CodegenError;
+        const resolved = self.resolveBindingName(arg.identifier);
+        try self.emitRelease(resolved);
+        // The rebind assign MOVES value_reg into the binding (the
+        // aggregate writeback's rebind arm has the same shape): no
+        // trailing release — the register is already consumed, and
+        // releasing it again traps UseAfterMove in the generated SA.
+        self.outPrint("    {s} = {s}\n", .{ resolved, value_reg }) catch return CodegenError.CodegenError;
+        arg_regs.items[arg_idx] = resolved;
+        release_regs.items[arg_idx] = null;
+    }
+
+    /// Emit the bridge expansion in place of the generic EXPAND for a
+    /// classified MAP_*/SET_* call. arg_regs/release_regs already hold
+    /// the bridge-materialized receiver/key/value-cell registers (the
+    /// remaining outputs were lowered by the generic loop); the value
+    /// outputs of multi-output forms were passed a fresh temp
+    /// (value_temp) that the underlying std macro fills with a cell
+    /// pointer, unboxed here before the generic store-back epilogue.
+    fn emitMapMacroBridge(
+        self: *Codegen,
+        call: *const ast.CallExpr,
+        bridge: MapMacroBridge,
+        dst: []const u8,
+        arg_regs: *std.array_list.Managed([]const u8),
+        release_regs: *std.array_list.Managed(?[]const u8),
+        value_temp: ?[]const u8,
+    ) CodegenError!void {
+        const recv_reg = arg_regs.items[bridge.recv_index];
+        const key_reg = arg_regs.items[bridge.key_index];
+        switch (bridge.kind) {
+            .get, .del => {
+                const cell = try self.newTmp();
+                const macro_name: []const u8 = if (bridge.kind == .get)
+                    (if (bridge.string_key) "MAP_GET_STR" else "MAP_GET")
+                else
+                    (if (bridge.string_key) "MAP_DEL_STR" else "MAP_DEL");
+                self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ macro_name, cell, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                const nz = try self.newTmp();
+                self.outPrint("    {s} = ne {s}, 0\n", .{ nz, cell }) catch return CodegenError.CodegenError;
+                try self.emitBridgeCellUnbox(dst, cell, nz, bridge.value_ty.?, bridge.kind == .del, true);
+                try self.emitRelease(cell);
+            },
+            .contains_key => {
+                if (bridge.string_key) {
+                    // Content-addressed probe (method-surface parity);
+                    // the generic macro probes by identity and misses
+                    // equal-content keys.
+                    self.outPrint("    {s} = call @sa_map_contains_key_str(&{s}, &{s})\n", .{ dst, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                } else {
+                    self.outPrint("    EXPAND MAP_CONTAINS_KEY {s}, {s}, {s}\n", .{ dst, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                }
+            },
+            .put, .insert => {
+                const cell = arg_regs.items[bridge.value_index.?];
+                const replaced_reg = if (bridge.kind == .put) try self.newTmp() else arg_regs.items[0];
+                const old_reg = if (bridge.kind == .put) try self.newTmp() else value_temp.?;
+                const macro_name: []const u8 = if (bridge.string_key) "MAP_INSERT_STR" else "MAP_INSERT";
+                self.outPrint("    EXPAND {s} {s}, {s}, {s}, {s}, {s}\n", .{ macro_name, replaced_reg, old_reg, recv_reg, key_reg, cell }) catch return CodegenError.CodegenError;
+                if (bridge.kind == .insert) {
+                    // The old-value output is the replaced entry's
+                    // cell pointer: unbox it (freeing the cell on the
+                    // generic family, mirroring
+                    // SLA_MAP_INSERT_OPTION_U64; the _str family
+                    // template does not free it) and hand the value to
+                    // the caller's binding.
+                    const value_reg = try self.newTmp();
+                    try self.emitBridgeCellUnbox(value_reg, old_reg, replaced_reg, bridge.value_ty.?, !bridge.string_key, false);
+                    try self.emitRelease(old_reg);
+                    try self.bridgeValueOutputWriteback(call, bridge.value_output_index.?, value_reg, arg_regs, release_regs);
+                } else if (!bridge.string_key) {
+                    // MAP_PUT discards the replaced entry; the generic
+                    // family's method template frees its cell.
+                    const rep_label = try self.newLabel("L_BRIDGE_PUT_REPLACED");
+                    const none_label = try self.newLabel("L_BRIDGE_PUT_NONE");
+                    const end_label = try self.newLabel("L_BRIDGE_PUT_END");
+                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ replaced_reg, rep_label, none_label }) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{rep_label}) catch return CodegenError.CodegenError;
+                    try self.emitRelease(replaced_reg);
+                    const free_reg = try self.newTmp();
+                    self.outPrint("    {s} = add {s}, 0\n", .{ free_reg, old_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    call @sa_mem_free(^{s})\n", .{free_reg}) catch return CodegenError.CodegenError;
+                    try self.emitRelease(old_reg);
+                    self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                    self.outPrint("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+                    try self.emitRelease(replaced_reg);
+                    try self.emitRelease(old_reg);
+                    self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                } else {
+                    try self.emitRelease(old_reg);
+                    try self.emitRelease(replaced_reg);
+                }
+                // The heap value cell's ownership moves into the map;
+                // forget it, never release it (method-insert parity).
+                try self.emitForgetMovedValue(cell);
+                if (self.insertArgCheckerConsumed(call.args[bridge.recv_index], call.args[bridge.key_index])) {
+                    try self.emitForgetMovedValue(key_reg);
+                }
+            },
+            .try_get => {
+                const cell = value_temp.?;
+                const macro_name: []const u8 = if (bridge.string_key) "MAP_TRY_GET_STR" else "MAP_TRY_GET";
+                self.outPrint("    EXPAND {s} {s}, {s}, {s}, {s}\n", .{ macro_name, arg_regs.items[0], cell, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                const value_reg = try self.newTmp();
+                try self.emitBridgeCellUnbox(value_reg, cell, arg_regs.items[0], bridge.value_ty.?, false, false);
+                try self.emitRelease(cell);
+                try self.bridgeValueOutputWriteback(call, bridge.value_output_index.?, value_reg, arg_regs, release_regs);
+            },
+            .remove_entry => {
+                const cell = value_temp.?;
+                const macro_name: []const u8 = if (bridge.string_key) "MAP_REMOVE_ENTRY_STR" else "MAP_REMOVE_ENTRY";
+                self.outPrint("    EXPAND {s} {s}, {s}, {s}, {s}, {s}\n", .{ macro_name, arg_regs.items[0], arg_regs.items[1], cell, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                const value_reg = try self.newTmp();
+                try self.emitBridgeCellUnbox(value_reg, cell, arg_regs.items[0], bridge.value_ty.?, true, false);
+                try self.emitRelease(cell);
+                try self.bridgeValueOutputWriteback(call, bridge.value_output_index.?, value_reg, arg_regs, release_regs);
+            },
+            .set_insert => {
+                const func_name: []const u8 = if (bridge.string_key) "@sa_set_insert_str" else "@sa_set_insert";
+                self.outPrint("    {s} = call {s}(&{s}, &{s})\n", .{ dst, func_name, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+            },
+            .set_contains => {
+                const func_name: []const u8 = if (bridge.string_key) "@sa_set_contains_str" else "@sa_set_contains";
+                self.outPrint("    {s} = call {s}(&{s}, &{s})\n", .{ dst, func_name, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+            },
+            .set_remove => {
+                if (bridge.string_key) {
+                    // No @sa_set_remove_str exists in std; compose it
+                    // from @sa_map_del_str + the set length, mirroring
+                    // @sa_set_remove's own body line for line (the
+                    // removed sentinel cell is retired, not freed).
+                    const len_before = try self.newTmp();
+                    self.outPrint("    {s} = call @sa_set_len(&{s})\n", .{ len_before, recv_reg }) catch return CodegenError.CodegenError;
+                    const removed = try self.newTmp();
+                    self.outPrint("    {s} = call @sa_map_del_str(&{s}, &{s})\n", .{ removed, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                    const len_after = try self.newTmp();
+                    self.outPrint("    {s} = call @sa_set_len(&{s})\n", .{ len_after, recv_reg }) catch return CodegenError.CodegenError;
+                    const found = try self.newTmp();
+                    self.outPrint("    {s} = ne {s}, {s}\n", .{ found, len_after, len_before }) catch return CodegenError.CodegenError;
+                    self.outPrint("    {s} = {s} as i32\n", .{ dst, found }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(removed);
+                    try self.emitRelease(len_after);
+                    try self.emitRelease(len_before);
+                } else {
+                    self.outPrint("    {s} = call @sa_set_remove(&{s}, &{s})\n", .{ dst, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                }
+            },
+        }
+    }
+
     fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (try self.genPlainTimeMacroCall(call, plan, hoisted_allocs)) |reg| return reg;
+        const bridge = try self.mapMacroBridge(call, plan);
+        var bridge_value_temp: ?[]const u8 = null;
         const reg = if (plan.expression_output) try self.newTmp() else "return_ty_sentinel";
         var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
@@ -13486,6 +13863,43 @@ pub const Codegen = struct {
         var output_writeback_indices = std.array_list.Managed(usize).init(self.allocator);
         defer output_writeback_indices.deinit();
         for (call.args, 0..) |arg, i| {
+            // DEF-REG12-BRIDGE-KEY: bridge-materialized arguments skip
+            // the generic imported-macro lowering entirely (receiver =
+            // the expression register itself, key = the method-surface
+            // key register, value = a per-entry heap cell, value output
+            // = a fresh temp the bridge unboxes after expansion). All
+            // other arguments (flag/key outputs) keep the generic path.
+            if (bridge) |b| {
+                if (i == b.recv_index) {
+                    const reg2 = try self.genExpr(arg, hoisted_allocs);
+                    try arg_regs.append(reg2);
+                    release_regs.append(if (callArgNeedsRelease(arg)) reg2 else null) catch return CodegenError.OutOfMemory;
+                    continue;
+                }
+                if (i == b.key_index) {
+                    const reg2 = try self.genHashMapKeyReg(arg, hoisted_allocs, b.key_ty);
+                    try arg_regs.append(reg2);
+                    release_regs.append(if (callArgNeedsRelease(arg)) reg2 else null) catch return CodegenError.OutOfMemory;
+                    continue;
+                }
+                if (b.value_index) |vi| {
+                    if (i == vi) {
+                        const cell = try self.genHashMapValueSlot(arg, hoisted_allocs, self.insertArgCheckerConsumed(call.args[b.recv_index], arg));
+                        try arg_regs.append(cell);
+                        release_regs.append(null) catch return CodegenError.OutOfMemory;
+                        continue;
+                    }
+                }
+                if (b.value_output_index) |voi| {
+                    if (i == voi) {
+                        const temp = try self.newTmp();
+                        bridge_value_temp = temp;
+                        try arg_regs.append(temp);
+                        release_regs.append(null) catch return CodegenError.OutOfMemory;
+                        continue;
+                    }
+                }
+            }
             const lowered_arg = try self.genImportedMacroArg(plan, i, arg, hoisted_allocs);
             // Parity with SAB `importedMacroDirectCallConsumesValueArg`: the
             // macro body moves (`^`) this value arg, so the verifier marks the
@@ -13540,18 +13954,22 @@ pub const Codegen = struct {
             release_regs.append(passed_release) catch return CodegenError.OutOfMemory;
         }
 
-        self.outPrint("    EXPAND {s}", .{plan.macro_name}) catch return CodegenError.CodegenError;
-        if (plan.expression_output) {
-            self.outPrint(" {s}", .{reg}) catch return CodegenError.CodegenError;
-        }
-        for (arg_regs.items, 0..) |arg_reg, i| {
-            if (plan.expression_output or i > 0) {
-                self.outPrint(", {s}", .{arg_reg}) catch return CodegenError.CodegenError;
-            } else {
-                self.outPrint(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
+        if (bridge) |b| {
+            try self.emitMapMacroBridge(call, b, reg, &arg_regs, &release_regs, bridge_value_temp);
+        } else {
+            self.outPrint("    EXPAND {s}", .{plan.macro_name}) catch return CodegenError.CodegenError;
+            if (plan.expression_output) {
+                self.outPrint(" {s}", .{reg}) catch return CodegenError.CodegenError;
             }
+            for (arg_regs.items, 0..) |arg_reg, i| {
+                if (plan.expression_output or i > 0) {
+                    self.outPrint(", {s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                } else {
+                    self.outPrint(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                }
+            }
+            self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
         }
-        self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
 
         // Leading output args whose binding lives in a stack slot were
         // lowered to load temps above; the expansion assigns the temp, so

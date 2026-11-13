@@ -4837,3 +4837,53 @@ test "sla nullish assign desugars to assign unwrap_or" {
     try std.testing.expect(std.mem.eql(u8, fallback.func_name, "unwrap_or"));
     try std.testing.expect(fallback.args.len == 2);
 }
+
+test "diag evidence G-5: parseInfixExpr bang arm raises UnexpectedInfixToken when not a macro call" {
+    // Direct drive of parseInfixExpr's `.bang` arm (parser.zig): entered
+    // with a bang token whose following token is not '(', the arm
+    // returns ParserError.UnexpectedInfixToken. Through the public
+    // parse path this arm is shadowed: parseExpr intercepts a postfix
+    // '!' as the non-null-assertion desugar before the infix loop can
+    // dispatch the token here.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var parser = Parser.init(a, "! b");
+    const left = try a.create(ast.Node);
+    left.* = .{ .identifier = "a" };
+    try std.testing.expectError(ParserError.UnexpectedInfixToken, parser.parseInfixExpr(left, 10));
+}
+
+test "diag evidence G-5: parseInfixExpr else arm raises UnexpectedInfixToken for unhandled tags" {
+    // Direct drive of parseInfixExpr's else arm: any tag without a
+    // dedicated arm lands here. parseExpr only dispatches tags whose
+    // infix precedence is > 0 and every such tag has an arm, so source
+    // text cannot land here; a comma (precedence 0, never dispatched)
+    // proves the arm fires when entered.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var parser = Parser.init(a, ", b");
+    const left = try a.create(ast.Node);
+    left.* = .{ .identifier = "a" };
+    try std.testing.expectError(ParserError.UnexpectedInfixToken, parser.parseInfixExpr(left, 0));
+}
+
+test "diag evidence G-5: source-level bang and in are rejected as SyntaxError, never UnexpectedInfixToken" {
+    // Stage-order evidence: the nearest constructible source programs
+    // are rejected by the parser with SyntaxError (the postfix-'!'
+    // desugar consumes the bang and leaves a stray operand; `in` has
+    // no infix meaning at all), never with UnexpectedInfixToken.
+    const shapes = [_][]const u8{
+        "fn f(a: i64, b: i64) -> i64 { return a ! b; }",
+        "fn f(a: i64, b: i64) -> i64 { return a in b; }",
+    };
+    for (shapes) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var parser = Parser.init(arena.allocator(), source);
+        try std.testing.expectError(ParserError.SyntaxError, parser.parseProgram());
+    }
+}

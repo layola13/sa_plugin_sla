@@ -2052,3 +2052,118 @@ test "monomorphize generic struct" {
     }
     try std.testing.expect(found_option_int);
 }
+
+
+test "diag evidence G-4: generic func ref to an unregistered template raises TemplateNotFound" {
+    // Direct drive of the monomorphizer's generic_func_ref lookup:
+    // a function-reference node carrying type arguments whose base
+    // name was never registered as a generic function template. The
+    // two sibling lookup sites are guarded by construction (the
+    // generic-call site is only reached for names already present in
+    // func_templates, and the generic-type site passes unknown names
+    // through as opaque types), so this ref site is the live one.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var mono = Monomorphizer.init(a);
+    defer mono.deinit();
+
+    const i32_ty = try a.create(ast.Type);
+    i32_ty.* = .{ .primitive = .i32 };
+    const generics = try a.alloc(*ast.Type, 1);
+    generics[0] = i32_ty;
+    const node = try a.create(ast.Node);
+    node.* = .{ .generic_func_ref = .{ .func_name = "missing", .generics = generics } };
+
+    try std.testing.expectError(MonomorphizeError.TemplateNotFound, mono.specializeNode(node));
+    try std.testing.expectEqualStrings("missing", mono.missingTemplateName().?);
+}
+
+test "diag evidence G-4: turbofish reference is rejected by the parser as SyntaxError" {
+    // Stage-order evidence (parser stage): the turbofish spelling of
+    // a generic reference never reaches the monomorphizer; the parser
+    // rejects it with SyntaxError.
+    const source =
+        \\fn pick(x: i32) -> i32 {
+        \\    return x;
+        \\}
+        \\fn main() -> i32 {
+        \\    return pick::<i32>(5);
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const parser_mod = @import("parser.zig");
+    var p = parser_mod.Parser.init(arena.allocator(), source);
+    try std.testing.expectError(parser_mod.ParserError.SyntaxError, p.parseProgram());
+}
+
+
+test "diag evidence G-4: bare generic ref to a non-generic function raises TemplateNotFound in the frontend stage order" {
+    // FINDING (refutes the G-4 corpus-unreachability classification):
+    // a colon-less generic function reference naming a declared
+    // non-generic function, driven through the exact stage order the
+    // `sla check` command runs (parse -> defer desugar ->
+    // monomorphize), raises MonomorphizeError.TemplateNotFound.
+    // The DIAG-CORPUS line attempted the turbofish spelling
+    // (parse-rejected, see the SyntaxError test above) but not this
+    // colon-less reference spelling.
+    const source =
+        \\fn pick(x: i32) -> i32 {
+        \\    return x;
+        \\}
+        \\fn main() -> i32 {
+        \\    let f = pick<i32>;
+        \\    return f(1);
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const parser_mod = @import("parser.zig");
+    const defer_desugar = @import("defer_desugar.zig");
+    var p = parser_mod.Parser.init(a, source);
+    const prog = try p.parseProgram();
+    var desugarer = defer_desugar.Desugarer.init(a);
+    try desugarer.desugarProgram(prog);
+
+    var mono = Monomorphizer.init(a);
+    defer mono.deinit();
+    try std.testing.expectError(MonomorphizeError.TemplateNotFound, mono.monomorphize(prog, null, null));
+    try std.testing.expectEqualStrings("pick", mono.missingTemplateName().?);
+}
+
+test "diag evidence G-4: ghost type args on a constructed struct value are rejected by the checker as TypeMismatch" {
+    // Stage-order evidence for the DIAG-CORPUS p_template_field /
+    // p_template_construct shapes: the bare declaration of a field
+    // with ghost type args is tolerated by the checker, but
+    // constructing the value forces field checking and the program
+    // is rejected with TypeMismatch, long before monomorphization
+    // could look the name up (see EVIDENCE.md G-4 shape table).
+    const source =
+        \\struct Plain {
+        \\    x: i32,
+        \\}
+        \\struct Holder {
+        \\    f: Plain<i32>,
+        \\}
+        \\fn main() -> i32 {
+        \\    let h = Holder { f: Plain { x: 5 } };
+        \\    return h.f.x;
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const parser_mod = @import("parser.zig");
+    const type_checker_mod = @import("type_checker.zig");
+    var p = parser_mod.Parser.init(arena.allocator(), source);
+    const prog = try p.parseProgram();
+
+    var tc = type_checker_mod.TypeChecker.init(arena.allocator());
+    defer tc.deinit();
+    try std.testing.expectError(type_checker_mod.TypeError.TypeMismatch, tc.checkProgram(prog));
+}

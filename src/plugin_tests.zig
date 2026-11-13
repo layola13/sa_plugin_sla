@@ -10975,3 +10975,232 @@ test "sla conditional declarations fail loudly when the target variant is missin
     try stderr_fw.writer().flush();
     try std.testing.expect(std.mem.indexOf(u8, stderr_buf.items, "Target Declaration Error") != null);
 }
+
+test "diag evidence G-2: conflicting const declarations are rejected by the checker as Redeclaration" {
+    // Stage-order evidence: the SAB-side ConflictingConstDecl guards
+    // the decoded-module merge, but any source-level construction of
+    // two same-name consts with different values is rejected by the
+    // type checker's declaration pass as Redeclaration, long before
+    // SAB generation merges anything.
+    const source =
+        \\const VALUE: i64 = 1;
+        \\const VALUE: i64 = 2;
+        \\fn main() -> i32 {
+        \\    return 0;
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var p = parser_mod.Parser.init(arena.allocator(), source);
+    const prog = try p.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(arena.allocator());
+    defer tc.deinit();
+    try std.testing.expectError(type_checker_mod.TypeError.Redeclaration, tc.checkProgram(prog));
+}
+
+test "diag evidence G-3: indexing a cast result is rejected by the checker before SAB typing" {
+    // Stage-order evidence (probe shape 1 of the DIAG-CORPUS G-3
+    // attempts): the nearest source shapes that would leave an
+    // expression untyped for SAB generation are rejected by the type
+    // checker, so expr_types is total over every accepted program.
+    const source =
+        \\fn main() -> i32 {
+        \\    let x: i64 = 5;
+        \\    let y = (x as i32);
+        \\    return y[0];
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var p = parser_mod.Parser.init(arena.allocator(), source);
+    const prog = try p.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(arena.allocator());
+    defer tc.deinit();
+    try std.testing.expectError(type_checker_mod.TypeError.TypeMismatch, tc.checkProgram(prog));
+}
+
+test "diag evidence G-3: indexing a call result is rejected by the checker before SAB typing" {
+    // Stage-order evidence (probe shape 2 of the DIAG-CORPUS G-3
+    // attempts): same stage-order claim as the cast shape.
+    const source =
+        \\fn five() -> i32 {
+        \\    return 5;
+        \\}
+        \\fn main() -> i32 {
+        \\    return five()[0];
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var p = parser_mod.Parser.init(arena.allocator(), source);
+    const prog = try p.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(arena.allocator());
+    defer tc.deinit();
+    try std.testing.expectError(type_checker_mod.TypeError.TypeMismatch, tc.checkProgram(prog));
+}
+
+test "diag evidence G-6: impl of an undeclared trait is rejected by the checker as UndefinedVariable" {
+    // Stage-order evidence: an impl naming a trait that was never
+    // declared is rejected by the type checker, so SAB vtable
+    // emission (which looks the trait up in the checker's trait
+    // table) always finds it present for accepted programs.
+    const source =
+        \\struct Foo {
+        \\    a: i32
+        \\}
+        \\impl NoSuchTrait for Foo {
+        \\    fn m(&self) -> i32 { return self.a; }
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var p = parser_mod.Parser.init(arena.allocator(), source);
+    const prog = try p.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(arena.allocator());
+    defer tc.deinit();
+    try std.testing.expectError(type_checker_mod.TypeError.UndefinedVariable, tc.checkProgram(prog));
+}
+
+test "diag evidence G-2: dual imported conflicting consts are rejected by the checker as Redeclaration" {
+    // Stage-order evidence (import form, matching the DIAG-CORPUS
+    // witness): two imported modules declaring the same const with
+    // different values are merged by the frontend's import expansion
+    // and then rejected by the type checker as Redeclaration, before
+    // any SAB module merge could raise ConflictingConstDecl.
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+    try tdir.writeFile(.{ .sub_path = "const_a.sla", .data = "const VALUE: int = 1;\n" });
+    try tdir.writeFile(.{ .sub_path = "const_b.sla", .data = "const VALUE: int = 2;\n" });
+    const base_dir = try tdir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(base_dir);
+
+    const source =
+        \\@import "const_a.sla"
+        \\@import "const_b.sla"
+        \\fn main() -> i32 {
+        \\    return VALUE;
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const main_path = try std.fs.path.join(a, &.{ base_dir, "main.sla" });
+    var p = parser_mod.Parser.initWithDir(a, source, base_dir);
+    const prog = try p.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(a);
+    const expanded = try plugin_import_expand.expandSlaImports(a, prog, main_path, &primary_decls, .{});
+    var tc = type_checker_mod.TypeChecker.init(a);
+    defer tc.deinit();
+    try std.testing.expectError(type_checker_mod.TypeError.Redeclaration, tc.checkProgram(expanded));
+}
+
+test "diag evidence G-1: handler lowering failure surfaces as CodegenError" {
+    // Direct drive of the handler bridge's lowering wrap site
+    // (compileHandlerWithSupport): a channel send used as a let
+    // initializer parses and type-checks, but syntax lowering fails
+    // ("this channel operation produces no value..."), and the bridge
+    // wraps that failure as error.CodegenError.
+    const fields = [_]handler_bridge.HandlerStateField{
+        .{ .name = "count", .ty = .i64, .address = "state+Counter_count" },
+    };
+    try std.testing.expectError(error.CodegenError, handler_bridge.compileHandler(
+        std.testing.allocator,
+        "h",
+        \\@import "sa_std/task.sai"
+        \\fn h() {
+        \\    let ch: Chan<u64> = Chan::new(1);
+        \\    let x = ch.send(1);
+        \\    ch.destroy();
+        \\    render();
+        \\}
+    ,
+        fields[0..],
+        .{},
+    ));
+}
+
+test "diag evidence G-1: main frontend surfaces the same lowering failure unwrapped as LoweringFailed" {
+    // Stage/path-order evidence: through the standard stage sequence
+    // (parse -> desugar -> monomorphize -> check -> lower), the same
+    // channel-send let initializer fails with error.LoweringFailed
+    // from syntax_lowering itself. CodegenError exists only as the
+    // handler bridge's wrapping of this failure; no stage of the main
+    // frontend path produces it.
+    const defer_desugar = @import("defer_desugar.zig");
+    const syntax_lowering = @import("syntax_lowering.zig");
+    const source =
+        \\@import "sa_std/task.sai"
+        \\
+        \\fn main() -> i32 {
+        \\    let ch: Chan<u64> = Chan::new(1);
+        \\    let x = ch.send(1);
+        \\    ch.destroy();
+        \\    return 0;
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var p = parser_mod.Parser.init(a, source);
+    const prog = try p.parseProgram();
+    var desugarer = defer_desugar.Desugarer.init(a);
+    try desugarer.desugarProgram(prog);
+    var mono = monomorphizer_mod.Monomorphizer.init(a);
+    defer mono.deinit();
+    const specialized = try mono.monomorphize(prog, null, null);
+    var tc = type_checker_mod.TypeChecker.init(a);
+    defer tc.deinit();
+    try tc.checkProgram(specialized);
+    var lowerer = syntax_lowering.Lowerer.init(a, &tc);
+    try std.testing.expectError(error.LoweringFailed, lowerer.lowerProgram(specialized));
+}
+
+test "diag evidence G-1: handler output extraction failure raises InvalidHandlerOutput" {
+    // Direct drive of extractFunctionParts via compileHandler: the
+    // handler compiles cleanly, but the requested handler name is not
+    // among the generated functions, so extraction fails with
+    // CompileHandlerError.InvalidHandlerOutput.
+    const fields = [_]handler_bridge.HandlerStateField{
+        .{ .name = "count", .ty = .i64, .address = "state+Counter_count" },
+    };
+    try std.testing.expectError(error.InvalidHandlerOutput, handler_bridge.compileHandler(
+        std.testing.allocator,
+        "missing_handler",
+        "fn present() { count = count + 1; render(); }",
+        fields[0..],
+        .{},
+    ));
+}
+
+test "diag evidence G-1: unreadable sla import in a handler raises InvalidHandlerOutput" {
+    // Direct drive of the handler import expander: any read failure of
+    // an imported .sla file is mapped to InvalidHandlerOutput.
+    const fields = [_]handler_bridge.HandlerStateField{
+        .{ .name = "count", .ty = .i64, .address = "state+Counter_count" },
+    };
+    try std.testing.expectError(error.InvalidHandlerOutput, handler_bridge.compileHandler(
+        std.testing.allocator,
+        "inc",
+        \\@import "definitely_missing_diag_evidence.sla"
+        \\fn inc() { count = count + 1; render(); }
+    ,
+        fields[0..],
+        .{},
+    ));
+}
+
+test "diag evidence G-1: main frontend reports a missing import as FileNotFound, not InvalidHandlerOutput" {
+    // Stage/path-order evidence: the main frontend's import resolver
+    // surfaces a missing import as error.FileNotFound. The
+    // InvalidHandlerOutput wrap exists only inside the handler
+    // bridge's private import expander.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(
+        error.FileNotFound,
+        plugin_imports.resolveImportFile(arena.allocator(), ".", "definitely_missing_diag_evidence.sla"),
+    );
+}

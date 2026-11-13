@@ -26007,3 +26007,63 @@ test "sab std import module cache key covers content and target" {
     }
     try std.testing.expect(saw_probe);
 }
+
+test "diag evidence G-3: pattern value without a checked type raises MissingType" {
+    // Direct drive of enumDeclForPatternValue: the value node's type
+    // comes from the checker's expr_types map. With an empty map (the
+    // state SAB generation would be in for any node the checker never
+    // typed) the lookup returns Error.MissingType.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    const value = try allocator.create(ast.Node);
+    value.* = .{ .identifier = "some_value" };
+    const pattern = ast.EnumPattern{ .enum_name = "Option", .variant_name = "Some", .bindings = &.{"x"} };
+    try std.testing.expectError(Error.MissingType, cg.enumDeclForPatternValue(value, pattern));
+}
+
+test "diag evidence G-6: unknown std surface arg kind raises UnsupportedSabDirectFeature" {
+    // Direct drive of parseStdSurfaceArg: std surface rule argument
+    // kinds are a closed vocabulary authored by the registry /
+    // federation surface lists; an unknown kind is rejected with
+    // Error.UnsupportedSabDirectFeature.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    try std.testing.expectEqual(StdSurfaceArgKind.out, try Codegen.parseStdSurfaceArg("out"));
+    try std.testing.expectError(Error.UnsupportedSabDirectFeature, Codegen.parseStdSurfaceArg("bogus_kind"));
+}
+
+test "diag evidence G-6: vtable entries for an undeclared trait raise UnsupportedSabDirectFeature" {
+    // Direct drive of appendTraitVTableEntries: the trait declaration
+    // is looked up in the checker's trait table; an absent trait (the
+    // state reached only when checker validation was bypassed) returns
+    // Error.UnsupportedSabDirectFeature.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    var slots = std.array_list.Managed(const_decl.VTableSlot).init(allocator);
+    var literal = std.array_list.Managed(u8).init(allocator);
+    try std.testing.expectError(
+        Error.UnsupportedSabDirectFeature,
+        cg.appendTraitVTableEntries("NoSuchTrait", "SomeType", &slots, &literal),
+    );
+}

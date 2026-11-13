@@ -1,0 +1,46 @@
+// DEF-TEXT-STALE-HOME(-F): a `let` shadowing a live function parameter
+// must get a fresh alias register on the text backend. Before the fix the
+// codegen reused the param's register and the SA verifier rejected the
+// function with error[RegisterRedefinition] (trap 1006); for aggregates
+// the stale home cell would also have delivered the param's record.
+// SAB already handled all shapes; this regression pins the text backend
+// on BOTH the block path (check_param_shadow / check_prim_shadow) and
+// the tail-expression path (check_tail).
+struct Pair {
+    a: u64,
+    b: u64,
+}
+
+fn read_a(p: *Pair) -> u64 {
+    return p.a;
+}
+
+fn check_param_shadow(v: Pair) -> u64 {
+    let v: Pair = Pair { a: 3, b: 4 };
+    let r = read_a(&v);
+    if r != 3 { panic(301); };
+    return r;
+}
+
+fn check_prim_shadow(v: u64) -> u64 {
+    let v: u64 = 3;
+    if v != 3 { panic(302); };
+    return v;
+}
+
+fn check_tail(v: u64) -> u64 {
+    let v: u64 = 3;
+    v
+}
+
+@test "text param shadow aggregate"() {
+    if check_param_shadow(Pair { a: 1, b: 2 }) != 3 { panic(303); };
+}
+
+@test "text param shadow primitive"() {
+    if check_prim_shadow(1) != 3 { panic(304); };
+}
+
+@test "text stale home tail param shadow"() {
+    if check_tail(1) != 3 { panic(305); };
+}

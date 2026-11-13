@@ -9806,10 +9806,16 @@ pub const Codegen = struct {
         // 2. Compile body statements
         const tail_expr_return = !isVoidType(f.ret_ty) and f.body.len > 0 and f.body[f.body.len - 1].* == .expr_stmt and !blockTerminates(f.body);
         if (tail_expr_return) {
-            for (f.body[0 .. f.body.len - 1]) |stmt| {
-                try self.genStmt(stmt, &hoisted_allocs);
-                if (self.async_pending_return_emitted) break;
-            }
+            // DEF-TEXT-STALE-HOME-F: route the prefix through genBlock
+            // (with the alias logic) instead of genStmt, and keep the
+            // aliases it pushed alive until the tail expression, its
+            // cleanups and the `return` have been generated: the tail
+            // expression may reference a prefix `let`, and popping the
+            // alias at the prefix end would resolve it back to the
+            // shadowed parameter's register.
+            var kept_aliases = std.array_list.Managed([]const u8).init(self.allocator);
+            defer kept_aliases.deinit();
+            try self.genBlockKeepAliases(f.body[0 .. f.body.len - 1], &hoisted_allocs, &kept_aliases);
             if (!self.async_pending_return_emitted) {
                 const tail_expr = f.body[f.body.len - 1].expr_stmt;
                 var tail_reg = if (lowering_rules.isStringType(f.ret_ty) and tail_expr.* == .literal and tail_expr.literal == .string_val)
@@ -9827,6 +9833,14 @@ pub const Codegen = struct {
                     try self.emitVaEndIfVariadic();
                     self.outPrint("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
                 }
+            }
+            // Pop the prefix aliases now that the tail expression, its
+            // cleanups and the `return` have been generated; nothing
+            // after this point references a prefix `let`.
+            var kept_i = kept_aliases.items.len;
+            while (kept_i > 0) {
+                kept_i -= 1;
+                self.popBindingAlias(kept_aliases.items[kept_i]);
             }
         } else {
             try self.genBlock(f.body, &hoisted_allocs);
@@ -10192,6 +10206,20 @@ pub const Codegen = struct {
     }
 
     fn genBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
+        try self.genBlockInner(block, hoisted_allocs, null);
+    }
+
+    // DEF-TEXT-STALE-HOME-F: genBlock variant that keeps the aliases it
+    // pushed alive past the block end: the caller receives the pushed
+    // source names in `kept_aliases` and must pop them (reverse order)
+    // once the code that still references them has been generated. Used
+    // by the tail-expression path in genFuncDeclNamed, where the tail
+    // expression may reference a prefix `let`.
+    fn genBlockKeepAliases(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8), kept_aliases: *std.array_list.Managed([]const u8)) CodegenError!void {
+        try self.genBlockInner(block, hoisted_allocs, kept_aliases);
+    }
+
+    fn genBlockInner(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8), kept_aliases: ?*std.array_list.Managed([]const u8)) CodegenError!void {
         self.enterBlockForLoopLocalTracking();
         defer self.leaveBlockForLoopLocalTracking();
 
@@ -10204,11 +10232,14 @@ pub const Codegen = struct {
         }
 
         var scoped_aliases = std.array_list.Managed([]const u8).init(self.allocator);
+        var aliases_kept = false;
         defer {
-            var i = scoped_aliases.items.len;
-            while (i > 0) {
-                i -= 1;
-                self.popBindingAlias(scoped_aliases.items[i]);
+            if (!aliases_kept) {
+                var i = scoped_aliases.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    self.popBindingAlias(scoped_aliases.items[i]);
+                }
             }
             scoped_aliases.deinit();
         }
@@ -10218,7 +10249,15 @@ pub const Codegen = struct {
             if (stmt.* == .let_stmt and !isDiscardName(stmt.let_stmt.name)) {
                 const source_name = stmt.let_stmt.name;
                 const resolved_name = self.resolveBindingName(source_name);
-                if (self.repeated_let_bindings.contains(source_name) or self.stack_alloc_bindings.contains(resolved_name)) {
+                // DEF-TEXT-STALE-HOME: a `let` shadowing a live parameter
+                // (or any pre-existing binding) must get a fresh alias
+                // register. Without it the let reuses the param's register
+                // and the SA verifier rejects the function with
+                // error[RegisterRedefinition]; for aggregates the stale
+                // home cell would also deliver the param's record.
+                // local_binding_types holds the params (recorded in the
+                // prologue) plus every let generated so far in this fn.
+                if (self.repeated_let_bindings.contains(source_name) or self.stack_alloc_bindings.contains(resolved_name) or self.local_binding_types.contains(resolved_name)) {
                     const alias = try self.pushBindingAlias(source_name);
                     try scoped_aliases.append(source_name);
                     if (self.addressable_bindings.contains(source_name)) {
@@ -10241,6 +10280,11 @@ pub const Codegen = struct {
                 try self.genStmt(stmt, hoisted_allocs);
             }
             if (self.async_pending_return_emitted) break;
+        }
+
+        if (kept_aliases) |out| {
+            out.appendSlice(scoped_aliases.items) catch return CodegenError.OutOfMemory;
+            aliases_kept = true;
         }
     }
 

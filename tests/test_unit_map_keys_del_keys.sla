@@ -1,0 +1,90 @@
+@import "sa_std/hashmap.sa"
+@import "sa_std/hashset.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// Regression (DEF-E1-KEYS-DEL-KEYS): a MAP_KEYS / SET_KEYS result
+// is typed Vec<String> (DEF-PROBE-A) -- an owned Vec whose
+// scope-exit drop frees every element -- but @sa_map_keys_vec
+// filled it with BORROWED pointers to the collection's stored key
+// objects. Two live results over one collection therefore freed
+// the same key objects twice (signal 11 / free(): invalid pointer
+// on both backends), and one result silently freed the keys of a
+// collection that outlived it. The original probe form
+// interleaved a MAP_DEL between the two MAP_KEYS calls; the
+// delete is not required -- two live results suffice. The bridge
+// corpus avoided the shape (one macro-result binding per test),
+// so it stayed green while this form crashed. The fix clones
+// each borrowed element into the fresh result at the call site
+// (clone-on-extract), giving the result sole ownership of its
+// elements. Word keys keep the zero-cost path (control test).
+//
+// Scope note: assertions use len() and literal-key lookups only.
+// String element content via indexing belongs to the DEF-IDX
+// corpus (test_unit_map_keys_index.sla), not this file.
+
+@test "keys del keys original form"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    MAP_PUT(m, "c", 3);
+    let ks = MAP_KEYS(m);
+    if len(ks) != 3 { panic(84501); };
+    let old = MAP_DEL(m, "a");
+    if old != 1 { panic(84502); };
+    let ks2 = MAP_KEYS(m);
+    if len(ks2) != 2 { panic(84503); };
+    if m.get("a").is_some() { panic(84504); };
+    if m.get("c").copied().unwrap_or(0) != 3 { panic(84505); };
+}
+
+@test "keys two live results no del"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    MAP_PUT(m, "c", 3);
+    let ks = MAP_KEYS(m);
+    if len(ks) != 3 { panic(84511); };
+    let ks2 = MAP_KEYS(m);
+    if len(ks2) != 3 { panic(84512); };
+    if len(ks) != 3 { panic(84513); };
+}
+
+@test "keys two live results annotated map"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    let k1: String = format("aa");
+    m.insert(k1, 1);
+    let k2: String = format("bb");
+    m.insert(k2, 2);
+    let ks = MAP_KEYS(m);
+    if len(ks) != 2 { panic(84521); };
+    let ks2 = MAP_KEYS(m);
+    if len(ks2) != 2 { panic(84522); };
+    if len(ks) != 2 { panic(84523); };
+}
+
+@test "set keys two live results"() {
+    let s: HashSet<String> = HashSet::new();
+    let p: String = format("p");
+    s.insert(p);
+    let q: String = format("q");
+    s.insert(q);
+    let ks = SET_KEYS(s);
+    if len(ks) != 2 { panic(84531); };
+    let ks2 = SET_KEYS(s);
+    if len(ks2) != 2 { panic(84532); };
+    if len(ks) != 2 { panic(84533); };
+}
+
+@test "keys two live results int map control"() {
+    let m = HashMap::new();
+    m.insert(5, 100);
+    m.insert(9, 200);
+    let ks = MAP_KEYS(m);
+    if len(ks) != 2 { panic(84541); };
+    let old = MAP_DEL(m, 5);
+    if old != 100 { panic(84542); };
+    let ks2 = MAP_KEYS(m);
+    if len(ks2) != 1 { panic(84543); };
+    if ks2[0] != 9 { panic(84544); };
+}

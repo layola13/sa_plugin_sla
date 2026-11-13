@@ -19847,6 +19847,22 @@ pub const Codegen = struct {
         return sentinel;
     }
 
+    /// DEF-E1-KEYS-DEL-KEYS (SA-text parity): element type of a
+    /// keys-snapshot macro result (MAP_KEYS / SET_KEYS), derived
+    /// from the receiver type exactly as the checker derives the
+    /// result `Vec<Elem>` typing (DEF-PROBE-A). Null for MAP_VALUES:
+    /// its elements are value cells, not key handles.
+    fn importedMacroKeysResultElemType(self: *Codegen, call: ast.CallExpr, source: lowering_rules.ImportedMacroVecResultSource) ?*const ast.Type {
+        if (call.args.len == 0) return null;
+        const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const peeled = lowering_rules.peelBorrowPointerType(recv_ty);
+        return switch (source) {
+            .map_key => if (lowering_rules.hashMapTypes(peeled)) |mt| mt.key else null,
+            .set_element => lowering_rules.hashSetElementType(peeled),
+            .map_value => null,
+        };
+    }
+
     fn genImportedMacroCall(self: *Codegen, call: ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, ctx: ?*MacroExpansionContext, result_ty: ?*const ast.Type) anyerror!u32 {
         if (try self.genMapMacroBridgeCall(call, plan, ctx, result_ty)) |reg| return reg;
         const import_path = plan.import_path orelse return Error.UnsupportedSabDirectFeature;
@@ -20003,6 +20019,30 @@ pub const Codegen = struct {
                 try self.emitForgetMovedValue(value);
             } else {
                 try self.emitRelease(value);
+            }
+        }
+        // DEF-E1-KEYS-DEL-KEYS (SA-text parity): @sa_map_keys_vec
+        // fills the result Vec with BORROWED pointers to the map's
+        // stored key objects, but DEF-PROBE-A types the result
+        // Vec<Key> -- an owned Vec whose scope-exit deep drop frees
+        // every element. Two live results over one map therefore
+        // free the same key objects twice (signal 11 / free():
+        // invalid pointer), and a single result silently frees the
+        // keys of a map that outlives it. Give the fresh result sole
+        // ownership of its elements: replace each borrowed element
+        // with a deep clone (clone-on-extract, REG3-DEF-2). Word
+        // keys need no clone (deepCloneNeeded gate) and keep the
+        // zero-cost path. SET_KEYS shares the producer through the
+        // MAP_KEYS expansion and is covered via .set_element.
+        if (dst) |reg| {
+            if (lowering_rules.importedMacroVecResultSource(plan.macro_name)) |source| {
+                if (source != .map_value) {
+                    if (self.importedMacroKeysResultElemType(call, source)) |elem_ty| {
+                        if (self.deepCloneNeeded(elem_ty, 0)) {
+                            try self.genReplaceBufferElementsWithClones(reg, elem_ty, lowering_rules.VecAbi.ptr_offset, lowering_rules.VecAbi.len_offset);
+                        }
+                    }
+                }
             }
         }
         // W1-DEF-SAB-PTRBYTEADD-MOVE: with a borrow-derived pointer

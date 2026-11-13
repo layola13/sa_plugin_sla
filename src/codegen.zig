@@ -13845,6 +13845,22 @@ pub const Codegen = struct {
         }
     }
 
+    /// DEF-E1-KEYS-DEL-KEYS: element type of a keys-snapshot macro
+    /// result (MAP_KEYS / SET_KEYS), derived from the receiver type
+    /// exactly as the checker derives the result `Vec<Elem>` typing
+    /// (DEF-PROBE-A). Null for MAP_VALUES: its elements are value
+    /// cells, not key handles, and stay with the values-side defect.
+    fn importedMacroKeysResultElemType(self: *Codegen, call: *const ast.CallExpr, source: lowering_rules.ImportedMacroVecResultSource) ?*const ast.Type {
+        if (call.args.len == 0) return null;
+        const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const peeled = lowering_rules.peelBorrowPointerType(recv_ty);
+        return switch (source) {
+            .map_key => if (lowering_rules.hashMapTypes(peeled)) |mt| mt.key else null,
+            .set_element => lowering_rules.hashSetElementType(peeled),
+            .map_value => null,
+        };
+    }
+
     fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (try self.genPlainTimeMacroCall(call, plan, hoisted_allocs)) |reg| return reg;
         const bridge = try self.mapMacroBridge(call, plan);
@@ -13969,6 +13985,37 @@ pub const Codegen = struct {
                 }
             }
             self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
+        }
+
+        // DEF-E1-KEYS-DEL-KEYS: @sa_map_keys_vec fills the result Vec
+        // with BORROWED pointers to the map's stored key objects, but
+        // DEF-PROBE-A types the result Vec<Key> -- an owned Vec whose
+        // scope-exit deep drop frees every element. Two live results
+        // over one map therefore free the same key objects twice
+        // (signal 11 / free(): invalid pointer), and a single result
+        // silently frees the keys of a map that outlives it. Give the
+        // fresh result sole ownership of its elements: replace each
+        // borrowed element with a deep clone, the clone-on-extract
+        // discipline already used for macro writebacks (REG3-DEF-2).
+        // Word keys need no clone (deepCloneNeeded gate) and keep
+        // the zero-cost path. SET_KEYS shares the producer through
+        // the MAP_KEYS expansion and is covered via .set_element.
+        if (bridge == null and plan.expression_output) {
+            if (lowering_rules.importedMacroVecResultSource(plan.macro_name)) |source| {
+                if (source != .map_value) {
+                    if (self.importedMacroKeysResultElemType(call, source)) |elem_ty| {
+                        if (self.deepCloneNeeded(elem_ty, 0)) {
+                            const data_reg = try self.newTmp();
+                            self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, reg }) catch return CodegenError.CodegenError;
+                            const len_reg = try self.newTmp();
+                            self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, reg }) catch return CodegenError.CodegenError;
+                            try self.genReplaceBufferElementsWithClones(data_reg, len_reg, elem_ty);
+                            try self.emitRelease(data_reg);
+                            try self.emitRelease(len_reg);
+                        }
+                    }
+                }
+            }
         }
 
         // Leading output args whose binding lives in a stack slot were

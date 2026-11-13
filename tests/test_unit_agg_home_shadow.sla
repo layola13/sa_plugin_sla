@@ -1,0 +1,107 @@
+@import "sa_std/vec.sa"
+
+// DEF-UNKNOWNREGISTER regression: same aggregate name bound in two
+// sibling/nested scopes within one function. Each binding gets its own
+// home cell (one per binding, keyed on the body register); pre-fix the
+// SAB backend shared one `{name}__agg_home` cell across bindings, so
+// the later binding's home store had no dominating stack_alloc and the
+// verifier trapped UnknownRegister (while/nested shapes) or the program
+// segfaulted at runtime when the first branch was skipped (sibling
+// shapes). Plain structs only: Vec/String/etc. are excluded from
+// aggregate homes by name.
+struct Pair {
+    a: u64,
+    b: u64,
+}
+
+// Shape 1: sibling ifs (redis `v` shape). Pre-fix: SIGSEGV on
+// check_sibling(false) — the shared cell is never allocated when the
+// first branch is skipped.
+fn check_sibling(flag: bool) -> u64 {
+    if flag == true {
+        let v: Pair = Pair { a: 1, b: 2 };
+        if v.a != 1 { panic(1); };
+    };
+    if flag == false {
+        let v: Pair = Pair { a: 3, b: 4 };
+        if v.a != 3 { panic(2); };
+    };
+    return 0;
+}
+
+@test "agg home sibling scope shadowing"() {
+    if check_sibling(false) != 0 { panic(3); };
+    if check_sibling(true) != 0 { panic(4); };
+}
+
+// Shape 2: while body then a later if (vec `chord_note` shape).
+// Pre-fix: error[UnknownRegister] naming v__agg_home.
+fn check_while(flag: bool) -> u64 {
+    let i: i64 = 0;
+    let total: u64 = 0;
+    while i < 1 {
+        let v: Pair = Pair { a: 1, b: 2 };
+        if v.a != 1 { panic(11); };
+        total = total + v.a;
+        i = i + 1;
+    }
+    if flag == false {
+        let v: Pair = Pair { a: 3, b: 4 };
+        if v.a != 3 { panic(12); };
+        total = total + v.a;
+    };
+    return total;
+}
+
+@test "agg home while body then later if"() {
+    if check_while(false) != 4 { panic(13); };
+    if check_while(true) != 1 { panic(14); };
+}
+
+// Shape 3: nested sibling ifs (redis tb==116/tb==102 shape).
+// Pre-fix: SIGSEGV on nested(35, false).
+fn check_nested(code: u64, flag: bool) -> u64 {
+    if code == 35 {
+        if flag == true {
+            let v: Pair = Pair { a: 5, b: 0 };
+            if v.a != 5 { panic(21); };
+            return v.a;
+        };
+        if flag == false {
+            let v: Pair = Pair { a: 7, b: 0 };
+            if v.a != 7 { panic(22); };
+            return v.a;
+        };
+    };
+    return 0;
+}
+
+@test "agg home nested sibling branches"() {
+    if check_nested(35, true) != 5 { panic(23); };
+    if check_nested(35, false) != 7 { panic(24); };
+    if check_nested(0, true) != 0 { panic(25); };
+}
+
+// Shape 4: Vec element struct bound in a while body and again in a
+// later if (vec `chord_note = ir.notes[i]` shape, reduced).
+fn vec_pick(notes: Vec<Pair>, flag: bool) -> u64 {
+    let j: i64 = 0;
+    let total: u64 = 0;
+    while j < 1 {
+        let note = notes[j];
+        total = total + note.a;
+        j = j + 1;
+    }
+    if flag == false {
+        let note = notes[0];
+        total = total + note.a;
+    };
+    return total;
+}
+
+@test "agg home vec element shadowed across loop and if"() {
+    let notes: Vec<Pair> = Vec::new();
+    notes.push(Pair { a: 10, b: 0 });
+    if vec_pick(notes, false) != 20 { panic(31); };
+    if vec_pick(notes, true) != 10 { panic(32); };
+}

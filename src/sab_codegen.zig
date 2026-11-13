@@ -2674,7 +2674,19 @@ pub const Codegen = struct {
     // pointer identity (ptr_typed_eq). Bindings that already own a
     // stack local (entry slots) keep theirs.
     fn emitAggregateHome(self: *Codegen, name: []const u8, body_reg: u32) anyerror!void {
-        const home_name = try std.fmt.allocPrint(self.allocator, "{s}__agg_home", .{name});
+        // DEF-UNKNOWNREGISTER: one home cell per binding, not one per
+        // name. Register identity is name-keyed and function-global, so
+        // a shared `{name}__agg_home` cell got a single stack_alloc in
+        // the first binding's block while every later same-named binding
+        // still stored into it; a later store reached via a label
+        // snapshot that predates the first stack_alloc (while body,
+        // sibling branches) then traps UnknownRegister in the verifier
+        // -- and at runtime the cell may never have been allocated at all
+        // (SIGSEGV when the first branch is skipped). Keying the cell on
+        // the binding's body register (fresh per `let` for multi-bound
+        // names, and the map guard already skips re-emission for a
+        // shared reg) gives each binding its own dominating declaration.
+        const home_name = try std.fmt.allocPrint(self.allocator, "{s}__agg_home_{d}", .{ name, body_reg });
         const home = try self.intern(home_name);
         try self.emitStackAlloc(home, 8);
         try self.emitStore(home, 0, body_reg, .ptr);

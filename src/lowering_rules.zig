@@ -3224,6 +3224,26 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
     return null;
 }
 
+/// Which element of the single collection argument an imported macro's
+/// expression result collects into a fresh `Vec`. The fixed result-kind
+/// table (`importedMacroExpressionResultKind`) cannot express
+/// `Vec<Elem>` because the element type is only known from the call's
+/// argument; the checker derives it through this source tag instead
+/// (DEF-PROBE-A: MAP_KEYS/MAP_VALUES/SET_KEYS results used to fall to
+/// `.infer`, leaving every consumer of the produced Vec untyped).
+pub const ImportedMacroVecResultSource = enum {
+    map_key,
+    map_value,
+    set_element,
+};
+
+pub fn importedMacroVecResultSource(macro_name: []const u8) ?ImportedMacroVecResultSource {
+    if (std.mem.eql(u8, macro_name, "MAP_KEYS")) return .map_key;
+    if (std.mem.eql(u8, macro_name, "MAP_VALUES")) return .map_value;
+    if (std.mem.eql(u8, macro_name, "SET_KEYS")) return .set_element;
+    return null;
+}
+
 pub fn planImportedMacroCall(tc: *type_checker.TypeChecker, call: ast.CallExpr) ?ImportedMacroCallPlan {
     if (call.associated_target != null) return null;
     const macro = tc.imported_macros.get(call.func_name) orelse return null;

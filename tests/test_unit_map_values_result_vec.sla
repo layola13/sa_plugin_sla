@@ -1,0 +1,39 @@
+@import "sa_std/vec.sa"
+@import "sa_std/hashmap.sa"
+@import "sa_std/core/option.sa"
+
+// Regression (DEF-PROBE-A): MAP_VALUES expression result typing.
+// See test_unit_map_keys_result_vec.sla for the root cause: the
+// result degraded to `.infer`, so `len(vs)` trapped on SAB with
+// UnknownRegister pre-fix. Indexing the produced Vec is covered by
+// test_unit_map_keys_index.sla; asserting the VALUES' content is
+// deliberately not done here -- @sa_map_values_vec in sa_std
+// returns wrong element content on both backends (len is right),
+// a separate sa_std defect tracked outside this regression.
+
+@test "map values result len free fn"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let vs = MAP_VALUES(m);
+    if len(vs) != 2 { panic(40102); };
+}
+
+@test "map values result len method"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let vs = MAP_VALUES(m);
+    if vs.len() != 2 { panic(40708); };
+}
+
+@test "map values result index read"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let vs = MAP_VALUES(m);
+    let v0 = vs[0];
+    let v1 = vs[1];
+    if len(vs) != 2 { panic(40721); };
+    if v0 + v1 == 424242 { panic(40722); };
+}

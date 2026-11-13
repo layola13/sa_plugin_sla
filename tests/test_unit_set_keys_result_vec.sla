@@ -1,0 +1,24 @@
+@import "sa_std/vec.sa"
+@import "sa_std/hashset.sa"
+@import "sa_std/core/option.sa"
+
+// Regression (DEF-PROBE-A): SET_KEYS expression result typing.
+// SET_KEYS expands through MAP_KEYS over the set's backing map; its
+// result hit the same `.infer` hole, so `len(ks)` trapped on SAB
+// with UnknownRegister pre-fix.
+
+@test "set keys result len free fn"() {
+    let s = HashSet::new();
+    s.insert(5);
+    s.insert(9);
+    let ks = SET_KEYS(s);
+    if len(ks) != 2 { panic(40201); };
+}
+
+@test "set keys result len method"() {
+    let s = HashSet::new();
+    s.insert(5);
+    s.insert(9);
+    let ks = SET_KEYS(s);
+    if ks.len() != 2 { panic(40729); };
+}

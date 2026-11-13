@@ -1,0 +1,42 @@
+@import "sa_std/vec.sa"
+@import "sa_std/hashmap.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// Regression (DEF-PROBE-A, index layer): indexing a Vec produced by
+// MAP_KEYS / MAP_VALUES. Pre-fix the index target carried `.infer`,
+// so the text backend died with CodegenError and the SAB backend
+// with UnsupportedSabDirectFeature. A plain Vec<String> index was
+// always fine (control shape, covered by existing corpus).
+//
+// Scope note: this file asserts index EXECUTION and, for Copy
+// (i64) elements, element CONTENT. It deliberately does not assert
+// `len(ks[0])` for String elements: that shape is blocked by two
+// separately registered defects outside this fix -- (1) with
+// string-literal keys the checker binds K to raw_ptr, so the
+// element is typed as a C string pointer and `len` lowers to the
+// CSTR_LEN path; (2) with properly typed owned String elements,
+// SAB index extraction double-frees the element buffer at drop.
+// The registry probe for MAP_KEYS[index] carries that shape and
+// stays fail until those land (see the PROBE-A line RESULT).
+
+@test "map keys result index execution"() {
+    let m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let ks = MAP_KEYS(m);
+    let k0 = ks[0];
+    let k1 = ks[1];
+    if len(ks) != 2 { panic(40109); };
+}
+
+@test "map keys result index i64 content"() {
+    let m = HashMap::new();
+    m.insert(5, 100);
+    m.insert(9, 200);
+    let ks = MAP_KEYS(m);
+    let k0 = ks[0];
+    let k1 = ks[1];
+    if k0 + k1 != 14 { panic(40731); };
+    if k0 == k1 { panic(40732); };
+}

@@ -10623,8 +10623,10 @@ pub const TypeChecker = struct {
                     // capability is unknown, so identical-place overlaps
                     // are rejected.
                     try self.checkCallArgPlaceOverlaps(null, call.args, scope, call.func_name, null, macro.borrowed_arg_mask | macro.address_slot_arg_mask);
-                    for (call.args) |arg| {
-                        _ = try self.checkExpr(arg, scope);
+                    var first_arg_ty: ?*ast.Type = null;
+                    for (call.args, 0..) |arg, arg_index| {
+                        const arg_ty = try self.checkExpr(arg, scope);
+                        if (arg_index == 0) first_arg_ty = arg_ty;
                     }
                     if (call.args.len == macro.arity) {
                         const ret = try self.allocator.create(ast.Type);
@@ -10634,6 +10636,24 @@ pub const TypeChecker = struct {
                     if (lowering_rules.importedMacroUsesExpressionOutput(macro, call.args.len)) {
                         if (lowering_rules.importedMacroExpressionResultKind(call.func_name)) |kind| {
                             return try self.makeImportedMacroExpressionResultType(kind);
+                        }
+                        // Vec-producing collection macros (MAP_KEYS and
+                        // kin): the result element type comes from the
+                        // collection argument, which the fixed kind
+                        // table cannot express. Derive `Vec<Elem>`
+                        // instead of degrading the result to `.infer`
+                        // (DEF-PROBE-A: every consumer of the produced
+                        // Vec -- len, index, drops -- was left untyped).
+                        if (lowering_rules.importedMacroVecResultSource(call.func_name)) |source| {
+                            if (first_arg_ty) |arg_ty| {
+                                const peeled = lowering_rules.peelBorrowPointerType(arg_ty);
+                                const elem_ty: ?*ast.Type = switch (source) {
+                                    .map_key => if (lowering_rules.hashMapTypes(peeled)) |mt| mt.key else null,
+                                    .map_value => if (lowering_rules.hashMapTypes(peeled)) |mt| mt.value else null,
+                                    .set_element => lowering_rules.hashSetElementType(peeled),
+                                };
+                                if (elem_ty) |elem| return try self.makeVecType(elem);
+                            }
                         }
                         return try self.makeInferType();
                     }

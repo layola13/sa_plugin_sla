@@ -607,9 +607,7 @@ pub fn runSlaCommandImpl(
             return 0;
         }
 
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
+        const allocator = std.heap.smp_allocator;
 
         const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
         const extra_args = args[options.passthrough_start..];

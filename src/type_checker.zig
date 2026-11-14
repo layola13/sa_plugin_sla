@@ -8042,6 +8042,196 @@ pub const TypeChecker = struct {
         return self.expr_types.get(last.expr_stmt);
     }
 
+
+    /// DEF-ADDSEG (checker site): result type of a binary node from
+    /// its operand types -- the post-operand half of checkExprImpl's
+    /// binary arm, extracted verbatim so checkBinaryChain can fold
+    /// left-leaning chains iteratively. `bin` points at the node's
+    /// payload in the AST, so the resolved_call_symbols key formed
+    /// from it is the same node-payload address the arm's @ptrCast
+    /// formed from its pattern capture.
+    fn binaryExprResultType(
+        self: *TypeChecker,
+        bin: *const ast.BinaryExpr,
+        l_ty: *ast.Type,
+        r_ty: *ast.Type,
+    ) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        switch (bin.op) {
+            .add, .sub, .mul, .div, .mod => {
+                if (try self.overloadSymbol(bin.op, l_ty, r_ty)) |symbol| {
+                    const call_symbol = try self.allocator.dupe(u8, symbol);
+                    try self.resolved_call_symbols.put(@as(*const ast.Node, @ptrCast(bin)), call_symbol);
+                    const ret = self.funcs.get(symbol) orelse return TypeError.UndefinedVariable;
+                    ty.* = ret.ret_ty.*;
+                    return ty;
+                }
+                if (self.structDeclForType(l_ty)) |left_struct| {
+                    if (self.structDeclForType(r_ty)) |right_struct| {
+                        if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
+                        if ((bin.op == .add or bin.op == .sub) and structFieldsAllNumeric(left_struct) and left_struct == right_struct) {
+                            ty.* = l_ty.*;
+                            return ty;
+                        }
+                    } else if (bin.op == .mul and isNumericType(r_ty) and structFieldsAllNumeric(left_struct)) {
+                        ty.* = l_ty.*;
+                        return ty;
+                    }
+                } else if (self.structDeclForType(r_ty)) |right_struct| {
+                    if (bin.op == .sub and literalZero(bin.left) and structFieldsAllNumeric(right_struct)) {
+                        ty.* = r_ty.*;
+                        return ty;
+                    }
+                    if (bin.op == .mul and isNumericType(l_ty) and structFieldsAllNumeric(right_struct)) {
+                        ty.* = r_ty.*;
+                        return ty;
+                    }
+                }
+                if (bin.op == .sub and literalZero(bin.left) and isNumericType(r_ty)) {
+                    ty.* = r_ty.*;
+                    return ty;
+                }
+                if (!self.typesEqual(l_ty, r_ty)) {
+                    self.setError("binary expression type mismatch: op={s}, left tag={s}, right tag={s}", .{ @tagName(bin.op), @tagName(l_ty.*), @tagName(r_ty.*) });
+                    return TypeError.TypeMismatch;
+                }
+                if (l_ty.* == .infer) {
+                    ty.* = l_ty.*;
+                    return ty;
+                }
+                if (!isNumericType(l_ty)) {
+                    self.setError("binary expression requires numeric operands: op={s}, operand tag={s}", .{ @tagName(bin.op), @tagName(l_ty.*) });
+                    return TypeError.TypeMismatch;
+                }
+                ty.* = l_ty.*;
+            },
+            .bit_and, .bit_or, .bit_xor => {
+                if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
+                if (l_ty.* == .infer) {
+                    ty.* = l_ty.*;
+                    return ty;
+                }
+                if (!isAnyIntegerType(l_ty)) return TypeError.TypeMismatch;
+                ty.* = l_ty.*;
+            },
+            .shl, .shr => {
+                if (l_ty.* == .infer) {
+                    if (!isAnyIntegerType(r_ty) and r_ty.* != .infer) return TypeError.TypeMismatch;
+                    ty.* = l_ty.*;
+                    return ty;
+                }
+                if (!isAnyIntegerType(l_ty)) return TypeError.TypeMismatch;
+                if (r_ty.* != .infer and !isAnyIntegerType(r_ty)) return TypeError.TypeMismatch;
+                ty.* = l_ty.*;
+            },
+            .spaceship => {
+                if (try self.overloadSymbol(bin.op, l_ty, r_ty)) |symbol| {
+                    const call_symbol = try self.allocator.dupe(u8, symbol);
+                    try self.resolved_call_symbols.put(@as(*const ast.Node, @ptrCast(bin)), call_symbol);
+                    const ret = self.funcs.get(symbol) orelse return TypeError.UndefinedVariable;
+                    ty.* = ret.ret_ty.*;
+                    return ty;
+                }
+                if (self.structDeclForType(l_ty)) |left_struct| {
+                    if (self.structDeclForType(r_ty)) |right_struct| {
+                        if (!self.typesEqual(l_ty, r_ty) or left_struct != right_struct) return TypeError.TypeMismatch;
+                        if (!self.typeIsOrd(l_ty)) return TypeError.TypeMismatch;
+                        return try self.makeOrderingType();
+                    }
+                }
+                if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
+                if (!isNumericType(l_ty)) return TypeError.TypeMismatch;
+                return try self.makeOrderingType();
+            },
+            .eq, .ne, .lt, .le, .gt, .ge => {
+                // Pointer-like operands compare by identity, never by
+                // pointee value. structDeclForType unwraps pointers, so
+                // without this fast path `*S == *S` (and the FFI staple
+                // `handle == ptr::null::<S>()`) is misrouted into the
+                // struct-value comparison below and rejected, because
+                // typeIsEq of a pointer type is always false. Only
+                // eq/ne are identity comparisons; relational ops keep
+                // the existing dispatch.
+                if ((bin.op == .eq or bin.op == .ne) and (l_ty.* == .pointer or l_ty.* == .borrow) and (r_ty.* == .pointer or r_ty.* == .borrow)) {
+                    if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
+                    ty.* = .{ .primitive = .boolean };
+                    return ty;
+                }
+                if (self.structDeclForType(l_ty)) |left_struct| {
+                    if (self.structDeclForType(r_ty)) |right_struct| {
+                        if (!self.typesEqual(l_ty, r_ty) or left_struct != right_struct) return TypeError.TypeMismatch;
+                        const supported = switch (bin.op) {
+                            .eq, .ne => self.typeIsEq(l_ty),
+                            .lt, .le, .gt, .ge => self.typeIsOrd(l_ty),
+                            else => false,
+                        };
+                        if (!supported) return TypeError.TypeMismatch;
+                        ty.* = .{ .primitive = .boolean };
+                        return ty;
+                    }
+                }
+                if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
+                ty.* = .{ .primitive = .boolean };
+            },
+            .logical_and, .logical_or => {
+                if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
+                if (l_ty.* == .infer) {
+                    ty.* = .{ .primitive = .boolean };
+                    return ty;
+                }
+                if (!isPrimitiveType(l_ty, .boolean)) return TypeError.TypeMismatch;
+                ty.* = .{ .primitive = .boolean };
+            },
+        }
+        return ty;
+    }
+
+    /// DEF-ADDSEG (checker site): checkExprImpl's binary arm used
+    /// to recurse into bin.left, so a left-leaning chain of N
+    /// operators recursed N checkExpr frames deep and overflowed
+    /// the compiler stack (the type checker survived the 1000-term
+    /// chain that killed SA codegen, but the same shape aborts at
+    /// ~2000 terms). The chain is now folded iteratively: descend
+    /// the left spine, check the deepest left operand, then for
+    /// each spine node check its right operand and fold the result
+    /// type upward, recording each node's type in expr_types
+    /// exactly as its checkExpr wrapper would have.
+    fn checkBinaryChain(
+        self: *TypeChecker,
+        root_bin: *const ast.BinaryExpr,
+        root_expr: *ast.Node,
+        scope: *Scope,
+    ) TypeError!*ast.Type {
+        const SpineNode = struct {
+            bin: *const ast.BinaryExpr,
+            expr: *ast.Node,
+        };
+        var spine = std.array_list.Managed(SpineNode).init(self.allocator);
+        defer spine.deinit();
+        spine.append(.{ .bin = root_bin, .expr = root_expr }) catch return TypeError.OutOfMemory;
+        var cur = root_bin.left;
+        while (cur.* == .binary_expr) {
+            spine.append(.{ .bin = &cur.binary_expr, .expr = cur }) catch return TypeError.OutOfMemory;
+            cur = cur.binary_expr.left;
+        }
+        var l_ty = try self.checkExpr(cur, scope);
+        var i = spine.items.len;
+        while (i > 0) {
+            i -= 1;
+            const node = spine.items[i];
+            const r_ty = try self.checkExpr(node.bin.right, scope);
+            const ty = self.binaryExprResultType(node.bin, l_ty, r_ty) catch |err| {
+                if (self.last_error.len == 0) {
+                    self.setError("checkExpr failed at node tag {s}", .{@tagName(node.expr.*)});
+                }
+                return err;
+            };
+            self.expr_types.put(node.expr, ty) catch return TypeError.OutOfMemory;
+            l_ty = ty;
+        }
+        return l_ty;
+    }
+
     fn checkExprImpl(self: *TypeChecker, expr: *ast.Node, scope: *Scope) TypeError!*ast.Type {
         switch (expr.*) {
             .literal => |lit| {
@@ -8138,136 +8328,7 @@ pub const TypeChecker = struct {
                 return TypeError.CompileError;
             },
             .binary_expr => |bin| {
-                const l_ty = try self.checkExpr(bin.left, scope);
-                const r_ty = try self.checkExpr(bin.right, scope);
-                const ty = try self.allocator.create(ast.Type);
-                switch (bin.op) {
-                    .add, .sub, .mul, .div, .mod => {
-                        if (try self.overloadSymbol(bin.op, l_ty, r_ty)) |symbol| {
-                            const call_symbol = try self.allocator.dupe(u8, symbol);
-                            try self.resolved_call_symbols.put(@as(*const ast.Node, @ptrCast(&bin)), call_symbol);
-                            const ret = self.funcs.get(symbol) orelse return TypeError.UndefinedVariable;
-                            ty.* = ret.ret_ty.*;
-                            return ty;
-                        }
-                        if (self.structDeclForType(l_ty)) |left_struct| {
-                            if (self.structDeclForType(r_ty)) |right_struct| {
-                                if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
-                                if ((bin.op == .add or bin.op == .sub) and structFieldsAllNumeric(left_struct) and left_struct == right_struct) {
-                                    ty.* = l_ty.*;
-                                    return ty;
-                                }
-                            } else if (bin.op == .mul and isNumericType(r_ty) and structFieldsAllNumeric(left_struct)) {
-                                ty.* = l_ty.*;
-                                return ty;
-                            }
-                        } else if (self.structDeclForType(r_ty)) |right_struct| {
-                            if (bin.op == .sub and literalZero(bin.left) and structFieldsAllNumeric(right_struct)) {
-                                ty.* = r_ty.*;
-                                return ty;
-                            }
-                            if (bin.op == .mul and isNumericType(l_ty) and structFieldsAllNumeric(right_struct)) {
-                                ty.* = r_ty.*;
-                                return ty;
-                            }
-                        }
-                        if (bin.op == .sub and literalZero(bin.left) and isNumericType(r_ty)) {
-                            ty.* = r_ty.*;
-                            return ty;
-                        }
-                        if (!self.typesEqual(l_ty, r_ty)) {
-                            self.setError("binary expression type mismatch: op={s}, left tag={s}, right tag={s}", .{ @tagName(bin.op), @tagName(l_ty.*), @tagName(r_ty.*) });
-                            return TypeError.TypeMismatch;
-                        }
-                        if (l_ty.* == .infer) {
-                            ty.* = l_ty.*;
-                            return ty;
-                        }
-                        if (!isNumericType(l_ty)) {
-                            self.setError("binary expression requires numeric operands: op={s}, operand tag={s}", .{ @tagName(bin.op), @tagName(l_ty.*) });
-                            return TypeError.TypeMismatch;
-                        }
-                        ty.* = l_ty.*;
-                    },
-                    .bit_and, .bit_or, .bit_xor => {
-                        if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
-                        if (l_ty.* == .infer) {
-                            ty.* = l_ty.*;
-                            return ty;
-                        }
-                        if (!isAnyIntegerType(l_ty)) return TypeError.TypeMismatch;
-                        ty.* = l_ty.*;
-                    },
-                    .shl, .shr => {
-                        if (l_ty.* == .infer) {
-                            if (!isAnyIntegerType(r_ty) and r_ty.* != .infer) return TypeError.TypeMismatch;
-                            ty.* = l_ty.*;
-                            return ty;
-                        }
-                        if (!isAnyIntegerType(l_ty)) return TypeError.TypeMismatch;
-                        if (r_ty.* != .infer and !isAnyIntegerType(r_ty)) return TypeError.TypeMismatch;
-                        ty.* = l_ty.*;
-                    },
-                    .spaceship => {
-                        if (try self.overloadSymbol(bin.op, l_ty, r_ty)) |symbol| {
-                            const call_symbol = try self.allocator.dupe(u8, symbol);
-                            try self.resolved_call_symbols.put(@as(*const ast.Node, @ptrCast(&bin)), call_symbol);
-                            const ret = self.funcs.get(symbol) orelse return TypeError.UndefinedVariable;
-                            ty.* = ret.ret_ty.*;
-                            return ty;
-                        }
-                        if (self.structDeclForType(l_ty)) |left_struct| {
-                            if (self.structDeclForType(r_ty)) |right_struct| {
-                                if (!self.typesEqual(l_ty, r_ty) or left_struct != right_struct) return TypeError.TypeMismatch;
-                                if (!self.typeIsOrd(l_ty)) return TypeError.TypeMismatch;
-                                return try self.makeOrderingType();
-                            }
-                        }
-                        if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
-                        if (!isNumericType(l_ty)) return TypeError.TypeMismatch;
-                        return try self.makeOrderingType();
-                    },
-                    .eq, .ne, .lt, .le, .gt, .ge => {
-                        // Pointer-like operands compare by identity, never by
-                        // pointee value. structDeclForType unwraps pointers, so
-                        // without this fast path `*S == *S` (and the FFI staple
-                        // `handle == ptr::null::<S>()`) is misrouted into the
-                        // struct-value comparison below and rejected, because
-                        // typeIsEq of a pointer type is always false. Only
-                        // eq/ne are identity comparisons; relational ops keep
-                        // the existing dispatch.
-                        if ((bin.op == .eq or bin.op == .ne) and (l_ty.* == .pointer or l_ty.* == .borrow) and (r_ty.* == .pointer or r_ty.* == .borrow)) {
-                            if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
-                            ty.* = .{ .primitive = .boolean };
-                            return ty;
-                        }
-                        if (self.structDeclForType(l_ty)) |left_struct| {
-                            if (self.structDeclForType(r_ty)) |right_struct| {
-                                if (!self.typesEqual(l_ty, r_ty) or left_struct != right_struct) return TypeError.TypeMismatch;
-                                const supported = switch (bin.op) {
-                                    .eq, .ne => self.typeIsEq(l_ty),
-                                    .lt, .le, .gt, .ge => self.typeIsOrd(l_ty),
-                                    else => false,
-                                };
-                                if (!supported) return TypeError.TypeMismatch;
-                                ty.* = .{ .primitive = .boolean };
-                                return ty;
-                            }
-                        }
-                        if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
-                        ty.* = .{ .primitive = .boolean };
-                    },
-                    .logical_and, .logical_or => {
-                        if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
-                        if (l_ty.* == .infer) {
-                            ty.* = .{ .primitive = .boolean };
-                            return ty;
-                        }
-                        if (!isPrimitiveType(l_ty, .boolean)) return TypeError.TypeMismatch;
-                        ty.* = .{ .primitive = .boolean };
-                    },
-                }
-                return ty;
+                return try self.checkBinaryChain(&bin, expr, scope);
             },
             .borrow_expr => |borrow| {
                 const inner_ty = try self.checkExpr(borrow.expr, scope);

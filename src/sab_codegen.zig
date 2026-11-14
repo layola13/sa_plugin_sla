@@ -6633,6 +6633,94 @@ pub const Codegen = struct {
         return &self.std_macro_templates.items[idx];
     }
 
+    /// Cache key for a literal-arg template: the plain template key
+    /// plus every baked literal value, so distinct literal
+    /// instantiations (VEC_CLONE with elem_size 8 vs 24) never share
+    /// a flattened body.
+    fn stdMacroLitTemplateKey(self: *Codegen, import_path: []const u8, macro_name: []const u8, args: []const []const u8, literal_args: []const bool) ![]const u8 {
+        const base = try self.stdMacroTemplateKey(import_path, macro_name, args.len);
+        defer self.allocator.free(base);
+        var key = std.array_list.Managed(u8).init(self.allocator);
+        errdefer key.deinit();
+        try key.appendSlice(base);
+        try key.appendSlice("\x1flit");
+        for (args, 0..) |arg, idx| {
+            if (!literal_args[idx]) continue;
+            try sio.managedPrint(&key, "\x1f{d}={s}", .{ idx, arg });
+        }
+        return try key.toOwnedSlice();
+    }
+
+    /// Literal-arg sibling of cachedStdMacroTemplate: the wrapper
+    /// snippet bakes literal args into the EXPAND line (exactly like
+    /// the fresh path) and uses `%argN` placeholders for the rest, so
+    /// the flattened module is identical to the one a fresh fragment
+    /// would build for the same (macro, literal values) pair — only
+    /// the wrapper name differs. Instantiation reuses the ordinary
+    /// placeholder-then-rename fragment clone, so a cache hit emits
+    /// the same instructions the fresh path would.
+    fn cachedLitStdMacroTemplate(self: *Codegen, import_path: []const u8, macro_name: []const u8, args: []const []const u8, literal_args: []const bool) !*const StdMacroTemplate {
+        const lookup_key = try self.stdMacroLitTemplateKey(import_path, macro_name, args, literal_args);
+        defer self.allocator.free(lookup_key);
+        if (self.std_macro_template_ids.get(lookup_key)) |idx| return &self.std_macro_templates.items[idx];
+
+        const owned_key = try self.stdMacroLitTemplateKey(import_path, macro_name, args, literal_args);
+        errdefer self.allocator.free(owned_key);
+        const func_name = try std.fmt.allocPrint(self.allocator, "__sla_macro_template_{}", .{self.std_macro_templates.items.len});
+        errdefer self.allocator.free(func_name);
+
+        var source = std.array_list.Managed(u8).init(self.allocator);
+        defer source.deinit();
+        try sio.managedPrint(&source, "@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
+        for (args, 0..) |arg, idx| {
+            if (literal_args[idx]) {
+                if (idx == 0) {
+                    try sio.managedPrint(&source, " {s}", .{arg});
+                } else {
+                    try sio.managedPrint(&source, ", {s}", .{arg});
+                }
+            } else {
+                const placeholder = try self.stdMacroPlaceholder(idx);
+                defer self.allocator.free(placeholder);
+                if (idx == 0) {
+                    try sio.managedPrint(&source, " {s}", .{placeholder});
+                } else {
+                    try sio.managedPrint(&source, ", {s}", .{placeholder});
+                }
+            }
+        }
+        try source.appendSlice("\n    return\n");
+
+        var flat = try self.flattenStdSnippet(source.items);
+        defer flat.deinit(self.allocator);
+        try self.recordConsumedStdFilesFromFlat(import_path, &flat);
+        const bytes = try sci_bridge.encodeSabFromFlatUnchecked(self.allocator, &flat);
+        defer self.allocator.free(bytes);
+        var module = try sab.decodeModule(self.allocator, bytes);
+        errdefer module.deinit(self.allocator);
+        try self.ownDecodedModuleSymbols(&module);
+
+        const idx = self.std_macro_templates.items.len;
+        try self.std_macro_template_ids.put(owned_key, idx);
+        errdefer _ = self.std_macro_template_ids.remove(owned_key);
+        try self.std_macro_templates.append(.{
+            .key = owned_key,
+            .func_name = func_name,
+            .arg_count = args.len,
+            .module = module,
+        });
+        return &self.std_macro_templates.items[idx];
+    }
+
+    fn emitCachedLitStdMacroFragment(self: *Codegen, import_path: []const u8, macro_name: []const u8, args: []const []const u8, literal_args: []const bool) !bool {
+        if (!stdMacroTemplateArgsSafe(args)) return false;
+        const template = try self.cachedLitStdMacroTemplate(import_path, macro_name, args, literal_args);
+        if (template.arg_count != args.len) return Error.UnsupportedSabDirectFeature;
+        try self.appendDecodedModuleConstDecls(template.module);
+        try self.appendRenamedTemplateFragmentBody(template.module, template.func_name, args);
+        return true;
+    }
+
     fn templateFunctionBodyBounds(template: *const StdMacroTemplate, func_name: []const u8) ?struct { start: usize, end: usize } {
         var start: ?usize = null;
         var end: usize = template.module.instructions.len;
@@ -6647,12 +6735,23 @@ pub const Codegen = struct {
         return .{ .start = start.?, .end = end };
     }
 
-    fn stdMacroTemplateSupportsArgs(self: *Codegen, template: *const StdMacroTemplate, args: []const []const u8) !bool {
+    fn stdMacroTemplateSupportsArgs(self: *Codegen, template: *const StdMacroTemplate, args: []const []const u8, import_path: []const u8) !bool {
         const bounds = templateFunctionBodyBounds(template, template.func_name) orelse return false;
-        var body_i = bounds.start;
-        while (body_i < bounds.end) : (body_i += 1) {
-            const source = template.module.instructions[body_i];
-            if (callInstructionBody(source) != null) return false;
+        // Call-body instructions carry register names inside text
+        // operands. The fragment clone rewrites those names through the
+        // same placeholder-then-rename map as the structured operands
+        // (replaceStdMacroPlaceholdersThenRename), which keeps the two
+        // sides consistent — but that equivalence is only relied on for
+        // sa_std/string_format.sa, whose FORMAT_*/STRFMT_* bodies are
+        // mostly call bodies and whose %tag hygiene locals are covered
+        // by the rename (they are `__`-prefixed after substitution).
+        // Every other module keeps the conservative blanket rejection.
+        if (!std.mem.eql(u8, import_path, "sa_std/string_format.sa")) {
+            var body_i = bounds.start;
+            while (body_i < bounds.end) : (body_i += 1) {
+                const source = template.module.instructions[body_i];
+                if (callInstructionBody(source) != null) return false;
+            }
         }
 
         for (args, 0..) |arg, idx| {
@@ -6682,20 +6781,25 @@ pub const Codegen = struct {
 
     fn emitCachedStdMacroFragment(self: *Codegen, import_path: []const u8, macro_name: []const u8, args: []const []const u8) !bool {
         if (!stdMacroTemplateArgsSafe(args)) return false;
-        // FORMAT_* / STRFMT_* macros in string_format.sa use a `%tag` hygiene
-        // suffix to name per-expansion local temporaries. Those locals are both
-        // *defined* by structured instructions (remapped to fresh registers on
-        // inlining) and *referenced* inside call-body text operands (which the
-        // arg-placeholder cache only rewrites for `%argN`, not for remapped
-        // local names). Caching therefore freezes a stale local name in the
-        // text call body and desyncs it from the fresh structured register,
-        // producing UnknownRegister at verify time. The fresh-flatten path
-        // re-expands hygiene per call and stays consistent, so bypass the cache
-        // for this module.
-        if (std.mem.eql(u8, import_path, "sa_std/string_format.sa")) return false;
+        // FORMAT_* / STRFMT_* macros in string_format.sa name their
+        // per-expansion locals with a `%tag` hygiene suffix. An earlier
+        // implementation bypassed the template cache for this module
+        // outright, on the theory that the cached path froze stale
+        // local names inside call-body text operands while the
+        // structured definitions were remapped to fresh registers
+        // (UnknownRegister at verify time). That desync predates the
+        // placeholder-then-rename fragment clone: both operand kinds
+        // now substitute `%argN` placeholders first and then resolve
+        // through the one per-fragment rename map
+        // (remapFragmentTemplateSymbol /
+        // replaceStdMacroPlaceholdersThenRename), so a cached template
+        // instantiates exactly like a fresh flatten of the same
+        // snippet. The cache therefore applies to string_format.sa as
+        // well; stdMacroTemplateSupportsArgs keeps its call-body
+        // rejection for every other module.
         const template = try self.cachedStdMacroTemplate(import_path, macro_name, args.len);
         if (template.arg_count != args.len) return Error.UnsupportedSabDirectFeature;
-        if (!try self.stdMacroTemplateSupportsArgs(template, args)) return false;
+        if (!try self.stdMacroTemplateSupportsArgs(template, args, import_path)) return false;
         try self.appendDecodedModuleConstDecls(template.module);
         try self.appendRenamedTemplateFragmentBody(template.module, template.func_name, args);
         return true;
@@ -6713,6 +6817,28 @@ pub const Codegen = struct {
         };
 
         if (has_literal_args) {
+            // Fragments whose literal args are all integer literals
+            // (the VEC_CLONE / VEC_PUSH elem_size family) go through
+            // the literal-arg template cache first: the cached body
+            // is built from the same snippet the fresh path would
+            // flatten, so a hit is instruction-identical to a fresh
+            // expansion, and the per-call-site cost collapses from a
+            // full std-closure flatten (~1 s, tens of MB retained) to
+            // a clone. Literal args of any other shape (memory-order
+            // keywords, type text) keep the fresh path.
+            const lit_all_integer = blk: {
+                for (args, 0..) |arg, idx| {
+                    if (literal_args[idx] and !isStdMacroTemplateIntegerArg(arg)) break :blk false;
+                }
+                break :blk true;
+            };
+            if (lit_all_integer) {
+                const used_cached = self.emitCachedLitStdMacroFragment(import_path, macro_name, args, literal_args) catch |err| switch (err) {
+                    error.UnsupportedType => false,
+                    else => return err,
+                };
+                if (used_cached) return;
+            }
             return try self.emitStdMacroFragmentFresh(import_path, macro_name, args, literal_args);
         }
 

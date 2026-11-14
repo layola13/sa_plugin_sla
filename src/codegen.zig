@@ -18404,6 +18404,105 @@ pub const Codegen = struct {
         return try self.genExpr(lit.body, hoisted_allocs);
     }
 
+    /// DEF-ADDSEG: the generic binary path used to recurse into
+    /// bin.left, so a left-leaning chain of N operators -- the shape
+    /// every flat `a + b + c + ...` expression parses to -- recursed
+    /// N genExpr frames deep and overflowed the compiler stack at a
+    /// few hundred terms (rc=139/134, top frame genExpr at the
+    /// bin.left recursion). This fallback walks the left spine
+    /// iteratively instead: it replays each spine node's preamble
+    /// (resolved-call check, operand types, the spaceship/struct
+    /// helpers) in exactly the order genExpr would run them, so any
+    /// helper emission still happens exactly once and in the same
+    /// order; the spine stops at the first node that diverts to a
+    /// helper or a resolved call, that deepest left value is
+    /// generated, and the spine is then folded back up through
+    /// combineBinaryFallback. The emitted instruction order is
+    /// identical to the recursive form.
+    fn genBinaryExprFallback(
+        self: *Codegen,
+        root_bin: *const ast.BinaryExpr,
+        root_expr: *ast.Node,
+        root_left_ty: *const ast.Type,
+        root_right_ty: *const ast.Type,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError![]const u8 {
+        const SpineNode = struct {
+            bin: *const ast.BinaryExpr,
+            expr: *ast.Node,
+            left_ty: *const ast.Type,
+            right_ty: *const ast.Type,
+        };
+        var spine = std.array_list.Managed(SpineNode).init(self.allocator);
+        defer spine.deinit();
+        try spine.append(.{ .bin = root_bin, .expr = root_expr, .left_ty = root_left_ty, .right_ty = root_right_ty });
+        var acc: ?[]const u8 = null;
+        var cur = root_bin.left;
+        while (cur.* == .binary_expr) {
+            const cbin = &cur.binary_expr;
+            if (self.tc.resolved_call_symbols.get(cur) != null) {
+                acc = try self.genExpr(cur, hoisted_allocs);
+                break;
+            }
+            const lty = self.resolvedTypeForExpr(cbin.left) orelse self.tc.expr_types.get(cbin.left) orelse return CodegenError.CodegenError;
+            const rty = self.resolvedTypeForExpr(cbin.right) orelse self.tc.expr_types.get(cbin.right) orelse return CodegenError.CodegenError;
+            if (try self.genSpaceshipExpr(cbin, lty, rty, hoisted_allocs)) |reg| {
+                acc = reg;
+                break;
+            }
+            if (try self.genStructEqualityExpr(cbin, lty, rty, hoisted_allocs)) |reg| {
+                acc = reg;
+                break;
+            }
+            if (try self.genStructOrdExpr(cbin, lty, rty, hoisted_allocs)) |reg| {
+                acc = reg;
+                break;
+            }
+            if (try self.genStructArithmeticExpr(cbin, lty, rty, hoisted_allocs)) |reg| {
+                acc = reg;
+                break;
+            }
+            try spine.append(.{ .bin = cbin, .expr = cur, .left_ty = lty, .right_ty = rty });
+            cur = cbin.left;
+        }
+        if (acc == null) {
+            acc = try self.genExpr(cur, hoisted_allocs);
+        }
+        var acc_reg = acc.?;
+        var i = spine.items.len;
+        while (i > 0) {
+            i -= 1;
+            const node = spine.items[i];
+            acc_reg = try self.combineBinaryFallback(node.bin, node.expr, acc_reg, node.left_ty, node.right_ty, hoisted_allocs);
+        }
+        return acc_reg;
+    }
+
+    /// One combine step of the generic binary path: generate the
+    /// right operand, then emit the operator instruction, the
+    /// operand releases and the shl result wrap exactly as the
+    /// in-line fallback in genExpr did.
+    fn combineBinaryFallback(
+        self: *Codegen,
+        bin: *const ast.BinaryExpr,
+        expr: *ast.Node,
+        l: []const u8,
+        left_ty: *const ast.Type,
+        right_ty: *const ast.Type,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError![]const u8 {
+        const r = try self.genExpr(bin.right, hoisted_allocs);
+        const reg = try self.newTmp();
+        const op = binaryOpName(bin.op, left_ty, right_ty) orelse return CodegenError.CodegenError;
+        self.outPrint("    {s} = {s} {s}, {s}\n", .{ reg, op, l, r }) catch return CodegenError.CodegenError;
+        if (self.exprResultRegNeedsRelease(bin.left)) try self.emitRelease(l);
+        if (self.exprResultRegNeedsRelease(bin.right)) try self.emitRelease(r);
+        if (bin.op == .shl) {
+            if (try self.emitShiftResultWrap(reg, self.shiftResultType(expr, bin, left_ty))) |wrapped| return wrapped;
+        }
+        return reg;
+    }
+
     fn genExpr(self: *Codegen, expr: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         @setEvalBranchQuota(10000);
         switch (expr.*) {
@@ -18532,17 +18631,7 @@ pub const Codegen = struct {
                 if (try self.genStructEqualityExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructOrdExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructArithmeticExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
-                const l = try self.genExpr(bin.left, hoisted_allocs);
-                const r = try self.genExpr(bin.right, hoisted_allocs);
-                const reg = try self.newTmp();
-                const op = binaryOpName(bin.op, left_ty, right_ty) orelse return CodegenError.CodegenError;
-                self.outPrint("    {s} = {s} {s}, {s}\n", .{ reg, op, l, r }) catch return CodegenError.CodegenError;
-                if (self.exprResultRegNeedsRelease(bin.left)) try self.emitRelease(l);
-                if (self.exprResultRegNeedsRelease(bin.right)) try self.emitRelease(r);
-                if (bin.op == .shl) {
-                    if (try self.emitShiftResultWrap(reg, self.shiftResultType(expr, &bin, left_ty))) |wrapped| return wrapped;
-                }
-                return reg;
+                return try self.genBinaryExprFallback(&bin, expr, left_ty, right_ty, hoisted_allocs);
             },
             .borrow_expr => |borrow| {
                 var deref_source_ty: ?*const ast.Type = null;

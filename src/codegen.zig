@@ -19220,6 +19220,8 @@ pub const Codegen = struct {
                     try self.emitRelease(value_ptr);
                     if (callArgNeedsRelease(idx.index)) try self.emitRelease(key_reg);
                     if (keyRegIsOwnedLiteralString(idx.index, hm.key)) try self.emitRelease(key_reg);
+                    // DEF-TEXT-IDX-CALLRET-LEAK: retire an owned call-result target temp (identifier targets are locals, correctly untouched).
+                    if (callArgNeedsRelease(idx.target)) try self.emitRelease(map_reg);
                     return reg;
                 }
                 if (btreeMapTypes(target_ty)) |bm| {
@@ -19239,6 +19241,8 @@ pub const Codegen = struct {
                     const reg = try self.newTmp();
                     self.outPrint("    {s} = {s} as {s}\n", .{ reg, raw_value, typeString(bm.value) }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(idx.index)) try self.emitRelease(key_reg);
+                    // DEF-TEXT-IDX-CALLRET-LEAK: retire an owned call-result target temp (identifier targets are locals, correctly untouched).
+                    if (callArgNeedsRelease(idx.target)) try self.emitRelease(map_reg);
                     return reg;
                 }
                 if (lowering_rules.vecLikeElementType(target_ty)) |elem_ty| {
@@ -19250,6 +19254,8 @@ pub const Codegen = struct {
                     const reg = try self.newTmp();
                     self.outPrint("    EXPAND VEC_DEQUE_GET {s}, {s}, {s}\n", .{ reg, deque_reg, index_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+                    // DEF-TEXT-IDX-CALLRET-LEAK: retire an owned call-result target temp (identifier targets are locals, correctly untouched).
+                    if (callArgNeedsRelease(idx.target)) try self.emitRelease(deque_reg);
                     return reg;
                 }
                 const addr = try self.genIndexAddress(&idx, hoisted_allocs);

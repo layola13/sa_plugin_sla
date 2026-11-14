@@ -1,0 +1,40 @@
+@import "sa_std/vec.sa"
+@import "sa_std/btree_map.sa"
+@import "sa_std/string.sai"
+@import "sa_std/str.sla"
+@import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// DEF-TEXT-IDX-CALLRET-LEAK (BTreeMap arm): an index read whose
+// target is a call result (make_btree()["a"]) left the map temp
+// Active at function exit on the TEXT backend (MemoryLeak 1012) —
+// the .index_expr BTreeMap arm in src/codegen.zig never retired
+// map_reg. Same fix as the HashMap arm (retire when
+// callArgNeedsRelease(target)).
+// BTreeMap keys are raw_ptr (string literals); a String-keyed
+// BTreeMap cannot be built (loud check rejection via
+// btreeSetKeySupported), so the reachable shape uses literal keys.
+// TEST ORDER IS LOAD-BEARING: `sa sla test` reports a MemoryLeak
+// only for the LAST @test function in a file. The bound control
+// comes FIRST and the call-result shape LAST. Do not reorder.
+// Pre-fix: the last test traps 1012 on text; post-fix: both pass
+// on both backends.
+
+fn make_btree() -> BTreeMap<ptr, i64> {
+    let m = BTreeMap::new();
+    m.insert("a", 9);
+    m.insert("b", 10);
+    return m;
+}
+
+@test "def text idx callret leak btree bound"() {
+    let mm = make_btree();
+    if mm["a"] != 9 { panic(71453); };
+    if mm["b"] != 10 { panic(71454); };
+}
+
+@test "def text idx callret leak btree"() {
+    if make_btree()["a"] != 9 { panic(71451); };
+    if make_btree()["b"] != 10 { panic(71452); };
+}

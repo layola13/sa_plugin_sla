@@ -1,0 +1,40 @@
+@import "sa_std/vec.sa"
+@import "sa_std/vec_deque.sa"
+@import "sa_std/string.sai"
+@import "sa_std/str.sla"
+@import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// DEF-TEXT-IDX-CALLRET-LEAK (VecDeque arm): an index read whose
+// target is a call result (make_deque()[0]) left the deque temp
+// Active at function exit on the TEXT backend (MemoryLeak 1012) —
+// the .index_expr VecDeque arm in src/codegen.zig never retired
+// deque_reg. Same fix as the HashMap arm (retire when
+// callArgNeedsRelease(target)).
+// SINGLE-TEST FILE BY DESIGN, for two measured reasons:
+//  (1) `sa sla test` reports a MemoryLeak only for the LAST @test
+//      in a file, so a red shape must be last (here: only).
+//  (2) The two-test form of this file (bound control first,
+//      call-result last) traps MemoryLeak 1012 on the SAB backend
+//      on BOTH pristine and candidate (tmp_18, the bound test's
+//      local deque, function=null, .sab line 405) although each
+//      test alone passes SAB — a separate SAB-side defect,
+//      registered in ~/workspace/claims/CLAIMS.md as
+//      DEF-SAB-DEQUE-MULTITEST-LEAK. Do NOT re-add a second test
+//      to this file until that DEF is fixed; the bound control's
+//      green evidence lives in the line's directed cells.
+// Pre-fix: this test traps 1012 on text; post-fix: passes on both
+// backends.
+
+fn make_deque() -> VecDeque<i64> {
+    let q: VecDeque<i64> = VecDeque::new();
+    q.push_back(9);
+    q.push_back(10);
+    return q;
+}
+
+@test "def text idx callret leak vecdeque"() {
+    if make_deque()[0] != 9 { panic(71461); };
+    if make_deque()[1] != 10 { panic(71462); };
+}

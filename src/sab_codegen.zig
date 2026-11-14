@@ -19982,7 +19982,7 @@ pub const Codegen = struct {
                         try self.markConsumed(src);
                     }
                 }
-                if (self.insertArgCheckerConsumed(recv_arg, key_arg)) {
+                if (self.insertArgCheckerConsumed(recv_arg, key_arg) or keyRegIsMaterializedCallString(key_arg, bridge.key_ty)) {
                     try self.emitConsumedMarker(key_reg);
                     try self.markConsumed(key_reg);
                 } else {
@@ -22915,6 +22915,20 @@ pub const Codegen = struct {
         return false;
     }
 
+    /// DEF-53-SINGLES (tombstone/DEF-IDX section 5.3): true when the key
+    /// argument is a fresh call-result temporary of String type that
+    /// genMapKeyReg materializes into an owned handle (a deep clone).
+    /// Insert epilogues must retire such a register like an owned
+    /// literal key — consumed marker, the map adopts the clone's
+    /// handle — while read-only epilogues retire it through
+    /// releaseExprResultIfNeeded, which deep-frees the clone.
+    fn keyRegIsMaterializedCallString(arg: *const ast.Node, key_ty: ?*const ast.Type) bool {
+        if (key_ty) |kt| {
+            return lowering_rules.isStringType(kt) and arg.* == .call_expr;
+        }
+        return false;
+    }
+
     /// Map key register shared by insert and index: string literals reuse one
     /// cached slice slot per function, mirroring the SA-text emitter's
     /// `hashmap_key_slots`. The std map probe compares keys by pointer, so a
@@ -22932,6 +22946,27 @@ pub const Codegen = struct {
             const reg = try self.genStringLiteral(arg.literal.string_val);
             try self.hashmap_key_slots.put(arg.literal.string_val, reg);
             return reg;
+        }
+        if (keyRegIsMaterializedCallString(arg, key_ty)) {
+            // DEF-53-SINGLES (tombstone/DEF-IDX section 5.3): a fresh
+            // call-result String temporary does not satisfy the _STR
+            // key contract on this backend. The planned-call
+            // destination register carries the callee's
+            // pointer-flavoured return (the SAB function signature
+            // types a String return as .ptr), so a probe reads the
+            // handle through the wrong cell and misses live entries —
+            // and an insert stores that very cell as the entry key,
+            // which no later probe can match either. The SA-text
+            // backend materializes the return into the caller cell, so
+            // it is unaffected. Materialize the temporary into a fresh
+            // owned handle with the backend's String clone idiom (the
+            // STRING_BUF_CLONE fragment family genOwnedStringLiteral's
+            // producers belong to), then retire the source temporary:
+            // the clone is the sole owner from here.
+            const src = try self.genExpr(@constCast(arg));
+            const cloned = try self.genStringCloneValue(src);
+            if (!self.isLocalReg(src)) try self.emitOwnedBufferFree(src, key_ty);
+            return cloned;
         }
         return try self.genExpr(@constCast(arg));
     }
@@ -23103,7 +23138,7 @@ pub const Codegen = struct {
             try self.emitConsumedMarker(value_reg);
             try self.markConsumed(value_reg);
         }
-        if (self.insertArgCheckerConsumed(call.args[0], key_arg) or keyRegIsOwnedLiteralString(key_arg, key_ty)) {
+        if (self.insertArgCheckerConsumed(call.args[0], key_arg) or keyRegIsOwnedLiteralString(key_arg, key_ty) or keyRegIsMaterializedCallString(key_arg, key_ty)) {
             try self.emitConsumedMarker(key_reg);
             try self.markConsumed(key_reg);
         } else {

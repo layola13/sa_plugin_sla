@@ -1,0 +1,97 @@
+@import "sa_std/vec.sa"
+@import "sa_std/hashmap.sa"
+@import "sa_std/string.sai"
+@import "sa_std/str.sla"
+@import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// DEF-53-SINGLES regression (DEF-TOMBSTONE RESULT section 5.3-a/b,
+// DEF-IDX RESULT section 5.3): HashMap<String, _> operations whose key
+// argument is a FRESH CALL-RESULT TEMPORARY (a String returned by a
+// plain function call, used directly in argument position) missed live
+// entries on the SAB backend: remove returned None for a present key
+// (panic 68944) and the entry stayed in the map, so a post-remove
+// MAP_KEYS still counted it (panic 68955). Root: the SAB planned-call
+// destination register carries the callee's pointer-flavoured return
+// (the SAB signature types a String return as .ptr), so the _STR probe
+// read the 24-byte handle through the wrong cell; the SA-text backend
+// materializes the return into the caller cell and was unaffected.
+// Fix: sab_codegen genMapKeyReg materializes a call-expr String key
+// into a fresh owned handle (STRING_BUF_CLONE) before any map op.
+// The literal-key control at the bottom passed before and after.
+// Verification status at authoring time: PENDING BOX GATES (authored
+// on the local staging clone without a venue; see the line RESULT).
+
+fn fresh53_mk_a() -> String {
+    let b: Vec<u8> = Vec::new();
+    b.push(97u8);
+    let sl: Slice<u8> = VEC_AS_SLICE(b);
+    let res: Result<String, i32> = str_from_utf8(sl);
+    match res {
+        Ok(s) => { return s; },
+        Err(e) => { panic(40320 + e); },
+    }
+}
+
+fn fresh53_mk_b() -> String {
+    let b: Vec<u8> = Vec::new();
+    b.push(98u8);
+    let sl: Slice<u8> = VEC_AS_SLICE(b);
+    let res: Result<String, i32> = str_from_utf8(sl);
+    match res {
+        Ok(s) => { return s; },
+        Err(e) => { panic(40320 + e); },
+    }
+}
+
+@test "sab map remove fresh call key match"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert(fresh53_mk_a(), 5);
+    m.insert(fresh53_mk_b(), 6);
+    match m.remove(fresh53_mk_a()) {
+        Some(v) => { if v != 5 { panic(68943); }; },
+        None => { panic(68944); },
+    };
+}
+
+@test "sab map fresh call key post-remove keys count"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert(fresh53_mk_a(), 5);
+    m.insert(fresh53_mk_b(), 6);
+    m.remove(fresh53_mk_a());
+    let ks = MAP_KEYS(m);
+    if len(ks) != 1 { panic(68955); };
+}
+
+@test "sab map get fresh call key"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert(fresh53_mk_a(), 5);
+    m.insert(fresh53_mk_b(), 6);
+    let got = m.get(fresh53_mk_a());
+    if got.is_none() { panic(68961); };
+    if got.copied().unwrap_or_default() != 5 { panic(68962); };
+}
+
+@test "sab map contains fresh call key live and removed"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert(fresh53_mk_a(), 5);
+    m.insert(fresh53_mk_b(), 6);
+    if m.contains_key(fresh53_mk_b()) != true { panic(68963); };
+    m.remove(fresh53_mk_a());
+    if m.contains_key(fresh53_mk_a()) != false { panic(68964); };
+    if m.contains_key(fresh53_mk_b()) != true { panic(68965); };
+    if len(m) != 1 { panic(68966); };
+}
+
+@test "sab map fresh call key literal control"() {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("a", 5);
+    m.insert("b", 6);
+    match m.remove("a") {
+        Some(v) => { if v != 5 { panic(68971); }; },
+        None => { panic(68972); },
+    };
+    let ks = MAP_KEYS(m);
+    if len(ks) != 1 { panic(68973); };
+}

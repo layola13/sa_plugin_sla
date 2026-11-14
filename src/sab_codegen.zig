@@ -22777,6 +22777,10 @@ pub const Codegen = struct {
                 self.symbols.items[index_reg],
             });
             if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+            // DEF-SAB-DEQUE-MULTITEST-LEAK: retire an owned call-result
+            // deque temp (identifier targets are locals, correctly
+            // untouched) — mirrors genMapIndex's releaseNonLocalTemps.
+            try self.releaseNonLocalTemps(&.{deque_reg});
             if (lowering_rules.vecDequeElementType(target_ty)) |elem_ty| {
                 if (signedNarrowPrim(elem_ty)) |prim| {
                     const canon = try self.emitSextNarrow(dst, prim);

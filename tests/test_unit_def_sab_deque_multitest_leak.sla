@@ -1,0 +1,44 @@
+@import "sa_std/vec.sa"
+@import "sa_std/vec_deque.sa"
+@import "sa_std/string.sai"
+@import "sa_std/str.sla"
+@import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// DEF-SAB-DEQUE-MULTITEST-LEAK: in a multi-test file where the BOUND
+// test runs FIRST and the call-result test runs SECOND, the SAB route
+// trapped MemoryLeak 1012 (tmp_18 = the bound test's local deque `qq`
+// at its qq[1] read, panic 71464) although each test alone passed
+// SAB. Root cause is in the SAB genIndex VecDeque arm, not in the
+// bound test: the arm retired index_reg but never the deque temp, so
+// a call-result target (make_deque()[i]) stayed Active at function
+// exit. The bound test is green only because its local is released
+// at function end. The fix retires the deque temp via
+// releaseNonLocalTemps (locals untouched).
+// TEST ORDER IS LOAD-BEARING twice over: (1) `sa sla test` reports a
+// MemoryLeak only for the LAST @test in a file, so the call-result
+// shape must be last to be reported; (2) the trap itself needs the
+// bound test first (the verifier's leak check examines the last
+// function in the emitted .sab, and the call-result temps are what
+// is left live there). Do not reorder.
+// Pre-fix: the last test traps 1012 on SAB (text passes); post-fix:
+// both pass on both backends.
+
+fn make_deque() -> VecDeque<i64> {
+    let q: VecDeque<i64> = VecDeque::new();
+    q.push_back(9);
+    q.push_back(10);
+    return q;
+}
+
+@test "def sab deque multitest leak vecdeque bound"() {
+    let qq = make_deque();
+    if qq[0] != 9 { panic(71463); };
+    if qq[1] != 10 { panic(71464); };
+}
+
+@test "def sab deque multitest leak vecdeque"() {
+    if make_deque()[0] != 9 { panic(71461); };
+    if make_deque()[1] != 10 { panic(71462); };
+}

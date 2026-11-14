@@ -1,0 +1,117 @@
+@import "sa_std/vec.sa"
+@import "sa_std/hashmap.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// Regression (DEF-MAP-VALUES, defect C): MAP_VALUES macro-form
+// element CONTENT. The SLA HashMap value model is A-form: values
+// are boxed into per-entry heap cells and the std table stores the
+// cell pointers verbatim, so @sa_map_values_vec fills the result
+// Vec with cell pointers; translating them back into values is the
+// frontend extraction side's job. The method form m.values() ran
+// that deref post-pass, but the imported-macro post-processing
+// explicitly skipped .map_value on both backends, so the macro
+// form returned cell addresses as elements (len right, content
+// wrong -- DEF-E1 sentinel panic 84332). The fix wires .map_value
+// into the macro post-pass: deref first (the method form's loop),
+// then E1's clone-on-extract for owned element types. The i64
+// tests assert content directly (multiset + sum + per-key get
+// cross-check); the String test covers the owned-element path.
+
+@test "map values content i64 str keys"() {
+    let m = HashMap::new();
+    m.insert("a", 111);
+    m.insert("b", 222);
+    m.insert("c", 333);
+    if m.get("a").copied().unwrap_or_default() != 111 { panic(84500); };
+    let vs = MAP_VALUES(m);
+    if len(vs) != 3 { panic(84501); };
+    if vs[0] + vs[1] + vs[2] != 666 { panic(84502); };
+    let n1 = 0;
+    if vs[0] == 111 { n1 = n1 + 1; };
+    if vs[1] == 111 { n1 = n1 + 1; };
+    if vs[2] == 111 { n1 = n1 + 1; };
+    if n1 != 1 { panic(84503); };
+    let n2 = 0;
+    if vs[0] == 222 { n2 = n2 + 1; };
+    if vs[1] == 222 { n2 = n2 + 1; };
+    if vs[2] == 222 { n2 = n2 + 1; };
+    if n2 != 1 { panic(84504); };
+    let n3 = 0;
+    if vs[0] == 333 { n3 = n3 + 1; };
+    if vs[1] == 333 { n3 = n3 + 1; };
+    if vs[2] == 333 { n3 = n3 + 1; };
+    if n3 != 1 { panic(84505); };
+}
+
+@test "map values content overwrite"() {
+    let m = HashMap::new();
+    m.insert("a", 1000001);
+    m.insert("b", 2000002);
+    MAP_PUT(m, "a", 3000003);
+    let vs = MAP_VALUES(m);
+    if len(vs) != 2 { panic(84511); };
+    if vs[0] + vs[1] != 5000005 { panic(84512); };
+}
+
+@test "map values content after del"() {
+    let m = HashMap::new();
+    m.insert("a", 11);
+    m.insert("b", 22);
+    m.insert("c", 33);
+    let old = MAP_DEL(m, "b");
+    if old != 22 { panic(84520); };
+    let vs = MAP_VALUES(m);
+    if len(vs) != 2 { panic(84521); };
+    if vs[0] + vs[1] != 44 { panic(84522); };
+}
+
+@test "map values method form content"() {
+    let m = HashMap::new();
+    m.insert("a", 111);
+    m.insert("b", 222);
+    m.insert("c", 333);
+    let vs = m.values();
+    if len(vs) != 3 { panic(84541); };
+    if vs[0] + vs[1] + vs[2] != 666 { panic(84542); };
+}
+
+@test "map values content int keys"() {
+    let m = HashMap::new();
+    m.insert(5, 100);
+    m.insert(9, 200);
+    let vs = MAP_VALUES(m);
+    if len(vs) != 2 { panic(84531); };
+    if vs[0] + vs[1] != 300 { panic(84532); };
+    if vs[0] == vs[1] { panic(84533); };
+}
+
+fn consume_string_values(vs: Vec<String>) -> u64 {
+    if len(vs) != 2 { panic(84601); };
+    let n5 = 0;
+    if STR_LEN(vs[0]) == 5 { n5 = n5 + 1; };
+    if STR_LEN(vs[1]) == 5 { n5 = n5 + 1; };
+    if n5 != 1 { panic(84605); };
+    return STR_LEN(vs[0]) + STR_LEN(vs[1]);
+}
+
+@test "map values content owned string values"() {
+    let m: HashMap<i32, String> = HashMap::new();
+    let v1: String = format("alpha");
+    m.insert(1, v1);
+    let v2: String = format("beta-longer");
+    m.insert(2, v2);
+    // The values Vec (and its elements) drop inside the consumer.
+    // If the elements aliased the map's value cells instead of
+    // being derefed + cloned, that drop would free the map's own
+    // Strings and the gets / second extraction below would read
+    // dead memory.
+    let vs = MAP_VALUES(m);
+    let total = consume_string_values(vs);
+    if total != 16 { panic(84602); };
+    if m.get(1).is_none() { panic(84603); };
+    if m.get(2).is_none() { panic(84604); };
+    let vs2 = MAP_VALUES(m);
+    let total2 = consume_string_values(vs2);
+    if total2 != 16 { panic(84606); };
+}

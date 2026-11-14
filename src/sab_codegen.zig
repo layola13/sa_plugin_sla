@@ -20001,7 +20001,8 @@ pub const Codegen = struct {
     /// keys-snapshot macro result (MAP_KEYS / SET_KEYS), derived
     /// from the receiver type exactly as the checker derives the
     /// result `Vec<Elem>` typing (DEF-PROBE-A). Null for MAP_VALUES:
-    /// its elements are value cells, not key handles.
+    /// its elements are value cells, not key handles; MAP_VALUES is
+    /// served by importedMacroValuesResultElemType below.
     fn importedMacroKeysResultElemType(self: *Codegen, call: ast.CallExpr, source: lowering_rules.ImportedMacroVecResultSource) ?*const ast.Type {
         if (call.args.len == 0) return null;
         const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
@@ -20011,6 +20012,22 @@ pub const Codegen = struct {
             .set_element => lowering_rules.hashSetElementType(peeled),
             .map_value => null,
         };
+    }
+
+    /// DEF-MAP-VALUES (defect C, SA-text parity): element type of
+    /// a values-snapshot macro result (MAP_VALUES), derived from
+    /// the receiver type exactly as the checker derives the result
+    /// `Vec<Elem>` typing. Under the A-form value model the std
+    /// producer fills the fresh Vec with heap value-cell pointers,
+    /// so the macro result takes the deref post-pass the method
+    /// form already runs (plus E1's clone-on-extract for owned
+    /// element types) in genImportedMacroCall below.
+    fn importedMacroValuesResultElemType(self: *Codegen, call: ast.CallExpr) ?*const ast.Type {
+        if (call.args.len == 0) return null;
+        const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const peeled = lowering_rules.peelBorrowPointerType(recv_ty);
+        if (lowering_rules.hashMapTypes(peeled)) |mt| return mt.value;
+        return null;
     }
 
     fn genImportedMacroCall(self: *Codegen, call: ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, ctx: ?*MacroExpansionContext, result_ty: ?*const ast.Type) anyerror!u32 {
@@ -20186,11 +20203,27 @@ pub const Codegen = struct {
         // MAP_KEYS expansion and is covered via .set_element.
         if (dst) |reg| {
             if (lowering_rules.importedMacroVecResultSource(plan.macro_name)) |source| {
-                if (source != .map_value) {
-                    if (self.importedMacroKeysResultElemType(call, source)) |elem_ty| {
-                        if (self.deepCloneNeeded(elem_ty, 0)) {
-                            try self.genReplaceBufferElementsWithClones(reg, elem_ty, lowering_rules.VecAbi.ptr_offset, lowering_rules.VecAbi.len_offset);
+                if (source == .map_value) {
+                    // DEF-MAP-VALUES (defect C, SA-text parity):
+                    // @sa_map_values_vec fills the result Vec with
+                    // heap value-cell pointers (A-form), so run the
+                    // method form's deref post-pass first -- each
+                    // element becomes the value inside its cell --
+                    // and only then, for owned element types, E1's
+                    // clone-on-extract, so the result holds owned
+                    // values rather than aliases of the map's cells.
+                    // Deref before clone: the clone's input is the
+                    // dereferenced value handle, never the cell
+                    // pointer.
+                    if (self.importedMacroValuesResultElemType(call)) |value_ty| {
+                        try self.genMapValuesDerefVec(reg);
+                        if (self.deepCloneNeeded(value_ty, 0)) {
+                            try self.genReplaceBufferElementsWithClones(reg, value_ty, lowering_rules.VecAbi.ptr_offset, lowering_rules.VecAbi.len_offset);
                         }
+                    }
+                } else if (self.importedMacroKeysResultElemType(call, source)) |elem_ty| {
+                    if (self.deepCloneNeeded(elem_ty, 0)) {
+                        try self.genReplaceBufferElementsWithClones(reg, elem_ty, lowering_rules.VecAbi.ptr_offset, lowering_rules.VecAbi.len_offset);
                     }
                 }
             }
@@ -23474,21 +23507,14 @@ pub const Codegen = struct {
     /// slots' stored words, which under the A-form value model are
     /// heap cell pointers; dereference each in place so the Vec
     /// holds the values themselves (mirrors the SA-text post-pass).
-    fn genMapValuesCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
-        _ = expr;
-        if (call.args.len != 1) return null;
-        if (!std.mem.eql(u8, call.func_name, "values")) return null;
-        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
-        if (lowering_rules.hashMapTypes(receiver_ty) == null) return null;
-        const recv_reg = try self.genExpr(@constCast(call.args[0]));
-        try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_values_vec"});
-        const out_reg = try self.intern(try self.newTmp());
-        try self.recordReg(out_reg);
-        try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_VALUES", &.{
-            self.symbols.items[out_reg],
-            self.symbols.items[recv_reg],
-        });
-        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+    /// DEF-MAP-VALUES (defect C): the deref loop of the values()
+    /// method form, factored out so the MAP_VALUES imported-macro
+    /// post-pass runs the identical pass. @sa_map_values_vec fills
+    /// the fresh Vec with heap value-cell pointers (A-form: the
+    /// std table stores the cell pointers verbatim); walk the Vec
+    /// in place and replace each cell pointer with the value
+    /// inside the cell.
+    fn genMapValuesDerefVec(self: *Codegen, out_reg: u32) anyerror!void {
         try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
         const data_reg = try self.intern(try self.newTmp());
         try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
@@ -23531,6 +23557,24 @@ pub const Codegen = struct {
         try self.emitRelease(data_reg);
         try self.emitRelease(len_reg);
         try self.emitRelease(idx);
+    }
+
+    fn genMapValuesCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 1) return null;
+        if (!std.mem.eql(u8, call.func_name, "values")) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.hashMapTypes(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_values_vec"});
+        const out_reg = try self.intern(try self.newTmp());
+        try self.recordReg(out_reg);
+        try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_VALUES", &.{
+            self.symbols.items[out_reg],
+            self.symbols.items[recv_reg],
+        });
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        try self.genMapValuesDerefVec(out_reg);
         return out_reg;
     }
 

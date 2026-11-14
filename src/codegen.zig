@@ -13896,7 +13896,8 @@ pub const Codegen = struct {
     /// result (MAP_KEYS / SET_KEYS), derived from the receiver type
     /// exactly as the checker derives the result `Vec<Elem>` typing
     /// (DEF-PROBE-A). Null for MAP_VALUES: its elements are value
-    /// cells, not key handles, and stay with the values-side defect.
+    /// cells, not key handles; MAP_VALUES is served by
+    /// importedMacroValuesResultElemType below.
     fn importedMacroKeysResultElemType(self: *Codegen, call: *const ast.CallExpr, source: lowering_rules.ImportedMacroVecResultSource) ?*const ast.Type {
         if (call.args.len == 0) return null;
         const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
@@ -13906,6 +13907,22 @@ pub const Codegen = struct {
             .set_element => lowering_rules.hashSetElementType(peeled),
             .map_value => null,
         };
+    }
+
+    /// DEF-MAP-VALUES (defect C): element type of a values-snapshot
+    /// macro result (MAP_VALUES), derived from the receiver type
+    /// exactly as the checker derives the result `Vec<Elem>` typing.
+    /// Under the A-form value model the std producer fills the fresh
+    /// Vec with heap value-cell pointers, so the macro result takes
+    /// the deref post-pass the method form already runs (plus E1's
+    /// clone-on-extract for owned element types) in
+    /// genImportedMacroCall below.
+    fn importedMacroValuesResultElemType(self: *Codegen, call: *const ast.CallExpr) ?*const ast.Type {
+        if (call.args.len == 0) return null;
+        const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const peeled = lowering_rules.peelBorrowPointerType(recv_ty);
+        if (lowering_rules.hashMapTypes(peeled)) |mt| return mt.value;
+        return null;
     }
 
     fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
@@ -14049,17 +14066,40 @@ pub const Codegen = struct {
         // the MAP_KEYS expansion and is covered via .set_element.
         if (bridge == null and plan.expression_output) {
             if (lowering_rules.importedMacroVecResultSource(plan.macro_name)) |source| {
-                if (source != .map_value) {
-                    if (self.importedMacroKeysResultElemType(call, source)) |elem_ty| {
-                        if (self.deepCloneNeeded(elem_ty, 0)) {
+                if (source == .map_value) {
+                    // DEF-MAP-VALUES (defect C): @sa_map_values_vec
+                    // fills the result Vec with heap value-cell
+                    // pointers (A-form: the std table stores the
+                    // cell pointers verbatim), so run the method
+                    // form's deref post-pass first -- each element
+                    // becomes the value inside its cell -- and only
+                    // then, for owned element types, E1's
+                    // clone-on-extract, so the result holds owned
+                    // values rather than aliases of the map's cells.
+                    // Deref before clone: the clone's input is the
+                    // dereferenced value handle, never the cell
+                    // pointer.
+                    if (self.importedMacroValuesResultElemType(call)) |value_ty| {
+                        try self.genHashMapValuesDerefText(reg);
+                        if (self.deepCloneNeeded(value_ty, 0)) {
                             const data_reg = try self.newTmp();
                             self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, reg }) catch return CodegenError.CodegenError;
                             const len_reg = try self.newTmp();
                             self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, reg }) catch return CodegenError.CodegenError;
-                            try self.genReplaceBufferElementsWithClones(data_reg, len_reg, elem_ty);
+                            try self.genReplaceBufferElementsWithClones(data_reg, len_reg, value_ty);
                             try self.emitRelease(data_reg);
                             try self.emitRelease(len_reg);
                         }
+                    }
+                } else if (self.importedMacroKeysResultElemType(call, source)) |elem_ty| {
+                    if (self.deepCloneNeeded(elem_ty, 0)) {
+                        const data_reg = try self.newTmp();
+                        self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, reg }) catch return CodegenError.CodegenError;
+                        const len_reg = try self.newTmp();
+                        self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, reg }) catch return CodegenError.CodegenError;
+                        try self.genReplaceBufferElementsWithClones(data_reg, len_reg, elem_ty);
+                        try self.emitRelease(data_reg);
+                        try self.emitRelease(len_reg);
                     }
                 }
             }

@@ -21506,7 +21506,8 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, hashSetTypes(ty).?.key);
                                 const reg = try self.newTmp();
-                                self.outPrint("    EXPAND SET_REMOVE {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                const set_remove_macro = if (lowering_rules.isStringType(hashSetTypes(ty).?.key)) "SET_REMOVE_STR" else "SET_REMOVE";
+                                self.outPrint("    EXPAND {s} {s}, {s}, {s}\n", .{ set_remove_macro, reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 if (keyRegIsOwnedLiteralString(call.args[1], hashSetTypes(ty).?.key)) try self.emitRelease(key_reg);

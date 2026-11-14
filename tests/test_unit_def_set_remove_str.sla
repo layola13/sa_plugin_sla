@@ -1,0 +1,72 @@
+@import "sa_std/vec.sa"
+@import "sa_std/hashmap.sa"
+@import "sa_std/string.sai"
+@import "sa_std/str.sla"
+@import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+
+// DEF-SET-REMOVE-STR regression: HashSet<String>.remove with a FRESH
+// equal-content key missed the stored entry on the TEXT backend.
+// Root: std had content-keyed SET_INSERT_STR / SET_CONTAINS_STR but
+// no SET_REMOVE_STR, and the TEXT method lowering (unlike insert /
+// contains) always emitted the generic SET_REMOVE (@sa_set_remove ->
+// @sa_map_del, identity-keyed), so a fresh key whose content equals
+// a stored key never matched it. DEF-IDX §5.1 discriminator
+// (disc_set_remove_var.sla): distinct same-content String variables
+// missed, panic 68931. The SAB backend was not affected: its
+// set_remove paths compose the content-keyed @sa_map_del_str delete
+// inline for String keys, so the SAB cells below are guards.
+// Fix: std @sa_set_remove_str + SET_REMOVE_STR macro (hashset.sa,
+// beside the _str siblings); TEXT method dispatch selects
+// SET_REMOVE_STR for String-element sets, mirroring insert /
+// contains. Panic codes 692xx.
+// Pre-fix: TEXT — test 1 panics 69201, test 2 panics 69211.
+// Post-fix: all pass on both backends.
+
+fn setrem_mk_a() -> String {
+    let b: Vec<u8> = Vec::new();
+    b.push(97u8);
+    let sl: Slice<u8> = VEC_AS_SLICE(b);
+    let res: Result<String, i32> = str_from_utf8(sl);
+    match res {
+        Ok(s) => { return s; },
+        Err(e) => { panic(69299); },
+    }
+}
+
+@test "def set remove str literal fresh key"() {
+    let s: HashSet<String> = HashSet::new();
+    s.insert("a");
+    s.insert("b");
+    s.remove("a");
+    if s.len() != 1 { panic(69201); };
+    if s.contains("a") { panic(69202); };
+    if !s.contains("b") { panic(69203); };
+}
+
+@test "def set remove str variable fresh key"() {
+    let s: HashSet<String> = HashSet::new();
+    s.insert(setrem_mk_a());
+    s.remove(setrem_mk_a());
+    if s.len() != 0 { panic(69211); };
+    if s.contains(setrem_mk_a()) { panic(69212); };
+}
+
+@test "def set remove str missing key"() {
+    let s: HashSet<String> = HashSet::new();
+    s.insert("a");
+    s.remove("zz");
+    if s.len() != 1 { panic(69221); };
+    if !s.contains("a") { panic(69222); };
+}
+
+@test "def set remove int key control"() {
+    let s = HashSet::new();
+    s.insert(5);
+    s.insert(9);
+    s.remove(5);
+    if s.len() != 1 { panic(69231); };
+    if s.contains(5) { panic(69232); };
+    if !s.contains(9) { panic(69233); };
+}

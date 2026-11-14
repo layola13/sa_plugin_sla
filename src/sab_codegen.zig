@@ -22660,13 +22660,15 @@ pub const Codegen = struct {
             const found = self.findStdSurfaceRule(.method, receiver_type_name, call.func_name) orelse return null;
             // DEF-SAB-AUDIT item 3 (74622): a HashSet<String> must key on
             // string CONTENT, not pointer identity — the plain SET_INSERT /
-            // SET_CONTAINS std macros hash the key pointer. The SA-text
-            // backend routes String-element sets to the *_str std variants
-            // (DEF-INSERT-GETMISS); mirror that routing here by substituting
-            // the surface rule when the inserted/queried value is a String.
-            // Requires the sa_std *_str variants (sci side of that fix).
+            // SET_CONTAINS / SET_REMOVE std macros hash the key pointer. The
+            // SA-text backend routes String-element sets to the *_str std
+            // variants (DEF-INSERT-GETMISS, DEF-SET-REMOVE-STR); mirror that
+            // routing here by substituting the surface rule when the
+            // inserted/queried/removed value is a String.
+            // Requires the sa_std *_str variants (sci side of those fixes).
             if ((std.mem.eql(u8, found.macro_name, "SET_INSERT") or
-                std.mem.eql(u8, found.macro_name, "SET_CONTAINS")) and call.args.len > 1)
+                std.mem.eql(u8, found.macro_name, "SET_CONTAINS") or
+                std.mem.eql(u8, found.macro_name, "SET_REMOVE")) and call.args.len > 1)
             {
                 if (self.tc.expr_types.get(call.args[1])) |value_ty| {
                     if (lowering_rules.isStringType(value_ty)) {
@@ -22680,10 +22682,17 @@ pub const Codegen = struct {
                                 "map_rehash",          "map_table_insert",
                                 "sa_mem_set",
                             };
-                        } else {
+                        } else if (std.mem.eql(u8, found.macro_name, "SET_CONTAINS")) {
                             str_rule.macro_name = "SET_CONTAINS_STR";
                             str_rule.deps = &.{
                                 "sa_set_contains_str", "sa_map_get_str",
+                                "map_hash_str_seed",   "map_table_probe_str",
+                                "map_probe_existing_str", "map_str_key_eq",
+                            };
+                        } else {
+                            str_rule.macro_name = "SET_REMOVE_STR";
+                            str_rule.deps = &.{
+                                "sa_set_remove_str", "sa_map_del_str",
                                 "map_hash_str_seed",   "map_table_probe_str",
                                 "map_probe_existing_str", "map_str_key_eq",
                             };

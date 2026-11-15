@@ -6425,7 +6425,14 @@ pub fn isBorrowLikeType(ty: *const ast.Type) bool {
 
 pub fn storedValueMovesIdentifier(value: *const ast.Node, value_ty: *const ast.Type, value_is_copy: bool) ?[]const u8 {
     if (value.* != .identifier) return null;
-    if (value_is_copy or isBorrowLikeType(value_ty)) return null;
+    if (isBorrowLikeType(value_ty)) return null;
+    // SHARD-S7: a whole-array value moves into the store place -- the
+    // checker reports UseAfterMove on any later read of the source
+    // binding -- even though a fixed array of Copy elements classifies
+    // as a Copy value. Without the move, the source register is never
+    // retired after the store (MemoryLeak 1012, e.g. the whole-array
+    // field assignment in the ni corpus and ni_parse_mac).
+    if (value_is_copy and value_ty.* != .array) return null;
     return value.identifier;
 }
 

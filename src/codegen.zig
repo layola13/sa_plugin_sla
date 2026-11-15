@@ -16488,7 +16488,25 @@ pub const Codegen = struct {
         for (lit.elements, 0..) |elem, i| {
             const layout = tupleFieldLayout(tuple, i) orelse return CodegenError.CodegenError;
             const val_reg = try self.genExpr(elem, hoisted_allocs);
-            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+            // TEXT-RESIDUAL-109 (pool family): a bare identifier (or an
+            // explicit move of one) as a non-Copy tuple element is a
+            // genuine register transfer into the aggregate — the same
+            // move the struct-literal isMove arm settles with the
+            // consume marker in the store itself. The plain store left
+            // the binding Active at function exit (MemoryLeak 1012,
+            // e.g. `let q = p; return (q, 7);` in the pool allocators)
+            // because markMovedExprBinding below only records the
+            // transfer in codegen bookkeeping, which the SA verifier
+            // cannot see. Place elements keep the plain store: their
+            // loaded temp is settled by the bookkeeping path (S3).
+            const transfers_root = (elem.* == .identifier or
+                (elem.* == .move_expr and elem.move_expr.expr.* == .identifier)) and
+                !self.typeIsCopyValue(tuple.elems[i]);
+            const store_reg = if (transfers_root and !std.mem.startsWith(u8, val_reg, "^"))
+                try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg})
+            else
+                val_reg;
+            self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, store_reg, layout.ty_str }) catch return CodegenError.CodegenError;
             // DEF triage (MOVEVEC-1): a non-Copy element stored into the
             // tuple transfers ownership to the aggregate — the same rule
             // releaseOrMarkMovedConstructorPayload applies to enum

@@ -1,0 +1,33 @@
+// TEXT-RESIDUAL-109 (pool family): an aggregate binding used as a
+// tuple element is a genuine register transfer into the aggregate;
+// the tuple store must settle it with the consume marker, exactly
+// like the struct-literal move arm. Pre-fix both shapes below trap
+// MemoryLeak 1012 at function exit (register q in pool_alloc_like,
+// register p in pool_direct) because the tuple path emitted a plain
+// store and only recorded the transfer in codegen bookkeeping.
+struct PoolP2 {
+    v: Vec<u8>,
+    n: u64,
+}
+
+fn pool_alloc_like(p: PoolP2, n: u64) -> (PoolP2, u32) {
+    if n == 0 {
+        return (p, 0);
+    };
+    let q = p;
+    return (q, 7);
+}
+
+fn pool_direct(p: PoolP2) -> (PoolP2, u32) {
+    return (p, 3);
+}
+
+@test "tuple aggregate identifier element transfers"() {
+    let r = pool_alloc_like(PoolP2 { v: Vec::new(), n: 1 }, 5);
+    if r.1 != 7 { panic(26921); };
+    let r2 = pool_alloc_like(PoolP2 { v: Vec::new(), n: 2 }, 0);
+    if r2.1 != 0 { panic(26922); };
+    let r3 = pool_direct(PoolP2 { v: Vec::new(), n: 3 });
+    if r3.1 != 3 { panic(26923); };
+    if r3.0.n != 3 { panic(26924); };
+}

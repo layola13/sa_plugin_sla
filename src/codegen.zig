@@ -1812,6 +1812,14 @@ pub const Codegen = struct {
                 // has no exit cleanup to settle it; retire it inline with
                 // a forget, as the tuple path does (DEF-TUPLE-COPY-EMIT).
                 if (lowering_rules.rootIdentifier(arg) == null) try self.emitForgetMovedValue(value_reg);
+                // SHARD-S6: a bare-identifier (or moved-identifier) payload
+                // is only MARKED consumed above; unlike a struct-literal
+                // store, the ctor EXPAND carries no ^ operand, and the
+                // exit cleanup skips consumed bindings without retiring
+                // their registers -- so the register stays Active to
+                // function exit (MemoryLeak 1012, e.g. ni_read_small_file
+                // returning Ok(out)). Retire it inline like the temp case.
+                if (arg.* == .identifier or (arg.* == .move_expr and arg.move_expr.expr.* == .identifier)) try self.emitForgetMovedValue(value_reg);
                 return;
             }
             if (lowering_rules.isHeapHandleType(value_ty)) {

@@ -1,0 +1,40 @@
+// STD-HYGIENE F5 regression: a fresh aggregate payload temp handed to an
+// Option/Result constructor (Some(Struct { .. }) / Ok(Struct { .. })) was
+// only bookkeeping-marked consumed in releaseOrMarkMovedConstructorPayload;
+// no forget was emitted, so the payload cell register stayed live to
+// function exit (MemoryLeak under the widened host verifier). Pre-fix this
+// file traps in the Some/Ok helper fns; post-fix it passes. The scalar
+// payload and plain-let shapes are controls (always clean).
+
+struct HygPt {
+    x: i32,
+    y: i32,
+}
+
+fn hyg_some_struct() {
+    let p: Option<HygPt> = Some(HygPt { x: 1, y: 2 });
+    if p.is_none() { panic(9711); };
+}
+
+fn hyg_ok_struct() -> i32 {
+    let r: Result<HygPt, i32> = Ok(HygPt { x: 3, y: 4 });
+    if r.is_ok() { return 1; };
+    return 0;
+}
+
+fn hyg_some_return() -> Option<HygPt> {
+    return Some(HygPt { x: 5, y: 6 });
+}
+
+fn hyg_some_scalar() {
+    let p: Option<i32> = Some(7);
+    if p.is_none() { panic(9711); };
+}
+
+@test "ctor payload temps are retired"() {
+    hyg_some_struct();
+    if hyg_ok_struct() != 1 { panic(9701); };
+    let q = hyg_some_return();
+    if q.is_none() { panic(9702); };
+    hyg_some_scalar();
+}

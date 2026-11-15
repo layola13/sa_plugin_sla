@@ -140,6 +140,7 @@ pub const SlaModuleExports = struct {
             .abi = fd.abi,
             .no_mangle = fd.no_mangle,
             .is_async = fd.is_async,
+            .is_variadic = fd.is_variadic,
             .module_path = self.module_path,
         });
     }

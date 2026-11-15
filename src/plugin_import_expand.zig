@@ -1321,7 +1321,7 @@ pub fn registerImportedFunctionAliasesFromResolvedImports(
                 if (members.len < 2) continue;
                 const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ namespace, name });
                 for (members) |signature| {
-                    const member_key = try tc.overloadMemberKey(name, signature.params);
+                    const member_key = try tc.overloadMemberKey(name, signature.params, signature.is_variadic);
                     try tc.registerImportedFunctionOverloadMember(name, member_key, signature.params, signature.ret_ty, signature.is_async);
                     try tc.registerImportedFunctionOverloadMember(alias, member_key, signature.params, signature.ret_ty, signature.is_async);
                 }

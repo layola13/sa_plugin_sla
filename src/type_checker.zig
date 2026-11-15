@@ -2942,19 +2942,36 @@ pub const TypeChecker = struct {
     /// so capability-only signature differences still produce distinct keys.
     /// The empty parameter list encodes as `v`. `__ov_` is a reserved marker:
     /// source-level function names containing it are rejected at registration.
-    pub fn overloadMemberKey(self: *TypeChecker, name: []const u8, params: []const ast.Param) ![]const u8 {
+    /// A variadic member keys on its fixed parameters plus the `_va_list`
+    /// marker (a definition's trailing VaList parameter is the marker
+    /// itself, not a fixed parameter, and is stripped before tagging) --
+    /// the same rendering externMemberKey gives a contract declaration.
+    /// A fixed prototype (`fn pick(x: ptr)`) and a variadic one
+    /// (`fn pick(x: ptr, ...)`) therefore never mint the same key, while
+    /// a variadic prototype, its definition and the .sai contract all
+    /// mint the identical key, whichever of them reachability pruning
+    /// leaves behind.
+    pub fn overloadMemberKey(self: *TypeChecker, name: []const u8, params: []const ast.Param, is_variadic: bool) ![]const u8 {
         var tag = std.array_list.Managed(u8).init(self.allocator);
         defer tag.deinit();
-        if (params.len == 0) {
+        var fixed = params;
+        if (is_variadic and fixed.len > 0) {
+            const last = fixed[fixed.len - 1];
+            if (last.ty.* == .primitive and last.ty.primitive == .va_list) {
+                fixed = fixed[0 .. fixed.len - 1];
+            }
+        }
+        if (fixed.len == 0) {
             try tag.append('v');
         } else {
-            for (params, 0..) |param, i| {
+            for (fixed, 0..) |param, i| {
                 if (i > 0) try tag.append('_');
                 try appendOverloadTypeTag(&tag, param.ty);
                 if (param.is_borrow) try tag.append('b');
                 if (param.is_move) try tag.append('m');
             }
         }
+        if (is_variadic) try tag.appendSlice("_va_list");
         return std.fmt.allocPrint(self.allocator, "{s}__ov_{s}", .{ name, tag.items });
     }
 
@@ -6594,7 +6611,7 @@ pub const TypeChecker = struct {
         var set = std.array_list.Managed(*ast.FuncDecl).init(self.allocator);
         errdefer set.deinit();
         for (classes.items) |class| {
-            const key = try self.overloadMemberKey(name, class.rep.params);
+            const key = try self.overloadMemberKey(name, class.rep.params, class.rep.is_variadic);
             if (self.funcs.contains(key)) {
                 self.setError("Redeclaration: function `{s}` is already defined", .{name});
                 return TypeError.Redeclaration;

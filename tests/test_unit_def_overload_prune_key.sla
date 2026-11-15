@@ -1,0 +1,49 @@
+// DEF-OVERLOAD-PRUNE-KEY regression: an extern overload set whose
+// fixed and variadic prototypes share identical fixed parameters
+// must register cleanly no matter which tests are present.
+//
+// The pre-check reachability prune keeps decl_only prototypes
+// unconditionally but drops definitions that no present test
+// references. With only the first test below selected (--filter),
+// both pick definitions are pruned and the two prototypes reach
+// the checker alone; before the fix, overloadMemberKey encoded no
+// variadic marker, so both prototypes minted the identical member
+// key `pick__ov_ptr` and the second registration failed with
+// `Redeclaration: function 'pick' is already defined` -- the
+// compile verdict depended on which tests were in the run.
+// The second test calls pick and is the always-green control:
+// with it present (any whole-file run) the definitions survive
+// pruning, so the whole file passed even before the fix.
+//
+// Filtered run (red before the fix, green after, both backends):
+//   sa sla test tests/test_unit_def_overload_prune_key.sla \
+//       --filter "does not call pick"
+// Whole-file run: green before and after.
+
+extern "C" {
+    fn pick(x: ptr) -> i64;
+    fn pick(x: ptr, ...) -> i64;
+}
+
+@no_mangle pub extern "C" fn pick(x: ptr) -> i64 {
+    return 77;
+}
+
+extern "C" fn pick(x: ptr, args: ...) -> i64 {
+    let a = va_next_i32(args);
+    return 600 + a as i64;
+}
+
+@test "present test does not call pick"() {
+    let a: i32 = 40;
+    let b: i32 = 2;
+    if a + b != 42 { panic(9101); };
+}
+
+@test "same fixed params fixed and variadic members coexist"() {
+    let p = stack_alloc(8);
+    let r = unsafe { pick(p, 5) };
+    if r != 605 { panic(9102); };
+    let r2 = unsafe { pick(p, 5, 6) };
+    if r2 != 605 { panic(9103); };
+}

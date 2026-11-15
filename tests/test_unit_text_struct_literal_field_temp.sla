@@ -1,0 +1,38 @@
+@import "sa_std/ip.sla";
+
+// TEXT-RESIDUAL-109 S1 regression: on the SA-text backend, a struct
+// literal's direct field store must retire the field temp after the
+// store. The release gate (callArgNeedsRelease) returned false for
+// cast expressions and for identifiers, so a scalar cast result
+// (bits as u64) and a const identifier's materialised temp were
+// stored but never retired and the widened verifier trapped the
+// function with MemoryLeak 1012 (the ip_addr_from_ipv4 shape, 15
+// slice cells). A plain variable field must NOT be retired: its
+// binding stays live after the literal.
+
+const FIELD_TEMP_TAG: u64 = 7;
+
+struct FieldTempPair {
+    tag: u64,
+    lo: u64,
+}
+
+fn field_temp_pair_from(bits: u32) -> FieldTempPair {
+    return FieldTempPair { tag: FIELD_TEMP_TAG, lo: bits as u64 };
+}
+
+@test "text struct literal cast and const field temps retired"() {
+    let a: IpAddr = ip_addr_from_ipv4(167772161);
+    if ip_addr_is_ipv4(a) { } else { panic(26501); };
+    let p: FieldTempPair = field_temp_pair_from(41);
+    if p.tag != 7 { panic(26502); };
+    if p.lo != 41 { panic(26503); };
+}
+
+@test "text struct literal variable field binding stays live"() {
+    let v: u64 = 9;
+    let p: FieldTempPair = FieldTempPair { tag: v, lo: 1 };
+    if v != 9 { panic(26504); };
+    if p.tag != 9 { panic(26505); };
+    if p.lo != 1 { panic(26506); };
+}

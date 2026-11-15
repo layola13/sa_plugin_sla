@@ -727,7 +727,7 @@ pub const Codegen = struct {
             self.outPrint("    {s} = {s}\n", .{ result, value_reg }) catch return CodegenError.CodegenError;
         }
         if (self.tc.cleanups.get(last)) |list| {
-            for (list.items) |name| try self.emitRelease(name);
+            for (list.items) |c_name| try self.emitRelease(c_name);
         }
         return result;
     }
@@ -8906,6 +8906,9 @@ pub const Codegen = struct {
             \\@sla_future_ready_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
             \\L_ENTRY:
             \\    EXPAND FUTURE_READY_SET_POLL_STATE out_poll_slot, data_slot
+            \\    !data_slot
+            \\    !ctx_slot
+            \\    !out_poll_slot
             \\    return
             \\
             \\@sla_future_defer_ready_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
@@ -8933,6 +8936,9 @@ pub const Codegen = struct {
             \\L_DEFER_READY_DONE:
             \\    !defer_ready_is_initial
             \\    !defer_ready_stage
+            \\    !data_slot
+            \\    !ctx_slot
+            \\    !out_poll_slot
             \\    return
             \\
             \\@sla_future_join2_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
@@ -8945,6 +8951,9 @@ pub const Codegen = struct {
             \\    !join2_poll_value
             \\    !join2_poll_tag
             \\    !join2_poll_tmp
+            \\    !data_slot
+            \\    !ctx_slot
+            \\    !out_poll_slot
             \\    return
             \\
             \\@sla_future_select2_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
@@ -8957,6 +8966,9 @@ pub const Codegen = struct {
             \\    !select2_poll_value
             \\    !select2_poll_tag
             \\    !select2_poll_tmp
+            \\    !data_slot
+            \\    !ctx_slot
+            \\    !out_poll_slot
             \\    return
             \\
             \\
@@ -9858,6 +9870,13 @@ pub const Codegen = struct {
             // a `return` into the final block; emitting the implicit void
             // epilogue as well produced `return` + `return` in one block,
             // which the SA verifier rejects as FallthroughForbidden.
+            // STD-HYGIENE E2: emit the root-scope exit cleanups the
+            // checker collected for a void function that falls off the
+            // end of its body (fn_exit_cleanups); without them every
+            // still-live parameter leaked at this implicit return.
+            if (self.tc.fn_exit_cleanups.get(f)) |list| {
+                for (list.items) |c_name| try self.emitRelease(c_name);
+            }
             try self.emitVaEndIfVariadic();
             self.outPrint("    return\n", .{}) catch return CodegenError.CodegenError;
         }

@@ -238,6 +238,14 @@ pub const TypeChecker = struct {
     macro_call_try_cleanups: std.AutoHashMap(*const ast.CallExpr, std.array_list.Managed([]const u8)),
     // Maps a branch end to the variables to release for Phi resolution
     phi_cleanups: std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)),
+    // Maps a function declaration to the root-scope variables still
+    // active when a void function falls off the end of its body (no
+    // explicit return statement): codegen's implicit epilogue emits
+    // these releases before the implicit `return`. Without this list
+    // the epilogue emitted a bare `return` and every still-live
+    // parameter leaked (error[MemoryLeak] under a verifier that
+    // checks every function exit, not just the last one).
+    fn_exit_cleanups: std.AutoHashMap(*const ast.FuncDecl, std.array_list.Managed([]const u8)),
 
     // DEF deep-drop batch (fields for the AssignDropMode decl above):
     // assign_drop_old maps an assignment node to its old-value drop mode.
@@ -406,6 +414,7 @@ pub const TypeChecker = struct {
             .await_cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
             .macro_call_try_cleanups = std.AutoHashMap(*const ast.CallExpr, std.array_list.Managed([]const u8)).init(allocator),
             .phi_cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
+            .fn_exit_cleanups = std.AutoHashMap(*const ast.FuncDecl, std.array_list.Managed([]const u8)).init(allocator),
             .assign_drop_old = std.AutoHashMap(*const ast.Node, AssignDropMode).init(allocator),
             .assign_replace_src = std.AutoHashMap(*const ast.Node, *const ast.Node).init(allocator),
             .drop_taint_snapshots = std.AutoHashMap(*const ast.Node, std.StringHashMap(void)).init(allocator),
@@ -3179,6 +3188,12 @@ pub const TypeChecker = struct {
             list.deinit();
         }
         self.phi_cleanups.deinit();
+
+        var fn_exit_iter = self.fn_exit_cleanups.valueIterator();
+        while (fn_exit_iter.next()) |list| {
+            list.deinit();
+        }
+        self.fn_exit_cleanups.deinit();
 
         self.assign_drop_old.deinit();
         self.assign_replace_src.deinit();
@@ -7251,11 +7266,24 @@ pub const TypeChecker = struct {
 
         // Verify that all parameters or locals in the function root scope are consumed (or we auto-release them)
         // For parameters/locals remaining active at function exit, compile-time checklist forces release.
+        var fn_exit_cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
         for (scope.symbols.values()) |*sym| {
             if (sym.state == .active and isPrimitiveType(func.ret_ty, .void_type) and !isInternalSymbol(sym.name)) {
                 // If it returns void, we can auto-release. If it's a value return, return statement handles cleanups.
+                // The auto-release must be materialised for codegen: the
+                // implicit void epilogue emits exactly this list (same
+                // filters as the return-statement cleanup collection,
+                // including the issue013 borrow-alias skip).
+                if (!(isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name))) {
+                    try fn_exit_cleanup_list.append(sym.name);
+                }
                 sym.state = .consumed;
             }
+        }
+        if (fn_exit_cleanup_list.items.len > 0) {
+            try self.fn_exit_cleanups.put(func, fn_exit_cleanup_list);
+        } else {
+            fn_exit_cleanup_list.deinit();
         }
     }
 

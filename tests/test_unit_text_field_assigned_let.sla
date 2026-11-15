@@ -1,0 +1,45 @@
+// Regression (TEXT-RESIDUAL-109 pool-capture, Defect A): a `let`
+// binding of an aggregate identifier that is later FIELD-ASSIGNED
+// (`let q = p; q.len = q.len + 1;`) takes genLet's assigned-value
+// slot plan: q is materialised as a stack cell and p was stored into
+// it plainly, while the checker had recorded `let q = p` as a move --
+// so p appeared in no exit cleanup and the SA verifier trapped
+// MemoryLeak 1012 naming p at the return (carrier:
+// sa_std/slot_pool.sla slot_pool_alloc, test_unit_reg4_slot_pool.sla).
+// The fix (A_move_store) emits the store with the consume marker
+// (`store q+0, ^p as ptr`) for checker-consumed identifier sources,
+// mirroring the tuple-literal consume-marker store. Control shapes
+// (push-only mutation, pop + if-let) passed before and must keep
+// passing.
+@import "sa_std/vec.sa"
+
+struct Pool {
+    data: Vec<u64>,
+    freelist: Vec<u32>,
+    len: u64,
+}
+
+fn bump(p: Pool) -> (Pool, u64) {
+    let q = p;
+    q.len = q.len + 1;
+    return (q, q.len);
+}
+
+fn bump_twice(p: Pool) -> (Pool, u64) {
+    let q = p;
+    q.len = q.len + 1;
+    q.data.push(7);
+    q.len = q.len + 1;
+    return (q, q.len);
+}
+
+@test "field-assigned aggregate let consumes its source"() {
+    let p0 = Pool { data: Vec::new(), freelist: Vec::new(), len: 0 };
+    let (p1, n) = bump(p0);
+    if n != 1 { panic(26931); };
+    if p1.len != 1 { panic(26932); };
+    let (p2, m) = bump_twice(p1);
+    if m != 3 { panic(26933); };
+    if p2.len != 3 { panic(26934); };
+    if len(p2.data) != 1 { panic(26935); };
+}

@@ -14971,7 +14971,29 @@ pub const Codegen = struct {
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.assigned_value_slots.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.outPrint("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
-                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
+                    // DEFECT-A (A_move_store): when the let source is an
+                    // identifier the checker consumed as a move -- the
+                    // storedIdentifierNeedsRelease predicate whose
+                    // markConsumedBinding below records that move in
+                    // codegen bookkeeping -- the store into the slot must
+                    // carry the consume marker so the emitted text agrees
+                    // with the checker's move record. The plain store left
+                    // the source register Active at function exit while
+                    // the bookkeeping suppressed its exit cleanup
+                    // (MemoryLeak 1012 naming the source, e.g. `let q = p;
+                    // q.len = q.len + 1;` in sa_std/slot_pool.sla
+                    // slot_pool_alloc). Mirrors the tuple-literal
+                    // consume-marker store in genTupleLiteralInto.
+                    // Sources the checker did NOT consume (Copy or
+                    // borrow-like identifiers, place expressions, fresh
+                    // temps, refcell borrow handles) keep the plain store.
+                    const moves_identifier = self.storedIdentifierNeedsRelease(let.value, let_ty) and
+                        !self.refcell_borrow_handles.contains(val_reg);
+                    const store_reg = if (moves_identifier and !std.mem.startsWith(u8, val_reg, "^"))
+                        try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg})
+                    else
+                        val_reg;
+                    self.outPrint("    store {s}+0, {s} as {s}\n", .{ let.name, store_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
                     if (self.refcell_borrow_handles.contains(val_reg)) {
                         try self.storeResultSlotTransferredValueState(let.name, val_reg, let_ty, callArgNeedsRelease(let.value));
                     } else if (self.fieldBaseResultNeedsRelease(let.value, val_reg)) try self.emitSlotTransferredRetire(let_ty, val_reg);

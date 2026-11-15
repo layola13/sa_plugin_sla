@@ -1,0 +1,62 @@
+// Regression (TEXT-RESIDUAL-109 shard S6): an enum-constructor payload
+// that is a bare local aggregate binding was only MARKED consumed; the
+// ctor EXPAND carries no ^ operand and the exit cleanup skips consumed
+// bindings, so the binding's register stayed Active to function exit
+// (MemoryLeak 1012). Source shape: ni_read_small_file's
+// `let out: Vec<u8> = ni_vec_from_ptr(..); return Ok(out);`
+// in sa_std/net_info.sla.
+fn build_vec_s6(n: u64) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    let i: u64 = 0;
+    while i < n {
+        v.push(7);
+        i = i + 1;
+    }
+    return v;
+}
+
+fn wrap_tail(n: u64) -> Result<Vec<u8>, i32> {
+    let out: Vec<u8> = build_vec_s6(n);
+    return Ok(out);
+}
+
+fn wrap_let(n: u64) -> Result<Vec<u8>, i32> {
+    let out: Vec<u8> = build_vec_s6(n);
+    let r = Ok(out);
+    return r;
+}
+
+fn wrap_branch(flag: bool, n: u64) -> Result<Vec<u8>, i32> {
+    let out: Vec<u8> = build_vec_s6(n);
+    if flag {
+        return Ok(out);
+    };
+    return Err(7);
+}
+
+@test "ctor payload identifier binding is retired"() {
+    match wrap_tail(3) {
+        Ok(v) => {
+            if len(v) != 3 { panic(26861); };
+        },
+        Err(e) => { panic(26862); },
+    };
+    match wrap_let(2) {
+        Ok(v) => {
+            if len(v) != 2 { panic(26863); };
+        },
+        Err(e) => { panic(26864); },
+    };
+    match wrap_branch(true, 1) {
+        Ok(v) => {
+            if len(v) != 1 { panic(26865); };
+        },
+        Err(e) => { panic(26866); },
+    };
+    match wrap_branch(false, 1) {
+        Ok(v) => { panic(26867); },
+        Err(e) => {
+            if e != 7 { panic(26868); };
+        },
+    };
+}

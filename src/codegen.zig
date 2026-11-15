@@ -10934,6 +10934,9 @@ pub const Codegen = struct {
             \\L_ASYNC_SINGLE_AWAIT_DONE:
             \\    !async_done
             \\    !async_stage
+            \\    !data_slot
+            \\    !ctx_slot
+            \\    !out_poll_slot
             \\    return
             \\
         , .{plan.binding_name}) catch return CodegenError.CodegenError;
@@ -11030,6 +11033,9 @@ pub const Codegen = struct {
             \\    !async_poll_first
             \\    !async_done
             \\    !async_stage
+            \\    !data_slot
+            \\    !ctx_slot
+            \\    !out_poll_slot
             \\    return
             \\
         , .{ plan.second_binding_name, plan.first_binding_name }) catch return CodegenError.CodegenError;
@@ -11121,7 +11127,7 @@ pub const Codegen = struct {
         for (0..plan.count) |s| {
             w.print("    !async_linear_is_{d}\n", .{s}) catch return CodegenError.CodegenError;
         }
-        w.print("    !async_done\n    !async_stage\n    return\n", .{}) catch return CodegenError.CodegenError;
+        w.print("    !async_done\n    !async_stage\n    !data_slot\n    !ctx_slot\n    !out_poll_slot\n    return\n", .{}) catch return CodegenError.CodegenError;
     }
 
     fn emitAsyncLinearAwaitScalarReady(self: *Codegen, plan: lowering_rules.AsyncLinearAwaitContinuationPlan) CodegenError!void {
@@ -11212,6 +11218,9 @@ pub const Codegen = struct {
             \\L_ASYNC_JOIN2_AWAIT_DONE:
             \\    !async_done
             \\    !async_stage
+            \\    !data_slot
+            \\    !ctx_slot
+            \\    !out_poll_slot
             \\    return
             \\
         , .{plan.binding_name}) catch return CodegenError.CodegenError;
@@ -11495,6 +11504,9 @@ pub const Codegen = struct {
             \\    !async_loop_awaiting
             \\    !async_loop_done
             \\    !async_loop_stage
+            \\    !data_slot
+            \\    !ctx_slot
+            \\    !out_poll_slot
             \\    return
             \\
             \\
@@ -11643,7 +11655,7 @@ pub const Codegen = struct {
         for (0..plan.count) |s| {
             w.print("    !async_general_is_{d}\n", .{s}) catch return CodegenError.CodegenError;
         }
-        w.print("    !async_done\n    !async_stage\n    return\n", .{}) catch return CodegenError.CodegenError;
+        w.print("    !async_done\n    !async_stage\n    !data_slot\n    !ctx_slot\n    !out_poll_slot\n    return\n", .{}) catch return CodegenError.CodegenError;
     }
 
     fn emitAsyncGeneralAwaitScalarReady(self: *Codegen, plan: lowering_rules.AsyncGeneralAwaitContinuationPlan) CodegenError!void {

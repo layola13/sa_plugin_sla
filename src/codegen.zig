@@ -9859,11 +9859,27 @@ pub const Codegen = struct {
                 if (!self.async_pending_return_emitted) {
                     // Form G: the tail expression is a return position;
                     // canonicalize to the declared return width.
+                    const tail_raw_reg = tail_reg;
                     tail_reg = try self.canonicalizeReturnValue(tail_expr, tail_reg, f.ret_ty);
+                    // TEXT-RESIDUAL-109 (param-narrow): same copied-
+                    // source release as the explicit return path — a
+                    // wrapped tail identifier was copied, not
+                    // transferred, and the tail cleanup plan treats
+                    // it as transfer_result.
+                    const tail_copied_source: ?[]const u8 = if (!std.mem.eql(u8, tail_reg, tail_raw_reg)) blk: {
+                        if (tail_expr.* == .identifier) break :blk tail_expr.identifier;
+                        if (tail_expr.* == .move_expr and tail_expr.move_expr.expr.* == .identifier) break :blk tail_expr.move_expr.expr.identifier;
+                        break :blk null;
+                    } else null;
                     if (async_return_plan.wrap_ready_future) {
                         tail_reg = try self.genReadyFutureI64(tail_reg);
                     }
                     try self.emitFunctionTailCleanups(f.body[f.body.len - 1], tail_expr);
+                    if (tail_copied_source) |source_name| {
+                        if (!self.consumed_bindings.contains(self.resolveBindingName(source_name))) {
+                            try self.emitRelease(source_name);
+                        }
+                    }
                     try self.emitVaEndIfVariadic();
                     self.outPrint("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
                 }
@@ -15708,6 +15724,11 @@ pub const Codegen = struct {
             .return_stmt => |ret| {
                 var val_reg: ?[]const u8 = null;
                 var result_extract_cloned = false;
+                // TEXT-RESIDUAL-109 (param-narrow): set when Form G
+                // canonicalization wraps the result register — the
+                // source binding was COPIED into the wrapped temp, not
+                // transferred, so it still needs its own release.
+                var copied_result_source: ?[]const u8 = null;
                 if (ret.value) |v| {
                     const raw_val_reg = if (self.current_fn_ret_ty != null and lowering_rules.isStringType(self.current_fn_ret_ty.?) and v.* == .literal and v.literal == .string_val)
                         try self.genOwnedStringLiteral(v.literal.string_val, hoisted_allocs)
@@ -15723,6 +15744,24 @@ pub const Codegen = struct {
                     // known in every mode, records or not).
                     if (val_reg) |vr| {
                         val_reg = try self.canonicalizeReturnValue(v, vr, self.current_fn_ret_ty);
+                        if (!std.mem.eql(u8, val_reg.?, vr)) {
+                            // The wrap materialised a fresh temp and
+                            // left the source register behind: for a
+                            // bare identifier (or explicit move of
+                            // one) the tail-cleanup plan classifies
+                            // the binding as transfer_result and the
+                            // checker excluded it from the cleanup
+                            // list as escaping, so nothing retires it
+                            // (param-narrow MemoryLeak: `return v`,
+                            // v: u8, emitted `return tmp_1` with v
+                            // still Active). Record it for release
+                            // after the cleanup loop.
+                            if (v.* == .identifier) {
+                                copied_result_source = v.identifier;
+                            } else if (v.* == .move_expr and v.move_expr.expr.* == .identifier) {
+                                copied_result_source = v.move_expr.expr.identifier;
+                            }
+                        }
                     }
                 }
                 if (self.current_async) {
@@ -15748,6 +15787,11 @@ pub const Codegen = struct {
                         } else {
                             try self.emitRelease(c_var);
                         }
+                    }
+                }
+                if (copied_result_source) |source_name| {
+                    if (!self.consumed_bindings.contains(self.resolveBindingName(source_name))) {
+                        try self.emitRelease(source_name);
                     }
                 }
                 try self.emitVaEndIfVariadic();

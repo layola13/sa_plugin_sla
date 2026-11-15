@@ -1,0 +1,17 @@
+// TEXT-RESIDUAL-109 regression (param-narrow cluster): `return v`
+// where v is a narrow-scalar parameter. Form G canonicalization
+// copies v into a wrapped temp and returns the temp, but the tail
+// cleanup plan classified the binding as transfer_result (and the
+// checker excluded it from the cleanup list as escaping), so the
+// parameter register stayed Active at function exit (MemoryLeak
+// 1012, register v). The emitter now releases the source binding
+// when canonicalization materialised a copy of a bare identifier.
+fn id8(v: u8) -> u8 { return v; }
+fn id32(v: i32) -> i32 { return v; }
+fn widen8(v: u8) -> u64 { return v as u64; }
+
+@test "param narrow return releases source"() {
+    if id8(200) != 200 { panic(26601); };
+    if id32(-5) != -5 { panic(26602); };
+    if widen8(7) != 7 { panic(26603); };
+}

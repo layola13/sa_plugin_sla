@@ -15,6 +15,8 @@ pub const SlaCliOptions = struct {
     passthrough_start: usize,
     help_requested: bool = false,
     emit_sab_file: bool = false,
+    /// Requested compiler backend (`--test-backend`); `.auto` is the
+    /// default policy and resolves via `effectiveTestBackend`.
     test_backend: TestBackend = .auto,
 };
 
@@ -27,6 +29,50 @@ pub fn parseTestBackendValue(value: []const u8) !TestBackend {
     if (std.mem.eql(u8, value, "sab")) return .sab;
     if (std.mem.eql(u8, value, "sa")) return .sa;
     return error.InvalidFormat;
+}
+
+/// The backend a command actually runs for a requested
+/// `--test-backend` value. `auto` is the default policy: since the
+/// 2026-11-15 direction change (production first; SAB is an
+/// optimisation direction) the default route is SA text, and the
+/// SAB route runs only when explicitly requested with
+/// `--test-backend sab`.
+pub fn effectiveTestBackend(requested: TestBackend) TestBackend {
+    return switch (requested) {
+        .auto, .sa => .sa,
+        .sab => .sab,
+    };
+}
+
+/// Commands whose compilation route `--test-backend` selects: the
+/// test command and the executable build family. (`sla build`
+/// always emits SA text; the `sla sab ...` commands are SAB by
+/// name.)
+pub fn commandSelectsTestBackend(command: []const u8) bool {
+    return std.mem.eql(u8, command, "test") or
+        std.mem.eql(u8, command, "build-exe") or
+        std.mem.eql(u8, command, "build-wasm") or
+        std.mem.eql(u8, command, "build-js") or
+        std.mem.eql(u8, command, "build-c") or
+        std.mem.eql(u8, command, "build-workspace");
+}
+
+/// Append `args` to `argv`, dropping the `--test-backend` tokens
+/// the plugin itself consumes, so they are not forwarded to the
+/// host build/test subprocess (the same treatment the test
+/// passthrough gives them in `appendSaTestPassthroughInternal`).
+pub fn appendBackendStrippedPassthrough(argv: *std.array_list.Managed([]const u8), args: []const []const u8) !void {
+    var idx: usize = 0;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (std.mem.eql(u8, arg, "--test-backend")) {
+            idx += 1;
+            if (idx >= args.len) return error.InvalidFormat;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--test-backend=")) continue;
+        try argv.append(arg);
+    }
 }
 
 pub fn parseTestBackendFromArgs(args: []const []const u8, default_backend: TestBackend) !TestBackend {
@@ -389,9 +435,9 @@ pub fn writeCommandHelp(writer: *std.Io.Writer, command: []const u8) !void {
         if (std.mem.eql(u8, command, "build-exe") or std.mem.eql(u8, command, "build-wasm") or std.mem.eql(u8, command, "build-js") or std.mem.eql(u8, command, "build-c") or std.mem.eql(u8, command, "build-workspace") or std.mem.eql(u8, command, "test")) {
             try writer.writeAll("  --emit-sab              Also write a sibling .sab artifact for inspection\n");
         }
-        if (std.mem.eql(u8, command, "test")) {
+        if (commandSelectsTestBackend(command)) {
             try writer.writeAll("  --test-backend auto|sab|sa\n");
-            try writer.writeAll("                          Select test compiler backend; default auto uses SAB\n");
+            try writer.writeAll("                          Select compiler backend; default auto uses SA text, sab opts into SAB\n");
         }
         if (std.mem.eql(u8, command, "sab build")) {
             try writer.writeAll("  -o, --out <file.sab>    Also write SAB output file; default uses .sla-cache/sab/\n");
@@ -422,11 +468,11 @@ pub fn parseSlaCliOptionsFrom(args: []const []const u8, command: []const u8, sta
             options.emit_sab_file = true;
             continue;
         }
-        if (std.mem.eql(u8, command, "test") and std.mem.startsWith(u8, arg, "--test-backend=")) {
+        if (commandSelectsTestBackend(command) and std.mem.startsWith(u8, arg, "--test-backend=")) {
             options.test_backend = try parseTestBackendValue(arg["--test-backend=".len..]);
             continue;
         }
-        if (std.mem.eql(u8, command, "test") and std.mem.eql(u8, arg, "--test-backend")) {
+        if (commandSelectsTestBackend(command) and std.mem.eql(u8, arg, "--test-backend")) {
             idx += 1;
             if (idx >= args.len) return error.InvalidFormat;
             options.test_backend = try parseTestBackendValue(args[idx]);
@@ -499,4 +545,30 @@ test "sla compiled test passthrough strips source-only test selection for child 
     try appendCompiledSaTestPassthrough(&argv_eq, &.{ "--filter=one", "--trace-panic" });
     try std.testing.expectEqual(@as(usize, 1), argv_eq.items.len);
     try std.testing.expectEqualStrings("--trace-panic", argv_eq.items[0]);
+
+    // Backend selection (2026-11-15 flip): the requested value
+    // parses in both spellings, an absent flag keeps the `.auto`
+    // request, and the effective route is SA text unless SAB was
+    // explicitly requested. The build-exe family selects its route
+    // with the same flag; plain `build` does not (it always emits
+    // SA text), and the tokens the plugin consumes are stripped
+    // from what is forwarded to the host subprocess.
+    try std.testing.expectEqual(TestBackend.auto, try parseTestBackendFromArgs(&.{}, .auto));
+    try std.testing.expectEqual(TestBackend.sab, try parseTestBackendFromArgs(&.{ "--test-backend", "sab" }, .auto));
+    try std.testing.expectEqual(TestBackend.sa, try parseTestBackendFromArgs(&.{ "--test-backend=sa" }, .auto));
+    try std.testing.expectEqual(TestBackend.sa, effectiveTestBackend(.auto));
+    try std.testing.expectEqual(TestBackend.sa, effectiveTestBackend(.sa));
+    try std.testing.expectEqual(TestBackend.sab, effectiveTestBackend(.sab));
+    try std.testing.expect(commandSelectsTestBackend("test"));
+    try std.testing.expect(commandSelectsTestBackend("build-exe"));
+    try std.testing.expect(commandSelectsTestBackend("build-workspace"));
+    try std.testing.expect(!commandSelectsTestBackend("build"));
+    try std.testing.expect(!commandSelectsTestBackend("check"));
+
+    var build_argv = std.array_list.Managed([]const u8).init(std.testing.allocator);
+    defer build_argv.deinit();
+    try appendBackendStrippedPassthrough(&build_argv, &.{ "--test-backend", "sab", "-o", "app" });
+    try std.testing.expectEqual(@as(usize, 2), build_argv.items.len);
+    try std.testing.expectEqualStrings("-o", build_argv.items[0]);
+    try std.testing.expectEqualStrings("app", build_argv.items[1]);
 }

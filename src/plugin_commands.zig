@@ -31,6 +31,7 @@ const compileSlaFileToSabWithOptions = plugin_compile.compileSlaFileToSabWithOpt
 const compileSlaSaTestInput = plugin_compile.compileSlaSaTestInput;
 const compileSlaSabTestInput = plugin_compile.compileSlaSabTestInput;
 const compileSlaToSaString = plugin_compile.compileSlaToSaString;
+const compileSlaToSaStringWithOptions = plugin_compile.compileSlaToSaStringWithOptions;
 const defaultOutputPath = plugin_sab_paths.defaultOutputPath;
 const expandSlaImportsWithModuleTable = plugin_import_expand.expandSlaImportsWithModuleTable;
 const hasEmitSabArg = plugin_sab_paths.hasEmitSabArg;
@@ -42,6 +43,9 @@ const parseSabOutFileArg = plugin_sab_paths.parseSabOutFileArg;
 const parseSlaCliOptions = plugin_cli.parseSlaCliOptions;
 const parseSlaCliOptionsFrom = plugin_cli.parseSlaCliOptionsFrom;
 const parseTestBackendFromArgs = plugin_cli.parseTestBackendFromArgs;
+const TestBackend = plugin_cli.TestBackend;
+const effectiveTestBackend = plugin_cli.effectiveTestBackend;
+const appendBackendStrippedPassthrough = plugin_cli.appendBackendStrippedPassthrough;
 const registerImportedFunctionAliasesFromResolvedImports = plugin_import_expand.registerImportedFunctionAliasesFromResolvedImports;
 const resolveSlaInputFile = plugin_compile.resolveSlaInputFile;
 const resolveWorkspaceSourcePath = plugin_compile.resolveWorkspaceSourcePath;
@@ -75,6 +79,45 @@ fn buildWasmCompileOptions() plugin_compile_options.SlaCompileOptions {
     // SAB handed to `sa build-wasm` carries wasm32-width extern decls.
     options.decl_target = .wasm32;
     return options;
+}
+
+/// The intermediate artifact a host build command consumes for
+/// `file`: the sibling SA text by default (the placement `sla
+/// build` and the host frontend routing already use), or the
+/// managed SAB when the SAB route was explicitly requested with
+/// `--test-backend sab`. `--emit-sab` keeps its meaning on both
+/// routes: a sibling .sab artifact is also written (on the text
+/// route it takes an additional SAB compile, mirroring
+/// `compileSlaSaTestInput`). Returns the intermediate path, or
+/// null after the compile error has been printed.
+fn compileBuildIntermediate(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    stderr: *std.Io.Writer,
+    compile_options: plugin_compile_options.SlaCompileOptions,
+    backend: TestBackend,
+    emit_sab_file: bool,
+) !?[]const u8 {
+    if (effectiveTestBackend(backend) == .sab) {
+        const sab_out = try managedSabPath(allocator, file);
+        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, compile_options)) orelse return null;
+        if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return null;
+        if (emit_sab_file) {
+            if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return null;
+        }
+        return sab_out;
+    }
+    const sa_out = try defaultOutputPath(allocator, file, ".sla", ".sa");
+    const sa_code = (try compileSlaToSaStringWithOptions(allocator, file, sa_out, stderr, compile_options)) orelse return null;
+    sio.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
+        try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
+        return null;
+    };
+    if (emit_sab_file) {
+        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sa_out, stderr, compile_options)) orelse return null;
+        if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return null;
+    }
+    return sa_out;
 }
 
 fn writeSiblingSabFromBytes(
@@ -258,11 +301,11 @@ pub fn runSlaCommandImpl(
         try stderr.writeAll("  skills     [--json]\n");
         try stderr.writeAll("  stability  schema|verify ...\n");
         try stderr.writeAll("  build      [file] [-p <package>] [--out <file>]\n");
-        try stderr.writeAll("  build-workspace [-p <package>] [sa-build-exe args]\n");
-        try stderr.writeAll("  build-exe  [file] [-p <package>] [sa-build-exe args]\n");
-        try stderr.writeAll("  build-wasm [file] [-p <package>] [sa-build-wasm args]\n");
-        try stderr.writeAll("  build-js   [file] [-p <package>] [sa-build-js args]\n");
-        try stderr.writeAll("  build-c    [file] [-p <package>] [sa-build-c args]\n");
+        try stderr.writeAll("  build-workspace [-p <package>] [--test-backend auto|sab|sa] [sa-build-exe args]\n");
+        try stderr.writeAll("  build-exe  [file] [-p <package>] [--test-backend auto|sab|sa] [sa-build-exe args]\n");
+        try stderr.writeAll("  build-wasm [file] [-p <package>] [--test-backend auto|sab|sa] [sa-build-wasm args]\n");
+        try stderr.writeAll("  build-js   [file] [-p <package>] [--test-backend auto|sab|sa] [sa-build-js args]\n");
+        try stderr.writeAll("  build-c    [file] [-p <package>] [--test-backend auto|sab|sa] [sa-build-c args]\n");
         try stderr.writeAll("  sab build  [file] [-p <package>] [--out <file.sab>]\n");
         try stderr.writeAll("  sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe args]\n");
         try stderr.writeAll("  sab disasm <file.sab> [--out <file.sa>]\n");
@@ -349,18 +392,20 @@ pub fn runSlaCommandImpl(
         const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
         const extra_args = args[options.passthrough_start..];
 
-        const sab_out = try managedSabPath(allocator, file);
-        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, buildExeCompileOptions())) orelse return 1;
-        if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
-        if (options.emit_sab_file) {
-            if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
-        }
+        const backend = parseTestBackendFromArgs(extra_args, options.test_backend) catch {
+            try writeCommandHelp(stderr, cmd);
+            return 1;
+        };
+        const intermediate = (try compileBuildIntermediate(allocator, file, stderr, buildExeCompileOptions(), backend, options.emit_sab_file)) orelse return 1;
 
         var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append("build-exe");
-        try argv.append(sab_out);
-        for (extra_args) |a| try argv.append(a);
+        try argv.append(intermediate);
+        appendBackendStrippedPassthrough(&argv, extra_args) catch {
+            try writeCommandHelp(stderr, cmd);
+            return 1;
+        };
         try appendDefaultJobsAuto(&argv, extra_args);
 
         var child = sio.Child.init(argv.items, allocator);
@@ -395,19 +440,21 @@ pub fn runSlaCommandImpl(
         const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
         const extra_args = args[options.passthrough_start..];
 
-        const sab_out = try managedSabPath(allocator, file);
         const compile_options = if (std.mem.eql(u8, cmd, "build-wasm")) buildWasmCompileOptions() else buildExeCompileOptions();
-        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, compile_options)) orelse return 1;
-        if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
-        if (options.emit_sab_file) {
-            if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
-        }
+        const backend = parseTestBackendFromArgs(extra_args, options.test_backend) catch {
+            try writeCommandHelp(stderr, cmd);
+            return 1;
+        };
+        const intermediate = (try compileBuildIntermediate(allocator, file, stderr, compile_options, backend, options.emit_sab_file)) orelse return 1;
 
         var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append(sa_sub);
-        try argv.append(sab_out);
-        for (extra_args) |a| try argv.append(a);
+        try argv.append(intermediate);
+        appendBackendStrippedPassthrough(&argv, extra_args) catch {
+            try writeCommandHelp(stderr, cmd);
+            return 1;
+        };
         try appendDefaultJobsAuto(&argv, extra_args);
 
         var child = sio.Child.init(argv.items, allocator);
@@ -441,18 +488,20 @@ pub fn runSlaCommandImpl(
         const file = (try resolveWorkspaceSourcePath(allocator, stderr, options.package_name)) orelse return 1;
         const extra_args = args[options.passthrough_start..];
 
-        const sab_out = try managedSabPath(allocator, file);
-        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, buildExeCompileOptions())) orelse return 1;
-        if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
-        if (options.emit_sab_file) {
-            if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
-        }
+        const backend = parseTestBackendFromArgs(extra_args, options.test_backend) catch {
+            try writeCommandHelp(stderr, cmd);
+            return 1;
+        };
+        const intermediate = (try compileBuildIntermediate(allocator, file, stderr, buildExeCompileOptions(), backend, options.emit_sab_file)) orelse return 1;
 
         var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append("build-exe");
-        try argv.append(sab_out);
-        for (extra_args) |a| try argv.append(a);
+        try argv.append(intermediate);
+        appendBackendStrippedPassthrough(&argv, extra_args) catch {
+            try writeCommandHelp(stderr, cmd);
+            return 1;
+        };
         try appendDefaultJobsAuto(&argv, extra_args);
 
         var child = sio.Child.init(argv.items, allocator);
@@ -622,10 +671,10 @@ pub fn runSlaCommandImpl(
             return 0;
         }
 
-        const test_input = switch (backend) {
-            .auto, .sab => (try compileSlaSabTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1,
-            .sa => (try compileSlaSaTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1,
-        };
+        const test_input = if (effectiveTestBackend(backend) == .sab)
+            (try compileSlaSabTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1
+        else
+            (try compileSlaSaTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1;
         defer {
             if (test_input.delete_after) sio.cwd().deleteFile(test_input.path) catch {};
         }

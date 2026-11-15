@@ -1,0 +1,59 @@
+// TEXT-RESIDUAL-109 regression (S3 form-2): `return Ok(parts.payload)`
+// moves a struct field into the Result payload. The field place must
+// be drop-tainted by that read-out so the owner struct's tail drop
+// shallows the moved field; without the taint, the tail drop freed
+// the payload Vec at function exit and the caller read freed memory
+// (jwt_verify_hs256 signal-11 shape). walkTaintCall treated the
+// constructor's first argument as a method receiver (non-consuming),
+// so the payload place was never tainted.
+@import "sa_std/vec.sa";
+@import "sa_std/core/slice.sa";
+
+struct Parts3 {
+    input: Vec<u8>,
+    payload: Vec<u8>,
+    sig: Vec<u8>,
+    status: i32,
+}
+
+fn mkvec(a: u8, b: u8) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    v.push(a);
+    v.push(b);
+    return v;
+}
+
+fn split3() -> Parts3 {
+    return Parts3 { input: mkvec(1, 1), payload: mkvec(7, 9), sig: mkvec(3, 3), status: 0 };
+}
+
+fn verify3() -> Result<Vec<u8>, i32> {
+    let parts: Parts3 = split3();
+    if parts.status != 0 {
+        return Err(parts.status);
+    };
+    return Ok(parts.payload);
+}
+
+@test "ctor payload place is not freed at exit"() {
+    match verify3() {
+        Ok(v) => {
+            // Churn the allocator so a freed payload buffer is reused.
+            let c1 = mkvec(5, 5);
+            let c2 = mkvec(6, 6);
+            let c3 = mkvec(8, 8);
+            if len(c1) != 2 { panic(26921); };
+            if len(c2) != 2 { panic(26922); };
+            if len(c3) != 2 { panic(26923); };
+            if len(v) != 2 { panic(26924); };
+            let sl: Slice<u8> = VEC_AS_SLICE(v);
+            let b0: u8 = 0;
+            SLICE_GET(b0, sl, 0);
+            if b0 != 7 { panic(26925); };
+            let b1: u8 = 0;
+            SLICE_GET(b1, sl, 1);
+            if b1 != 9 { panic(26926); };
+        },
+        Err(e) => { panic(26927); },
+    };
+}

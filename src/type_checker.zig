@@ -2148,7 +2148,18 @@ pub const TypeChecker = struct {
             self.extern_funcs.contains(call.func_name) or
             self.imported_function_signatures.contains(call.func_name) or
             self.macros.contains(call.func_name) or
-            self.imported_macros.contains(call.func_name);
+            self.imported_macros.contains(call.func_name) or
+            // TEXT-RESIDUAL-109 (S3 form-2): the Option/Result
+            // constructor macros consume their payload by value
+            // (releaseOrMarkMovedConstructorPayload in codegen), so a
+            // place payload (Ok(parts.payload)) is a consuming
+            // read-out and must taint the place. Without this, the
+            // constructor names fell into the method-call branch and
+            // arg 0 was walked as a non-consuming receiver, leaving
+            // the place untainted; the owner struct's tail drop then
+            // freed the payload at exit (jwt_verify_hs256 UAF).
+            lowering_rules.isResultConstructorCall(call) or
+            lowering_rules.isOptionSomeCall(call);
         for (call.args, 0..) |arg, i| {
             const consuming = known_callee or i != 0;
             try self.walkTaintExpr(arg, consuming, taint);

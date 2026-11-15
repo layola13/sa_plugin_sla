@@ -2804,7 +2804,13 @@ test "sla empty void exits keep caller managed parameters" {
         const end = std.mem.indexOfPos(u8, tail, 1, "\n@") orelse tail.len;
         const body = tail[0..end];
         try std.testing.expect(std.mem.indexOf(u8, body, "    return\n") != null);
-        try std.testing.expect(std.mem.indexOf(u8, body, "    !value\n") == null);
+        // STD-HYGIENE E2: void fall-off exits now emit the root-scope
+        // exit cleanups (checker fn_exit_cleanups) in the implicit
+        // epilogue, so an empty void body DOES release its parameters
+        // before return; the widened host verifier requires it (a live
+        // borrow/owned parameter at function exit is a MemoryLeak).
+        // This assertion previously pinned the pre-fix shape.
+        try std.testing.expect(std.mem.indexOf(u8, body, "    !value\n") != null);
     }
 }
 

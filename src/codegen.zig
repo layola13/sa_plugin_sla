@@ -2516,6 +2516,21 @@ pub const Codegen = struct {
         }
     }
 
+    fn emitFunctionTailParamCleanups(self: *Codegen, f: *const ast.FuncDecl, tail_expr: *const ast.Node) CodegenError!void {
+        // DEF-REFCELL-PAYLOAD-ACCOUNTING: the implicit tail return
+        // must release the still-live root-scope parameters the
+        // checker recorded in fn_exit_cleanups (value functions too,
+        // not just void); the tail statement's own cleanup list only
+        // covers block locals. Filtered through the same
+        // transfer-result plan as the block-local tail cleanups so a
+        // parameter that IS the result is never released.
+        if (self.tc.fn_exit_cleanups.get(f)) |list| {
+            for (list.items) |name| {
+                if ((try self.planFunctionResultCleanup(name, tail_expr)).releasesValue()) try self.emitRelease(name);
+            }
+        }
+    }
+
     fn planFunctionResultCleanup(self: *Codegen, cleanup_name: []const u8, result_expr: *const ast.Node) CodegenError!lowering_rules.FunctionTailCleanupAction {
         const base_plan = lowering_rules.planFunctionTailCleanup(cleanup_name, result_expr);
         if (base_plan.transfersResult()) return base_plan;
@@ -9889,6 +9904,22 @@ pub const Codegen = struct {
                             try self.emitRelease(source_name);
                         }
                     }
+                    // DEF-REFCELL-PAYLOAD-ACCOUNTING: release the
+                    // still-live parameters (fn_exit_cleanups) before
+                    // the tail `return`. The kept prefix aliases are
+                    // popped first so a parameter name shadowed by a
+                    // prefix `let` resolves to the parameter register,
+                    // not the shadowing let's register — the same order
+                    // the void epilogue relies on (genBlock pops its
+                    // aliases before the epilogue runs). Clearing the
+                    // kept list makes the trailing pop a no-op.
+                    var kept_i = kept_aliases.items.len;
+                    while (kept_i > 0) {
+                        kept_i -= 1;
+                        self.popBindingAlias(kept_aliases.items[kept_i]);
+                    }
+                    kept_aliases.clearRetainingCapacity();
+                    try self.emitFunctionTailParamCleanups(f, tail_expr);
                     try self.emitVaEndIfVariadic();
                     self.outPrint("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
                 }

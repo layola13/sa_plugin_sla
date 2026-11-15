@@ -7296,16 +7296,39 @@ pub const TypeChecker = struct {
         // For parameters/locals remaining active at function exit, compile-time checklist forces release.
         var fn_exit_cleanup_list = std.array_list.Managed([]const u8).init(self.allocator);
         for (scope.symbols.values()) |*sym| {
-            if (sym.state == .active and isPrimitiveType(func.ret_ty, .void_type) and !isInternalSymbol(sym.name)) {
-                // If it returns void, we can auto-release. If it's a value return, return statement handles cleanups.
-                // The auto-release must be materialised for codegen: the
-                // implicit void epilogue emits exactly this list (same
-                // filters as the return-statement cleanup collection,
-                // including the issue013 borrow-alias skip).
-                if (!(isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name))) {
-                    try fn_exit_cleanup_list.append(sym.name);
+            if (sym.state == .active and !isInternalSymbol(sym.name)) {
+                if (isPrimitiveType(func.ret_ty, .void_type)) {
+                    // If it returns void, we can auto-release.
+                    // The auto-release must be materialised for codegen: the
+                    // implicit void epilogue emits exactly this list (same
+                    // filters as the return-statement cleanup collection,
+                    // including the issue013 borrow-alias skip).
+                    if (!(isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name))) {
+                        try fn_exit_cleanup_list.append(sym.name);
+                    }
+                    sym.state = .consumed;
+                } else if (func.body.len > 0) {
+                    // DEF-REFCELL-PAYLOAD-ACCOUNTING: a value return does
+                    // NOT always go through a `return` statement — an
+                    // implicit tail expression returns without one, and
+                    // the tail path only releases the tail statement's
+                    // block-local cleanups, never the root-scope
+                    // parameters (the old comment claimed "return
+                    // statement handles cleanups", which is false for
+                    // tails: `fn f(cell: &RefCell<T>) -> i64 {
+                    // cell.borrow().value }` leaked `cell` at exit,
+                    // trap 1012). Record the same exit list for a real
+                    // tail so the tail path can emit it; bindings that
+                    // escape into the tail result are skipped, exactly
+                    // as the return-statement collection does.
+                    const last = func.body[func.body.len - 1];
+                    if (last.* == .expr_stmt and !stmtTerminates(last)) {
+                        if (functionExitBindingEscapes(scope, last.expr_stmt, sym.name)) continue;
+                        if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
+                        try fn_exit_cleanup_list.append(sym.name);
+                        sym.state = .consumed;
+                    }
                 }
-                sym.state = .consumed;
             }
         }
         if (fn_exit_cleanup_list.items.len > 0) {

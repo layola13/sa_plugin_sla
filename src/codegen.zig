@@ -16088,6 +16088,22 @@ pub const Codegen = struct {
         }
     }
 
+    /// TEXT-RESIDUAL-109 S1: a struct-literal direct field store copies
+    /// the scalar value into the aggregate, so the field temp must be
+    /// retired after the store. callArgNeedsRelease is too narrow at
+    /// this site: it returns false for cast expressions (a scalar cast
+    /// result IS a fresh temp — exprResultRegNeedsRelease) and for
+    /// identifiers (a const identifier materialises a fresh temp,
+    /// while a plain variable resolves to its own binding name and
+    /// must NOT be retired). Combine the cast-aware result check with
+    /// the fieldBase-style fresh-temp test.
+    fn structFieldTempNeedsRelease(self: *Codegen, value: *const ast.Node, generated_reg: []const u8) bool {
+        if (self.exprResultRegNeedsRelease(value)) return true;
+        if (!isTemporaryRegisterName(generated_reg)) return false;
+        if (value.* == .identifier and std.mem.eql(u8, generated_reg, self.resolveBindingName(value.identifier))) return false;
+        return true;
+    }
+
     fn genStructLiteralInto(
         self: *Codegen,
         target: []const u8,
@@ -16175,7 +16191,7 @@ pub const Codegen = struct {
                     }
                     self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, store_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                     if (wrapped_reg) |wrapped| try self.emitRelease(wrapped);
-                    if (callArgNeedsRelease(literal_field.value)) try self.emitRelease(raw_val_reg);
+                    if (self.structFieldTempNeedsRelease(literal_field.value, raw_val_reg)) try self.emitRelease(raw_val_reg);
                 }
             }
             return;
@@ -16232,7 +16248,7 @@ pub const Codegen = struct {
                 }
                 self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, store_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                 if (wrapped_reg) |wrapped| try self.emitRelease(wrapped);
-                if (callArgNeedsRelease(value)) try self.emitRelease(raw_val_reg);
+                if (self.structFieldTempNeedsRelease(value, raw_val_reg)) try self.emitRelease(raw_val_reg);
             } else if (transfer.isMove()) {
                 const val_reg = try self.genExpr(value, hoisted_allocs);
                 const move_reg = if (std.mem.startsWith(u8, val_reg, "^")) val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg});

@@ -3346,9 +3346,17 @@ pub const Codegen = struct {
     /// `storeResultSlotTransferredValue`): retire the source alias with
     /// `move_` (frees nothing) so the verifier does not report the branch
     /// allocation live at function exit. The slot, and later the
-    /// merge-loaded result, owns the memory. Locals are exempt.
+    /// merge-loaded result, owns the memory. Locals are NOT exempt here:
+    /// the fall-through transfer two lines below consumes a local src
+    /// (transferResultSlotValueState -> markConsumed), so the exit
+    /// cleanup never retires it — the exemption and the transfer
+    /// contradict each other for local srcs (DEF-REFCELL-OWNER-RELEASE,
+    /// third form; trap 1012 tmp_45). `move_` frees nothing; the value
+    /// is freed once via the slot's loaded result. This function has
+    /// exactly one caller (the :3341 fall-through), so the change is
+    /// single-site; emitMove no-ops on regs already in released_regs.
     fn emitMoveForSlotTransfer(self: *Codegen, src: u32) !void {
-        if (!self.isLocalReg(src)) try self.emitMove(src);
+        try self.emitMove(src);
     }
 
     fn loadResultSlotTransferredValue(self: *Codegen, dst: u32, slot: u32, target_ty: *const ast.Type) !void {

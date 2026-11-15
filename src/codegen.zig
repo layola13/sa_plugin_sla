@@ -2048,6 +2048,14 @@ pub const Codegen = struct {
     }
 
     fn storeResultSlotTransferredValueState(self: *Codegen, slot: []const u8, src: []const u8, target_ty: *const ast.Type, source_needs_release: bool) CodegenError!void {
+        // DEF-REFCELL-OWNER-RELEASE (branch-merge shape): snapshot
+        // whether src was already consumed on entry. The
+        // refcell-companion branch below and transferResultSlotValueState
+        // both mark src consumed in bookkeeping only, so testing the
+        // live set at the trailing retire would skip `^src` on every
+        // refcell path and leave the borrow-handle tmp (e.g. tmp_299)
+        // Active at function exit (trap 1012).
+        const src_consumed_on_entry = self.consumed_bindings.contains(src);
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
         const store_lifecycle = lowering_rules.planResultSlotStoreLifecycle(plan, source_needs_release);
         if (store_lifecycle.releasesSource()) return self.emitRelease(src);
@@ -2074,8 +2082,11 @@ pub const Codegen = struct {
         // the SAB backend `emitMoveForSlotTransfer`): retire a temporary
         // source alias with `^src` (frees nothing) so the verifier does not
         // report the branch allocation live at function exit. Named bindings
-        // stay live.
-        if (!self.consumed_bindings.contains(src) and std.mem.startsWith(u8, src, "tmp_")) {
+        // stay live. The liveness test uses the entry snapshot: the
+        // refcell branch above and the transfer just performed mark src
+        // consumed in bookkeeping, which must not suppress the retire
+        // for a tmp that was live when the store began.
+        if (!src_consumed_on_entry and std.mem.startsWith(u8, src, "tmp_")) {
             self.outPrint("    ^{s}\n", .{src}) catch return CodegenError.CodegenError;
             try self.markConsumedBinding(src);
         }

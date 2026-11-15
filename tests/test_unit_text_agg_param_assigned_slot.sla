@@ -1,0 +1,35 @@
+// Regression (TEXT-RESIDUAL-109 shard S4): a by-value aggregate
+// parameter that is field-assigned in the body takes the
+// assigned-value-slot prologue in the TEXT codegen, which stored
+// the entry copy into the slot but never retired the copy
+// register — the widened verifier trapped MemoryLeak at every
+// return of such a function (std shape: redis_pubsub_normalize).
+struct CfgVal {
+    kind: u32,
+    int_val: i64,
+    bulk: Vec<u8>,
+    items: Vec<CfgVal>,
+}
+
+fn cfg_normalize(v: CfgVal) -> CfgVal {
+    if v.kind == 5 {
+        v.kind = 12;
+    };
+    return v;
+}
+
+fn cfg_read_and_bump(v: CfgVal) -> CfgVal {
+    let k: u32 = v.kind;
+    v.int_val = (k as i64) + 1;
+    return v;
+}
+
+@test "agg param assigned slot entry copy"() {
+    let a = CfgVal { kind: 5, int_val: 0, bulk: Vec::new(), items: Vec::new() };
+    let r = cfg_normalize(a);
+    if r.kind != 12 { panic(26901); };
+    let b = CfgVal { kind: 7, int_val: 0, bulk: Vec::new(), items: Vec::new() };
+    let r2 = cfg_read_and_bump(b);
+    if r2.kind != 7 { panic(26902); };
+    if r2.int_val != 8 { panic(26903); };
+}

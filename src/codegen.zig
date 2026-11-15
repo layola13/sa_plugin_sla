@@ -14440,7 +14440,15 @@ pub const Codegen = struct {
             try self.emitForgetMovedValue(value_reg);
             return;
         }
-        if (!callArgNeedsRelease(value)) return;
+        // SHARD-S5: callArgNeedsRelease is false for every cast_expr,
+        // but a materialising cast (e.g. u32 -> u8) produces a fresh
+        // result temp that nothing else retires after the store
+        // (http_proxy_tunnel_socks5 req[4] = ((bits >> 24) as u8)).
+        // Let materialising casts through to the retire logic below;
+        // non-materialising casts keep the early return.
+        if (!callArgNeedsRelease(value)) {
+            if (value.* != .cast_expr or !self.exprResultRegNeedsRelease(value)) return;
+        }
         if (std.mem.eql(u8, typeString(value_ty), "ptr") or (!self.typeIsCopyValue(value_ty) and !lowering_rules.isBorrowLikeType(value_ty))) {
             try self.emitForgetMovedValue(value_reg);
             return;

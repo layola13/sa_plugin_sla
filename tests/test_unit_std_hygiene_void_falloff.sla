@@ -1,0 +1,42 @@
+// STD-HYGIENE E2 regression: void functions that fall off the end of
+// their body (no explicit return statement) must still release their
+// still-live root-scope parameters at the implicit epilogue.
+// Pre-fix (candidate verifier host + pristine plugin): the first
+// helper below traps error[MemoryLeak] on its parameter, because the
+// checker marked root-scope symbols consumed without registering an
+// exit cleanup list and the codegen epilogue emitted a bare return.
+// Post-fix: green. (Under the pristine verifier the leak is masked:
+// the leaking functions are not the last in the stream.)
+
+fn hygiene_sink(x: u64) -> u64 { return x + 1; }
+
+fn falloff_bare_call(v: u64) {
+    hygiene_sink(v);
+}
+
+fn falloff_unused_let(v: u64) {
+    let y: u64 = v + 1;
+}
+
+fn falloff_let_chain(v: u64) {
+    let y: u64 = hygiene_sink(v);
+    let z: u64 = y + 1;
+}
+
+fn hygiene_sink_ptr(p: ptr) {
+}
+
+fn falloff_ptr_param(p: ptr, n: u64) {
+    let i: u64 = 0;
+    while i < n {
+        hygiene_sink_ptr(p);
+        i = i + 1;
+    }
+}
+
+@test "void falloff releases params"() {
+    falloff_bare_call(3);
+    falloff_unused_let(4);
+    falloff_let_chain(5);
+    falloff_ptr_param(0 as ptr, 2);
+}

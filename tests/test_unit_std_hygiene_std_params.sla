@@ -1,0 +1,45 @@
+// STD-HYGIENE std regression (sci sa_std L1-L4): hand-written .sa
+// std functions must release every parameter/local register on
+// every return path: sa_vec_with_capacity + sa_vec_shrink_to_fit
+// (elem_size), __mpsc_try_send/__mpsc_try_recv (chan + slot
+// borrows), map_rehash (new_cap + new_slots).
+// Pre-fix (candidate verifier host + fixed plugin + pristine std
+// 095d1c9e): traps error[MemoryLeak] in @sa_vec_with_capacity,
+// register elem_size. Post-fix: green.
+
+@import "sa_std/task.sai"
+
+@test "vec grow exercises with_capacity"() {
+    let v: Vec<u64> = Vec::new();
+    let i: u64 = 0;
+    while i < 100 {
+        v.push(i);
+        i = i + 1;
+    }
+    if v.len() != 100 { panic(9601); };
+    if v[99] != 99 { panic(9602); };
+}
+
+@test "hashmap growth exercises rehash"() {
+    let m: HashMap<u64, u64> = HashMap::new();
+    let i: u64 = 0;
+    while i < 200 {
+        m.insert(i, i * 2);
+        i = i + 1;
+    }
+    if m.len() != 200 { panic(9603); };
+    let got = m.get(7).copied().unwrap_or(0);
+    if got != 14 { panic(9604); };
+}
+
+@test "chan exercises mpsc try paths"() {
+    let ch: Chan<u64> = Chan::new(2);
+    ch.send(40);
+    ch.send(2);
+    let (a, ca) = ch.recv();
+    if ca { panic(9605); };
+    let (b, cb) = ch.recv();
+    if cb { panic(9606); };
+    if a + b != 42 { panic(9607); };
+    ch.destroy();
+}

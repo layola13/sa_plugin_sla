@@ -1,0 +1,23 @@
+// STD-HYGIENE E1 regression: the future-poll shim functions emitted
+// by emitFutureTaskHelpers (sla_future_ready_poll and siblings) must
+// release their borrow parameters (data_slot, ctx_slot,
+// out_poll_slot) before returning.
+// Pre-fix (candidate verifier host + pristine plugin): this file
+// traps error[MemoryLeak] in @sla_future_ready_poll, register
+// data_slot. Post-fix: green.
+
+async fn hygiene_step() -> int {
+    return 7;
+}
+
+async fn hygiene_run() -> int {
+    let value = hygiene_step().await;
+    return value + 1;
+}
+
+@test "future poll shims release params"() {
+    let result = hygiene_run().await;
+    if result != 8 {
+        panic(1);
+    };
+}

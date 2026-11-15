@@ -1760,10 +1760,23 @@ pub const Codegen = struct {
         // emitBranchConsumptionCompensation uses this set to balance the
         // consuming side with a bare `!name`.
         if (lowering_rules.rootIdentifier(expr)) |name| {
-            const resolved = self.resolveBindingName(name);
-            try self.markConsumedBinding(resolved);
-            self.store_moved_bindings.put(resolved, {}) catch return CodegenError.OutOfMemory;
-            return;
+            // TEXT-RESIDUAL-109: only a bare identifier (or an explicit
+            // move of one) transfers the binding's own register into the
+            // cell. A place expression (field/index of a root) loads a
+            // fresh temp and borrow-stores THAT; the root binding keeps
+            // ownership and must stay live for its own tail cleanup.
+            // Marking the root consumed here suppressed the cleanup and
+            // stranded the root register at function exit (MemoryLeak
+            // 1012 on the parameter of e.g. sse_extract_lines, whose
+            // fields are rebuilt into the returned struct).
+            const transfers_root = expr.* == .identifier or
+                (expr.* == .move_expr and expr.move_expr.expr.* == .identifier);
+            if (transfers_root) {
+                const resolved = self.resolveBindingName(name);
+                try self.markConsumedBinding(resolved);
+                self.store_moved_bindings.put(resolved, {}) catch return CodegenError.OutOfMemory;
+                return;
+            }
         }
         if (std.mem.startsWith(u8, reg, "^") or std.mem.startsWith(u8, reg, "&")) {
             try self.markConsumedBinding(reg[1..]);

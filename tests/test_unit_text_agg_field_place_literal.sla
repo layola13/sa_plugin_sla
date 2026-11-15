@@ -1,0 +1,27 @@
+// TEXT-RESIDUAL-109 regression: a struct literal whose field value is a
+// member expression of a struct parameter (P2 { v: p.v, n: p.n }) must
+// not strand the parameter register at function exit. The emitter's
+// store-move bookkeeping marked the place root consumed even though
+// only a loaded field temp was borrow-stored into the literal cell;
+// the parameter's own tail cleanup was suppressed and the SA verifier
+// trapped MemoryLeak 1012 on the parameter register.
+struct P2 {
+    v: Vec<u8>,
+    n: u64,
+}
+
+fn direct(p: P2) -> P2 {
+    return P2 { v: p.v, n: p.n };
+}
+
+fn staged(p: P2) -> P2 {
+    let cur = P2 { v: p.v, n: p.n };
+    return cur;
+}
+
+@test "agg field place literal keeps param cleanup"() {
+    let r = direct(P2 { v: Vec::new(), n: 3 });
+    if r.n != 3 { panic(26901); };
+    let r2 = staged(P2 { v: Vec::new(), n: 4 });
+    if r2.n != 4 { panic(26902); };
+}

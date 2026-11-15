@@ -9824,6 +9824,7 @@ pub const Codegen = struct {
                     self.assigned_value_slots.put(p.name, {}) catch return CodegenError.OutOfMemory;
                     self.outPrint("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
                     self.outPrint("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(raw_param);
                 }
             }
         }

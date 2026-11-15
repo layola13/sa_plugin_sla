@@ -1795,10 +1795,19 @@ pub const Codegen = struct {
         if (self.tc.expr_types.get(arg)) |value_ty| {
             if (!self.typeIsCopyValue(value_ty)) {
                 try self.markMovedExprBinding(arg, value_reg);
+                // STD-HYGIENE F5: a fresh payload temp (no root binding)
+                // has no exit cleanup to settle it; retire it inline with
+                // a forget, as the tuple path does (DEF-TUPLE-COPY-EMIT).
+                if (lowering_rules.rootIdentifier(arg) == null) try self.emitForgetMovedValue(value_reg);
                 return;
             }
             if (lowering_rules.isHeapHandleType(value_ty)) {
-                if (arg.* != .identifier) try self.markConsumedBinding(value_reg);
+                if (arg.* != .identifier) {
+                    try self.markConsumedBinding(value_reg);
+                    // STD-HYGIENE F5: same inline forget for Copy
+                    // aggregate payload temps (e.g. Some(Struct { .. })).
+                    try self.emitForgetMovedValue(value_reg);
+                }
                 return;
             }
         }

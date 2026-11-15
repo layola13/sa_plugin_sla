@@ -1,0 +1,32 @@
+// Regression (TEXT-RESIDUAL-109 shard S5): a place store whose value is a
+// materialising cast expression leaked the cast result temp, because the
+// shared post-store finisher gated on callArgNeedsRelease, which is false
+// for every cast_expr. Source shape: http_proxy_tunnel_socks5 packing
+// req[4] = ((bits >> 24) as u8) in sa_std/http_proxy.sla.
+struct ByteBox {
+    lo: u8,
+    hi: u8,
+}
+
+fn pack_word_idx(bits: u32) -> u32 {
+    let req: [u8; 8] = [0u8; 8];
+    req[4] = ((bits >> 24) as u8);
+    req[5] = ((bits >> 16) as u8);
+    req[6] = ((bits >> 8) as u8);
+    req[7] = (bits as u8);
+    return (req[4] as u32) * 1000 + (req[7] as u32);
+}
+
+fn pack_word_field(x: u32) -> u32 {
+    let b = ByteBox { lo: 0, hi: 0 };
+    b.lo = ((x >> 8) as u8);
+    b.hi = (x as u8);
+    return (b.lo as u32) * 1000 + (b.hi as u32);
+}
+
+@test "index and field store of cast value retire the cast temp"() {
+    let s = pack_word_idx(16909060);
+    if s != 1004 { panic(26821); };
+    let t = pack_word_field(258);
+    if t != 1002 { panic(26822); };
+}

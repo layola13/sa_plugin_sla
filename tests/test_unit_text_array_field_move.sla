@@ -1,0 +1,37 @@
+// Regression (TEXT-RESIDUAL-109 shard S7): a whole-array field
+// assignment moves the source binding (the checker reports
+// UseAfterMove on a later read), but storedValueMovesIdentifier
+// classified the array value as Copy, so the source register was
+// never retired after the store (MemoryLeak 1012). Source shapes:
+// the ni corpus make_pair (`out.bytes = vals`) and ni_parse_mac in
+// sa_std/net_info.sla.
+struct PairU {
+    bytes: [u8; 6],
+    ok: bool,
+}
+
+fn make_pair_u() -> PairU {
+    let out = PairU { bytes: [0u8; 6], ok: false };
+    let vals: [u8; 6] = [1u8, 35u8, 69u8, 103u8, 137u8, 171u8];
+    out.bytes = vals;
+    out.ok = true;
+    return out;
+}
+
+@test "whole array field assign retires the source register"() {
+    let p = make_pair_u();
+    if !p.ok { panic(26891); };
+    let exp: [u8; 6] = [1u8, 35u8, 69u8, 103u8, 137u8, 171u8];
+    let i: u64 = 0;
+    while i < 6 {
+        if p.bytes[i] != exp[i] { panic(26892); };
+        i = i + 1;
+    }
+    let q = PairU { bytes: [0u8; 6], ok: false };
+    q.bytes = p.bytes;
+    let j: u64 = 0;
+    while j < 6 {
+        if q.bytes[j] != exp[j] { panic(26893); };
+        j = j + 1;
+    }
+}

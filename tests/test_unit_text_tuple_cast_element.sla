@@ -1,0 +1,36 @@
+// Regression (TEXT-RESIDUAL-109 pool-capture, Defect V): a tuple
+// literal element that is a materialising cast expression leaked
+// the cast result temp on the SA-text backend, because
+// genTupleLiteralInto retires identifier elements (consume marker /
+// bookkeeping) and fresh heap-handle temps (forget) but had no
+// finisher for a Copy-typed cast temp. The assignment and
+// struct-literal paths retire the same temp through
+// finishStoredValueAfterSlotStore's SHARD-S5 cast arm.
+// Source shape: sa_std/slice_pool.sla slice_pool_view's
+// `return (vp, n as u64);` (verifier: MemoryLeak 1012 naming the
+// cast temp at the return; carrier test_unit_decl_slice_pool.sla).
+@import "sa_std/vec.sa"
+@import "sa_std/ptr.sa"
+
+struct ViewBox {
+    data: Vec<u64>,
+    len: u64,
+}
+
+fn view_pair(p: &ViewBox, n: u32) -> (ptr, u64) {
+    let base: ptr = VEC_AS_PTR(&p.data);
+    return (base, n as u64);
+}
+
+fn word_pair(w: u32) -> (u64, u64) {
+    return (w as u64, 7);
+}
+
+@test "tuple cast element retires the cast temp"() {
+    let b = ViewBox { data: Vec::new(), len: 0 };
+    let (vp, m) = view_pair(&b, 5);
+    if m != 5 { panic(26911); };
+    let (x, y) = word_pair(258);
+    if x != 258 { panic(26912); };
+    if y != 7 { panic(26913); };
+}

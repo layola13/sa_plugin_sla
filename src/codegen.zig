@@ -16548,6 +16548,19 @@ pub const Codegen = struct {
                 try self.emitForgetMovedValue(val_reg);
             } else if (!self.typeIsCopyValue(tuple.elems[i])) {
                 try self.markMovedExprBinding(elem, val_reg);
+            } else if (elem.* == .cast_expr and self.exprResultRegNeedsRelease(elem)) {
+                // POOL-CAPTURE (Defect V): a materialising cast as a
+                // Copy tuple element (e.g. `n as u64` in
+                // `return (vp, n as u64);`, sa_std/slice_pool.sla
+                // slice_pool_view) is stored plainly above; it is not
+                // an identifier (no consume marker / bookkeeping) and
+                // not a heap handle (no forget above), so nothing
+                // retired its result temp and the SA verifier trapped
+                // MemoryLeak at the return. The assignment and
+                // struct-literal paths retire the same temp through
+                // finishStoredValueAfterSlotStore's SHARD-S5 cast
+                // arm; mirror it here under the same predicate.
+                try self.emitRelease(val_reg);
             }
         }
     }

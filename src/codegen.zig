@@ -662,8 +662,23 @@ pub const Codegen = struct {
                     } else {
                         _ = self.macro_arg_types.remove(let.name);
                     }
+                    // DEF-TEXT31-USER-MACRO-AGG-LOCAL-LEAK: the let was
+                    // generated through a renamed stack copy, so genStmt's
+                    // epilogue lookup (tc.cleanups keyed by node pointer)
+                    // missed the block-exit cleanups the checker attached
+                    // to the original statement. Emit them here, against
+                    // the original node, exactly as the epilogue would.
+                    if (!stmtTerminates(stmt)) try self.emitStmtExitCleanups(stmt);
                 },
-                .block_stmt => |block| try self.genUserMacroBlockInline(macro_decl, block.body, hoisted_allocs),
+                .block_stmt => |block| {
+                    try self.genUserMacroBlockInline(macro_decl, block.body, hoisted_allocs);
+                    // DEF-TEXT31-USER-MACRO-AGG-LOCAL-LEAK: the recursion
+                    // bypasses genStmt entirely, so cleanups the checker
+                    // attached to the block statement itself (the
+                    // enclosing scope's locals when a nested block is its
+                    // last statement) were never emitted either.
+                    if (!stmtTerminates(stmt)) try self.emitStmtExitCleanups(stmt);
+                },
                 .for_stmt => |for_stmt| {
                     const alias = try self.newInlineMacroLocal(macro_decl.name, for_stmt.var_name);
                     try self.pushBindingAliasTo(for_stmt.var_name, alias);
@@ -674,6 +689,13 @@ pub const Codegen = struct {
                     for_copy.var_name = alias;
                     var node = ast.Node{ .for_stmt = for_copy };
                     try self.genStmt(&node, hoisted_allocs);
+                    // DEF-TEXT31-USER-MACRO-AGG-LOCAL-LEAK: same
+                    // pointer-key miss as the let case — a block whose
+                    // last statement is this `for` keeps its locals'
+                    // exit cleanups on the original node (the census
+                    // shape: aggregate locals declared before a `for`
+                    // in a macro-body block leaked unreleased).
+                    if (!stmtTerminates(stmt)) try self.emitStmtExitCleanups(stmt);
                 },
                 else => try self.genStmt(stmt, hoisted_allocs),
             }

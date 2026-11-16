@@ -1,0 +1,78 @@
+struct AggLocalPoint { left: i64, right: i64 }
+
+macro agg_for_tail_macro(out, seed) {
+    {
+        let point = AggLocalPoint { left: seed, right: seed + 1 };
+        let tuple = (point.left, point.right);
+        let values: [i64; 3] = [tuple.0, tuple.1, seed + 2];
+        out = 0;
+        for i in 0..3 {
+            out = out + values[i];
+        }
+    }
+}
+
+fn agg_for_tail_direct(seed: i64) -> i64 {
+    let total = 99;
+    agg_for_tail_macro(total, seed);
+    total
+}
+
+@test "user macro aggregate locals released at block exit (for tail)"() {
+    if agg_for_tail_direct(3) != 12 { panic(3091); };
+}
+
+macro agg_block_tail_macro(out, seed) {
+    {
+        let point = AggLocalPoint { left: seed, right: seed + 1 };
+        {
+            out = point.left + point.right;
+        }
+    }
+}
+
+fn agg_block_tail_direct(seed: i64) -> i64 {
+    let total = 99;
+    agg_block_tail_macro(total, seed);
+    total
+}
+
+@test "user macro aggregate locals released at block exit (block tail)"() {
+    if agg_block_tail_direct(3) != 7 { panic(3092); };
+}
+
+macro agg_let_tail_macro(out, seed) {
+    {
+        let first = AggLocalPoint { left: seed, right: seed };
+        out = first.left + first.right;
+        let last = AggLocalPoint { left: seed + 1, right: seed + 2 };
+    }
+}
+
+fn agg_let_tail_direct(seed: i64) -> i64 {
+    let total = 99;
+    agg_let_tail_macro(total, seed);
+    total
+}
+
+@test "user macro aggregate locals released at block exit (let tail)"() {
+    if agg_let_tail_direct(3) != 6 { panic(3093); };
+}
+
+macro agg_move_chain_macro(out, seed) {
+    {
+        let point = AggLocalPoint { left: seed, right: seed * 2 };
+        let moved = point;
+        out = moved.left + moved.right;
+    }
+}
+
+fn agg_move_chain_direct(seed: i64) -> i64 {
+    let total = 99;
+    agg_move_chain_macro(total, seed);
+    total
+}
+
+@test "user macro aggregate local moved once released once"() {
+    if agg_move_chain_direct(3) != 9 { panic(3094); };
+}

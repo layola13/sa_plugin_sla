@@ -8,9 +8,9 @@
 # client.sla speaking the page's protocol (gap recorded in README).
 set -u
 cd "$(dirname "$0")"
-export PATH=/content/sa_all/sci/zig-out/bin:/content/sa_all/sa_plugin_sla/zig-out/bin:/tools/node/bin:$PATH
+export PATH=${SA_ALL_ROOT:-/content/sa_all}/sci/zig-out/bin:${SA_ALL_ROOT:-/content/sa_all}/sa_plugin_sla/zig-out/bin:/tools/node/bin:$PATH
 export SA_PLUGIN_DEV=1
-SAX=/content/sa_all/sa_plugin_sax
+SAX=${SA_ALL_ROOT:-/content/sa_all}/sa_plugin_sax
 
 # The sax bundle build needs the plugin's LLVM-C backend
 # (LLVMDIBuilderInsertDeclareRecordAtEnd -> LLVM >= 19; the box has
@@ -43,7 +43,21 @@ echo "using zig: $ZIG_BIN ($("$ZIG_BIN" version))"
 
 if [ ! -f "$SAX/zig-out/lib/libsax.so" ]; then
   echo "building sax plugin (ReleaseFast, LLVM-C backend)..."
-  (cd "$SAX" && timeout 1200 "$ZIG_BIN" build -Doptimize=ReleaseFast) || { echo "D12 SAX BUILD FAILED"; exit 1; }
+  # Sax needs LLVM >= 19: its C shim calls LLVMDIBuilderInsertDeclareRecordAtEnd,
+  # which does not exist in LLVM-14 — the LLVM-14 devroot (SA_LLVM_*) can never
+  # build it. Resolve an LLVM >= 19 location: explicit SA_SAX_LLVM_* env first,
+  # then system llvm-20, then llvm-19; without any of them the plain default
+  # build runs and fails loudly with sax's own message.
+  SAX_FLAGS=""
+  if [ -n "${SA_SAX_LLVM_INCLUDE_DIR:-}" ] && [ -n "${SA_SAX_LLVM_LIB_DIR:-}" ]; then
+    SAX_FLAGS="-Dllvm-include-dir=$SA_SAX_LLVM_INCLUDE_DIR -Dllvm-lib-dir=$SA_SAX_LLVM_LIB_DIR -Dllvm-lib-name=${SA_SAX_LLVM_LIB_NAME:-LLVM-20}"
+  elif [ -f /usr/lib/llvm-20/include/llvm-c/Core.h ]; then
+    SAX_FLAGS="-Dllvm-include-dir=/usr/lib/llvm-20/include -Dllvm-lib-dir=/usr/lib/llvm-20/lib -Dllvm-lib-name=LLVM-20"
+  elif [ -f /usr/lib/llvm-19/include/llvm-c/Core.h ]; then
+    SAX_FLAGS="-Dllvm-include-dir=/usr/lib/llvm-19/include -Dllvm-lib-dir=/usr/lib/llvm-19/lib -Dllvm-lib-name=LLVM-19"
+  fi
+  # shellcheck disable=SC2086
+  (cd "$SAX" && timeout 1200 "$ZIG_BIN" build -Doptimize=ReleaseFast $SAX_FLAGS) || { echo "D12 SAX BUILD FAILED"; exit 1; }
 fi
 
 rm -rf web server server.sa server.sa.bc client client.sa client.sa.bc

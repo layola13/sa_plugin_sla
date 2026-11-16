@@ -5,7 +5,7 @@
 # checks the same values.
 set -u
 cd "$(dirname "$0")"
-export PATH=/content/sa_all/sci/zig-out/bin:$PATH
+export PATH=${SA_ALL_ROOT:-/content/sa_all}/sci/zig-out/bin:$PATH
 
 SA_PLUGIN_DEV=1 timeout 300 sa build-exe main.sla || exit 1
 CXU_MODEL=gpt-env-override timeout 60 ./main || { echo "FAIL: demo exit code $?"; exit 1; }

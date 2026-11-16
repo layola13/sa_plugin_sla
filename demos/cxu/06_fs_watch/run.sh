@@ -4,7 +4,7 @@
 # codes per check); success prints "d6 fs watch ok".
 set -u
 cd "$(dirname "$0")"
-export PATH=/content/sa_all/sci/zig-out/bin:/content/sa_all/sa_plugin_sla/zig-out/bin:$PATH
+export PATH=${SA_ALL_ROOT:-/content/sa_all}/sci/zig-out/bin:${SA_ALL_ROOT:-/content/sa_all}/sa_plugin_sla/zig-out/bin:$PATH
 export SA_PLUGIN_DEV=1
 rm -f main main.sa main.sa.bc main.test main.test.sa
 rm -rf work

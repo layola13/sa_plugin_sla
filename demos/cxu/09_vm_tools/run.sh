@@ -8,9 +8,9 @@
 #    token-sourced allows.
 set -u
 cd "$(dirname "$0")"
-export PATH=/content/sa_all/sci/zig-out/bin:/content/sa_all/sa_plugin_sla/zig-out/bin:$PATH
+export PATH=${SA_ALL_ROOT:-/content/sa_all}/sci/zig-out/bin:${SA_ALL_ROOT:-/content/sa_all}/sa_plugin_sla/zig-out/bin:$PATH
 export SA_PLUGIN_DEV=1
-export SA_TREE_SITTER_DIR=/content/sa_all/sci/artifacts/tree_sitter
+export SA_TREE_SITTER_DIR=${SA_ALL_ROOT:-/content/sa_all}/sci/artifacts/tree_sitter
 rm -f main main.sa main.sa.bc main.test main.test.sa audit_a.jsonl audit_c.jsonl
 timeout 300 sa build-exe main.sla || { echo "D9 BUILD FAILED"; exit 1; }
 

@@ -1,0 +1,30 @@
+// DEF-TEXT31-SELECT regression (send-arm staging shape): the
+// select lowering stages a word send payload through a slot view
+// via a synthetic borrow-typed let (__sel_sp_*). The binding is
+// created after the checker ran, so no cleanup list ever named
+// it; once the view store has copied the pointer into the view
+// home, the SA verifier classes the register must-settle and it
+// stayed Active at function exit — pre-fix this file traps
+// MemoryLeak 1012 on __sel_sp_13. The lowering now retires the
+// slot pointer with mem::forget right after staging.
+@import "sa_std/task.sai"
+
+@test "select send arm fires when it is the only ready arm"() {
+    let a: Chan<u64> = Chan::new(1);
+    let b: Chan<u64> = Chan::new(1);
+    let hit: u64 = 0;
+    select {
+        case let v = b.recv() {
+            hit = 1;
+        }
+        case a.send(55) {
+            hit = 2;
+        }
+    }
+    if hit != 2 { panic(9535); };
+    let (v, closed) = a.recv();
+    if closed { panic(9536); };
+    if v != 55 { panic(9537); };
+    a.destroy();
+    b.destroy();
+}

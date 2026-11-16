@@ -1,0 +1,30 @@
+// DEF-TEXT31-SELECT regression (send_step shape): two send arms
+// on channels reached through a raw pointer, inside a helper
+// function. Same slot-pointer retire gap as the send-arm staging
+// shape — pre-fix this file traps MemoryLeak 1012 on __sel_sp_8
+// at send_step's exit.
+@import "sa_std/task.sai"
+@import "sa_std/core/box.sa"
+
+struct SendChs {
+    a: Chan<u64>,
+    b: Chan<u64>,
+}
+
+fn send_step(chs: *SendChs, v: u64) {
+    let hit: u64 = 0;
+    select {
+        case (*chs).a.send(v) { hit = 1; }
+        case (*chs).b.send(v) { hit = 2; }
+    }
+}
+
+@test "select send step via raw ptr"() {
+    let ca: Chan<u64> = Chan::new(1);
+    let cb: Chan<u64> = Chan::new(1);
+    let chs = Box::into_raw(Box::new(SendChs { a: ca, b: cb }));
+    send_step(chs, 7);
+    let (v, cl) = (*chs).a.recv();
+    if cl { panic(9541); };
+    if v != 7 { panic(9542); };
+}

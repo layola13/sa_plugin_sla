@@ -1155,25 +1155,19 @@ pub const Lowerer = struct {
     /// SA verifier rejects it for &-parameters
     /// (CapabilityMismatch); a borrow-typed binding carries the
     /// borrow capability in its register.
-    fn slotPtrLet(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slots_name: []const u8, slots_ty: *ast.Type, offset: usize) LowerError!*ast.Node {
+    const SlotPtr = struct { name: []const u8, ident: *ast.Node, ty: *ast.Type };
+
+    fn slotPtrLetNamed(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slots_name: []const u8, slots_ty: *ast.Type, offset: usize) LowerError!SlotPtr {
         const borrow_ty = try self.allocator.create(ast.Type);
         borrow_ty.* = .{ .borrow = try self.tyPrim(.u8) };
         const name = try self.freshName("__sel_sp_");
         const addr = try self.slotOffsetBorrow(slots_name, slots_ty, offset);
         try out.append(try self.letNode(name, borrow_ty, addr));
-        return try self.identNode(name, borrow_ty);
+        return .{ .name = name, .ident = try self.identNode(name, borrow_ty), .ty = borrow_ty };
     }
 
-    /// Call-site form of a select slot address for sa_mem_copy:
-    /// a borrow expression over the slot-pointer binding. The SA
-    /// text verifier takes the capability from the call-site `&`
-    /// prefix (a bare register reads as a by-value pointer pass
-    /// and is rejected for `&ptr` parameters), so the operand must
-    /// be a borrow node — the same shape the plain chan send/recv
-    /// copies use. The SAB side materializes it identically.
-    fn slotPtrArg(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slots_name: []const u8, slots_ty: *ast.Type, offset: usize) LowerError!*ast.Node {
-        const ident = try self.slotPtrLet(out, slots_name, slots_ty, offset);
-        return try self.borrowNode(ident, try self.tyPrim(.u8));
+    fn slotPtrLet(self: *Lowerer, out: *std.array_list.Managed(*ast.Node), slots_name: []const u8, slots_ty: *ast.Type, offset: usize) LowerError!*ast.Node {
+        return (try self.slotPtrLetNamed(out, slots_name, slots_ty, offset)).ident;
     }
 
     fn lowerSelect(self: *Lowerer, stmt: *ast.Node, out: *std.array_list.Managed(*ast.Node)) LowerError!void {
@@ -1244,13 +1238,35 @@ pub const Lowerer = struct {
                     // view the arm's slot, move the staged
                     // payload into the view field, forget the
                     // view borrow.
-                    const slot_ptr = try self.slotPtrLet(out, slots_name, slots_ty, 16 * i);
-                    try self.storeSlotValueViaView(out, slot_ptr, info.payload_ty, try self.identNode(sv_name, info.payload_ty));
+                    const sp = try self.slotPtrLetNamed(out, slots_name, slots_ty, 16 * i);
+                    try self.storeSlotValueViaView(out, sp.ident, info.payload_ty, try self.identNode(sv_name, info.payload_ty));
+                    // DEF-TEXT31-SELECT: retire the slot-pointer
+                    // borrow itself. It is a synthetic let the
+                    // checker never saw, so no cleanup list names
+                    // it; once storeSlotValueViaView has stored
+                    // the pointer into the view home the verifier
+                    // classes the register must-settle and it
+                    // otherwise stays Active at function exit.
+                    try out.append(try self.forgetStmt(sp.name, sp.ty));
                 } else {
                     const size = try self.payloadSize(info.payload_ty);
-                    const dst = try self.slotPtrArg(out, slots_name, slots_ty, 16 * i);
+                    const sp = try self.slotPtrLetNamed(out, slots_name, slots_ty, 16 * i);
+                    // Call-site form of the slot address for
+                    // sa_mem_copy: a borrow expression over the
+                    // slot-pointer binding. The SA text verifier
+                    // takes the capability from the call-site `&`
+                    // prefix (a bare register reads as a by-value
+                    // pointer pass and is rejected for `&ptr`
+                    // parameters), so the operand must be a borrow
+                    // node — the same shape the plain chan
+                    // send/recv copies use. The SAB side
+                    // materializes it identically.
+                    const dst = try self.borrowNode(sp.ident, try self.tyPrim(.u8));
                     const src = try self.borrowNode(try self.identNode(sv_name, info.payload_ty), info.payload_ty);
                     try self.emitMemCopy(out, dst, src, size);
+                    // DEF-TEXT31-SELECT: same slot-pointer retire
+                    // as the A form above.
+                    try out.append(try self.forgetStmt(sp.name, sp.ty));
                 }
             }
         }
@@ -1297,14 +1313,26 @@ pub const Lowerer = struct {
                 // checker and misallocated by the SAB var path)
                 // and no whole-var move (StackEscape on text).
                 if (case.bind_name) |bind_name| {
-                    const slot_ptr = try self.slotPtrLet(&body, slots_name, slots_ty, 16 * i);
-                    const sv = try self.slotValueFromPtrFull(&body, slot_ptr, info.payload_ty);
+                    const sp = try self.slotPtrLetNamed(&body, slots_name, slots_ty, 16 * i);
+                    const sv = try self.slotValueFromPtrFull(&body, sp.ident, info.payload_ty);
                     try body.append(try self.letNode(bind_name, info.payload_ty, sv.expr));
                     // Retire the view borrow like the plain recv
                     // binding does (its register otherwise stays
                     // live at fn exit in the text codegen).
                     if (sv.ref_name) |ref_name| {
                         try body.append(try self.forgetStmt(ref_name, sv.ref_ty.?));
+                    }
+                    // DEF-TEXT31-SELECT: retire the slot-pointer
+                    // borrow itself, as in the send staging above —
+                    // but only on the word path: for aggregate
+                    // payloads slotValueFromPtrFull's plain cast
+                    // MOVES the slot pointer into the binding (the
+                    // register is already Consumed, and a forget
+                    // would read it — UseAfterMove), while the word
+                    // path's view cast materialises as ptr_add and
+                    // leaves the binding Active.
+                    if (sv.ref_name != null) {
+                        try body.append(try self.forgetStmt(sp.name, sp.ty));
                     }
                 }
                 if (case.bind_closed) |bind_closed| {

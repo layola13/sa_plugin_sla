@@ -1,0 +1,37 @@
+// DEF-TEXT31-SELECT regression (case-let aggregate shape): the
+// checker defines a select case's bindings in the case scope, a
+// parent of the body block's own scope, so the body block's
+// auto-cleanup never recorded them. A non-Copy case-let binding
+// (here `msg`, a tuple payload) stayed Active at function exit —
+// pre-fix this file traps MemoryLeak 1012 on msg. The checker
+// now records the case bindings' block-exit cleanups on the body
+// block's last statement, like any block local.
+@import "sa_std/globals.sai"
+@import "sa_std/task.sai"
+@import "sa_std/ptr.sa"
+
+fn mon_worker(arg: u64) {
+    let out: u64 = 0;
+    let rc = sa_global_u64_add("mon_ctr", 8, 7, &out);
+    if rc != 0 { panic(9751); };
+}
+
+@test "monitor channel works in select"() {
+    let h = go mon_worker(0);
+    let m = monitor(h);
+    let got: i32 = 0;
+    select {
+        case let (msg, closed) = m.recv() {
+            if msg.0 != h { panic(9770); };
+            if msg.1 != 0 { panic(9771); };
+            got = 1;
+        }
+        timeout(5000000000) {
+            panic(9772);
+        }
+    }
+    if got != 1 { panic(9773); };
+    let status = sa_task_join(h);
+    if status != 0 { panic(9774); };
+    m.destroy();
+}

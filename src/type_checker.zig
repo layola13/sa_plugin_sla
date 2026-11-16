@@ -4421,6 +4421,34 @@ pub const TypeChecker = struct {
                 },
             }
             _ = try self.checkBlock(case.body, case_scope, ret_ty, null, current_loop_scope);
+            // DEF-TEXT31-SELECT: the case bindings (bind_name /
+            // bind_closed) live in case_scope, a PARENT of the body
+            // block's own scope, so checkBlock's auto-cleanup —
+            // which scans only the block's own scope — never
+            // records them. A non-Copy case-let binding (an
+            // aggregate payload) then stays Active at function
+            // exit in the text codegen (MemoryLeak 1012). Record
+            // their block-exit cleanups on the body block's last
+            // statement, merged with any list checkBlock attached
+            // there, under the same rules checkBlock applies to
+            // block locals.
+            if (case.body.len > 0) {
+                const last_stmt = case.body[case.body.len - 1];
+                if (last_stmt.* != .return_stmt and last_stmt.* != .break_stmt and last_stmt.* != .continue_stmt) {
+                    var cleanup_list = self.cleanups.get(last_stmt) orelse std.array_list.Managed([]const u8).init(self.allocator);
+                    var recorded = false;
+                    for (case_scope.symbols.values()) |*sym| {
+                        if (sym.state == .active and !isInternalSymbol(sym.name)) {
+                            if (sym.ty.* == .primitive and sym.ty.primitive == .raw_ptr) continue;
+                            if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(case_scope, sym.name)) continue;
+                            try cleanup_list.append(sym.name);
+                            sym.state = .consumed;
+                            recorded = true;
+                        }
+                    }
+                    if (recorded) try self.cleanups.put(last_stmt, cleanup_list);
+                }
+            }
         }
         if (sel.timeout_expr) |timeout_expr| {
             const timeout_ty = try self.checkExpr(timeout_expr, scope);

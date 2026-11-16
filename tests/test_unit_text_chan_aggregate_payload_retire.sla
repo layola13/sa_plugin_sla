@@ -1,0 +1,47 @@
+// DEF-TEXT31-CHAN-PAYLOAD-SV regression: an aggregate (struct/tuple)
+// payload that is not a place expression (literal, call result) is
+// staged by the chan send lowering through a synthetic saved-value
+// temp; the temp must be retired once the payload bytes are copied
+// into the channel slot. On the pre-fix compiler each test below
+// traps MemoryLeak 1012 on the staging temp at test exit.
+
+@import "sa_std/task.sai"
+
+struct PairMsg {
+    a: u64,
+    b: u64,
+}
+
+fn mk_pair() -> PairMsg {
+    return PairMsg { a: 5, b: 6 };
+}
+
+@test "chan struct literal payload staging retires"() {
+    let ch: Chan<PairMsg> = Chan::new(1);
+    ch.send(PairMsg { a: 30, b: 12 });
+    let (m, closed) = ch.recv();
+    if closed { panic(9518); };
+    if m.a != 30 { panic(9519); };
+    if m.b != 12 { panic(9520); };
+    ch.destroy();
+}
+
+@test "chan tuple literal payload staging retires"() {
+    let tc: Chan<(u64, bool)> = Chan::new(1);
+    tc.send((7, true));
+    let (t, closedt) = tc.recv();
+    if closedt { panic(9521); };
+    if t.0 != 7 { panic(9522); };
+    if !t.1 { panic(9523); };
+    tc.destroy();
+}
+
+@test "chan struct call-result payload staging retires"() {
+    let ch: Chan<PairMsg> = Chan::new(1);
+    ch.send(mk_pair());
+    let (m, closed) = ch.recv();
+    if closed { panic(9530); };
+    if m.a != 5 { panic(9531); };
+    if m.b != 6 { panic(9532); };
+    ch.destroy();
+}

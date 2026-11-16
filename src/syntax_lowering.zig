@@ -903,14 +903,27 @@ pub const Lowerer = struct {
                         .identifier, .field_expr, .index_expr, .deref_expr => true,
                         else => false,
                     };
+                    var staged_name: ?[]const u8 = null;
                     if (!is_place) {
                         const bind_name = try self.freshName("__sv_");
                         try out.append(try self.letNode(bind_name, info.payload_ty, value_node));
                         value_node = try self.identNode(bind_name, info.payload_ty);
+                        staged_name = bind_name;
                     }
                     const dst = try self.borrowNode(try self.identNode(slot_name, slot_ty), slot_ty);
                     const src = try self.borrowNode(value_node, value_ty);
                     try self.emitMemCopy(out, dst, src, size);
+                    if (staged_name) |bind_name| {
+                        // The byte copy transfers ownership of the
+                        // payload's contents to the slot (and then
+                        // the receiver); the staging temp itself is
+                        // retired without a drop -- releasing it
+                        // would free heap handles the receiver now
+                        // owns. The synthetic let is created after
+                        // the checker ran, so no cleanup entry names
+                        // it (DEF-TEXT31-CHAN-PAYLOAD-SV).
+                        try out.append(try self.forgetStmt(bind_name, info.payload_ty));
+                    }
                 }
                 const rc_name = try self.freshName("__ch_rc_");
                 const args = try self.allocator.alloc(*ast.Node, 2);

@@ -1,0 +1,72 @@
+// DEF-TEXT-VARIADIC-PROMOTE-CALLEXPR: a promoted variadic trailing
+// argument written as a CALL EXPRESSION must reach the C callee with
+// the promoted value. On the defective codegen the raw call-result
+// register is fed straight into the widening `as` cast; SA registers
+// are width-less and only the declared width of a call result is
+// guaranteed, so an i16 result of -7 was passed as 65529 (and
+// snprintf printed "65529", returning 5 instead of 2). Identifier
+// arguments were unaffected: bindings are width-canonicalized at the
+// binding site. These tests assert the runtime VALUE, not just rc.
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+@import "import_fixtures/variadic_libc.sai"
+
+fn get_small() -> i16 {
+    return -7;
+}
+
+fn get_tiny() -> i8 {
+    return -100;
+}
+
+fn get_ratio() -> f32 {
+    return 0.5;
+}
+
+fn get_byte() -> u8 {
+    return 200;
+}
+
+@test "variadic snprintf promotes i16 call expr arg"() {
+    let buf = stack_alloc(64);
+    let n = unsafe { snprintf(buf, 64, STR_PTR("%d\0"), get_small()) };
+    if n != 2 {
+        panic(7221);
+    };
+    if unsafe { memcmp(buf, STR_PTR("-7\0"), 3) } != 0 {
+        panic(7222);
+    };
+}
+
+@test "variadic snprintf promotes i8 call expr arg"() {
+    let buf = stack_alloc(64);
+    let n = unsafe { snprintf(buf, 64, STR_PTR("%d\0"), get_tiny()) };
+    if n != 4 {
+        panic(7231);
+    };
+    if unsafe { memcmp(buf, STR_PTR("-100\0"), 5) } != 0 {
+        panic(7232);
+    };
+}
+
+@test "variadic snprintf promotes f32 call expr arg"() {
+    let buf = stack_alloc(64);
+    let n = unsafe { snprintf(buf, 64, STR_PTR("%f\0"), get_ratio()) };
+    if n != 8 {
+        panic(7241);
+    };
+    if unsafe { memcmp(buf, STR_PTR("0.500000\0"), 9) } != 0 {
+        panic(7242);
+    };
+}
+
+@test "variadic snprintf promotes u8 call expr arg"() {
+    let buf = stack_alloc(64);
+    let n = unsafe { snprintf(buf, 64, STR_PTR("%u\0"), get_byte()) };
+    if n != 3 {
+        panic(7251);
+    };
+    if unsafe { memcmp(buf, STR_PTR("200\0"), 4) } != 0 {
+        panic(7252);
+    };
+}

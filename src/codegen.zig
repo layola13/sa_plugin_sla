@@ -13654,6 +13654,34 @@ pub const Codegen = struct {
                     const copied = try self.newTmp();
                     try self.emitPrimitiveCopy(copied, lowered.reg, src_ty);
                     src_reg = copied;
+                } else if (lowered.release_after_call and lowered.release_reg == null and lowered.consume_reg == null and
+                    !std.mem.startsWith(u8, lowered.reg, "^") and !std.mem.startsWith(u8, lowered.reg, "&"))
+                {
+                    // DEF-TEXT-VARIADIC-PROMOTE-CALLEXPR: a non-identifier
+                    // argument (a call result, a binary result, ...) sits
+                    // in a raw disposable temp. SA registers are
+                    // width-less and the backend only guarantees the
+                    // declared width of a produced value, so the bits
+                    // above a narrow source type are NOT the value's
+                    // sign extension (an i16 call result of -7 reached
+                    // the cast as 65529 and snprintf printed "65529").
+                    // Identifier arguments never hit this: their
+                    // bindings were canonicalized at the binding site,
+                    // and the copy above re-materialises the value.
+                    // Give expression arguments the same treatment
+                    // before the widening cast: canonicalize a narrow
+                    // integer temp to its source width (the wrap
+                    // retires the raw temp), and materialise any other
+                    // primitive (f32) through a primitive copy, exactly
+                    // like the identifier branch.
+                    if (try self.emitWidthCanonicalize(lowered.reg, src_ty, true)) |wrapped| {
+                        src_reg = wrapped;
+                    } else {
+                        const copied = try self.newTmp();
+                        try self.emitPrimitiveCopy(copied, lowered.reg, src_ty);
+                        try self.emitRelease(lowered.reg);
+                        src_reg = copied;
+                    }
                 }
                 const promoted = try self.newTmp();
                 self.outPrint("    {s} = {s} as {s}\n", .{ promoted, src_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;

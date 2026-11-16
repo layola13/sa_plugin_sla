@@ -1,0 +1,60 @@
+// DEF-TEXT31-ASYNC-SM regression (join2 shape): the async
+// state-machine prologue (@sla__await_*) binds the join2 arguments
+// with leading lets, and FUTURE_NEW moves each identifier argument's
+// state cell into the join future. The generated prologue never ran
+// the enclosing function's exit cleanup, so pre-fix both functions
+// below trap MemoryLeak 1012 on `left` at the prologue's exit.
+@import "sa_std/future.sa"
+@import "sa_std/core/task.sa"
+
+async fn await_smfix_join2_sum() -> i32 {
+    let left = future::ready(19);
+    let right = future::ready(23);
+    let pair = future::join2(left, right).await;
+    let left_value = future::pair_left(pair);
+    let right_value = future::pair_right(pair);
+    return left_value + right_value;
+}
+
+fn poll_smfix_join2_sum() -> i32 {
+    let fut = await_smfix_join2_sum();
+    let task = task::new(fut);
+    if task::poll(task) != true {
+        panic(9811);
+    };
+    if task::is_ready(task) != true {
+        panic(9812);
+    };
+    return task::result(task);
+}
+
+@test "async sm join2 prefix args retire ready"() {
+    if poll_smfix_join2_sum() != 42 {
+        panic(9813);
+    };
+}
+
+async fn await_smfix_join2_pending() -> i32 {
+    let left = future::ready(11);
+    let right = future::pending::<i32>();
+    let pair = future::join2(left, right).await;
+    return future::pair_left(pair);
+}
+
+fn poll_smfix_join2_pending() -> bool {
+    let fut = await_smfix_join2_pending();
+    let task = task::new(fut);
+    if task::poll(task) != false {
+        panic(9821);
+    };
+    if task::is_ready(task) != false {
+        panic(9822);
+    };
+    return true;
+}
+
+@test "async sm join2 prefix args retire pending"() {
+    if poll_smfix_join2_pending() != true {
+        panic(9823);
+    };
+}

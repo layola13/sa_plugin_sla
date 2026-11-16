@@ -1,0 +1,38 @@
+// DEF-TEXT31-ASYNC-SM regression (capture shape): a Copy-struct
+// local captured across a defer_ready await is boxed and stored
+// into the async state struct by the state-machine prologue
+// (@sla__await_*). The stored box is moved into the state slot, so
+// the prologue must forget the source temp; pre-fix it emitted no
+// retire at all and the function traps MemoryLeak 1012 on the
+// capture temp at the prologue's exit.
+@import "sa_std/future.sa"
+@import "sa_std/core/task.sa"
+
+@derive(copy)
+struct SmfixBump {
+    amount: i32,
+}
+
+async fn await_smfix_defer_capture() -> i32 {
+    let bump = SmfixBump { amount: 3 };
+    let value = future::defer_ready(39).await;
+    return value + bump.amount;
+}
+
+fn poll_smfix_defer_capture() -> i32 {
+    let fut = await_smfix_defer_capture();
+    let task = task::new(fut);
+    if task::poll(task) != false {
+        panic(9831);
+    };
+    if task::poll(task) != true {
+        panic(9832);
+    };
+    return task::result(task);
+}
+
+@test "async sm defer copy struct capture retires"() {
+    if poll_smfix_defer_capture() != 42 {
+        panic(9833);
+    };
+}

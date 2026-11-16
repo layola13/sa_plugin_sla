@@ -11587,6 +11587,11 @@ pub const Codegen = struct {
             };
             self.outPrint("    store {s}+{}, {s} as {s}\n", .{ async_state, capture.offset, addend_reg, store_ty }) catch return CodegenError.CodegenError;
             if (capture.storage == .scalar) try self.emitRelease(addend_reg);
+            // DEF-TEXT31-ASYNC-SM: a copy_struct capture's box was stored
+            // into the async state above (moved); forget it like
+            // inner_state below -- a release would free the very box the
+            // continuation loads from the state slot (UAF-STATE).
+            if (capture.storage == .copy_struct and !self.consumed_bindings.contains(addend_reg)) try self.emitForgetMovedValue(addend_reg);
         }
         // inner_state was stored into the async state above (moved);
         // forget it instead of releasing it (UAF-STATE, async cluster 1).
@@ -12069,6 +12074,29 @@ pub const Codegen = struct {
         // join_state was stored into the async state above (moved);
         // forget it instead of releasing it.
         try self.emitForgetMovedValue(join_state);
+        // DEF-TEXT31-ASYNC-SM: the leading input lets bound the join2
+        // arguments, and FUTURE_NEW moved each identifier argument's
+        // state cell into the join future. genFutureObjectForState
+        // retires only temp operands (DEF-BATCH1-R5); identifier
+        // bindings rely on the enclosing function's exit cleanup,
+        // which this generated function never runs. Forget each
+        // identifier argument here: the cells live on inside the
+        // returned async state, so the retire is the move-consume
+        // form, never a release (UAF-STATE).
+        if (plan.await_expr.* == .call_expr) {
+            for (plan.await_expr.call_expr.args) |arg| {
+                const arg_name: ?[]const u8 = if (arg.* == .identifier)
+                    arg.identifier
+                else if (arg.* == .move_expr and arg.move_expr.expr.* == .identifier)
+                    arg.move_expr.expr.identifier
+                else
+                    null;
+                if (arg_name) |bound_name| {
+                    const arg_reg = self.resolveBindingName(bound_name);
+                    if (!self.consumed_bindings.contains(arg_reg)) try self.emitForgetMovedValue(arg_reg);
+                }
+            }
+        }
         for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncJoin2AwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);

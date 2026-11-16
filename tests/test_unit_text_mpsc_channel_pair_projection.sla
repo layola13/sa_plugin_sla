@@ -1,0 +1,64 @@
+// DEF-TEXT31-TUPLE-PAIR-PROJECTION regression: `mpsc::channel()` in
+// value position materialises its (Sender, Receiver) tuple by storing
+// the fresh MPSC_NEW handle temp into a tuple cell twice (both slots
+// are views of the one channel). The TEXT codegen never retired that
+// birth temp, so it stayed Active at function exit and the host
+// verifier trapped MemoryLeak 1012 (census: tmp_82 in sched_new_pipe,
+// sa_std/async.sla; here: tmp_0 in new_pipe_min). The destructure form
+// `let (tx, rx) = mpsc::channel()` uses a different accounting path
+// and was not affected. Fix: forget the handle temp after the stores
+// (its ownership moved into the tuple cell).
+//
+// Control (green before and after the fix, both routes): a Copy pair
+// projection through the same struct-literal shape (i64 elements;
+// tuple element slots are word-sized). A Vec-element variant of the
+// control is deliberately not in this file: that shape is green on
+// the TEXT route but red on the SAB route already on base (sealed
+// SAB-side gap), so it cannot ride in a both-routes corpus file.
+@import "sa_std/async.sla"
+
+struct Pipe2 {
+    tx: Sender<i32>,
+    rx: Receiver<i32>,
+}
+
+fn new_pipe_min() -> Pipe2 {
+    let pair = mpsc::channel();
+    return Pipe2 { tx: pair.0, rx: pair.1 };
+}
+
+// The roundtrip runs inside a plain fn (not at @test scope): the SAB
+// exit scan reports chan registers still live at @test scope, the
+// same reason test_unit_decl_sched keeps its roundtrip in a helper.
+fn pipe_roundtrip_min() {
+    let p = new_pipe_min();
+    p.tx.send(5);
+    match p.rx.recv() {
+        Ok(x) => { if x != 5 { panic(77111); }; },
+        Err(e) => { panic(77112); },
+    };
+    mem::forget(p);
+}
+
+@test "text mpsc channel pair projection retires chan temp"() {
+    pipe_roundtrip_min();
+}
+
+struct TwoInts {
+    a: i64,
+    b: i64,
+}
+
+fn make_ints() -> (i64, i64) {
+    return (3, 4);
+}
+
+fn wrap_ints() -> TwoInts {
+    let pair = make_ints();
+    return TwoInts { a: pair.0, b: pair.1 };
+}
+
+@test "tuple pair projection copy control"() {
+    let w = wrap_ints();
+    if w.a + w.b != 7 { panic(77102); };
+}

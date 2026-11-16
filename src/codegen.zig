@@ -20034,6 +20034,16 @@ pub const Codegen = struct {
                         self.outPrint("    {s} = alloc 16\n", .{tuple}) catch return CodegenError.CodegenError;
                         self.outPrint("    store {s}+0, {s} as ptr\n", .{ tuple, chan }) catch return CodegenError.CodegenError;
                         self.outPrint("    store {s}+8, {s} as ptr\n", .{ tuple, chan }) catch return CodegenError.CodegenError;
+                        // DEF-TEXT31-TUPLE-PAIR-PROJECTION: both tuple
+                        // slots now hold the handle (Sender/Receiver are
+                        // views of the one channel), so the birth temp's
+                        // ownership has moved into the tuple cell. The
+                        // stores are plain copies of the ptr, so without
+                        // a settle the temp stays Active at function
+                        // exit (MemoryLeak 1012, e.g. tmp_82 in
+                        // sched_new_pipe). Forget it, mirroring the
+                        // BOX_NEW source retire.
+                        try self.emitForgetMovedValue(chan);
                         return tuple;
                     }
                     if (lowering_rules.isThreadSpawnCall(call)) {

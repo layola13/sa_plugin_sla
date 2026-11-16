@@ -16098,6 +16098,15 @@ pub const Codegen = struct {
                     // at scope exit AND by the Vec's element drop
                     // (double free: demos/rosetta/32 vec! of Box<dyn>
                     // locals; same hole for String/Vec locals).
+                    // DEF-TEXT31-EXECUTOR-VEC-TEMP (SAB arm): a
+                    // tmp-symbol local (a fresh call result bound by
+                    // let, e.g. Box::new / format) also needs the
+                    // emitted marker -- bookkeeping alone leaves the
+                    // tmp Active at function exit (MemoryLeak, e.g.
+                    // test_unit_def_rosetta32_vec_literal_move).
+                    if (std.mem.startsWith(u8, self.symbols.items[arg_reg], "tmp_")) {
+                        try self.emitConsumedMarker(arg_reg);
+                    }
                     try self.markConsumed(arg_reg);
                 }
             } else if (lowering_rules.isHeapHandleType(elem_ty)) {
@@ -17509,7 +17518,14 @@ pub const Codegen = struct {
         // a no-op; live since sci 75007ee3 made release really free).
         // Mirrors the DEF-ACL store rule via isHeapHandleType.
         if (lowering_rules.isHeapHandleType(elem_ty)) {
-            if (!self.isLocalReg(value_reg)) {
+            // DEF-TEXT31-EXECUTOR-VEC-TEMP (SAB arm): a local whose
+            // register is physically a tmp (e.g. a task::new result
+            // bound by let) has no named-binding cleanup path in the
+            // instruction stream, so bookkeeping-only consumption
+            // leaves the tmp Active at function exit (MemoryLeak).
+            // Emit the marker for tmp-symbol locals as well; named
+            // locals keep the previous bookkeeping-only behaviour.
+            if (!self.isLocalReg(value_reg) or std.mem.startsWith(u8, self.symbols.items[value_reg], "tmp_")) {
                 try self.emitConsumedMarker(value_reg);
             }
             // DEF-SAB-BORROW-RESIDUAL: the DEF-ZRANGE consumption also
@@ -17572,7 +17588,12 @@ pub const Codegen = struct {
         // element's handle word itself, so heap-handle element temps
         // are consumed by the push, never released.
         if (lowering_rules.isHeapHandleType(elem_ty)) {
-            if (!self.isLocalReg(value_reg)) {
+            // DEF-TEXT31-EXECUTOR-VEC-TEMP (SAB arm): GrowVec mirror
+            // of the genVecPushCall rule -- a tmp-symbol local (e.g.
+            // a task::new result bound by let) needs the emitted
+            // marker, not bookkeeping alone, or it stays Active at
+            // function exit (MemoryLeak).
+            if (!self.isLocalReg(value_reg) or std.mem.startsWith(u8, self.symbols.items[value_reg], "tmp_")) {
                 try self.emitConsumedMarker(value_reg);
             }
             // DEF-SAB-BORROW-RESIDUAL: GrowVec mirror of the

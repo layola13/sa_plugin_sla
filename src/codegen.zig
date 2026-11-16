@@ -10974,6 +10974,12 @@ pub const Codegen = struct {
             self.outPrint("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
             self.outPrint("    EXPAND TASK_NEW {s}, {s}, {s}\n", .{ task, future_obj, ctx }) catch return CodegenError.CodegenError;
             try self.emitRelease(ctx);
+            // future_obj was moved into the task by TASK_NEW; forget it
+            // instead of releasing it (mirrors the SAB backend's arm and
+            // the genJoin2Future/genSelect2Future child-future discipline;
+            // without this the wrapper temp stays Active at function
+            // exit -- DEF-TEXT31-EXECUTOR-VEC-TEMP).
+            try self.emitForgetMovedValue(future_obj);
             // The state object was moved into the future wrapper above; forget
             // the source reg like every sibling branch does for its consumed
             // arg, otherwise it stays Active until function exit (MemoryLeak).

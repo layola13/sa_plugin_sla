@@ -1,0 +1,11 @@
+// DEF-TEXT31-PTR-PARAM-ALIAS regression (shape A): a ptr parameter copied by
+// a let-alias must still be retired at function exit. Before the fix this
+// trapped MemoryLeak 1012 on the parameter register itself (buf).
+fn chain_append(buf: ptr, off: int, add: int) -> int {
+    let keep = buf;
+    return off + add;
+}
+
+@test "ptr param alias"() {
+    if chain_append("abc", 10, 2) != 12 { panic(1051); };
+}

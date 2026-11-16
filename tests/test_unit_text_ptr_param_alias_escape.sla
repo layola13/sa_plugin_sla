@@ -1,0 +1,16 @@
+// DEF-TEXT31-PTR-PARAM-ALIAS regression (escape shape): a ptr parameter
+// aliased into a local that is returned. The alias copy escapes; the
+// parameter register itself is a distinct copy and must still be retired
+// at exit. Before the fix this trapped MemoryLeak 1012 on the parameter (p).
+@import "sa_std/string.sa"
+
+fn probe_escape(p: ptr) -> ptr {
+    let y = p;
+    return y;
+}
+
+@test "ptr param alias escape returns the pointer"() {
+    let text = "abc";
+    let r = probe_escape(STR_PTR(text));
+    if r != STR_PTR(text) { panic(1062); };
+}

@@ -567,6 +567,20 @@ pub const TypeChecker = struct {
         };
     }
 
+    fn issue013SkipApplies(self: *TypeChecker, scope: *Scope, sym: *const Symbol) bool {
+        // issue013 skip, narrowed (DEF-TEXT31-PTR-PARAM-ALIAS): the skip
+        // exists because a borrow alias shares the source's register
+        // (codegen emits a bare move for `.borrow`), so settling the
+        // source separately would double-release. A primitive raw_ptr
+        // alias is instead materialised by codegen as a DISTINCT
+        // register copy, so the source register keeps its own cleanup
+        // entry; skipping it leaks the source register at the exit
+        // (MemoryLeak 1012). Raw pointers are non-owning, so settling
+        // both registers emits two liveness ends, never a double free.
+        if (sym.ty.* == .primitive and sym.ty.primitive == .raw_ptr) return false;
+        return isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name);
+    }
+
     fn borrowSourceAliasedByOtherActive(self: *TypeChecker, scope: *Scope, name: []const u8) bool {
         _ = self;
         // issue013: when a borrow value is `let y = x;` (x is a borrow), the borrow
@@ -2565,6 +2579,12 @@ pub const TypeChecker = struct {
         while (current_scope) |frame| : (current_scope = frame.parent) remaining += frame.symbols.count();
         while (remaining > 0) : (remaining -= 1) {
             const current = scope.lookup(current_name) orelse return false;
+            // A raw_ptr link in the chain is a distinct register copy
+            // (genLet materializes raw_ptr aliases with a primitive copy,
+            // not a bare move), so the source register does not escape
+            // through it: only the copy escapes. Escape propagation is a
+            // register-sharing property and stops at raw_ptr links.
+            if (current.ty.* == .primitive and current.ty.primitive == .raw_ptr) return false;
             const source = current.borrow_source orelse return false;
             if (std.mem.eql(u8, candidate, source)) return true;
             current_name = source;
@@ -2633,7 +2653,7 @@ pub const TypeChecker = struct {
                 if (sym.state != .active or isInternalSymbol(sym.name)) continue;
                 if (functionExitBindingEscapes(scope, future_expr, sym.name)) continue;
                 // issue013: skip borrowed source that was aliased.
-                if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
+                if (self.issue013SkipApplies(scope, sym)) continue;
                 try cleanup_list.append(sym.name);
             }
         }
@@ -4440,7 +4460,7 @@ pub const TypeChecker = struct {
                     for (case_scope.symbols.values()) |*sym| {
                         if (sym.state == .active and !isInternalSymbol(sym.name)) {
                             if (sym.ty.* == .primitive and sym.ty.primitive == .raw_ptr) continue;
-                            if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(case_scope, sym.name)) continue;
+                            if (self.issue013SkipApplies(case_scope, sym)) continue;
                             try cleanup_list.append(sym.name);
                             sym.state = .consumed;
                             recorded = true;
@@ -7338,7 +7358,7 @@ pub const TypeChecker = struct {
                     // implicit void epilogue emits exactly this list (same
                     // filters as the return-statement cleanup collection,
                     // including the issue013 borrow-alias skip).
-                    if (!(isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name))) {
+                    if (!(self.issue013SkipApplies(scope, sym))) {
                         try fn_exit_cleanup_list.append(sym.name);
                     }
                     sym.state = .consumed;
@@ -7359,7 +7379,7 @@ pub const TypeChecker = struct {
                     const last = func.body[func.body.len - 1];
                     if (last.* == .expr_stmt and !stmtTerminates(last)) {
                         if (functionExitBindingEscapes(scope, last.expr_stmt, sym.name)) continue;
-                        if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
+                        if (self.issue013SkipApplies(scope, sym)) continue;
                         try fn_exit_cleanup_list.append(sym.name);
                         sym.state = .consumed;
                     }
@@ -7401,7 +7421,7 @@ pub const TypeChecker = struct {
                 // issue013: if another active local has borrow_source == sym.name,
                 // the borrow handle was moved into that local; skip the source here
                 // so we do not emit a double `!name` release.
-                if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
+                if (self.issue013SkipApplies(scope, sym)) continue;
                 try cleanup_list.append(sym.name);
                 sym.state = .consumed;
             }
@@ -7974,7 +7994,7 @@ pub const TypeChecker = struct {
                                 if (functionExitBindingEscapes(scope, val, sym.name)) continue;
                             }
                             // issue013: skip borrow source that has been re-aliased.
-                            if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
+                            if (self.issue013SkipApplies(scope, sym)) continue;
                             try cleanup_list.append(sym.name);
                         }
                     }
@@ -8066,7 +8086,7 @@ pub const TypeChecker = struct {
                     for (s.symbols.values()) |*sym| {
                         if (sym.state == .active and !isInternalSymbol(sym.name)) {
                             // issue013: skip borrowed source that was aliased.
-                            if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
+                            if (self.issue013SkipApplies(scope, sym)) continue;
                             try cleanup_list.append(sym.name);
                         }
                     }

@@ -1,0 +1,60 @@
+// DEF-TEXT-EXTRACT-ROOT-TRANSFER regression: a field/index extraction
+// result copies the value out of the root binding; the root register
+// must still be retired at the return, not classified as transferred.
+struct Item {
+    code: u64,
+    tag: u64,
+}
+
+struct QueryC {
+    items: Vec<Item>,
+}
+
+fn iter_at(self: &QueryC, index: u64) -> Item {
+    return self.items[index];
+}
+
+fn first_of(self: &QueryC) -> Item {
+    return self.items[0];
+}
+
+struct Owned {
+    items: Vec<Item>,
+}
+
+fn owned_at(q: Owned, index: u64) -> Item {
+    return q.items[index];
+}
+
+struct Holder {
+    b: Box<u64>,
+    n: u64,
+}
+
+fn take_b(h: Holder) -> Box<u64> {
+    return h.b;
+}
+
+@test "extract root release borrow index"() {
+    let items: Vec<Item> = Vec::new();
+    items.push(Item { code: 5, tag: 6 });
+    let q = QueryC { items: items };
+    let got = iter_at(&q, 0);
+    if got.code != 5 { panic(101); };
+    let first = first_of(&q);
+    if first.tag != 6 { panic(102); };
+}
+
+@test "extract root release owned index"() {
+    let items: Vec<Item> = Vec::new();
+    items.push(Item { code: 7, tag: 8 });
+    let q = Owned { items: items };
+    let got = owned_at(q, 0);
+    if got.code != 7 { panic(103); };
+}
+
+@test "extract root release box field"() {
+    let h = Holder { b: Box::new(9), n: 1 };
+    let b = take_b(h);
+    if *b != 9 { panic(104); };
+}

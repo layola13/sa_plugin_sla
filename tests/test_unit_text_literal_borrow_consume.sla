@@ -1,0 +1,33 @@
+// DEF-TEXT-LITERAL-BORROW-CONSUME regression: the checker consumes a
+// root borrow binding filled into a deep struct-literal field; the
+// text emitter must settle the register with a consuming store.
+struct BorrowReader {
+    bytes: &Vec<u8>,
+    offset: u64,
+}
+
+fn borrow_reader_new(bytes: &Vec<u8>) -> BorrowReader {
+    return BorrowReader { bytes: bytes, offset: 0 };
+}
+
+fn borrow_reader_local(bytes: &Vec<u8>) -> u64 {
+    let r = BorrowReader { bytes: bytes, offset: 3 };
+    return r.offset;
+}
+
+fn borrow_reader_alias(v: &Vec<u8>) -> u64 {
+    let b = v;
+    let r = BorrowReader { bytes: b, offset: 0 };
+    return len(b) + r.offset;
+}
+
+@test "literal borrow consume"() {
+    let data: Vec<u8> = Vec::new();
+    data.push(11);
+    data.push(31);
+    let reader = borrow_reader_new(&data);
+    let bytes_ref = reader.bytes;
+    if len(bytes_ref) != 2 { panic(201); };
+    if borrow_reader_local(&data) != 3 { panic(202); };
+    if borrow_reader_alias(&data) != 2 { panic(203); };
+}

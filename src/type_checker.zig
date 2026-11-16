@@ -232,6 +232,11 @@ pub const TypeChecker = struct {
 
     // Maps a return/block exit node to the variables that need to be dropped
     cleanups: std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)),
+    /// TEXT35-OWNERSHIP (DEF-TEXT-LITERAL-BORROW-CONSUME): struct-literal
+    /// field value nodes whose binding the DEF-deep-copy fill consumed.
+    /// The text emitter reads this to store the value with the consume
+    /// marker the checker already assumes it emits.
+    literal_consumed_values: std.AutoHashMap(*const ast.Node, void),
     // Maps await expressions to cleanups used only when codegen emits a
     // generated pending return. Ready paths retain their ordinary state.
     await_cleanups: std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)),
@@ -411,6 +416,7 @@ pub const TypeChecker = struct {
             .layout_defines = std.StringHashMap(contract_parser.LayoutDefine).init(allocator),
             .scope_pool = std.array_list.Managed(*Scope).init(allocator),
             .cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
+            .literal_consumed_values = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .await_cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
             .macro_call_try_cleanups = std.AutoHashMap(*const ast.CallExpr, std.array_list.Managed([]const u8)).init(allocator),
             .phi_cleanups = std.AutoHashMap(*const ast.Node, std.array_list.Managed([]const u8)).init(allocator),
@@ -3200,6 +3206,7 @@ pub const TypeChecker = struct {
             list.deinit();
         }
         self.cleanups.deinit();
+        self.literal_consumed_values.deinit();
 
         var await_cleanup_iter = self.await_cleanups.valueIterator();
         while (await_cleanup_iter.next()) |list| {
@@ -8622,6 +8629,7 @@ pub const TypeChecker = struct {
                                 const literal_ctx = std.fmt.allocPrint(self.allocator, "struct literal field `{s}.{s}` of type `{s}`", .{ ud.name, literal_field.name, typeDesc(field_ty) }) catch return TypeError.OutOfMemory;
                                 try self.consumeBinding(scope, literal_field.value.identifier, sym, "struct literal field fill");
                                 sym.consumed_by_literal = literal_ctx;
+                                self.literal_consumed_values.put(literal_field.value, {}) catch return TypeError.OutOfMemory;
                             }
                         }
                     }

@@ -1,0 +1,44 @@
+// DEF-TEXT-SHADOW-CLEANUP-RESOLUTION regression: a parameter shadowed
+// by a same-name let must still be retired at every exit form.
+struct Pair {
+    a: u64,
+    b: u64,
+}
+
+fn check_param_shadow(v: Pair) -> u64 {
+    if v.a > 0 {
+        let v: Pair = Pair { a: 9, b: 9 };
+        if v.b != 9 { panic(301); };
+    };
+    let r = v.a + v.b;
+    return r;
+}
+
+fn take(p: Pair) -> u64 {
+    return p.a;
+}
+
+fn shadow_consumed_before_return(v: Pair) -> u64 {
+    let v: Pair = Pair { a: 3, b: 4 };
+    let r = take(v);
+    return r;
+}
+
+fn return_shadow(v: Pair) -> Pair {
+    let v: Pair = Pair { a: 3, b: 4 };
+    return v;
+}
+
+fn tail_shadow(v: Pair) -> Pair {
+    let v: Pair = Pair { a: 5, b: 6 };
+    v
+}
+
+@test "shadow exit release"() {
+    if check_param_shadow(Pair { a: 1, b: 2 }) != 3 { panic(302); };
+    if shadow_consumed_before_return(Pair { a: 1, b: 2 }) != 3 { panic(303); };
+    let p = return_shadow(Pair { a: 1, b: 2 });
+    if p.a != 3 { panic(304); };
+    let q = tail_shadow(Pair { a: 1, b: 2 });
+    if q.a != 5 { panic(305); };
+}

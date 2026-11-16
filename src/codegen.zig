@@ -282,6 +282,11 @@ pub const Codegen = struct {
     // They own nothing they point at, so emitRelease must retire only
     // the register and never run the deep value drop on them.
     borrow_param_bindings: std.StringHashMap(void),
+    /// TEXT35-OWNERSHIP (DEF-TEXT-SHADOW-CLEANUP-RESOLUTION): parameters
+    /// whose body register is the bare parameter name (no entry alias
+    /// was pushed for them). Exit paths consult it to retire a parameter
+    /// that a shadowing let hid from the name-based cleanup lists.
+    fn_param_bindings: std.StringHashMap(void),
     borrow_source_temps: std.StringHashMap([]const u8),
     refcell_borrow_handles: std.StringHashMap(RefCellBorrowHandle),
     result_slot_refcell_handles: std.StringHashMap(ResultSlotRefCellHandle),
@@ -396,6 +401,7 @@ pub const Codegen = struct {
             .hashset_bindings = std.StringHashMap(void).init(allocator),
             .btree_set_bindings = std.StringHashMap(void).init(allocator),
             .borrow_param_bindings = std.StringHashMap(void).init(allocator),
+            .fn_param_bindings = std.StringHashMap(void).init(allocator),
             .borrow_source_temps = std.StringHashMap([]const u8).init(allocator),
             .refcell_borrow_handles = std.StringHashMap(RefCellBorrowHandle).init(allocator),
             .result_slot_refcell_handles = std.StringHashMap(ResultSlotRefCellHandle).init(allocator),
@@ -484,6 +490,7 @@ pub const Codegen = struct {
         self.hashset_bindings.deinit();
         self.btree_set_bindings.deinit();
         self.borrow_param_bindings.deinit();
+        self.fn_param_bindings.deinit();
         self.borrow_source_temps.deinit();
         self.refcell_borrow_handles.deinit();
         self.result_slot_refcell_handles.deinit();
@@ -2542,7 +2549,35 @@ pub const Codegen = struct {
         }
     }
 
+    /// TEXT35-OWNERSHIP (DEF-TEXT-SHADOW-CLEANUP-RESOLUTION): release the
+    /// register a name-based cleanup entry actually denotes. Alias levels
+    /// are addressed directly by register; the bottom level is the bare
+    /// name itself, so the alias stack is unwound to reach it and then
+    /// restored for the enclosing block's own bookkeeping.
+    fn emitReleaseForCleanup(self: *Codegen, name: []const u8, target_reg: []const u8, target_is_bottom: bool) CodegenError!void {
+        if (!target_is_bottom) {
+            try self.emitRelease(target_reg);
+            return;
+        }
+        var saved = std.array_list.Managed([]const u8).init(self.allocator);
+        defer saved.deinit();
+        if (self.binding_aliases.get(name)) |aliases| {
+            for (aliases.items) |alias| saved.append(alias) catch return CodegenError.OutOfMemory;
+        }
+        var n = saved.items.len;
+        while (n > 0) {
+            n -= 1;
+            self.popBindingAlias(name);
+        }
+        try self.emitRelease(name);
+        for (saved.items) |alias| try self.pushBindingAliasTo(name, alias);
+    }
+
     fn planFunctionResultCleanup(self: *Codegen, cleanup_name: []const u8, result_expr: *const ast.Node) CodegenError!lowering_rules.FunctionTailCleanupAction {
+        return self.planFunctionResultCleanupResolved(cleanup_name, result_expr, self.resolveBindingName(cleanup_name));
+    }
+
+    fn planFunctionResultCleanupResolved(self: *Codegen, cleanup_name: []const u8, result_expr: *const ast.Node, resolved: []const u8) CodegenError!lowering_rules.FunctionTailCleanupAction {
         const base_plan = lowering_rules.planFunctionTailCleanup(cleanup_name, result_expr);
         if (base_plan.transfersResult()) return base_plan;
         const root_name = lowering_rules.rootIdentifier(result_expr) orelse return base_plan;
@@ -2550,6 +2585,14 @@ pub const Codegen = struct {
         const result_ty = self.resolvedTypeForExpr(result_expr) orelse self.tc.expr_types.get(result_expr) orelse return base_plan;
         if (self.typeIsCopyValue(result_ty)) return base_plan;
         if (lowering_rules.isBorrowLikeType(result_ty)) return base_plan;
+        // TEXT35-OWNERSHIP (DEF-TEXT-EXTRACT-ROOT-TRANSFER): a field or
+        // index extraction result transfers the root binding only when
+        // generating the result actually consumed it. A plain extraction
+        // copies the element/field out (load into a fresh register),
+        // leaving the root register live: it must take the base plan's
+        // normal release or it leaks at the exit boundary
+        // (`return self.items[index]`).
+        if (!self.consumed_bindings.contains(resolved) and !self.store_moved_bindings.contains(resolved)) return base_plan;
         return .transfer_result;
     }
 
@@ -9666,6 +9709,7 @@ pub const Codegen = struct {
         self.hashset_bindings.clearRetainingCapacity();
         self.btree_set_bindings.clearRetainingCapacity();
         self.borrow_param_bindings.clearRetainingCapacity();
+        self.fn_param_bindings.clearRetainingCapacity();
         self.borrow_source_temps.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
         self.result_slot_refcell_handles.clearRetainingCapacity();
@@ -9872,6 +9916,15 @@ pub const Codegen = struct {
             try self.emitAggregateHomeIfNeeded(p.name, p.ty, false);
         }
 
+        // TEXT35-OWNERSHIP (DEF-TEXT-SHADOW-CLEANUP-RESOLUTION): record
+        // the parameters whose body register is the bare parameter name
+        // (no entry alias was pushed for them above), so exit paths can
+        // retire a parameter hidden behind a shadowing let.
+        for (f.params) |p| {
+            const aliased = if (self.binding_aliases.get(p.name)) |aliases| aliases.items.len > 0 else false;
+            if (!aliased) self.fn_param_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+        }
+
         // 2. Compile body statements
         const tail_expr_return = !isVoidType(f.ret_ty) and f.body.len > 0 and f.body[f.body.len - 1].* == .expr_stmt and !blockTerminates(f.body);
         if (tail_expr_return) {
@@ -9924,6 +9977,27 @@ pub const Codegen = struct {
                     // the void epilogue relies on (genBlock pops its
                     // aliases before the epilogue runs). Clearing the
                     // kept list makes the trailing pop a no-op.
+                    // TEXT35-OWNERSHIP (DEF-TEXT-SHADOW-CLEANUP-
+                    // RESOLUTION): if the tail result is a bare
+                    // identifier/move naming a bare-name parameter that a
+                    // kept prefix let shadows, the checker's name-based
+                    // escape test excluded the parameter from
+                    // fn_exit_cleanups too; remember it so its register
+                    // can be retired after the alias pops below.
+                    const tail_shadowed_param: ?[]const u8 = blk: {
+                        const rname: ?[]const u8 = if (tail_expr.* == .identifier)
+                            tail_expr.identifier
+                        else if (tail_expr.* == .move_expr and tail_expr.move_expr.expr.* == .identifier)
+                            tail_expr.move_expr.expr.identifier
+                        else
+                            null;
+                        const rn = rname orelse break :blk null;
+                        if (!self.fn_param_bindings.contains(rn)) break :blk null;
+                        for (kept_aliases.items) |ka| {
+                            if (std.mem.eql(u8, ka, rn)) break :blk rn;
+                        }
+                        break :blk null;
+                    };
                     var kept_i = kept_aliases.items.len;
                     while (kept_i > 0) {
                         kept_i -= 1;
@@ -9931,6 +10005,9 @@ pub const Codegen = struct {
                     }
                     kept_aliases.clearRetainingCapacity();
                     try self.emitFunctionTailParamCleanups(f, tail_expr);
+                    if (tail_shadowed_param) |rname| {
+                        if (!self.consumed_bindings.contains(rname)) try self.emitRelease(rname);
+                    }
                     try self.emitVaEndIfVariadic();
                     self.outPrint("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
                 }
@@ -9998,6 +10075,7 @@ pub const Codegen = struct {
         self.hashset_bindings.clearRetainingCapacity();
         self.btree_set_bindings.clearRetainingCapacity();
         self.borrow_param_bindings.clearRetainingCapacity();
+        self.fn_param_bindings.clearRetainingCapacity();
         self.borrow_source_temps.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
         self.result_slot_refcell_handles.clearRetainingCapacity();
@@ -12464,6 +12542,7 @@ pub const Codegen = struct {
             self.hashset_bindings.clearRetainingCapacity();
             self.btree_set_bindings.clearRetainingCapacity();
             self.borrow_param_bindings.clearRetainingCapacity();
+            self.fn_param_bindings.clearRetainingCapacity();
             self.borrow_source_temps.clearRetainingCapacity();
             self.refcell_borrow_handles.clearRetainingCapacity();
             self.result_slot_refcell_handles.clearRetainingCapacity();
@@ -15857,22 +15936,74 @@ pub const Codegen = struct {
                 // Inject scope cleanups before return
                 if (self.tc.cleanups.get(stmt)) |list| {
                     for (list.items) |c_var| {
+                        // TEXT35-OWNERSHIP (DEF-TEXT-SHADOW-CLEANUP-
+                        // RESOLUTION): the cleanup list is name-based, so
+                        // under shadowing every entry for a name resolves
+                        // to the innermost register and outer bindings are
+                        // never retired. Walk the alias stack past levels
+                        // whose register is already consumed -- an entry
+                        // can only denote a still-active binding -- and
+                        // release the register it actually denotes.
+                        var target_reg = self.resolveBindingName(c_var);
+                        var target_is_bottom = false;
+                        if (self.binding_aliases.get(c_var)) |aliases| {
+                            var lvl: usize = aliases.items.len;
+                            while (lvl > 0 and self.consumed_bindings.contains(target_reg)) {
+                                lvl -= 1;
+                                if (lvl == 0) {
+                                    target_reg = c_var;
+                                    target_is_bottom = true;
+                                } else {
+                                    target_reg = aliases.items[lvl - 1];
+                                }
+                            }
+                        }
                         if (ret.value) |v| {
                             // DEF-ARC-DROP: a cloned extraction (deep
                             // clone or Arc/Rc bump) transfers nothing
                             // out of the root binding; its cleanup is
                             // a normal release, not a result transfer.
                             if (result_extract_cloned and std.mem.eql(u8, c_var, lowering_rules.rootIdentifier(v) orelse "")) {
-                                try self.emitRelease(c_var);
-                            } else if ((try self.planFunctionResultCleanup(c_var, v)).releasesValue()) try self.emitRelease(c_var);
+                                try self.emitReleaseForCleanup(c_var, target_reg, target_is_bottom);
+                            } else if ((try self.planFunctionResultCleanupResolved(c_var, v, target_reg)).releasesValue()) {
+                                try self.emitReleaseForCleanup(c_var, target_reg, target_is_bottom);
+                            }
                         } else {
-                            try self.emitRelease(c_var);
+                            try self.emitReleaseForCleanup(c_var, target_reg, target_is_bottom);
                         }
                     }
                 }
                 if (copied_result_source) |source_name| {
                     if (!self.consumed_bindings.contains(self.resolveBindingName(source_name))) {
                         try self.emitRelease(source_name);
+                    }
+                }
+                // TEXT35-OWNERSHIP (DEF-TEXT-SHADOW-CLEANUP-RESOLUTION):
+                // a bare identifier/move result escapes through the
+                // innermost binding of its name, and the checker's
+                // name-based escape test then excludes EVERY binding of
+                // that name from the cleanup list above -- outer bindings
+                // shadowed by the result binding are never retired.
+                // Release the alias levels below the result binding and,
+                // for a bare-name parameter, the parameter register.
+                if (ret.value) |v| {
+                    const result_root: ?[]const u8 = if (v.* == .identifier)
+                        v.identifier
+                    else if (v.* == .move_expr and v.move_expr.expr.* == .identifier)
+                        v.move_expr.expr.identifier
+                    else
+                        null;
+                    if (result_root) |rname| {
+                        if (self.binding_aliases.get(rname)) |aliases| {
+                            var lvl = aliases.items.len;
+                            while (lvl > 1) {
+                                lvl -= 1;
+                                try self.emitRelease(aliases.items[lvl - 1]);
+                            }
+                            if (aliases.items.len > 0 and self.fn_param_bindings.contains(rname)) {
+                                try self.emitReleaseForCleanup(rname, rname, true);
+                            }
+                        }
                     }
                 }
                 try self.emitVaEndIfVariadic();
@@ -16316,20 +16447,29 @@ pub const Codegen = struct {
                     self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_copied, layout.ty_str }) catch return CodegenError.CodegenError;
                 } else {
                     const raw_val_reg = try self.genExpr(literal_field.value, hoisted_allocs);
-                    // Form G: canonicalize to the field's declared
-                    // width at the init boundary (see the main field
-                    // loop's direct arm).
-                    var store_reg = raw_val_reg;
-                    var wrapped_reg: ?[]const u8 = null;
-                    if (field_ty) |fty| {
-                        if (try self.emitWidthCanonicalize(raw_val_reg, fty, false)) |wrapped| {
-                            wrapped_reg = wrapped;
-                            store_reg = wrapped;
+                    if (literal_field.value.* == .identifier and self.tc.literal_consumed_values.contains(literal_field.value)) {
+                        // TEXT35-OWNERSHIP (DEF-TEXT-LITERAL-BORROW-
+                        // CONSUME): same consuming store as the main
+                        // field loop's direct arm.
+                        const move_reg = if (std.mem.startsWith(u8, raw_val_reg, "^")) raw_val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{raw_val_reg});
+                        self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                        try self.markMovedExprBinding(literal_field.value, raw_val_reg);
+                    } else {
+                        // Form G: canonicalize to the field's declared
+                        // width at the init boundary (see the main field
+                        // loop's direct arm).
+                        var store_reg = raw_val_reg;
+                        var wrapped_reg: ?[]const u8 = null;
+                        if (field_ty) |fty| {
+                            if (try self.emitWidthCanonicalize(raw_val_reg, fty, false)) |wrapped| {
+                                wrapped_reg = wrapped;
+                                store_reg = wrapped;
+                            }
                         }
+                        self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, store_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                        if (wrapped_reg) |wrapped| try self.emitRelease(wrapped);
+                        if (self.structFieldTempNeedsRelease(literal_field.value, raw_val_reg)) try self.emitRelease(raw_val_reg);
                     }
-                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, store_reg, layout.ty_str }) catch return CodegenError.CodegenError;
-                    if (wrapped_reg) |wrapped| try self.emitRelease(wrapped);
-                    if (self.structFieldTempNeedsRelease(literal_field.value, raw_val_reg)) try self.emitRelease(raw_val_reg);
                 }
             }
             return;
@@ -16374,19 +16514,30 @@ pub const Codegen = struct {
                 if (callArgNeedsRelease(value)) try self.emitRelease(source_reg);
             } else if (transfer.isDirect()) {
                 const raw_val_reg = try self.genExpr(value, hoisted_allocs);
-                // Form G: canonicalize the field value to the field's
-                // declared width at the init boundary (the typed store
-                // truncates too; canonicalizing the register first
-                // keeps every consumer of the value exact).
-                var store_reg = raw_val_reg;
-                var wrapped_reg: ?[]const u8 = null;
-                if (try self.emitWidthCanonicalize(raw_val_reg, decl_field.ty, false)) |wrapped| {
-                    wrapped_reg = wrapped;
-                    store_reg = wrapped;
+                if (value.* == .identifier and self.tc.literal_consumed_values.contains(value)) {
+                    // TEXT35-OWNERSHIP (DEF-TEXT-LITERAL-BORROW-CONSUME):
+                    // the checker consumed this binding into the literal
+                    // (DEF-deep-copy fill of a deep field); store it with
+                    // the consume marker so the register settles, exactly
+                    // as the checker's model assumes.
+                    const move_reg = if (std.mem.startsWith(u8, raw_val_reg, "^")) raw_val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{raw_val_reg});
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                    try self.markMovedExprBinding(value, raw_val_reg);
+                } else {
+                    // Form G: canonicalize the field value to the field's
+                    // declared width at the init boundary (the typed store
+                    // truncates too; canonicalizing the register first
+                    // keeps every consumer of the value exact).
+                    var store_reg = raw_val_reg;
+                    var wrapped_reg: ?[]const u8 = null;
+                    if (try self.emitWidthCanonicalize(raw_val_reg, decl_field.ty, false)) |wrapped| {
+                        wrapped_reg = wrapped;
+                        store_reg = wrapped;
+                    }
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, store_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                    if (wrapped_reg) |wrapped| try self.emitRelease(wrapped);
+                    if (self.structFieldTempNeedsRelease(value, raw_val_reg)) try self.emitRelease(raw_val_reg);
                 }
-                self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, store_reg, layout.ty_str }) catch return CodegenError.CodegenError;
-                if (wrapped_reg) |wrapped| try self.emitRelease(wrapped);
-                if (self.structFieldTempNeedsRelease(value, raw_val_reg)) try self.emitRelease(raw_val_reg);
             } else if (transfer.isMove()) {
                 const val_reg = try self.genExpr(value, hoisted_allocs);
                 const move_reg = if (std.mem.startsWith(u8, val_reg, "^")) val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg});
@@ -21289,6 +21440,11 @@ pub const Codegen = struct {
                             const reg = try self.newTmp();
                             self.outPrint("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             self.outPrint("    EXPAND RC_CLONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                            // TEXT35-OWNERSHIP (DEF-TEXT-EXPAND-RECV-TEMP):
+                            // retire the receiver register -- an inline
+                            // `&place` argument is an unnamed temp that no
+                            // cleanup list owns.
+                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                             return reg;
                         }
                         if (arcInnerType(ty) != null and lowering_rules.isCloneCall(call)) {
@@ -21297,6 +21453,10 @@ pub const Codegen = struct {
                             const reg = try self.newTmp();
                             self.outPrint("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             self.outPrint("    EXPAND ARC_CLONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                            // TEXT35-OWNERSHIP (DEF-TEXT-EXPAND-RECV-TEMP):
+                            // retire the receiver register (see the Rc
+                            // clone branch above).
+                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                             return reg;
                         }
                         // DEF-ARC-DROP (F1): count surface emission. The
@@ -21316,6 +21476,9 @@ pub const Codegen = struct {
                                 self.outPrint("    EXPAND RC_WEAK_COUNT {s}, {s}\n", .{ reg, src_reg }) catch return CodegenError.CodegenError;
                             }
                             try self.emitRelease(src_reg);
+                            // TEXT35-OWNERSHIP (DEF-TEXT-EXPAND-RECV-TEMP):
+                            // retire the receiver register as well.
+                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                             return reg;
                         }
                         if (arcInnerType(ty) != null and (lowering_rules.isStrongCountCall(call) or lowering_rules.isWeakCountCall(call))) {
@@ -21330,6 +21493,9 @@ pub const Codegen = struct {
                                 self.outPrint("    EXPAND ARC_WEAK_COUNT {s}, {s}\n", .{ reg, src_reg }) catch return CodegenError.CodegenError;
                             }
                             try self.emitRelease(src_reg);
+                            // TEXT35-OWNERSHIP (DEF-TEXT-EXPAND-RECV-TEMP):
+                            // retire the receiver register as well.
+                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                             return reg;
                         }
                         // DEF-deep-copy: the explicit clone surface for

@@ -1,0 +1,15 @@
+// DEF-TEXT-EXPAND-RECV-TEMP regression: Rc/Arc clone and count calls
+// with an inline borrow argument must retire the receiver temp.
+@import "sa_std/core/rc.sa";
+@import "sa_std/core/arc.sa";
+
+@test "expand recv temp release"() {
+    let rc1: Rc<u64> = Rc::new(5);
+    let rc2 = Rc::clone(&rc1);
+    if *rc2 != 5 { panic(401); };
+    let n = Rc::strong_count(&rc1);
+    if n != 2 { panic(402); };
+    let a1: Arc<u64> = Arc::new(7);
+    let a2 = Arc::clone(&a1);
+    if *a2 != 7 { panic(403); };
+}

@@ -952,7 +952,16 @@ pub const Lowerer = struct {
                 const closed_expr = try self.newNode(.{ .binary_expr = .{ .op = .ne, .left = closed_ident, .right = try self.intNode(0) } });
                 self.registerType(closed_expr, try self.tyPrim(.boolean));
                 const tuple_elems = try self.allocator.alloc(*ast.Node, 2);
-                tuple_elems[0] = try self.slotValueExpr(out, slot_name, slot_ty, info.payload_ty);
+                // DEF-TEXT31-RECV-EXPR-REF: the expression form must
+                // retire the slot-view borrow (__rv_ref_) once the
+                // tuple is bound, exactly as emitRecvBinding and the
+                // select recv arms do. Routing through slotValueExpr
+                // discarded SlotValue.ref_name, so the borrow local
+                // stayed live at function exit and the SA-text
+                // codegen trapped MemoryLeak for every word-payload
+                // `let pair = ch.recv();`.
+                const sv = try self.slotValueForBinding(out, slot_name, slot_ty, info.payload_ty);
+                tuple_elems[0] = sv.expr;
                 tuple_elems[1] = closed_expr;
                 const tuple_node = try self.newNode(.{ .tuple_literal = .{ .elements = tuple_elems } });
                 const tuple_elem_tys = try self.allocator.alloc(*ast.Type, 2);
@@ -962,6 +971,9 @@ pub const Lowerer = struct {
                 self.registerType(tuple_node, tuple_ty);
                 const tuple_name = try self.freshName("__rt_");
                 try out.append(try self.letNode(tuple_name, tuple_ty, tuple_node));
+                if (sv.ref_name) |ref_name| {
+                    try out.append(try self.forgetStmt(ref_name, sv.ref_ty.?));
+                }
                 return try self.identNode(tuple_name, tuple_ty);
             },
             .close, .destroy => {

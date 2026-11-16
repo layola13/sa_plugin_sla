@@ -1,0 +1,38 @@
+// DEF-TEXT31-RECV-EXPR-REF regression: the expression form of a
+// channel receive (`let pair = ch.recv();`) must retire the
+// receive-slot view borrow (__rv_ref_) once the (payload, closed)
+// tuple is bound. The statement-level destructured form
+// (`let (v, closed) = ch.recv();`) already retired it; the
+// expression form dropped the ref name in the lowering
+// (slotValueFromPtr discarded SlotValue.ref_name), so the borrow
+// local stayed live at function exit and the SA-text codegen
+// trapped MemoryLeak 1012. Pointer payloads take the view-load
+// path and are the affected shape (the census shape).
+// Sibling defect, NOT covered here: for non-pointer word payloads
+// (e.g. u64) the synthetic tuple temp (__rt_) also stays live —
+// a distinct register/accounting path, registered separately as
+// DEF-TEXT-RECV-EXPR-TUPLE-TEMP (probes: base leaks __rv_ref_
+// first and masks it; a plain non-recv tuple binding is clean).
+@import "sa_std/ptr.sa"
+@import "sa_std/task.sai"
+@import "sa_std/core/box.sa"
+@import "sa_std/vec.sa"
+
+struct RefMsg {
+    fd: u64,
+    kind: u8,
+}
+
+fn ref_msg_new(fd: u64, kind: u8) -> *RefMsg {
+    return Box::into_raw(Box::new(RefMsg { fd: fd, kind: kind }));
+}
+
+@test "text recv expr form retires rv ref ptr payload"() {
+    let ch: Chan<*RefMsg> = Chan::new(2);
+    let m0 = ref_msg_new(7, 2);
+    ch.send(m0);
+    let pair = ch.recv();
+    if pair.1 { panic(45201); };
+    if (*pair.0).fd != 7 { panic(45202); };
+    if (*pair.0).kind != 2 { panic(45203); };
+}

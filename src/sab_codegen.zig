@@ -17813,6 +17813,22 @@ pub const Codegen = struct {
                     if (call.args[0].* == .field_expr and lowering_rules.rootIdentifier(call.args[0]) != null) {
                         try self.neutralizeMovedOutField(call.args[0].field_expr, value_ty);
                     }
+                    // DEF-REFCELL-IFLET-FAILURE-CLEANUP: markConsumed is
+                    // bookkeeping-only -- it emits no instruction, so the
+                    // host verifier still sees the payload temp Active at
+                    // function exit (MemoryLeak 1012; e.g. the
+                    // RefCell::new temp wrapped by Some() in an if-let
+                    // chain, tmp_423 in the target file / tmp_5 in the
+                    // standalone minim). Retire it visibly with a
+                    // non-freeing move_: the enum now owns the payload
+                    // (DEF-3), so a freeing release would double-free.
+                    // Stack slots die with their scope -- move_ on one
+                    // traps StackEscape, so those keep the
+                    // bookkeeping-only retire (the verifier exempts
+                    // stack-allocated registers from the leak check).
+                    if (!self.stack_alloc_regs.contains(value_reg) and !self.stack_alloc_emitted.contains(value_reg)) {
+                        try self.emitMove(value_reg);
+                    }
                     try self.markConsumed(value_reg);
                     return dst;
                 }

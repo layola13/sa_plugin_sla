@@ -1,0 +1,98 @@
+// DEF-TEXT31-U32READ-VIEW-TEMP regression: a scalar Copy payload built
+// by a temp-materializing cast (e.g. `Some(acc as u32)`) must be retired
+// after the Option/Result constructor EXPAND stores it. The payload
+// settlement helper's scalar fallthrough keyed on callArgNeedsRelease,
+// which excludes cast results -- most consumers retire the cast temp
+// themselves, the constructor path did not, so the payload register
+// stayed Active to function exit (MemoryLeak 1012 on the TEXT route;
+// the SAB route is the control). Census file:
+// test_unit_bend2_parity_u32 (tmp_368 @ u32_read).
+
+@import "sa_std/string.sa"
+
+fn wrap_some_cast(x: u64) -> Option<u32> {
+    return Some(x as u32);
+}
+
+@test "text some cast payload temp retires"() {
+    let r = wrap_some_cast(7);
+    if r.unwrap_or(0) != 7 { panic(32101); };
+}
+
+fn wrap_ok_cast(x: u64) -> Result<u32, u64> {
+    return Ok(x as u32);
+}
+
+@test "text ok cast payload temp retires"() {
+    let r = wrap_ok_cast(9);
+    if r.unwrap_or(0) != 9 { panic(32102); };
+}
+
+fn let_some_cast(x: u64) -> Option<u32> {
+    let o = Some(x as u32);
+    return o;
+}
+
+@test "text let-bound some cast payload temp retires"() {
+    let r = let_some_cast(11);
+    if r.unwrap_or(0) != 11 { panic(32103); };
+}
+
+// The census mechanism in miniature: an as_bytes view binding, early
+// None returns inside the loop, and a tail Some built from a cast.
+fn read_digits(s: &String) -> Option<u32> {
+    let bs = s.as_bytes();
+    let n = len(bs);
+    if n == 0 {
+        return None;
+    };
+    let acc: u64 = 0;
+    let i: u64 = 0;
+    while i < n {
+        let c = bs[i] as u64;
+        if c < 48 {
+            return None;
+        };
+        if c > 57 {
+            return None;
+        };
+        acc = acc * 10 + (c - 48);
+        if acc > 4294967295 {
+            return None;
+        };
+        i = i + 1;
+    }
+    return Some(acc as u32);
+}
+
+@test "text u32 read tail some cast payload temp retires"() {
+    let s1: String = format("123");
+    let r1 = read_digits(&s1);
+    if r1.unwrap_or(0) != 123 { panic(32104); };
+    let s2: String = format("");
+    let r2 = read_digits(&s2);
+    if r2.is_some() { panic(32105); };
+    let s3: String = format("12a");
+    let r3 = read_digits(&s3);
+    if r3.is_some() { panic(32106); };
+}
+
+// Controls: identifier and binary-expression payloads were already
+// retired correctly on the base and must stay green.
+fn wrap_some_ident(x: u32) -> Option<u32> {
+    return Some(x);
+}
+
+@test "text some ident payload still green"() {
+    let r = wrap_some_ident(13);
+    if r.unwrap_or(0) != 13 { panic(32107); };
+}
+
+fn wrap_some_expr(x: u64) -> Option<u64> {
+    return Some(x + 1);
+}
+
+@test "text some binary expr payload still green"() {
+    let r = wrap_some_expr(20);
+    if r.unwrap_or(0) != 21 { panic(32108); };
+}

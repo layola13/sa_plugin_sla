@@ -1908,7 +1908,20 @@ pub const Codegen = struct {
                 return;
             }
         }
-        if (callArgNeedsRelease(arg)) try self.emitRelease(value_reg);
+        if (callArgNeedsRelease(arg)) {
+            try self.emitRelease(value_reg);
+        } else if (arg.* == .cast_expr and self.exprResultRegNeedsRelease(arg)) {
+            // DEF-TEXT31-U32READ-VIEW-TEMP: a scalar Copy payload built
+            // by a temp-materializing cast (e.g. `Some(acc as u32)`) is
+            // a fresh register, but callArgNeedsRelease excludes cast
+            // results -- most consumers retire the cast temp themselves,
+            // the constructor EXPAND does not, so without this the
+            // payload register stays Active to function exit
+            // (MemoryLeak 1012, tmp_34 @ u32_read). Pointer-carrier
+            // casts do not materialize (the payload IS the source
+            // register) and keep the no-release behavior.
+            try self.emitRelease(value_reg);
+        }
     }
 
     fn rebindRefCellBorrowHandleOwners(self: *Codegen, src: []const u8, dst: []const u8) void {

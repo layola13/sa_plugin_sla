@@ -20241,6 +20241,35 @@ pub const Codegen = struct {
                     const copied = try self.newTmp();
                     try self.emitPrimitiveCopy(copied, inner, src_ty);
                     src_reg = copied;
+                } else if (cast.expr.* != .identifier and cast.expr.* != .cast_expr and src_ty.* == .primitive and
+                    !std.mem.startsWith(u8, inner, "^") and !std.mem.startsWith(u8, inner, "&"))
+                {
+                    // DEF-TEXT-CAST-EXPR-RAW-REG: an explicit cast of a
+                    // non-identifier expression (a call result, a binary
+                    // result, ...) feeds the raw result register straight
+                    // into the widening `as`. SA registers are width-less
+                    // and the backend only guarantees the declared width
+                    // of a produced value, so the bits above a narrow
+                    // source type are NOT the value's sign extension (an
+                    // i16 call result of -7 reached the cast as 65529 and
+                    // printed "65529"). Identifier sources never hit
+                    // this: their bindings were canonicalized at the
+                    // binding site. Give expression sources the Form G
+                    // treatment before the cast: canonicalize a narrow
+                    // integer temp to its source width (the wrap retires
+                    // the raw temp when this expression owns it), and
+                    // materialise an f32 temp through a primitive copy
+                    // (an fadd materialisation, exactly like the
+                    // promotion arm) so the widening cast reads a real
+                    // float register instead of the raw call-result bits.
+                    if (try self.emitWidthCanonicalize(inner, src_ty, self.exprResultRegNeedsRelease(cast.expr))) |wrapped| {
+                        src_reg = wrapped;
+                    } else if (src_ty.primitive == .f32 and self.exprResultRegNeedsRelease(cast.expr)) {
+                        const copied = try self.newTmp();
+                        try self.emitPrimitiveCopy(copied, inner, src_ty);
+                        try self.emitRelease(inner);
+                        src_reg = copied;
+                    }
                 }
                 const reg = try self.newTmp();
                 self.outPrint("    {s} = {s} as {s}\n", .{ reg, src_reg, typeString(cast.ty) }) catch return CodegenError.CodegenError;

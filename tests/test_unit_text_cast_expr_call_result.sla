@@ -1,0 +1,89 @@
+// DEF-TEXT-CAST-EXPR-RAW-REG: an explicit source-level cast of a
+// CALL EXPRESSION (or other raw expression result) must reach the
+// consumer with the cast value. On the defective codegen the cast arm
+// fed the raw result register straight into the widening `as`; SA
+// registers are width-less and only the declared width of a produced
+// value is guaranteed, so an i16 result of -7 was passed to snprintf
+// as 65529 (and printed "65529"). Identifier sources were unaffected:
+// bindings are width-canonicalized at the binding site, and consumers
+// that canonicalize (lets, compares) masked the defect elsewhere --
+// only the extern variadic boundary exposed the raw bits. These tests
+// assert the runtime VALUE, not just rc.
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+@import "import_fixtures/variadic_libc.sai"
+
+fn get_small() -> i16 {
+    return -7;
+}
+
+fn get_tiny() -> i8 {
+    return -100;
+}
+
+fn get_byte() -> u8 {
+    return 200;
+}
+
+fn get_ratio() -> f32 {
+    return 0.5;
+}
+
+fn get_big() -> i16 {
+    return 20000;
+}
+
+@test "variadic snprintf reads i16 call cast to i32"() {
+    let buf = stack_alloc(64);
+    let n = unsafe { snprintf(buf, 64, STR_PTR("%d\0"), get_small() as i32) };
+    if n != 2 {
+        panic(7601);
+    };
+    if unsafe { memcmp(buf, STR_PTR("-7\0"), 3) } != 0 {
+        panic(7602);
+    };
+}
+
+@test "variadic snprintf reads i8 call cast to i32"() {
+    let buf = stack_alloc(64);
+    let n = unsafe { snprintf(buf, 64, STR_PTR("%d\0"), get_tiny() as i32) };
+    if n != 4 {
+        panic(7611);
+    };
+    if unsafe { memcmp(buf, STR_PTR("-100\0"), 5) } != 0 {
+        panic(7612);
+    };
+}
+
+@test "variadic snprintf reads f32 call cast to f64"() {
+    let buf = stack_alloc(64);
+    let n = unsafe { snprintf(buf, 64, STR_PTR("%f\0"), get_ratio() as f64) };
+    if n != 8 {
+        panic(7621);
+    };
+    if unsafe { memcmp(buf, STR_PTR("0.500000\0"), 9) } != 0 {
+        panic(7622);
+    };
+}
+
+@test "variadic snprintf reads binary expr cast to i32"() {
+    let buf = stack_alloc(64);
+    let n = unsafe { snprintf(buf, 64, STR_PTR("%d\0"), (get_big() + get_big()) as i32) };
+    if n != 6 {
+        panic(7631);
+    };
+    if unsafe { memcmp(buf, STR_PTR("-25536\0"), 7) } != 0 {
+        panic(7632);
+    };
+}
+
+@test "variadic snprintf reads u8 call cast to i32"() {
+    let buf = stack_alloc(64);
+    let n = unsafe { snprintf(buf, 64, STR_PTR("%d\0"), get_byte() as i32) };
+    if n != 3 {
+        panic(7641);
+    };
+    if unsafe { memcmp(buf, STR_PTR("200\0"), 4) } != 0 {
+        panic(7642);
+    };
+}

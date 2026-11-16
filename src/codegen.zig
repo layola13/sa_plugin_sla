@@ -267,6 +267,14 @@ pub const Codegen = struct {
     /// still register-Active so it can emit the balancing `!name` on the
     /// consuming side; see emitBranchConsumptionCompensation.
     store_moved_bindings: std.StringHashMap(void),
+    /// DEF-DNS-QUERY-PHI-CONFLICT: bindings whose register was
+    /// materialised by a payload load (match / let-pattern extraction).
+    /// The SA verifier classes such registers RawPointer /
+    /// EphemeralScalar, for which a plain `!name` release does NOT
+    /// settle the register mask (it stays Active). Branch-merge
+    /// compensation must finish their retire with a visible `^name`
+    /// forget; see emitLoadClassSettle / emitBranchSettle.
+    load_class_bindings: std.StringHashMap(void),
     mpsc_sender_bindings: std.StringHashMap(void),
     mpsc_sender_channels: std.StringHashMap([]const u8),
     mpsc_receiver_bindings: std.StringHashMap(void),
@@ -389,6 +397,7 @@ pub const Codegen = struct {
             .inline_thread_handles = std.StringHashMap(void).init(allocator),
             .consumed_bindings = std.StringHashMap(void).init(allocator),
             .store_moved_bindings = std.StringHashMap(void).init(allocator),
+            .load_class_bindings = std.StringHashMap(void).init(allocator),
             .mpsc_sender_bindings = std.StringHashMap(void).init(allocator),
             .mpsc_sender_channels = std.StringHashMap([]const u8).init(allocator),
             .mpsc_receiver_bindings = std.StringHashMap(void).init(allocator),
@@ -479,6 +488,7 @@ pub const Codegen = struct {
         self.inline_thread_handles.deinit();
         self.consumed_bindings.deinit();
         self.store_moved_bindings.deinit();
+        self.load_class_bindings.deinit();
         self.mpsc_sender_bindings.deinit();
         self.mpsc_sender_channels.deinit();
         self.mpsc_receiver_bindings.deinit();
@@ -1794,6 +1804,65 @@ pub const Codegen = struct {
         self.store_moved_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
     }
 
+    /// DEF-DNS-QUERY-PHI-CONFLICT: constructor-payload counterpart of
+    /// markMovedExprBinding. The caller
+    /// (releaseOrMarkMovedConstructorPayload) retires the payload
+    /// register with a visible `^` forget (emitForgetMovedValue), so
+    /// the SA register mask IS Consumed -- unlike a struct/array
+    /// literal store-move, whose `^` operand leaves the mask Active.
+    /// Recording the name in store_moved_bindings as well makes branch
+    /// compensation emit a second settle (`!name`) on the consuming
+    /// branch, a UseAfterMove double-settle. Only the consumed record
+    /// is needed here, so sibling branches still release the name.
+    fn markConstructorMovedBinding(self: *Codegen, expr: *const ast.Node, reg: []const u8) CodegenError!void {
+        if (lowering_rules.rootIdentifier(expr)) |name| {
+            const transfers_root = expr.* == .identifier or
+                (expr.* == .move_expr and expr.move_expr.expr.* == .identifier);
+            if (transfers_root) {
+                const resolved = self.resolveBindingName(name);
+                try self.markConsumedBinding(resolved);
+                return;
+            }
+        }
+        if (std.mem.startsWith(u8, reg, "^") or std.mem.startsWith(u8, reg, "&")) {
+            try self.markConsumedBinding(reg[1..]);
+            return;
+        }
+        try self.markConsumedBinding(reg);
+    }
+
+    /// DEF-SAB-TRYBORROW-COUNT-GAP: when a guard value (RefCell
+    /// borrow handle, mutex / rwlock guard) is moved into an enum
+    /// payload or extracted from one by a pattern binding, its
+    /// release metadata must follow the value: cleanup paths release
+    /// by the HOLDING register's name, so without the transfer the
+    /// binding's scope-exit release is a plain register release and
+    /// the dynamic borrow is never returned (the borrow count stays
+    /// nonzero and a later borrow_mut panics).
+    fn transferGuardMetadata(self: *Codegen, dst: []const u8, src: []const u8) CodegenError!void {
+        if (std.mem.eql(u8, dst, src)) return;
+        if (self.refcell_borrow_handles.get(src)) |handle| {
+            self.refcell_borrow_handles.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.refcell_borrow_handles.remove(src);
+        }
+        if (self.mutex_guard_handles.get(src)) |handle| {
+            self.mutex_guard_handles.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.mutex_guard_handles.remove(src);
+        }
+        if (self.mutex_lock_results.get(src)) |handle| {
+            self.mutex_lock_results.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.mutex_lock_results.remove(src);
+        }
+        if (self.rwlock_guard_handles.get(src)) |handle| {
+            self.rwlock_guard_handles.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.rwlock_guard_handles.remove(src);
+        }
+        if (self.rwlock_lock_results.get(src)) |handle| {
+            self.rwlock_lock_results.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.rwlock_lock_results.remove(src);
+        }
+    }
+
     /// DEF-3: the Option/Result constructor macros (OPTION_NEW_SOME /
     /// RESULT_NEW_OK / RESULT_NEW_ERR) store the payload handle into
     /// the fresh enum object, so ownership of a non-Copy payload moves
@@ -1814,7 +1883,7 @@ pub const Codegen = struct {
     fn releaseOrMarkMovedConstructorPayload(self: *Codegen, arg: *const ast.Node, value_reg: []const u8) CodegenError!void {
         if (self.tc.expr_types.get(arg)) |value_ty| {
             if (!self.typeIsCopyValue(value_ty)) {
-                try self.markMovedExprBinding(arg, value_reg);
+                try self.markConstructorMovedBinding(arg, value_reg);
                 // STD-HYGIENE F5: a fresh payload temp (no root binding)
                 // has no exit cleanup to settle it; retire it inline with
                 // a forget, as the tuple path does (DEF-TUPLE-COPY-EMIT).
@@ -2313,9 +2382,12 @@ pub const Codegen = struct {
         // Else side first: its text is the current tail of the output, so
         // compensation, jump and the deferred blank line simply append.
         if (!else_terminates) {
-            for (for_else.items) |n| try self.emitRelease(n);
+            for (for_else.items) |n| {
+                try self.emitRelease(n);
+                try self.emitLoadClassSettle(n);
+            }
             for (forget_in_else.items) |n| {
-                self.outPrint("    !{s}\n", .{n}) catch return CodegenError.CodegenError;
+                try self.emitBranchSettle(n);
             }
             self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
         }
@@ -2332,11 +2404,12 @@ pub const Codegen = struct {
             const saved_out = self.out;
             self.out = scratch;
             for (forget_in_then.items) |n| {
-                self.outPrint("    !{s}\n", .{n}) catch return CodegenError.CodegenError;
+                try self.emitBranchSettle(n);
             }
             for (for_then.items) |n| {
                 _ = self.consumed_bindings.remove(n);
                 try self.emitRelease(n);
+                try self.emitLoadClassSettle(n);
             }
             self.outPrint("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
             scratch = self.out;
@@ -2344,6 +2417,29 @@ pub const Codegen = struct {
         }
         scratch.appendSlice("\n") catch return CodegenError.OutOfMemory;
         self.out.insertSlice(then_text_end, scratch.items) catch return CodegenError.OutOfMemory;
+    }
+
+    /// DEF-DNS-QUERY-PHI-CONFLICT: after the (runtime-effective)
+    /// release of a load-class binding in branch compensation, finish
+    /// the retire with a visible forget: the verifier does not settle
+    /// a load-materialised register's mask on release, so without the
+    /// forget this merge predecessor stays Active against the sibling
+    /// branch's Consumed.
+    fn emitLoadClassSettle(self: *Codegen, name: []const u8) CodegenError!void {
+        if (self.isLoadClassBinding(name)) {
+            self.outPrint("    ^{s}\n", .{name}) catch return CodegenError.CodegenError;
+        }
+    }
+
+    /// The consuming-side settle for a store-moved name: a bare
+    /// release for owning registers, a forget for load-class
+    /// registers (whose release is mask-ineffective, see above).
+    fn emitBranchSettle(self: *Codegen, name: []const u8) CodegenError!void {
+        if (self.isLoadClassBinding(name)) {
+            self.outPrint("    ^{s}\n", .{name}) catch return CodegenError.CodegenError;
+        } else {
+            self.outPrint("    !{s}\n", .{name}) catch return CodegenError.CodegenError;
+        }
     }
 
     /// Snapshot of the source bindings live before a branch, the only
@@ -2448,13 +2544,14 @@ pub const Codegen = struct {
         for (compensation_union) |n| {
             if (!arm_end_consumed.contains(n)) continue;
             if (arm_store_moved.contains(n) and !pre_store_moved.contains(n)) {
-                self.outPrint("    !{s}\n", .{n}) catch return CodegenError.CodegenError;
+                try self.emitBranchSettle(n);
             }
         }
         for (compensation_union) |n| {
             if (arm_end_consumed.contains(n)) continue;
             _ = self.consumed_bindings.remove(n);
             try self.emitRelease(n);
+            try self.emitLoadClassSettle(n);
         }
         scratch = self.out;
         self.out = saved_out;
@@ -4872,6 +4969,45 @@ pub const Codegen = struct {
     fn rememberLocalBindingType(self: *Codegen, name: []const u8, ty: *const ast.Type) CodegenError!void {
         if (isDiscardName(name) or ty.* == .infer) return;
         self.local_binding_types.put(name, ty) catch return CodegenError.OutOfMemory;
+        // A fresh declaration is owning-class unless the caller marks
+        // it load-class immediately after (pattern extraction does).
+        _ = self.load_class_bindings.remove(name);
+    }
+
+    /// DEF-DNS-QUERY-PHI-CONFLICT: pattern bindings were never entered
+    /// in local_binding_types, so snapshotLiveOwnedBindings omitted
+    /// them and branch compensation never balanced a one-sided
+    /// consumption of a pattern-bound owned value (the dns_query
+    /// match-arm shape). Register the binding's payload type and mark
+    /// it load-class: its register came from a payload load, so the
+    /// verifier will not settle its mask on a plain release.
+    fn rememberLoadClassBinding(self: *Codegen, name: []const u8, ty: *const ast.Type) CodegenError!void {
+        try self.rememberLocalBindingType(name, ty);
+        if (isDiscardName(name) or ty.* == .infer) return;
+        self.load_class_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+    }
+
+    fn isLoadClassBinding(self: *Codegen, name: []const u8) bool {
+        if (self.load_class_bindings.contains(name)) return true;
+        const resolved = self.resolveBindingName(name);
+        if (!std.mem.eql(u8, resolved, name) and self.load_class_bindings.contains(resolved)) return true;
+        return false;
+    }
+
+    /// Pattern bindings are arm-scoped: once a match is fully
+    /// generated (including its merge compensation, which still needs
+    /// the registered types for its releases), drop the registrations
+    /// so a later branch in the same function cannot mistake a
+    /// same-named live binding for the pattern binding and release a
+    /// register that was never declared in its scope
+    /// (UnknownRegister, the dns_query two-match shape).
+    fn removeMatchPatternRegistrations(self: *Codegen, mat: *const ast.MatchExpr) void {
+        for (mat.cases) |case| {
+            for (case.pattern.bindings) |binding| {
+                _ = self.local_binding_types.remove(binding);
+                _ = self.load_class_bindings.remove(binding);
+            }
+        }
     }
 
     /// Thread-spawn helpers are emitted after all functions, when the local
@@ -5974,6 +6110,13 @@ pub const Codegen = struct {
             const target = try self.pushBindingAlias(binding);
             const layout = enumFieldLayout(variant, field.name) orelse return CodegenError.CodegenError;
             self.outPrint("    {s} = load {s}+{} as {s}\n", .{ target, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            try self.rememberLoadClassBinding(binding, field.ty);
+            if (!std.mem.eql(u8, target, binding)) {
+                self.load_class_bindings.put(target, {}) catch return CodegenError.OutOfMemory;
+            }
+            if (variant.fields.len == 1) {
+                try self.transferGuardMetadata(target, value_reg);
+            }
         }
     }
 
@@ -16941,6 +17084,10 @@ pub const Codegen = struct {
             for (case.pattern.bindings, variant.fields) |binding, field| {
                 const layout = enumFieldLayout(variant, field.name) orelse return CodegenError.CodegenError;
                 self.outPrint("    {s} = load {s}+{} as {s}\n", .{ binding, val_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                try self.rememberLoadClassBinding(binding, field.ty);
+                if (variant.fields.len == 1) {
+                    try self.transferGuardMetadata(binding, val_reg);
+                }
             }
             if (case.guard) |guard| {
                 const body_label = try self.newLabel("L_MATCH_GUARD_BODY");
@@ -16999,6 +17146,7 @@ pub const Codegen = struct {
                 try self.insertArmMergeCompensation(compensation_union.items, arm_end_sets.items[arm_idx], arm_sm_sets.items[arm_idx], &pre_match_store_moved, arm_jmp_offsets.items[arm_idx]);
             }
         }
+        self.removeMatchPatternRegistrations(mat);
 
         self.outPrint("{s}:\n", .{no_match_label}) catch return CodegenError.CodegenError;
         if (cond_regs.items.len > 0) {
@@ -17099,6 +17247,13 @@ pub const Codegen = struct {
             } else if (std.mem.eql(u8, case.pattern.variant_name, "Err") and case.pattern.bindings.len == 1) {
                 self.outPrint("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
             }
+            if (case.pattern.bindings.len == 1) {
+                if (self.tc.expr_types.get(mat.val)) |vty| {
+                    const bty = if (std.mem.eql(u8, case.pattern.variant_name, "Some")) optionInnerType(vty) else if (std.mem.eql(u8, case.pattern.variant_name, "Ok")) resultOkType(vty) else if (std.mem.eql(u8, case.pattern.variant_name, "Err")) resultErrType(vty) else null;
+                    if (bty) |bt| try self.rememberLoadClassBinding(case.pattern.bindings[0], bt);
+                }
+                try self.transferGuardMetadata(case.pattern.bindings[0], val_reg);
+            }
             if (case.guard) |guard| {
                 const body_label = try self.newLabel("L_OPTION_MATCH_GUARD_BODY");
                 const fail_label = try self.newLabel("L_OPTION_MATCH_GUARD_FAIL");
@@ -17156,6 +17311,7 @@ pub const Codegen = struct {
                 try self.insertArmMergeCompensation(compensation_union.items, arm_end_sets.items[arm_idx], arm_sm_sets.items[arm_idx], &pre_match_store_moved, arm_jmp_offsets.items[arm_idx]);
             }
         }
+        self.removeMatchPatternRegistrations(mat);
 
         self.outPrint("{s}:\n", .{no_match_label}) catch return CodegenError.CodegenError;
         if (cond_regs.items.len > 0) {
@@ -19705,6 +19861,7 @@ pub const Codegen = struct {
                     const reg = try self.newTmp();
                     self.outPrint("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                     try self.releaseOrMarkMovedConstructorPayload(call.args[0], value_reg);
+                    if (self.consumed_bindings.contains(value_reg)) try self.transferGuardMetadata(reg, value_reg);
                     return reg;
                 }
                 if (std.mem.eql(u8, call.func_name, "None") and call.associated_target == null) {
@@ -19719,6 +19876,7 @@ pub const Codegen = struct {
                     const reg = try self.newTmp();
                     self.outPrint("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                     try self.releaseOrMarkMovedConstructorPayload(call.args[0], value_reg);
+                    if (self.consumed_bindings.contains(value_reg)) try self.transferGuardMetadata(reg, value_reg);
                     return reg;
                 }
                 if (lowering_rules.isResultErrCall(call)) {
@@ -19727,6 +19885,7 @@ pub const Codegen = struct {
                     const reg = try self.newTmp();
                     self.outPrint("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                     try self.releaseOrMarkMovedConstructorPayload(call.args[0], value_reg);
+                    if (self.consumed_bindings.contains(value_reg)) try self.transferGuardMetadata(reg, value_reg);
                     return reg;
                 }
                 if (lowering_rules.isPtrNullCall(call)) {
@@ -22461,16 +22620,19 @@ pub const Codegen = struct {
                             const binding = cond.pattern.bindings[0];
                             const target = try self.pushBindingAlias(binding);
                             self.outPrint("    EXPAND OPTION_GET {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                            try self.transferGuardMetadata(target, value_reg);
                             try acquired.append(binding);
                         } else if (std.mem.eql(u8, cond.pattern.variant_name, "Ok") and cond.pattern.bindings.len == 1) {
                             const binding = cond.pattern.bindings[0];
                             const target = try self.pushBindingAlias(binding);
                             self.outPrint("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                            try self.transferGuardMetadata(target, value_reg);
                             try acquired.append(binding);
                         } else if (std.mem.eql(u8, cond.pattern.variant_name, "Err") and cond.pattern.bindings.len == 1) {
                             const binding = cond.pattern.bindings[0];
                             const target = try self.pushBindingAlias(binding);
                             self.outPrint("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                            try self.transferGuardMetadata(target, value_reg);
                             try acquired.append(binding);
                         }
                         if (callArgNeedsRelease(cond.value)) try self.emitRelease(value_reg);

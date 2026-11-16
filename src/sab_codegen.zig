@@ -474,6 +474,15 @@ pub const Codegen = struct {
     current_reg_ids: std.array_list.Managed(u32),
     current_reg_seen: std.AutoHashMap(u32, void),
     released_regs: std.AutoHashMap(u32, void),
+    /// DEF-DNS-QUERY-PHI-CONFLICT: registers materialised by a payload
+    /// load (pattern-binding extraction). The SA verifier classes such
+    /// registers RawPointer (ptr load) or EphemeralScalar, for which a
+    /// plain release does NOT settle the register mask (it stays
+    /// Active). Branch-balance retirement of such a local must finish
+    /// with a visible move_ or the merge sees Active against the
+    /// sibling branch's Consumed; see emitBalanceReleaseLocal.
+    payload_load_regs: std.AutoHashMap(u32, void),
+    enum_payload_handle_regs: std.AutoHashMap(u32, u32),
     // DEF deep-drop: AST node whose drop taint snapshot governs the
     // cleanup/assign emission currently in progress (set by
     // releaseCleanupForStmt / emitBranchCleanupForNode / genStmt's
@@ -598,6 +607,8 @@ pub const Codegen = struct {
             .current_reg_ids = std.array_list.Managed(u32).init(allocator),
             .current_reg_seen = std.AutoHashMap(u32, void).init(allocator),
             .released_regs = std.AutoHashMap(u32, void).init(allocator),
+            .payload_load_regs = std.AutoHashMap(u32, void).init(allocator),
+            .enum_payload_handle_regs = std.AutoHashMap(u32, u32).init(allocator),
             .stack_alloc_emitted = std.AutoHashMap(u32, void).init(allocator),
             .current_expr_later_nodes = std.array_list.Managed(*const ast.Node).init(allocator),
         };
@@ -703,6 +714,8 @@ pub const Codegen = struct {
         self.current_reg_ids.deinit();
         self.current_reg_seen.deinit();
         self.released_regs.deinit();
+        self.payload_load_regs.deinit();
+        self.enum_payload_handle_regs.deinit();
         self.stack_alloc_emitted.deinit();
         self.current_expr_later_nodes.deinit();
     }
@@ -1986,6 +1999,10 @@ pub const Codegen = struct {
                 const layout = lowering_rules.enumFieldLayout(variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
                 const binding_reg = try self.intern(try self.newTmp());
                 try self.emitLoad(binding_reg, value_reg, layout.offset, try storagePrimType(layout.ty));
+                try self.payload_load_regs.put(binding_reg, {});
+                if (variant.fields.len == 1) {
+                    try self.transferGuardMetadataRegs(binding_reg, self.guardTransferSource(value_reg));
+                }
                 try self.pushTypedLocal(binding, binding_reg, false, field.ty);
             }
             return;
@@ -2000,6 +2017,8 @@ pub const Codegen = struct {
                     self.symbols.items[binding_reg],
                     self.symbols.items[value_reg],
                 });
+                try self.payload_load_regs.put(binding_reg, {});
+                try self.transferGuardMetadataRegs(binding_reg, self.guardTransferSource(value_reg));
                 try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, inner_ty);
             }
             return;
@@ -2018,6 +2037,8 @@ pub const Codegen = struct {
                     self.symbols.items[binding_reg],
                     self.symbols.items[value_reg],
                 });
+                try self.payload_load_regs.put(binding_reg, {});
+                try self.transferGuardMetadataRegs(binding_reg, self.guardTransferSource(value_reg));
                 try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, ok_ty);
             }
             return;
@@ -2032,6 +2053,8 @@ pub const Codegen = struct {
                     self.symbols.items[binding_reg],
                     self.symbols.items[value_reg],
                 });
+                try self.payload_load_regs.put(binding_reg, {});
+                try self.transferGuardMetadataRegs(binding_reg, self.guardTransferSource(value_reg));
                 try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, err_ty);
             }
             return;
@@ -3232,6 +3255,52 @@ pub const Codegen = struct {
         }
     }
 
+    /// DEF-SAB-TRYBORROW-COUNT-GAP: guard release metadata (RefCell
+    /// borrow handles, mutex / rwlock guards) must follow the value
+    /// when it is moved into an enum payload or extracted from one by
+    /// a pattern binding: cleanup releases by the HOLDING register,
+    /// so without the transfer the binding's cleanup finds no handle
+    /// entry (and the original register's entry is skipped as already
+    /// released), the dynamic borrow is never returned, and the
+    /// borrow count stays nonzero.
+    fn transferGuardMetadataRegs(self: *Codegen, dst: u32, src: u32) !void {
+        if (dst == src) return;
+        if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
+            _ = self.refcell_borrow_values.remove(dst);
+            try self.refcell_borrow_values.put(dst, entry.value);
+        }
+        if (self.mutex_guard_values.fetchRemove(src)) |entry| {
+            _ = self.mutex_guard_values.remove(dst);
+            try self.mutex_guard_values.put(dst, entry.value);
+        }
+        if (self.rwlock_guard_values.fetchRemove(src)) |entry| {
+            _ = self.rwlock_guard_values.remove(dst);
+            try self.rwlock_guard_values.put(dst, entry.value);
+        }
+    }
+
+    /// DEF-SAB-TRYBORROW-COUNT-GAP: the register a pattern binding
+    /// should pull guard metadata FROM when extracting out of
+    /// `enum_reg`: if the enum was built locally by a builtin
+    /// constructor, the guard entry still lives under the original
+    /// payload handle register (see the constructor site); follow the
+    /// recording transitively for nested constructors. Otherwise the
+    /// enum register itself is the source (params / call results key
+    /// their payload state there via the result-slot machinery).
+    fn guardTransferSource(self: *Codegen, enum_reg: u32) u32 {
+        var cur = enum_reg;
+        var hops: usize = 0;
+        while (hops < 8) : (hops += 1) {
+            const next = self.enum_payload_handle_regs.get(cur) orelse break;
+            if (next == cur) break;
+            cur = next;
+        }
+        if (cur != enum_reg) {
+            _ = self.enum_payload_handle_regs.remove(enum_reg);
+        }
+        return cur;
+    }
+
     fn transferReleaseMetadata(self: *Codegen, dst: u32, src: u32) !void {
         if (dst == src) return;
         self.rebindRefCellBorrowValueOwners(src, dst);
@@ -4002,6 +4071,36 @@ pub const Codegen = struct {
 
     fn emitBalanceReleaseLocal(self: *Codegen, local: Local) !void {
         if (self.released_regs.contains(local.reg)) return;
+        // DEF-DNS-QUERY-PHI-CONFLICT: a payload-load local's planned
+        // deep drop ends in a plain release of the container register,
+        // which the verifier treats as a no-op for this register class
+        // (RawPointer / EphemeralScalar): the mask stays Active while
+        // a sibling branch that consumed the local (constructor move_,
+        // stored move) reaches the merge Consumed -- PhiStateConflict.
+        // Dispose of the contents with the planned drop, then retire
+        // the register with a visible move_. Only the deep container
+        // plans end in a plain release; Arc/Rc/Box plans consume via
+        // their release calls and fall through to the generic body, as
+        // do plan-less locals (the ptr path there already retires with
+        // emitMove and the buffer path consumes via its free call).
+        if (self.payload_load_regs.contains(local.reg)) {
+            if (local.ty) |payload_ty| {
+                if (self.tc.planValueDrop(payload_ty)) |plan| {
+                    switch (plan.*) {
+                        .deep_struct, .deep_vec, .deep_growvec => {
+                            if (try self.emitPlannedLocalDrop(local)) {
+                                var item = self.makeInst(.move_);
+                                item.operands[0] = .{ .reg = local.reg };
+                                try self.appendInst(item);
+                                try self.released_regs.put(local.reg, {});
+                                return;
+                            }
+                        },
+                        else => {},
+                    }
+                } else |_| {}
+            }
+        }
         // Follow-up line (family 1): branch-merge compensation for an
         // owned String/Vec local must dispose of the value deeply. The
         // shallow `move_` previously emitted here freed only the Vec
@@ -17830,6 +17929,15 @@ pub const Codegen = struct {
                         try self.emitMove(value_reg);
                     }
                     try self.markConsumed(value_reg);
+                    // DEF-SAB-TRYBORROW-COUNT-GAP (Form 2): do NOT
+                    // re-key the payload's guard entry onto the enum
+                    // register -- branch cleanup plain-releases the
+                    // scrutinee enum register separately from the
+                    // metadata-aware release, so an entry keyed there
+                    // is released twice (UseAfterMove). Record where
+                    // the payload handle lives; the pattern binding
+                    // that extracts it pulls the entry from there.
+                    try self.enum_payload_handle_regs.put(dst, value_reg);
                     return dst;
                 }
                 // DEF-ACL: a Copy AGGREGATE payload (POD struct / enum /
@@ -24763,6 +24871,10 @@ pub const Codegen = struct {
                         if (prim == .ptr) return Error.UnsupportedSabDirectFeature;
                         const binding_reg = case_binding_regs.items[i][binding_idx];
                         try self.emitLoad(binding_reg, val_reg, layout.offset, prim);
+                        try self.payload_load_regs.put(binding_reg, {});
+                        if (enum_variant.fields.len == 1) {
+                            try self.transferGuardMetadataRegs(binding_reg, self.guardTransferSource(val_reg));
+                        }
                         try self.recordReg(binding_reg);
                         try self.locals.append(.{ .name = binding, .reg = binding_reg, .is_param = false, .ty = field.ty, .is_stack_alloc = true });
                     }
@@ -24789,6 +24901,8 @@ pub const Codegen = struct {
                     } else {
                         return Error.UnsupportedSabDirectFeature;
                     }
+                    try self.payload_load_regs.put(binding_reg, {});
+                    try self.transferGuardMetadataRegs(binding_reg, self.guardTransferSource(val_reg));
                     try self.recordReg(binding_reg);
                     try self.locals.append(.{ .name = case.pattern.bindings[0], .reg = binding_reg, .is_param = false, .ty = resolved_binding_ty, .is_stack_alloc = true });
                 }

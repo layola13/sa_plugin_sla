@@ -114,3 +114,142 @@ fn fub_param_branch(s: String, c: bool) -> u64 {
         panic(7009);
     };
 }
+
+// DEF-DNS-QUERY-PHI-CONFLICT regression shapes: a pattern-bound owned
+// value consumed on only one side of a nested branch must be balanced
+// on the other side (both backends). Pre-fix these trapped
+// PhiStateConflict (match-bound) or UseAfterMove (let-bound
+// constructor) on at least one route.
+
+struct PhiMsg {
+    id: u16,
+    is_response: bool,
+    questions: Vec<u8>,
+    answers: Vec<u8>,
+}
+
+struct PhiHolder {
+    f: PhiMsg,
+}
+
+fn phi_make() -> Result<PhiMsg, i32> {
+    let m = PhiMsg {
+        id: 7,
+        is_response: true,
+        questions: Vec::new(),
+        answers: Vec::new(),
+    };
+    return Ok(m);
+}
+
+fn phi_run_match_ctor() -> i32 {
+    let decoded = phi_make();
+    let out: i32 = 0;
+    match decoded {
+        Ok(m) => {
+            if m.id == 7 && m.is_response {
+                let r2 = Ok(m);
+                match r2 {
+                    Ok(mm) => {
+                        out = mm.id as i32;
+                    },
+                    Err(e) => {
+                        out = e;
+                    },
+                };
+            };
+        },
+        Err(e) => {
+            out = e;
+        },
+    };
+    return out;
+}
+
+fn phi_run_let_ctor() -> i32 {
+    let m = PhiMsg {
+        id: 7,
+        is_response: true,
+        questions: Vec::new(),
+        answers: Vec::new(),
+    };
+    let result: Result<PhiMsg, i32> = Err(0);
+    let out: i32 = 0;
+    if m.id == 7 && m.is_response {
+        result = Ok(m);
+    };
+    match result {
+        Ok(mm) => {
+            out = mm.id as i32;
+        },
+        Err(e) => {
+            out = e;
+        },
+    };
+    return out;
+}
+
+fn phi_run_match_struct_literal() -> i32 {
+    let decoded = phi_make();
+    let out: i32 = 0;
+    match decoded {
+        Ok(m) => {
+            if m.id == 7 && m.is_response {
+                let holder = PhiHolder { f: m };
+                out = holder.f.id as i32;
+            };
+        },
+        Err(e) => {
+            out = e;
+        },
+    };
+    return out;
+}
+
+fn phi_run_vec_payload() -> i32 {
+    let r: Result<Vec<u8>, i32> = Ok(Vec::new());
+    let out: i32 = 0;
+    match r {
+        Ok(v) => {
+            if v.len() == 0 {
+                let r2 = Ok(v);
+                match r2 {
+                    Ok(vv) => {
+                        out = vv.len() as i32;
+                    },
+                    Err(e) => {
+                        out = e;
+                    },
+                };
+            };
+        },
+        Err(e) => {
+            out = e;
+        },
+    };
+    return out;
+}
+
+@test "phi balance match-bound constructor payload"() {
+    if phi_run_match_ctor() != 7 {
+        panic(31101);
+    };
+}
+
+@test "phi balance let-bound constructor payload"() {
+    if phi_run_let_ctor() != 7 {
+        panic(31102);
+    };
+}
+
+@test "phi balance match-bound struct literal move"() {
+    if phi_run_match_struct_literal() != 7 {
+        panic(31103);
+    };
+}
+
+@test "phi balance vec payload"() {
+    if phi_run_vec_payload() != 0 {
+        panic(31104);
+    };
+}

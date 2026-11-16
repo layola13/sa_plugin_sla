@@ -577,3 +577,73 @@ fn owner_release_if_let_reassign_handle(flag: bool) -> i64 {
         panic(30964);
     };
 }
+
+// DEF-SAB-TRYBORROW-COUNT-GAP regression shapes: a borrow handle
+// wrapped in Some() and bound by an if-let chain must return its
+// dynamic borrow on every chain exit (failure and success), in both
+// backends. Pre-fix the count stayed at 1 and a later borrow_mut
+// panicked.
+
+struct BorrowCountProbePayload {
+    value: int,
+}
+
+fn borrow_count_probe_count(cell: &RefCell<BorrowCountProbePayload>) -> i64 {
+    SLA_REFCELL_BORROW_COUNT(cell)
+}
+
+@test "chain borrow handle fail path returns borrow count"() {
+    let cell = RefCell::new(BorrowCountProbePayload { value: 23 });
+    let none: Option<i32> = None;
+    let result = if let Some(borrowed) = Some(cell.borrow()) && let Some(_) = none {
+        borrowed.value
+    } else {
+        0
+    };
+    if result != 0 {
+        panic(31111);
+    };
+    if borrow_count_probe_count(&cell) != 0 {
+        panic(31112);
+    };
+}
+
+@test "chain borrow handle then path returns borrow count"() {
+    let cell = RefCell::new(BorrowCountProbePayload { value: 24 });
+    let some: Option<i32> = Some(1);
+    let result = if let Some(borrowed) = Some(cell.borrow()) && let Some(_) = some {
+        borrowed.value
+    } else {
+        0
+    };
+    if result != 24 {
+        panic(31113);
+    };
+    if borrow_count_probe_count(&cell) != 0 {
+        panic(31114);
+    };
+}
+
+@test "chain borrow handle downstream borrow_mut after failure"() {
+    let cell = RefCell::new(BorrowCountProbePayload { value: 25 });
+    let none: Option<i32> = None;
+    let result = if let Some(borrowed) = Some(cell.borrow()) && let Some(_) = none {
+        borrowed.value
+    } else {
+        0
+    };
+    if result != 0 {
+        panic(31115);
+    };
+    let m = cell.borrow_mut();
+    m.value = 26;
+    !m;
+    let check = cell.borrow();
+    if check.value != 26 {
+        panic(31116);
+    };
+    !check;
+    if borrow_count_probe_count(&cell) != 0 {
+        panic(31117);
+    };
+}

@@ -1,0 +1,62 @@
+// DEF-TEXT31-ENUM-WRAP-TEMP regression: a fresh Copy aggregate temp
+// stored into a fresh aggregate object must be retired visibly after
+// the store -- bookkeeping alone leaves it live at function exit
+// (MemoryLeak 1012 on the TEXT route; the SAB route is the control).
+// Three construction arms of the census file
+// test_unit_def_acl_aggregate_payload were missing the visible
+// retirement: (1) a user-defined enum literal payload
+// (Enum::Val(StructLit { .. }) in tail-return position -- the
+// Option/Result constructor macros settle the same transfer via
+// releaseOrMarkMovedConstructorPayload, the manual enum path called
+// nothing); (2) an array literal's aggregate elements and (3) a
+// repeat array literal's per-slot aggregate values, whose DEF-ACL
+// arms recorded the transfer with markConsumedBinding only.
+
+@derive(copy)
+struct WrapPod {
+    a: u64,
+    b: u64,
+    c: u64,
+}
+
+enum WrapEnum {
+    Val(WrapPod),
+    Empty,
+}
+
+fn mk_wrap() -> WrapEnum {
+    return WrapEnum::Val(WrapPod { a: 11, b: 22, c: 33 });
+}
+
+@test "text enum wrap struct payload temp retires"() {
+    match mk_wrap() {
+        WrapEnum::Val(p) => {
+            if p.a != 11 { panic(32011); };
+            if p.b != 22 { panic(32012); };
+            if p.c != 33 { panic(32013); };
+        },
+        WrapEnum::Empty => { panic(32010); },
+    };
+}
+
+fn mk_array() -> [WrapPod; 2] {
+    return [WrapPod { a: 11, b: 22, c: 33 }, WrapPod { a: 44, b: 55, c: 66 }];
+}
+
+@test "text array of struct literals element temps retire"() {
+    let arr = mk_array();
+    if arr[0].a != 11 { panic(32021); };
+    if arr[0].c != 33 { panic(32023); };
+    if arr[1].a != 44 { panic(32024); };
+    if arr[1].c != 66 { panic(32026); };
+}
+
+fn mk_repeat() -> [WrapPod; 2] {
+    return [WrapPod { a: 11, b: 22, c: 33 }; 2];
+}
+
+@test "text repeat array struct literal temps retire"() {
+    let arr = mk_repeat();
+    if arr[0].a != 11 { panic(32031); };
+    if arr[1].c != 33 { panic(32033); };
+}

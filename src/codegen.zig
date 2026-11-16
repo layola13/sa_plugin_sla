@@ -16807,8 +16807,14 @@ pub const Codegen = struct {
                 // element temp transfers into the array instead of being
                 // released (a release freed the cell the array points
                 // at). Identifier elements keep their binding, as before.
+                // DEF-TEXT31-ENUM-WRAP-TEMP: the transfer must also be
+                // VISIBLE -- bookkeeping alone leaves the fresh temp
+                // Active at function exit (MemoryLeak 1012 in
+                // acl_mk_array), the same lesson as DEF-TUPLE-COPY-EMIT
+                // and STD-HYGIENE F5. Retire it with a forget.
                 if (lowering_rules.isHeapHandleType(eff_ty) and elem.* != .identifier) {
                     try self.markConsumedBinding(val_reg);
+                    try self.emitForgetMovedValue(val_reg);
                 } else if (callArgNeedsRelease(elem)) {
                     try self.emitRelease(val_reg);
                 }
@@ -16894,8 +16900,13 @@ pub const Codegen = struct {
                     // DEF-ACL: composite elements are heap handles retained
                     // by the array (see genArrayLiteralInto); transfer the
                     // per-slot temp instead of releasing it.
+                    // DEF-TEXT31-ENUM-WRAP-TEMP: same visible-retirement
+                    // fix as genArrayLiteralInto -- bookkeeping alone
+                    // left the per-slot temp Active at function exit
+                    // (MemoryLeak 1012 in acl_mk_repeat).
                     if (lowering_rules.isHeapHandleType(arr.elem) and lit.value.* != .identifier) {
                         try self.markConsumedBinding(slot_reg);
+                        try self.emitForgetMovedValue(slot_reg);
                     } else if (callArgNeedsRelease(lit.value)) {
                         try self.emitRelease(slot_reg);
                     }
@@ -17012,6 +17023,15 @@ pub const Codegen = struct {
             const layout = enumFieldLayout(variant, field.name) orelse return CodegenError.CodegenError;
             const val_reg = try self.genExpr(value, hoisted_allocs);
             self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+            // DEF-TEXT31-ENUM-WRAP-TEMP: the payload is stored into the
+            // fresh enum object, so ownership transfers exactly as in
+            // the Option/Result constructor macros -- retire the source
+            // with the same helper those paths call after their EXPAND.
+            // Without it, a fresh payload temp (e.g. a Copy struct
+            // literal in `return Wrap::Val(Pod { .. })`) stayed live at
+            // function exit (MemoryLeak 1012, tmp_28 in acl_mk_wrap).
+            try self.releaseOrMarkMovedConstructorPayload(value, val_reg);
+            if (self.consumed_bindings.contains(val_reg)) try self.transferGuardMetadata(target, val_reg);
         }
     }
 

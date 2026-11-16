@@ -20289,7 +20289,22 @@ pub const Codegen = struct {
                             if (self.tc.expr_types.get(elem)) |elem_ty| {
                                 const stored = try self.genVecDequeElementStoreReg(elem, elem_reg, elem_ty);
                                 self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ reg, stored.reg }) catch return CodegenError.CodegenError;
-                                if (stored.release_value and callArgNeedsRelease(elem)) try self.emitRelease(elem_reg);
+                                if (stored.release_value) {
+                                    if (callArgNeedsRelease(elem)) try self.emitRelease(elem_reg);
+                                } else {
+                                    // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: same
+                                    // visible retirement as the push_back
+                                    // arm -- the fresh element record's
+                                    // ownership transferred into the deque.
+                                    try self.emitForgetMovedValue(elem_reg);
+                                }
+                                if (!std.mem.eql(u8, stored.reg, elem_reg)) {
+                                    // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: same
+                                    // visible retirement for a manufactured
+                                    // element record (copy / box), as in the
+                                    // push_back arm.
+                                    try self.emitForgetMovedValue(stored.reg);
+                                }
                             } else {
                                 self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ reg, elem_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(elem)) try self.emitRelease(elem_reg);
@@ -21780,7 +21795,28 @@ pub const Codegen = struct {
                             const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
                             const stored = try self.genVecDequeElementStoreReg(call.args[1], value_reg, vecDequeElementType(ty).?);
                             self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ recv_reg, stored.reg }) catch return CodegenError.CodegenError;
-                            if (stored.release_value and callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
+                            if (stored.release_value) {
+                                if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
+                            } else {
+                                // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: ownership of
+                                // the fresh record transferred into the deque
+                                // (its address is the slot value), so no release
+                                // may fire -- but the source temp must still be
+                                // retired VISIBLY; bookkeeping alone leaves it
+                                // Active at function exit (MemoryLeak 1012,
+                                // tmp_1 @ demo_form), the same lesson as
+                                // DEF-TEXT31-ENUM-WRAP-TEMP / STD-HYGIENE F5.
+                                try self.emitForgetMovedValue(value_reg);
+                            }
+                            if (!std.mem.eql(u8, stored.reg, value_reg)) {
+                                // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: a record
+                                // manufactured for the store (shallow copy /
+                                // byte-copy box) transferred into the deque
+                                // the same way; retire its temp visibly too
+                                // (tmp_139 @ ident_arg once the literal arm
+                                // was fixed).
+                                try self.emitForgetMovedValue(stored.reg);
+                            }
                             return "return_ty_sentinel";
                         }
                         if (vecDequeElementType(ty) != null and lowering_rules.isPopFrontCall(call)) {

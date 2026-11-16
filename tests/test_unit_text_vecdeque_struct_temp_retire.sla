@@ -1,0 +1,53 @@
+// DEF-TEXT31-VECDEQUE-STRUCT-TEMP regression: a struct element record
+// pushed into a VecDeque transfers ownership to the deque (its record
+// address becomes the slot value), so the transferred temp must be
+// retired visibly after the push -- bookkeeping alone leaves it live
+// at function exit (MemoryLeak 1012; the defect showed on both the
+// TEXT and SAB routes at the census pin). Three transfer shapes were
+// missing the visible retirement, in both backends' push_back /
+// VecDeque::from emitters: (1) a fresh struct literal / call result
+// stored directly; (2) a live source shallow-copied into a fresh
+// record for the store; (3) a plain struct byte-copied into a fresh
+// box for the store. Census file:
+// test_unit_vecdeque_struct_elements (tmp_1 @ demo_form).
+
+struct VdJob {
+    id: i32,
+    cost: i32,
+}
+
+fn push_literal_pop() -> i32 {
+    let q: VecDeque<VdJob> = VecDeque::new();
+    q.push_back(VdJob { id: 7, cost: 3 });
+    q.push_back(VdJob { id: 9, cost: 5 });
+    let first = q.pop_front().unwrap();
+    return first.id + first.cost;
+}
+
+@test "text vecdeque struct literal push retires element temp"() {
+    if push_literal_pop() != 10 { panic(32101); };
+}
+
+fn push_ident_pop() -> i32 {
+    let q: VecDeque<VdJob> = VecDeque::new();
+    let j1 = VdJob { id: 7, cost: 3 };
+    let j2 = VdJob { id: 9, cost: 5 };
+    q.push_back(j1);
+    q.push_back(j2);
+    let first = q.pop_front().unwrap();
+    return first.id + first.cost;
+}
+
+@test "text vecdeque struct ident push retires copied element temp"() {
+    if push_ident_pop() != 10 { panic(32102); };
+}
+
+fn from_array_pop() -> i32 {
+    let q: VecDeque<VdJob> = VecDeque::from([VdJob { id: 7, cost: 3 }, VdJob { id: 9, cost: 5 }]);
+    let first = q.pop_front().unwrap();
+    return first.id + first.cost;
+}
+
+@test "text vecdeque from struct literals retires element temps"() {
+    if from_array_pop() != 10 { panic(32103); };
+}

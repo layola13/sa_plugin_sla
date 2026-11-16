@@ -18075,16 +18075,25 @@ pub const Codegen = struct {
             const elem_reg = try self.genExpr(@constCast(elem));
             var store_reg = elem_reg;
             var release = !self.isLocalReg(elem_reg);
+            var transferred_reg: ?u32 = null;
             if (self.tc.expr_types.get(elem)) |elem_ty| {
                 const stored = try self.genVecDequeElementStoreReg(elem, elem_reg, elem_ty);
                 store_reg = stored.reg;
                 release = stored.release_value and release;
+                // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: the element record
+                // (the fresh source itself, or a copy / box manufactured
+                // for the store) transferred into the deque; its temp
+                // retires with a forget after the push, mirroring the
+                // SA-text emitter.
+                if (!stored.release_value) transferred_reg = elem_reg;
+                if (stored.reg != elem_reg) transferred_reg = stored.reg;
             }
             try self.emitStdMacroFragment("sa_std/vec_deque.sa", "VEC_DEQUE_PUSH_BACK", &.{
                 self.symbols.items[dst],
                 self.symbols.items[store_reg],
             });
             if (release) try self.emitRelease(elem_reg);
+            if (transferred_reg) |treg| try self.emitForgetMovedValue(treg);
         }
         return dst;
     }
@@ -23990,7 +23999,22 @@ pub const Codegen = struct {
             self.symbols.items[stored.reg],
         });
         if (!self.isLocalReg(deque_reg)) try self.emitRelease(deque_reg);
-        if (stored.release_value and !self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        if (stored.release_value) {
+            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        } else {
+            // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: mirror of the SA-text
+            // emitter -- ownership of the fresh record transferred into
+            // the deque (its address is the slot value), so the source
+            // temp retires with a forget, never a release; without it
+            // the temp stays Active at function exit (MemoryLeak 1012).
+            try self.emitForgetMovedValue(value_reg);
+        }
+        if (stored.reg != value_reg) {
+            // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: a record manufactured
+            // for the store (shallow copy / byte-copy box) transferred
+            // into the deque the same way; retire its temp too.
+            try self.emitForgetMovedValue(stored.reg);
+        }
         const sentinel = try self.intern(try self.newTmp());
         try self.recordReg(sentinel);
         try self.emitAssignImm(sentinel, 0);

@@ -864,6 +864,54 @@ pub const Codegen = struct {
         self.active_macro_try_cleanup = if (self.tc.macro_call_try_cleanups.get(cleanup_key)) |list| list.items else previous_try_cleanup;
         defer self.active_macro_try_cleanup = previous_try_cleanup;
         try self.genUserMacroBlockInline(macro_decl, macro_decl.body, hoisted_allocs);
+        // DEF-TEXT31-USER-MACRO-EVAL-ARG-LEAK: an argument expression
+        // is evaluated once into a fresh register above and the param
+        // is aliased to it, but unlike a plain call -- whose planned
+        // arg cleanups retire such temps after the call -- the inline
+        // settled nobody's register, so a temp the body only reads
+        // (or never touches) stayed Active to function exit
+        // (MemoryLeak 1012; census tmp_92 @
+        // macro_value_arg_evaluated_once, minim tmp_5). The SAB route
+        // settles the same temps and is the control. Retire each
+        // temp-materialising argument the body did not itself consume.
+        // Identifier and string-literal arguments denote caller-owned
+        // bindings and keep the no-release behaviour
+        // (callArgNeedsRelease), as do stack_alloc homes (spec-exempt
+        // from the leak check) and the J-4 prebound output slot.
+        if (!self.async_pending_return_emitted) {
+            for (call.args, arg_regs.items, arg_types.items, 0..) |arg, arg_reg, arg_ty, arg_index| {
+                if (arg_index == 0 and prebound_first != null) continue;
+                if (!callArgNeedsRelease(arg) and
+                    !(arg.* == .cast_expr and self.exprResultRegNeedsRelease(arg))) continue;
+                if (!isTemporaryRegisterName(arg_reg)) continue;
+                if (self.stack_alloc_bindings.contains(arg_reg)) continue;
+                // Borrow-like temps (a borrow or a raw pointer) own
+                // no value the inline may dispose of: the plain-call
+                // path settles an address temp immediately after the
+                // call under its dedicated borrow plan, and a
+                // post-body release here disturbs the derived-pointer
+                // releases the body already emitted (runtime panic
+                // 4099 on the borrow-arg probe).
+                if (arg_ty) |ty| {
+                    if (lowering_rules.isBorrowLikeType(ty)) continue;
+                }
+                // A recorded real move settled the register (its
+                // mask is Consumed; touching it again traps
+                // UseAfterMove). A store-move-only record leaves the
+                // mask Active, so the register still needs the
+                // release below.
+                if (self.consumed_bindings.contains(arg_reg) and
+                    !self.store_moved_bindings.contains(arg_reg)) continue;
+                // A register-rename assignment out of the parameter
+                // (`dst = ^param`) consumes the register in the
+                // verifier mask but records nothing -- the recording
+                // predicate recognises only a bare-identifier RHS --
+                // so consult the body scan for consuming uses of the
+                // parameter before releasing its register.
+                if (lowering_rules.macroBodyConsumesParam(self.tc, macro_decl.body, macro_decl.params[arg_index])) continue;
+                try self.emitRelease(arg_reg);
+            }
+        }
     }
 
     /// J-4 (leading_output_convention): expression form of a user

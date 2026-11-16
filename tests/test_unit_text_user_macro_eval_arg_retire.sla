@@ -1,0 +1,161 @@
+// DEF-TEXT31-USER-MACRO-EVAL-ARG-LEAK regression: a user-macro call
+// argument expression is evaluated once into a fresh register and the
+// parameter is aliased to it, but the TEXT inline settled nobody's
+// register after the body, so a temp the body only reads (or never
+// touches) stayed Active to function exit (MemoryLeak 1012; census
+// test_unit_user_macro_direct tmp_92 @ macro_value_arg_evaluated_once;
+// the SAB route is the control and passed throughout). The evaluated-
+// once semantics are part of the contract: the RefCell counter shapes
+// below panic if the argument is ever evaluated more than once.
+// Controls at the end pin the shapes that were already correct: a
+// body that moves the temp consumes it (no second settle), and
+// identifier arguments stay caller-owned. Borrow/raw-pointer
+// argument temps are out of scope by design: they own no value, and
+// the plain-call path settles an address temp immediately after the
+// call under its dedicated borrow plan; a post-body release disturbs
+// the body's derived-pointer releases (runtime panic 4099).
+
+@import "sa_std/core/box.sa"
+@import "sa_std/core/refcell.sa"
+
+struct EvalArgCounter { value: i64 }
+
+fn eval_arg_next_value(cell: &RefCell<EvalArgCounter>) -> i64 {
+    let borrowed: &EvalArgCounter = cell.borrow_mut();
+    borrowed.value = borrowed.value + 1;
+    borrowed.value
+}
+
+fn eval_arg_add_values(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+fn eval_arg_next_plain(x: i64) -> i64 {
+    x + 1
+}
+
+macro eval_value_once_macro(out, value) {
+    out = value + value;
+}
+
+macro eval_call_value_once_macro(out, value) {
+    out = eval_arg_add_values(value, value);
+}
+
+macro eval_ignore_macro(out, value) {
+    out = 7;
+}
+
+macro eval_move_once_macro(out, value) {
+    out = ^value;
+}
+
+macro eval_branch_move_once_macro(out, value, cond) {
+    if cond {
+        out = ^value;
+    } else {
+        out = ^value;
+    }
+}
+
+macro eval_forward_once_macro(out, value) {
+    eval_move_once_macro(out, value);
+}
+
+fn macro_value_arg_temp() -> i64 {
+    let cell = RefCell::new(EvalArgCounter { value: 0 });
+    let total = 0i64;
+    eval_value_once_macro(total, eval_arg_next_value(&cell));
+    let borrowed: &EvalArgCounter = cell.borrow();
+    if borrowed.value != 1 { panic(32301); };
+    total
+}
+
+@test "text macro value arg evaluated once temp retires"() {
+    if macro_value_arg_temp() != 2 { panic(32302); };
+}
+
+fn macro_call_value_arg_temp() -> i64 {
+    let cell = RefCell::new(EvalArgCounter { value: 0 });
+    let total = 0i64;
+    eval_call_value_once_macro(total, eval_arg_next_value(&cell));
+    let borrowed: &EvalArgCounter = cell.borrow();
+    if borrowed.value != 1 { panic(32303); };
+    total
+}
+
+@test "text macro call value arg evaluated once temp retires"() {
+    if macro_call_value_arg_temp() != 2 { panic(32304); };
+}
+
+fn macro_cast_arg_temp() -> i64 {
+    let total = 0i64;
+    let y: i32 = 21;
+    eval_value_once_macro(total, y as i64);
+    total
+}
+
+@test "text macro cast arg temp retires"() {
+    if macro_cast_arg_temp() != 42 { panic(32305); };
+}
+
+fn macro_unused_arg_temp() -> i64 {
+    let total = 0i64;
+    eval_ignore_macro(total, eval_arg_next_plain(20));
+    total
+}
+
+@test "text macro unused call arg temp retires"() {
+    if macro_unused_arg_temp() != 7 { panic(32306); };
+}
+
+// The Vec-temp shape (a Vec<i64> call result indexed twice by the
+// body) leaked the same way on base and retires with the fix; it is
+// covered by the line's probe evidence rather than a test here
+// because SAB direct lowering rejects Vec construction
+// (error.UnsupportedSabDirectFeature) on base and fix alike, and
+// this file must stay runnable on both routes.
+
+// Controls: bodies that move the temp consume it exactly once; the
+// call-site settlement must not settle it a second time.
+
+fn macro_move_temp_control() -> i64 {
+    let destination = Box::new(1i64);
+    eval_move_once_macro(destination, Box::new(42i64));
+    *destination
+}
+
+@test "text macro move temp arg still consumed once"() {
+    if macro_move_temp_control() != 42 { panic(32309); };
+}
+
+fn macro_branch_move_temp_control() -> i64 {
+    let destination = Box::new(1i64);
+    eval_branch_move_once_macro(destination, Box::new(42i64), true);
+    *destination
+}
+
+@test "text macro branch move temp arg still consumed once"() {
+    if macro_branch_move_temp_control() != 42 { panic(32310); };
+}
+
+fn macro_forward_move_temp_control() -> i64 {
+    let destination = Box::new(1i64);
+    eval_forward_once_macro(destination, Box::new(42i64));
+    *destination
+}
+
+@test "text macro forwarded move temp arg still consumed once"() {
+    if macro_forward_move_temp_control() != 42 { panic(32311); };
+}
+
+fn macro_ident_arg_control() -> i64 {
+    let total = 0i64;
+    let v = eval_arg_next_plain(20);
+    eval_value_once_macro(total, v);
+    total
+}
+
+@test "text macro ident arg still green"() {
+    if macro_ident_arg_control() != 42 { panic(32312); };
+}

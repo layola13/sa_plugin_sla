@@ -6412,6 +6412,191 @@ fn macroNodeRequiresLvalue(tc: *type_checker.TypeChecker, node: *const ast.Node,
     };
 }
 
+/// DEF-TEXT31-USER-MACRO-EVAL-ARG-LEAK: does this macro body consume
+/// the named parameter's value -- move it, store/rename it into
+/// another place, return it, release it, or hand it to a callee that
+/// may move it (a macro, or a plain fn's move parameter)? The TEXT
+/// inline aliases the parameter to the once-evaluated argument
+/// register; most consuming emission paths record that register as
+/// consumed, but a register-rename assignment out of `^param`
+/// records nothing (the recording predicate recognises only a bare
+/// identifier RHS), so the inline's post-body retirement of the
+/// argument temp consults this scan first. Conservative by design:
+/// shapes the scan cannot see through count as consuming, which
+/// keeps the pre-fix behaviour (a leak) rather than risking a
+/// double settle (a UseAfterMove trap).
+pub fn macroBodyConsumesParam(tc: *type_checker.TypeChecker, body: []const *ast.Node, name: []const u8) bool {
+    for (body) |node| {
+        if (macroNodeConsumesParam(tc, node, name)) return true;
+    }
+    return false;
+}
+
+fn macroCallArgConsumesParam(tc: *type_checker.TypeChecker, call: ast.CallExpr, arg: *const ast.Node, index: usize, name: []const u8) bool {
+    const root = rootIdentifier(arg) orelse return false;
+    if (!std.mem.eql(u8, root, name)) return false;
+    if (tc.macros.contains(call.func_name) or tc.imported_macros.contains(call.func_name)) return true;
+    const target = tc.resolveFunctionAlias(call.func_name);
+    if (tc.funcs.get(target)) |decl| {
+        if (index < decl.params.len and decl.params[index].is_move) return true;
+    }
+    return false;
+}
+
+fn macroExprConsumesParam(tc: *type_checker.TypeChecker, expr: *const ast.Node, name: []const u8) bool {
+    return switch (expr.*) {
+        .move_expr => |move| blk: {
+            if (rootIdentifier(move.expr)) |root| {
+                if (std.mem.eql(u8, root, name)) break :blk true;
+            }
+            break :blk macroExprConsumesParam(tc, move.expr, name);
+        },
+        .call_expr => |call| blk: {
+            if (call.callee) |callee| {
+                if (macroExprConsumesParam(tc, callee, name)) break :blk true;
+            }
+            for (call.args, 0..) |arg, index| {
+                if (macroCallArgConsumesParam(tc, call, arg, index, name)) break :blk true;
+                if (macroExprConsumesParam(tc, arg, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .binary_expr => |bin| macroExprConsumesParam(tc, bin.left, name) or macroExprConsumesParam(tc, bin.right, name),
+        .borrow_expr => |borrow| macroExprConsumesParam(tc, borrow.expr, name),
+        .deref_expr => |deref| macroExprConsumesParam(tc, deref.expr, name),
+        .cast_expr => |cast| macroExprConsumesParam(tc, cast.expr, name),
+        .field_expr => |field| macroExprConsumesParam(tc, field.expr, name),
+        .index_expr => |idx| macroExprConsumesParam(tc, idx.target, name) or macroExprConsumesParam(tc, idx.index, name),
+        .slice_expr => |slice| macroExprConsumesParam(tc, slice.target, name) or macroExprConsumesParam(tc, slice.start, name) or macroExprConsumesParam(tc, slice.end, name),
+        .try_expr => |try_expr| macroExprConsumesParam(tc, try_expr.expr, name),
+        .await_expr => |await_expr| macroExprConsumesParam(tc, await_expr.expr, name),
+        .go_expr => |go_expr| macroExprConsumesParam(tc, go_expr.call, name),
+        .if_expr => |ife| blk: {
+            if (macroExprConsumesParam(tc, ife.cond, name)) break :blk true;
+            if (ife.let_chain) |chain| {
+                for (chain) |cond| {
+                    if (macroExprConsumesParam(tc, cond.value, name)) break :blk true;
+                }
+            }
+            break :blk macroBodyConsumesParam(tc, ife.then_block, name) or
+                (if (ife.else_block) |else_block| macroBodyConsumesParam(tc, else_block, name) else false);
+        },
+        .switch_expr => |swe| blk: {
+            if (macroExprConsumesParam(tc, swe.val, name)) break :blk true;
+            for (swe.cases) |case| {
+                if (macroBodyConsumesParam(tc, case.body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .match_expr => |mat| blk: {
+            if (macroExprConsumesParam(tc, mat.val, name)) break :blk true;
+            for (mat.cases) |case| {
+                if (case.guard) |guard| {
+                    if (macroExprConsumesParam(tc, guard, name)) break :blk true;
+                }
+                if (macroBodyConsumesParam(tc, case.body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .unsafe_expr => |unsafe_expr| macroBodyConsumesParam(tc, unsafe_expr.body, name),
+        .block_stmt => |block| macroBodyConsumesParam(tc, block.body, name),
+        .struct_literal => |lit| blk: {
+            for (lit.fields) |field| {
+                if (rootIdentifier(field.value)) |root| {
+                    if (std.mem.eql(u8, root, name)) break :blk true;
+                }
+                if (macroExprConsumesParam(tc, field.value, name)) break :blk true;
+            }
+            if (lit.update_expr) |update| {
+                if (macroExprConsumesParam(tc, update, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .enum_literal => |lit| blk: {
+            for (lit.fields) |field| {
+                if (rootIdentifier(field.value)) |root| {
+                    if (std.mem.eql(u8, root, name)) break :blk true;
+                }
+                if (macroExprConsumesParam(tc, field.value, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .tuple_literal => |lit| blk: {
+            for (lit.elements) |elem| {
+                if (rootIdentifier(elem)) |root| {
+                    if (std.mem.eql(u8, root, name)) break :blk true;
+                }
+                if (macroExprConsumesParam(tc, elem, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .array_literal => |lit| blk: {
+            for (lit.elements) |elem| {
+                if (macroExprConsumesParam(tc, elem, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .repeat_array_literal => |lit| macroExprConsumesParam(tc, lit.value, name),
+        .closure_literal => |closure| macroExprConsumesParam(tc, closure.body, name),
+        else => false,
+    };
+}
+
+fn macroNodeConsumesParam(tc: *type_checker.TypeChecker, node: *const ast.Node, name: []const u8) bool {
+    return switch (node.*) {
+        .let_stmt => |let_stmt| blk: {
+            if (rootIdentifier(let_stmt.value)) |root| {
+                if (std.mem.eql(u8, root, name)) break :blk true;
+            }
+            break :blk macroExprConsumesParam(tc, let_stmt.value, name);
+        },
+        .const_stmt => |const_stmt| macroExprConsumesParam(tc, const_stmt.value, name),
+        .let_else_stmt => |let_else| macroExprConsumesParam(tc, let_else.value, name) or macroBodyConsumesParam(tc, let_else.else_block, name),
+        .let_destructure_stmt => |destructure| macroExprConsumesParam(tc, destructure.value, name),
+        .assign_stmt => |assign| blk: {
+            if (rootIdentifier(assign.value)) |root| {
+                if (std.mem.eql(u8, root, name)) break :blk true;
+            }
+            break :blk macroExprConsumesParam(tc, assign.value, name) or macroExprConsumesParam(tc, assign.target, name);
+        },
+        .return_stmt => |ret| blk: {
+            if (ret.value) |value| {
+                if (rootIdentifier(value)) |root| {
+                    if (std.mem.eql(u8, root, name)) break :blk true;
+                }
+                break :blk macroExprConsumesParam(tc, value, name);
+            }
+            break :blk false;
+        },
+        .release_stmt => |release| std.mem.eql(u8, release.var_name, name),
+        .expr_stmt => |expr| macroNodeConsumesParam(tc, expr, name),
+        .block_stmt => |block| macroBodyConsumesParam(tc, block.body, name),
+        .arena_stmt => |arena| macroBodyConsumesParam(tc, arena.body, name),
+        .for_stmt => |for_stmt| macroExprConsumesParam(tc, for_stmt.start, name) or
+            (if (for_stmt.end) |end| macroExprConsumesParam(tc, end, name) else false) or
+            macroBodyConsumesParam(tc, for_stmt.body, name),
+        .while_stmt => |while_stmt| macroExprConsumesParam(tc, while_stmt.cond, name) or macroBodyConsumesParam(tc, while_stmt.body, name),
+        .defer_stmt => |defer_stmt| macroExprConsumesParam(tc, defer_stmt.call, name),
+        .select_stmt => |select| blk: {
+            for (select.cases) |case| {
+                if (macroExprConsumesParam(tc, case.call, name)) break :blk true;
+                if (macroBodyConsumesParam(tc, case.body, name)) break :blk true;
+            }
+            if (select.default_body) |default_body| {
+                if (macroBodyConsumesParam(tc, default_body, name)) break :blk true;
+            }
+            if (select.timeout_expr) |timeout_expr| {
+                if (macroExprConsumesParam(tc, timeout_expr, name)) break :blk true;
+            }
+            if (select.timeout_body) |timeout_body| {
+                if (macroBodyConsumesParam(tc, timeout_body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        else => macroExprConsumesParam(tc, node, name),
+    };
+}
+
 pub const FunctionTailCleanupAction = control_flow_rules.FunctionExitCleanupAction;
 pub const planFunctionTailCleanup = control_flow_rules.planFunctionExitCleanup;
 

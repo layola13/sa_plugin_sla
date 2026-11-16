@@ -12935,6 +12935,26 @@ pub const Codegen = struct {
         }
     }
 
+    /// DEF-TEXT31-BOX-CONSUME: mirror of the checker's
+    /// consumeConstructorArg decision (DEF-ARC-DROP) for the
+    /// Box/Rc/Arc::new emitter arms. The checker consumes a
+    /// root-identifier constructor argument whose type is not Copy,
+    /// so the exit-cleanup plan excludes that binding; the arms used
+    /// to gate the source retire on callArgNeedsRelease, which is
+    /// false for identifiers, so no `^binding` reached the SA text
+    /// and the host verifier found the register Active at function
+    /// exit (MemoryLeak 1012). Retire the source when the historical
+    /// temp gate fires, when genExpr materialised a fresh temp for
+    /// the argument, or when the argument is a non-Copy root
+    /// identifier the checker consumed.
+    fn constructorArgNeedsConsume(self: *Codegen, arg: *const ast.Node, arg_reg: []const u8) bool {
+        if (callArgNeedsRelease(arg)) return true;
+        if (isTemporaryRegisterName(arg_reg)) return true;
+        if (arg.* != .identifier) return false;
+        const arg_ty = self.tc.expr_types.get(arg) orelse return false;
+        return !self.typeIsCopyValue(arg_ty);
+    }
+
     fn plannedCallArgReleaseReg(self: *Codegen, lowered_arg: LoweredCallArg) ?[]const u8 {
         const release_after_call = lowered_arg.release_reg != null or lowered_arg.release_after_call;
         const candidate = lowered_arg.release_reg orelse lowered_arg.reg;
@@ -14575,8 +14595,17 @@ pub const Codegen = struct {
         // (http_proxy_tunnel_socks5 req[4] = ((bits >> 24) as u8)).
         // Let materialising casts through to the retire logic below;
         // non-materialising casts keep the early return.
+        // DEF-TEXT31-BOX-CONSUME: a non-materialising (pointer-carrier)
+        // cast passes its operand's register through unchanged, so
+        // when the operand itself produced a release-needing temp —
+        // e.g. `Box::into_raw(req) as ptr` stored into a chan-send
+        // view slot — that temp IS the stored value register and
+        // nothing retires it. Let those casts through too; casts of
+        // plain identifiers/literals still return early (their
+        // register is a live binding or a constant, not a temp).
         if (!callArgNeedsRelease(value)) {
-            if (value.* != .cast_expr or !self.exprResultRegNeedsRelease(value)) return;
+            if (value.* != .cast_expr) return;
+            if (!self.exprResultRegNeedsRelease(value) and !exprResultNeedsRelease(value.cast_expr.expr)) return;
         }
         if (std.mem.eql(u8, typeString(value_ty), "ptr") or (!self.typeIsCopyValue(value_ty) and !lowering_rules.isBorrowLikeType(value_ty))) {
             try self.emitForgetMovedValue(value_reg);
@@ -19841,7 +19870,11 @@ pub const Codegen = struct {
                         // fresh box cell — ownership moves into the box.
                         // Releasing the source freed the payload while
                         // the box owned it; retire it as consumed.
-                        if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(arg_reg);
+                        // DEF-TEXT31-BOX-CONSUME: the retire must also
+                        // fire for the non-Copy root identifier the
+                        // checker consumed (see
+                        // constructorArgNeedsConsume).
+                        if (self.constructorArgNeedsConsume(call.args[0], arg_reg)) try self.emitForgetMovedValue(arg_reg);
                         return reg;
                     }
                     if (lowering_rules.isBoxIntoRawCall(call)) {
@@ -19877,7 +19910,7 @@ pub const Codegen = struct {
                         self.outPrint("    EXPAND RC_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
                         // DEF-R8-FIX: as BOX_NEW — the value is stored
                         // into the fresh Rc cell and owned by it.
-                        if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(arg_reg);
+                        if (self.constructorArgNeedsConsume(call.args[0], arg_reg)) try self.emitForgetMovedValue(arg_reg);
                         return reg;
                     }
                     if (lowering_rules.isArcNewCall(call)) {
@@ -19887,7 +19920,7 @@ pub const Codegen = struct {
                         self.outPrint("    EXPAND ARC_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
                         // DEF-R8-FIX: as BOX_NEW — the value is stored
                         // into the fresh Arc cell and owned by it.
-                        if (callArgNeedsRelease(call.args[0])) try self.emitForgetMovedValue(arg_reg);
+                        if (self.constructorArgNeedsConsume(call.args[0], arg_reg)) try self.emitForgetMovedValue(arg_reg);
                         return reg;
                     }
                     if (std.mem.eql(u8, target, "AtomicI32") and std.mem.eql(u8, call.func_name, "new")) {

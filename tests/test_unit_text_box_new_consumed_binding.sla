@@ -1,0 +1,60 @@
+// DEF-TEXT31-BOX-CONSUME regression (shape A): a non-Copy root
+// binding moved into Box::new / Rc::new / Arc::new is consumed by
+// the checker, so the TEXT emitter must retire the source register
+// after the constructor's store. Pre-fix every function below traps
+// MemoryLeak 1012 on the consumed binding at function exit.
+@import "sa_std/core/rc.sa";
+@import "sa_std/core/arc.sa";
+@import "sa_std/core/box.sa";
+
+struct Counter {
+    n: i32,
+}
+
+struct World {
+    value: i32,
+}
+
+fn make_box_of_arc(a: Arc<Counter>) -> i32 {
+    let bx = Box::new(a);
+    return (*bx).strong_count();
+}
+
+fn world_shared(value: i32) -> Arc<*World> {
+    let world = World { value: value };
+    let boxed = Box::new(world);
+    let raw = Box::into_raw(boxed);
+    return Arc::new(raw);
+}
+
+fn make_rc() -> i32 {
+    let c = Counter { n: 7 };
+    let r = Rc::new(c);
+    return (*r).n;
+}
+
+fn make_arc() -> i32 {
+    let c = Counter { n: 8 };
+    let r = Arc::new(c);
+    return (*r).n;
+}
+
+@test "box new consumes arc param binding"() {
+    let probe = Arc::new(Counter { n: 9 });
+    let during = make_box_of_arc(probe.clone());
+    if during != 2 { panic(111); };
+    if probe.strong_count() != 1 { panic(112); };
+}
+
+@test "box new consumes local binding"() {
+    let a = world_shared(5);
+    if a.strong_count() != 1 { panic(101); };
+}
+
+@test "rc new consumes local binding"() {
+    if make_rc() != 7 { panic(121); };
+}
+
+@test "arc new consumes local binding"() {
+    if make_arc() != 8 { panic(122); };
+}

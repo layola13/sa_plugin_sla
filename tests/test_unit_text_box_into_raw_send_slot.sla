@@ -1,0 +1,41 @@
+// DEF-TEXT31-BOX-CONSUME regression (shape B): the owned temp
+// produced by Box::into_raw, cast to ptr and stored into a
+// chan-send view slot, must be retired after the store. The cast
+// is a non-materialising pointer-carrier cast, so the slot-store
+// finish used to skip the retire and the temp stayed Active to
+// function exit (MemoryLeak 1012). Verbatim shape of
+// test_unit_decl_executor's executor call.
+@import "sa_std/task.sai";
+@import "sa_std/core/box.sa";
+
+struct Req {
+    op: u64,
+    arg: u64,
+    reply: Chan<u64>,
+}
+
+fn responder(inbox: Chan<ptr>) {
+    let (raw, closed) = inbox.recv();
+    if closed { return; };
+    let req = raw as *Req;
+    (*req).reply.send((*req).arg + 1);
+}
+
+fn call_shape(inbox: Chan<ptr>, op: u64, arg: u64) -> u64 {
+    let reply: Chan<u64> = Chan::new(1);
+    let req = Box::new(Req { op: op, arg: arg, reply: reply });
+    inbox.send(Box::into_raw(req) as ptr);
+    let (result, closed) = reply.recv();
+    reply.destroy();
+    return result;
+}
+
+@test "executor call shape"() {
+    let inbox: Chan<ptr> = Chan::new(1);
+    let h = go responder(inbox);
+    let r = call_shape(inbox, 5, 41);
+    if r != 42 { panic(1101); };
+    let st = sa_task_join(h);
+    if st != 0 { panic(1102); };
+    inbox.destroy();
+}

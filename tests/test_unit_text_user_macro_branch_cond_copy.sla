@@ -1,0 +1,28 @@
+macro branch_cast_retire(var_ref, cond, delta) {
+    {
+        if cond {
+            var_ref = var_ref + (delta as i64);
+        } else {
+            var_ref = var_ref - (delta as i64);
+        }
+    }
+}
+
+fn macro_branch_cond_direct(value: i64, cond: bool, delta: i32) -> i64 {
+    let item = value;
+    branch_cast_retire(item, cond, delta);
+    item
+}
+
+fn macro_branch_cond_renamed(value: i64, flag: bool, delta: i32) -> i64 {
+    let item = value;
+    branch_cast_retire(item, flag, delta);
+    item
+}
+
+@test "user macro branch cond copy"() {
+    if macro_branch_cond_direct(10, true, 4) != 14 { panic(1071); };
+    if macro_branch_cond_direct(10, false, 4) != 6 { panic(1072); };
+    if macro_branch_cond_renamed(20, true, 5) != 25 { panic(1073); };
+    if macro_branch_cond_renamed(20, false, 5) != 15 { panic(1074); };
+}

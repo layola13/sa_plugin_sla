@@ -13061,7 +13061,17 @@ pub const Codegen = struct {
 
     fn genBranchConditionReg(self: *Codegen, cond: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const cond_reg = try self.genExpr(cond, hoisted_allocs);
-        const cond_ty = self.tc.expr_types.get(cond) orelse return CodegenError.CodegenError;
+        // DEF-TEXT31-USER-MACRO-UAM: probe the type through the
+        // macro-aware resolver, not raw expr_types. An untyped
+        // user-macro parameter keeps `.infer` in expr_types (see
+        // TypeChecker.checkMacro), so the raw probe never sees the
+        // primitive argument type and the protective copy below is
+        // skipped; the if-codegen's per-arm release then fires on the
+        // caller's own binding register, which its owner scope
+        // releases again at exit (UseAfterMove 1009). The raw
+        // expr_types value remains as the fallback so an unresolvable
+        // condition keeps its previous behaviour.
+        const cond_ty = self.resolvedTypeForExpr(cond) orelse self.tc.expr_types.get(cond) orelse return CodegenError.CodegenError;
         if (cond.* == .identifier and cond_ty.* == .primitive) {
             const resolved_name = self.resolveBindingName(cond.identifier);
             if (std.mem.eql(u8, cond_reg, resolved_name) or std.mem.eql(u8, cond_reg, cond.identifier) or self.global_const_bindings.contains(cond.identifier)) {

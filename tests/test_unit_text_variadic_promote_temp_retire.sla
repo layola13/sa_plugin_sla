@@ -1,0 +1,39 @@
+// DEF-TEXT31-VARIADIC-PROMOTE-TEMP regression: a variadic extern
+// call's promoted trailing argument (C default argument promotion:
+// i16 -> int, f32 -> double, u8 -> int) lives in a fresh temp that no
+// declared callee parameter consumes. The call site must plan the
+// promoted temp's release or it stays Active at function exit
+// (MemoryLeak 1012 on the TEXT route; the SAB route is the control).
+
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+@import "import_fixtures/variadic_libc.sai"
+
+extern "C" {
+    fn sprintf(buf: ptr, fmt: ptr, ...) -> i32;
+}
+
+@test "text variadic promoted id args retire after call"() {
+    let buf = stack_alloc(64);
+    let small: i16 = -7;
+    let ratio: f32 = 0.5;
+    let n = unsafe { snprintf(buf, 64, STR_PTR("%d|%f|%s\0"), small, ratio, STR_PTR("ok\0")) };
+    if n != 14 {
+        panic(7301);
+    };
+    if unsafe { memcmp(buf, STR_PTR("-7|0.500000|ok\0"), 15) } != 0 {
+        panic(7302);
+    };
+}
+
+@test "text variadic promoted u8 id arg retires after call"() {
+    let buf = stack_alloc(64);
+    let byte_val: u8 = 200;
+    let n = unsafe { sprintf(buf, STR_PTR("%u:%lld\0"), byte_val, -5000000000) };
+    if n != 15 {
+        panic(7303);
+    };
+    if unsafe { memcmp(buf, STR_PTR("200:-5000000000\0"), 16) } != 0 {
+        panic(7304);
+    };
+}

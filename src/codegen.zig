@@ -13558,7 +13558,17 @@ pub const Codegen = struct {
                 }
                 const promoted = try self.newTmp();
                 self.outPrint("    {s} = {s} as {s}\n", .{ promoted, src_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
-                lowered = .{ .reg = promoted, .release_after_call = lowered.release_after_call, .release_reg = lowered.release_reg, .consume_reg = lowered.consume_reg };
+                // DEF-TEXT31-VARIADIC-PROMOTE-TEMP: the promoted value
+                // lives in a fresh temp, but a variadic trailing
+                // argument has no declared parameter, so the callee
+                // signature never consumes it and the inherited
+                // cleanup plan (which described the pre-promotion
+                // register) leaves it Active at function exit. Unless
+                // a release of another register was already planned,
+                // plan a release of the promoted temp itself; the
+                // standard post-call cleanup then retires it.
+                const promote_release = lowered.release_after_call or lowered.release_reg == null;
+                lowered = .{ .reg = promoted, .release_after_call = promote_release, .release_reg = lowered.release_reg, .consume_reg = lowered.consume_reg };
                 promotion_applied = true;
             }
         }

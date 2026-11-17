@@ -1,0 +1,31 @@
+// DEF-TEXT-RECV-EXPR-TUPLE-TEMP regression: the expression form of
+// a channel receive (`let pair = ch.recv();`) with a plain word
+// payload (u64) materializes the (payload, closed) pair in a
+// synthetic tuple temp (__rt_). The temp is a heap alloc created by
+// syntax lowering after the checker ran, so no cleanup list named
+// it: unlike the transfer slots (slotArrayNode) it was never
+// registered for block-exit cleanup, stayed Active at function
+// exit, and the SA-text verifier trapped MemoryLeak 1012 on
+// register __rt_*. A plain fn tuple binding of the same shape is
+// clean (the call result lands directly in the binding), and the
+// pointer-payload sibling (DEF-TEXT31-RECV-EXPR-REF) is covered by
+// test_unit_text_recv_expr_ref_retire.sla.
+@import "sa_std/ptr.sa"
+@import "sa_std/task.sai"
+@import "sa_std/core/box.sa"
+@import "sa_std/vec.sa"
+
+@test "text recv expr tuple temp retired both projections"() {
+    let ch: Chan<u64> = Chan::new(2);
+    ch.send(41);
+    let pair = ch.recv();
+    if pair.1 { panic(45301); };
+    if pair.0 != 41 { panic(45302); };
+}
+
+@test "text recv expr tuple temp retired first projection only"() {
+    let ch: Chan<u64> = Chan::new(2);
+    ch.send(41);
+    let pair = ch.recv();
+    if pair.0 != 41 { panic(45502); };
+}

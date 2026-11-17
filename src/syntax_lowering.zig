@@ -971,6 +971,12 @@ pub const Lowerer = struct {
                 self.registerType(tuple_node, tuple_ty);
                 const tuple_name = try self.freshName("__rt_");
                 try out.append(try self.letNode(tuple_name, tuple_ty, tuple_node));
+                // DEF-TEXT-RECV-EXPR-TUPLE-TEMP: the synthetic tuple
+                // let is a heap alloc the checker never saw; register
+                // it for block-exit cleanup like the transfer slots
+                // (slotArrayNode), or it stays Active at function
+                // exit and the verifier traps MemoryLeak.
+                try self.noteAllocLet(tuple_name);
                 if (sv.ref_name) |ref_name| {
                     try out.append(try self.forgetStmt(ref_name, sv.ref_ty.?));
                 }

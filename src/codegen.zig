@@ -13527,6 +13527,21 @@ pub const Codegen = struct {
         try self.markConsumedBinding(reg);
     }
 
+    /// Verifier-visible ownership transfer into a container. Unlike
+    /// emitForgetMovedValue (a bare `^` move-out with no destination, which
+    /// the Referee cannot distinguish from discarding a value), this emits
+    /// `transfer <container>, <value>` so the Referee can check that the
+    /// destination is a live owned root and record the ownership obligation.
+    /// The bytes were already moved by the preceding `store`; this is a
+    /// semantic annotation (runtime no-op in every backend).
+    fn emitTransferToContainer(self: *Codegen, container: []const u8, reg: []const u8) CodegenError!void {
+        if (std.mem.startsWith(u8, reg, "&")) return;
+        if (std.mem.startsWith(u8, reg, "^")) return try self.markConsumedBinding(reg[1..]);
+        if (self.stack_alloc_bindings.contains(reg)) return try self.markConsumedBinding(reg);
+        self.outPrint("    transfer {s}, {s}\n", .{ container, reg }) catch return CodegenError.CodegenError;
+        try self.markConsumedBinding(reg);
+    }
+
     /// Retire the source register of a value that was just stored by
     /// value into a binding's stack slot (the addressable-storage and
     /// assigned-value-slot let branches). The store transferred the
@@ -21020,18 +21035,17 @@ pub const Codegen = struct {
                                 if (stored.release_value) {
                                     if (callArgNeedsRelease(elem)) try self.emitRelease(elem_reg);
                                 } else {
-                                    // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: same
-                                    // visible retirement as the push_back
-                                    // arm -- the fresh element record's
-                                    // ownership transferred into the deque.
-                                    try self.emitForgetMovedValue(elem_reg);
+                                    // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: ownership
+                                    // of the fresh element record moves into the
+                                    // deque. Emit a verifier-visible `transfer`
+                                    // (not a bare `^`) so the Referee can check
+                                    // the destination and record the obligation.
+                                    try self.emitTransferToContainer(reg, elem_reg);
                                 }
                                 if (!std.mem.eql(u8, stored.reg, elem_reg)) {
-                                    // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: same
-                                    // visible retirement for a manufactured
-                                    // element record (copy / box), as in the
-                                    // push_back arm.
-                                    try self.emitForgetMovedValue(stored.reg);
+                                    // Manufactured element record (copy / box)
+                                    // transfers into the deque the same way.
+                                    try self.emitTransferToContainer(reg, stored.reg);
                                 }
                             } else {
                                 self.outPrint("    EXPAND VEC_DEQUE_PUSH_BACK {s}, {s}\n", .{ reg, elem_reg }) catch return CodegenError.CodegenError;
@@ -22536,23 +22550,22 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                             } else {
                                 // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: ownership of
-                                // the fresh record transferred into the deque
-                                // (its address is the slot value), so no release
-                                // may fire -- but the source temp must still be
-                                // retired VISIBLY; bookkeeping alone leaves it
-                                // Active at function exit (MemoryLeak 1012,
-                                // tmp_1 @ demo_form), the same lesson as
-                                // DEF-TEXT31-ENUM-WRAP-TEMP / STD-HYGIENE F5.
-                                try self.emitForgetMovedValue(value_reg);
+                                // the fresh record moves into the deque (its
+                                // address is the slot value), so no release may
+                                // fire -- but the retire must be VISIBLE to the
+                                // Referee. `transfer` (not a bare `^`) records
+                                // the destination so a missing retire is a
+                                // verifier error at the transfer site and a
+                                // bogus destination is rejected outright.
+                                try self.emitTransferToContainer(recv_reg, value_reg);
                             }
                             if (!std.mem.eql(u8, stored.reg, value_reg)) {
-                                // DEF-TEXT31-VECDEQUE-STRUCT-TEMP: a record
-                                // manufactured for the store (shallow copy /
-                                // byte-copy box) transferred into the deque
-                                // the same way; retire its temp visibly too
-                                // (tmp_139 @ ident_arg once the literal arm
-                                // was fixed).
-                                try self.emitForgetMovedValue(stored.reg);
+                                // A record manufactured for the store (shallow
+                                // copy / byte-copy box) transfers into the deque
+                                // the same way; emit transfer for its temp too
+                                // (tmp_139 @ ident_arg once the literal arm was
+                                // fixed).
+                                try self.emitTransferToContainer(recv_reg, stored.reg);
                             }
                             return "return_ty_sentinel";
                         }

@@ -1,0 +1,40 @@
+// DEF-TEXT-INLINE-WRITE-PHANTOM-SEG-RETIRE regression: the same owned
+// Vec binding name declared in two sibling branches, each consumed by
+// value into a call and followed by `return`. The checker keeps a Vec
+// call argument active (clone-on-later-use discipline), so the name
+// lands in the return cleanup list; codegen emits both branches'
+// values under alias temps (repeated let), and the shadow-cleanup
+// walk then released the bare name -- a register never assigned in
+// the function -- and the SA host trapped UnknownRegister 1007
+// (slaredis @sla__g_try_inline_write). Fails on the base head (the
+// build is rejected), passes after the fix.
+
+fn seg_push(v: Vec<u8>) {
+    if len(v) != 1 { panic(401); };
+}
+
+fn make_seg(n: u8) -> Vec<u8> {
+    let v: Vec<u8> = Vec::new();
+    v.push(n);
+    return v;
+}
+
+fn pick_write(flag: bool, other: bool) -> u64 {
+    if flag {
+        let seg = make_seg(7);
+        seg_push(seg);
+        return 1;
+    };
+    if other {
+        let seg = make_seg(9);
+        seg_push(seg);
+        return 2;
+    };
+    return 0;
+}
+
+@test "inline write phantom seg retire"() {
+    if pick_write(true, false) != 1 { panic(402); };
+    if pick_write(false, true) != 2 { panic(403); };
+    if pick_write(false, false) != 0 { panic(404); };
+}

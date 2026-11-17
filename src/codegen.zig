@@ -298,6 +298,14 @@ pub const Codegen = struct {
     /// was pushed for them). Exit paths consult it to retire a parameter
     /// that a shadowing let hid from the name-based cleanup lists.
     fn_param_bindings: std.StringHashMap(void),
+    /// DEF-TEXT-INLINE-WRITE-PHANTOM-SEG-RETIRE: names of let /
+    /// destructure / const bindings whose register in the current
+    /// function is the bare source name itself (the declaration was
+    /// generated without a binding alias). Together with
+    /// fn_param_bindings and the hoisted allocs it tells the return
+    /// cleanup walk whether the alias stack's bottom level denotes a
+    /// register that was actually materialised.
+    bare_name_bindings: std.StringHashMap(void),
     borrow_source_temps: std.StringHashMap([]const u8),
     refcell_borrow_handles: std.StringHashMap(RefCellBorrowHandle),
     result_slot_refcell_handles: std.StringHashMap(ResultSlotRefCellHandle),
@@ -417,6 +425,7 @@ pub const Codegen = struct {
             .btree_set_bindings = std.StringHashMap(void).init(allocator),
             .borrow_param_bindings = std.StringHashMap(void).init(allocator),
             .fn_param_bindings = std.StringHashMap(void).init(allocator),
+            .bare_name_bindings = std.StringHashMap(void).init(allocator),
             .borrow_source_temps = std.StringHashMap([]const u8).init(allocator),
             .refcell_borrow_handles = std.StringHashMap(RefCellBorrowHandle).init(allocator),
             .result_slot_refcell_handles = std.StringHashMap(ResultSlotRefCellHandle).init(allocator),
@@ -510,6 +519,7 @@ pub const Codegen = struct {
         self.btree_set_bindings.deinit();
         self.borrow_param_bindings.deinit();
         self.fn_param_bindings.deinit();
+        self.bare_name_bindings.deinit();
         self.borrow_source_temps.deinit();
         self.refcell_borrow_handles.deinit();
         self.result_slot_refcell_handles.deinit();
@@ -2780,6 +2790,23 @@ pub const Codegen = struct {
                 if ((try self.planFunctionResultCleanup(name, tail_expr)).releasesValue()) try self.emitRelease(name);
             }
         }
+    }
+
+    /// DEF-TEXT-INLINE-WRITE-PHANTOM-SEG-RETIRE: whether the bottom
+    /// level of a name's alias stack denotes a register that was
+    /// actually materialised under the bare name in this function: a
+    /// bare parameter (fn_param_bindings), a let / destructure / const
+    /// generated without an alias (bare_name_bindings), or a hoisted
+    /// loop alloc (emitted at L_ENTRY under the source name). A name
+    /// declared only under alias temps -- e.g. a repeated let whose
+    /// declarations sit in sibling branches -- has no bottom register.
+    fn cleanupBottomIsMaterialised(self: *Codegen, name: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) bool {
+        if (self.fn_param_bindings.contains(name)) return true;
+        if (self.bare_name_bindings.contains(name)) return true;
+        for (hoisted_allocs.items) |h_name| {
+            if (std.mem.eql(u8, h_name, name)) return true;
+        }
+        return false;
     }
 
     /// TEXT35-OWNERSHIP (DEF-TEXT-SHADOW-CLEANUP-RESOLUTION): release the
@@ -10259,6 +10286,7 @@ pub const Codegen = struct {
         self.btree_set_bindings.clearRetainingCapacity();
         self.borrow_param_bindings.clearRetainingCapacity();
         self.fn_param_bindings.clearRetainingCapacity();
+        self.bare_name_bindings.clearRetainingCapacity();
         self.borrow_source_temps.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
         self.result_slot_refcell_handles.clearRetainingCapacity();
@@ -10634,6 +10662,7 @@ pub const Codegen = struct {
         self.btree_set_bindings.clearRetainingCapacity();
         self.borrow_param_bindings.clearRetainingCapacity();
         self.fn_param_bindings.clearRetainingCapacity();
+        self.bare_name_bindings.clearRetainingCapacity();
         self.borrow_source_temps.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
         self.result_slot_refcell_handles.clearRetainingCapacity();
@@ -11033,10 +11062,46 @@ pub const Codegen = struct {
                     try self.rememberLoopBodyTopLevelLocal(alias);
                 } else {
                     try self.genStmt(stmt, hoisted_allocs);
+                    // DEF-TEXT-INLINE-WRITE-PHANTOM-SEG-RETIRE: this
+                    // declaration was generated under its bare source
+                    // name; record it so the return cleanup walk can
+                    // tell a materialised bottom binding from a name
+                    // that only ever existed under alias temps.
+                    self.bare_name_bindings.put(source_name, {}) catch return CodegenError.OutOfMemory;
                     try self.rememberLoopBodyTopLevelLocal(source_name);
                 }
             } else {
                 try self.genStmt(stmt, hoisted_allocs);
+                // DEF-TEXT-INLINE-WRITE-PHANTOM-SEG-RETIRE: bindings
+                // declared by destructure / const statements are
+                // generated under their bare names too (this path
+                // never renames them); record the ones that resolve
+                // to themselves, for the same bottom test.
+                switch (stmt.*) {
+                    .let_destructure_stmt => |let| {
+                        for (let.names) |bound_name| {
+                            if (!isDiscardName(bound_name) and std.mem.eql(u8, self.resolveBindingName(bound_name), bound_name)) {
+                                self.bare_name_bindings.put(bound_name, {}) catch return CodegenError.OutOfMemory;
+                            }
+                        }
+                        if (let.rest_name) |rest_name| {
+                            if (!isDiscardName(rest_name) and std.mem.eql(u8, self.resolveBindingName(rest_name), rest_name)) {
+                                self.bare_name_bindings.put(rest_name, {}) catch return CodegenError.OutOfMemory;
+                            }
+                        }
+                        if (let.rest_alias) |rest_alias| {
+                            if (!isDiscardName(rest_alias) and std.mem.eql(u8, self.resolveBindingName(rest_alias), rest_alias)) {
+                                self.bare_name_bindings.put(rest_alias, {}) catch return CodegenError.OutOfMemory;
+                            }
+                        }
+                    },
+                    .const_stmt => |c| {
+                        if (!isDiscardName(c.name) and std.mem.eql(u8, self.resolveBindingName(c.name), c.name)) {
+                            self.bare_name_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
+                        }
+                    },
+                    else => {},
+                }
             }
             if (self.async_pending_return_emitted) break;
         }
@@ -13153,6 +13218,7 @@ pub const Codegen = struct {
             self.btree_set_bindings.clearRetainingCapacity();
             self.borrow_param_bindings.clearRetainingCapacity();
             self.fn_param_bindings.clearRetainingCapacity();
+            self.bare_name_bindings.clearRetainingCapacity();
             self.borrow_source_temps.clearRetainingCapacity();
             self.refcell_borrow_handles.clearRetainingCapacity();
             self.result_slot_refcell_handles.clearRetainingCapacity();
@@ -16771,6 +16837,21 @@ pub const Codegen = struct {
                                 }
                             }
                         }
+                        // DEF-TEXT-INLINE-WRITE-PHANTOM-SEG-RETIRE: the
+                        // walk lands on the bare name when every alias
+                        // level is consumed, but that bottom level is a
+                        // register only if a bottom binding was actually
+                        // materialised under the bare name. When the
+                        // name was declared only under alias temps
+                        // (a repeated let in sibling branches), the
+                        // entry denoted the consumed innermost alias
+                        // itself -- the value already moved out through
+                        // the call -- and releasing the bare name emits
+                        // `!name` for a register that was never
+                        // assigned, which the host traps as
+                        // UnknownRegister 1007 (slaredis
+                        // @sla__g_try_inline_write's `seg`).
+                        if (target_is_bottom and !self.cleanupBottomIsMaterialised(c_var, hoisted_allocs)) continue;
                         if (ret.value) |v| {
                             // DEF-ARC-DROP: a cloned extraction (deep
                             // clone or Arc/Rc bump) transfers nothing

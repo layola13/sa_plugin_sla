@@ -457,7 +457,16 @@ fn supervisorMain(all: []const std.builtin.TestFn) u8 {
                 if (!std.mem.eql(u8, name, all[idx].name)) continue;
                 const v: Verdict = if (std.mem.eql(u8, v_s, "pass")) .pass else if (std.mem.eql(u8, v_s, "fail")) .fail else if (std.mem.eql(u8, v_s, "hang")) .hang else continue;
                 verdicts[idx] = v;
-                rcs[idx] = std.fmt.parseInt(i64, rc_s, 10) catch 0;
+                // RUNNER-JOURNAL-RC0: a torn/corrupt rc field must never be
+                // read back as 0 (success). Force the verdict to .fail and
+                // record an invalid rc sentinel so a damaged journal cannot
+                // manufacture a false green in the resumed result set.
+                if (std.fmt.parseInt(i64, rc_s, 10)) |parsed_rc| {
+                    rcs[idx] = parsed_rc;
+                } else |_| {
+                    rcs[idx] = -1;
+                    verdicts[idx] = .fail;
+                }
                 done_count += 1;
             }
         } else {}

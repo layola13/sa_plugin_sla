@@ -1475,7 +1475,12 @@ pub const Codegen = struct {
                     .arc_ptr, .rc_ptr, .box_ptr => {
                         try self.emitSmartPointerDropText(resolved_name, binding_ty, plan, resolved_name, self.current_drop_node, false, false);
                     },
-                    else => {},
+                    // Shallow plans: the generic `!name` tail below releases
+                    // them. Listed explicitly (not `else => {}`) so adding a
+                    // future plan that owns children is a COMPILE ERROR here
+                    // instead of a silent shallow drop + child leak -- the
+                    // same loud-on-new-kind discipline as `transfer`.
+                    .none, .buffer, .buffer_growvec => {},
                 }
             } else |_| {}
             }

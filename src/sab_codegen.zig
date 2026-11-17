@@ -4052,7 +4052,11 @@ pub const Codegen = struct {
         const plan = self.tc.planValueDrop(ty) catch return false;
         switch (plan.*) {
             .deep_vec, .deep_growvec, .deep_struct, .arc_ptr, .rc_ptr, .box_ptr => {},
-            else => return false,
+            // Shallow plans fall through to the caller's existing path. Listed
+            // explicitly so a future child-owning plan is a COMPILE ERROR here
+            // rather than a silent shallow drop (same discipline as the text
+            // emitter's emitRelease).
+            .none, .buffer, .buffer_growvec => return false,
         }
         if (local.stack_ty != null) {
             const value = try self.intern(try self.newTmp());

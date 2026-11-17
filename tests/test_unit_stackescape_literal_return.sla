@@ -1,0 +1,20 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+// CLOSING-D regression: DEF-DEMOS-STACKESCAPE-LITERAL-RETURN.
+// Pre-fix: `fn get() -> ptr { return "hi"; }` materialized the literal as
+// a Slice in a stack slot and returned the slot address (StackEscape 1025).
+// Post-fix: a `ptr` return takes the static constant address.
+
+fn get() -> ptr {
+    return "hi";
+}
+
+fn main() -> i32 {
+    println("{}", len(get()));
+    return 0;
+}
+
+@test "stackescape literal return"() {
+    if len(get()) != 2 { panic(14801); };
+}

@@ -3816,7 +3816,14 @@ pub const Codegen = struct {
                                     const fmt_buf = try self.newTmp();
                                     const data_reg = try self.newTmp();
                                     const len_reg = try self.newTmp();
-                                    self.outPrint("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                    // DEF-DEMOS-SIGNED-FMT (CLOSING-D): a negative value
+                                    // must print with a minus sign; @sa_fmt_u64 renders
+                                    // the two's-complement bit pattern as a huge number.
+                                    const fmt_fn: []const u8 = switch (p) {
+                                        .integer, .i8, .i16, .i32, .i64, .isize => "@sa_fmt_i64",
+                                        else => "@sa_fmt_u64",
+                                    };
+                                    self.outPrint("    {s} = call {s}({s}, 10)\n", .{ fmt_buf, fmt_fn, val_reg }) catch return CodegenError.CodegenError;
                                     self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const print_ptr = try self.newTmp();
@@ -3874,7 +3881,14 @@ pub const Codegen = struct {
                                     const fmt_buf = try self.newTmp();
                                     const data_reg = try self.newTmp();
                                     const len_reg = try self.newTmp();
-                                    self.outPrint("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                    // DEF-DEMOS-SIGNED-FMT (CLOSING-D): a negative value
+                                    // must print with a minus sign; @sa_fmt_u64 renders
+                                    // the two's-complement bit pattern as a huge number.
+                                    const fmt_fn: []const u8 = switch (p) {
+                                        .integer, .i8, .i16, .i32, .i64, .isize => "@sa_fmt_i64",
+                                        else => "@sa_fmt_u64",
+                                    };
+                                    self.outPrint("    {s} = call {s}({s}, 10)\n", .{ fmt_buf, fmt_fn, val_reg }) catch return CodegenError.CodegenError;
                                     self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const ptr_reg = try self.newTmp();
@@ -3929,7 +3943,14 @@ pub const Codegen = struct {
                                 const fmt_buf = try self.newTmp();
                                 const data_reg = try self.newTmp();
                                 const len_reg = try self.newTmp();
-                                self.outPrint("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
+                                // DEF-DEMOS-SIGNED-FMT (CLOSING-D): a negative value
+                                // must print with a minus sign; @sa_fmt_u64 renders
+                                // the two's-complement bit pattern as a huge number.
+                                const fmt_fn: []const u8 = switch (p) {
+                                    .integer, .i8, .i16, .i32, .i64, .isize => "@sa_fmt_i64",
+                                    else => "@sa_fmt_u64",
+                                };
+                                self.outPrint("    {s} = call {s}({s}, 10)\n", .{ fmt_buf, fmt_fn, val_reg }) catch return CodegenError.CodegenError;
                                 self.outPrint("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 self.outPrint("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 const ptr_reg = try self.newTmp();
@@ -3938,7 +3959,7 @@ pub const Codegen = struct {
                                 self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
                                 try self.emitRelease(len_reg);
-                                if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
+                                if (callArgNeedsRelease(arg) or (arg.* == .cast_expr and self.exprResultRegNeedsRelease(arg))) try self.emitRelease(val_reg);
                             },
                             .f32, .f64, .float => {
                                 const val_reg = try self.genExpr(arg, hoisted_allocs);
@@ -3954,7 +3975,7 @@ pub const Codegen = struct {
                                 self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
                                 try self.emitRelease(len_reg);
-                                if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
+                                if (callArgNeedsRelease(arg) or (arg.* == .cast_expr and self.exprResultRegNeedsRelease(arg))) try self.emitRelease(val_reg);
                             },
                             .boolean => {
                                 const val_reg = try self.genExpr(arg, hoisted_allocs);
@@ -3970,7 +3991,7 @@ pub const Codegen = struct {
                                 self.outPrint("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
                                 try self.emitRelease(len_reg);
-                                if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
+                                if (callArgNeedsRelease(arg) or (arg.* == .cast_expr and self.exprResultRegNeedsRelease(arg))) try self.emitRelease(val_reg);
                             },
                             else => {
                                 // FB-006: primitive kinds without a
@@ -4914,7 +4935,7 @@ pub const Codegen = struct {
         if (ty.* == .primitive and ty.primitive == .raw_ptr) {
             const ptr_reg = try self.genExpr(arg, hoisted_allocs);
             const len_reg = try self.newTmp();
-            self.outPrint("    EXPAND CSTR_LEN {s}, {s}\n", .{ len_reg, ptr_reg }) catch return CodegenError.CodegenError;
+            try self.emitCstrLenInline(len_reg, ptr_reg);
             self.outPrint("    EXPAND FORMAT_PUSH_BYTES {s}, {s}, {s}, {s}\n", .{ tag, out_reg, ptr_reg, len_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(len_reg);
             if (callArgNeedsRelease(arg)) try self.emitRelease(ptr_reg);
@@ -4984,7 +5005,7 @@ pub const Codegen = struct {
 
         const val_reg = try self.genExpr(arg, hoisted_allocs);
         try self.emitFormatPushValue(out_reg, val_reg, ty);
-        if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
+        if (callArgNeedsRelease(arg) or (arg.* == .cast_expr and self.exprResultRegNeedsRelease(arg))) try self.emitRelease(val_reg);
     }
 
     fn emitFormatPushValue(self: *Codegen, out_reg: []const u8, val_reg: []const u8, ty: *const ast.Type) CodegenError!void {
@@ -5805,6 +5826,57 @@ pub const Codegen = struct {
         return result;
     }
 
+    /// String evidence for ordering: a string literal, an inferred-slice
+    /// binding, or a String-typed operand. A bare raw_ptr without such
+    /// evidence keeps the scalar path (it may be a genuine pointer
+    /// comparison, not a string).
+    fn stringOrdEvidence(self: *Codegen, node: *const ast.Node, ty: *const ast.Type) bool {
+        if (node.* == .literal and node.literal == .string_val) return true;
+        if (node.* == .identifier and self.inferred_string_slice_locals.contains(node.identifier)) return true;
+        if (lowering_rules.isStringType(ty)) return true;
+        return false;
+    }
+
+    /// DEF-DEMOS-STRING-COMPARE shape A (CLOSING-D): lexicographic `<` /
+    /// `<=` / `>` / `>=` on string-like operands via EXPAND STR_CMP
+    /// (sci sa_std/string.sa:5711; ordering -1/0/+1 on materialized
+    /// slices), then compare the ordering against 0. Returns null for
+    /// non-ordering ops and for operands without string evidence.
+    fn genStringOrdExpr(
+        self: *Codegen,
+        bin: *const ast.BinaryExpr,
+        left_ty: *const ast.Type,
+        right_ty: *const ast.Type,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError!?[]const u8 {
+        const ordering_op: []const u8 = switch (bin.op) {
+            .lt => "slt",
+            .le => "sle",
+            .gt => "sgt",
+            .ge => "sge",
+            else => return null,
+        };
+        if (!self.stringOrdEvidence(bin.left, left_ty)) return null;
+        if (!self.stringOrdEvidence(bin.right, right_ty)) return null;
+        const l = try self.genExpr(bin.left, hoisted_allocs);
+        const r = try self.genExpr(bin.right, hoisted_allocs);
+        const left_arg = try self.materializeStrEqSliceFromReg(l, bin.left, left_ty);
+        const right_arg = try self.materializeStrEqSliceFromReg(r, bin.right, right_ty);
+        const ordering = try self.newTmp();
+        self.outPrint("    EXPAND STR_CMP {s}, {s}, {s}\n", .{ ordering, left_arg.reg, right_arg.reg }) catch return CodegenError.CodegenError;
+        if (left_arg.needs_release) try self.emitRelease(left_arg.reg);
+        if (right_arg.needs_release) try self.emitRelease(right_arg.reg);
+        if (self.exprResultRegNeedsRelease(bin.left)) try self.emitRelease(l);
+        if (self.exprResultRegNeedsRelease(bin.right)) try self.emitRelease(r);
+        const zero = try self.newTmp();
+        try self.emitIntConst(zero, 0);
+        const reg = try self.newTmp();
+        self.outPrint("    {s} = {s} {s}, {s}\n", .{ reg, ordering_op, ordering, zero }) catch return CodegenError.CodegenError;
+        try self.emitRelease(ordering);
+        try self.emitRelease(zero);
+        return reg;
+    }
+
     fn genStructOrdExpr(
         self: *Codegen,
         bin: *const ast.BinaryExpr,
@@ -6261,6 +6333,109 @@ pub const Codegen = struct {
             \\[END_MACRO]
             \\
         , .{}) catch return CodegenError.CodegenError;
+    }
+
+    // CLOSING-D (DEF-DEMOS-CSTR-LEN-TEXT, Jev R196 form A_text_inline):
+    // Inline the CSTR_LEN macro body at the call site, mirroring SAB's
+    // emitStdMacroFragment. TEXT used to emit a bare `EXPAND CSTR_LEN`
+    // and rely on the AST pre-scan (programNeedsFfiCstrMacros) to import
+    // sa_std/ffi.sa — but the scan never walked if-conditions, so @test
+    // bodies (`if len(...) != N { panic }`) assembled with no CSTR_LEN
+    // definition at all (UndefinedMacro 1060). Inlining the fragment
+    // makes the macro available everywhere, with no scan and no import.
+    // Body is verbatim from sa_std/ffi.sa; label/temp names are suffixed
+    // by the out register, so each call site's copy is unique.
+    fn emitCstrLenInline(self: *Codegen, out_reg: []const u8, ptr_reg: []const u8) CodegenError!void {
+        self.outPrint("    __cstr_len_slot_{s} = stack_alloc 8\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    store __cstr_len_slot_{s}+0, 0 as u64\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp L_CSTR_LEN_HEAD_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("L_CSTR_LEN_HEAD_{s}:\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    __cstr_len_i_{s} = load __cstr_len_slot_{s}+0 as u64\n", .{ out_reg, out_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    __cstr_len_p_{s} = ptr_add {s}, __cstr_len_i_{s}\n", .{ out_reg, ptr_reg, out_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    __cstr_len_b_{s} = load __cstr_len_p_{s}+0 as u8\n", .{ out_reg, out_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    __cstr_len_done_{s} = eq __cstr_len_b_{s}, 0\n", .{ out_reg, out_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br __cstr_len_done_{s} -> L_CSTR_LEN_DONE_{s}, L_CSTR_LEN_NEXT_{s}\n", .{ out_reg, out_reg, out_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("L_CSTR_LEN_NEXT_{s}:\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    __cstr_len_next_{s} = add __cstr_len_i_{s}, 1\n", .{ out_reg, out_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store __cstr_len_slot_{s}+0, __cstr_len_next_{s} as u64\n", .{ out_reg, out_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    !__cstr_len_next_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !__cstr_len_done_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !__cstr_len_b_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !__cstr_len_p_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !__cstr_len_i_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp L_CSTR_LEN_HEAD_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("\n", .{}) catch return CodegenError.CodegenError;
+        self.outPrint("L_CSTR_LEN_DONE_{s}:\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load __cstr_len_slot_{s}+0 as u64\n", .{ out_reg, out_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    !__cstr_len_done_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !__cstr_len_b_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !__cstr_len_p_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !__cstr_len_i_{s}\n", .{out_reg}) catch return CodegenError.CodegenError;
+    }
+
+    /// DEF-DEMOS-STR-EQ-RAW-PTR (CLOSING-D): materialize a str_eq /
+    /// switch operand as a Slice, mirroring SAB genStrEqArg + the shared
+    /// planStrEqArg (lowering_rules.zig:5377).
+    /// - string literal / inferred-slice binding: the register already IS
+    ///   a slice slot; use it directly.
+    /// - format-string (String buf): STRING_BUF_AS_STR view.
+    /// - any other raw pointer: stack_alloc Slice_SIZE + inline
+    ///   CSTR_FROM_PTR shape (emitCstrLenInline + SLICE_NEW with the
+    ///   scanned content length; the ffi.sa macro adds +1 for the NUL,
+    ///   which content comparison must NOT include).
+    /// `needs_release` is true only for a fresh view the caller must
+    /// retire after use.
+    const StrEqSliceArg = struct { reg: []const u8, needs_release: bool };
+
+    fn strEqSliceMaterialization(self: *Codegen, arg: *const ast.Node) lowering_rules.StringBindingMaterialization {
+        if (arg.* == .literal and arg.literal == .string_val) return .inferred_slice;
+        if (arg.* == .identifier and self.inferred_string_slice_locals.contains(arg.identifier)) return .inferred_slice;
+        return .other;
+    }
+
+    fn materializeStrEqSliceFromReg(self: *Codegen, orig_reg: []const u8, arg: *const ast.Node, ty: ?*const ast.Type) CodegenError!StrEqSliceArg {
+        // A struct `ptr` field initialized from a string literal holds the
+        // slice-slot address, not the data pointer (genStructLiteralInto
+        // stores the literal's slice slot into the field); scanning it as
+        // a C string reads pointer bytes and breaks previously-passing
+        // basic/132. The store convention is its own defect (struct-
+        // literal site, follow-up); pass field values through untouched.
+        if (arg.* == .field_expr) return .{ .reg = orig_reg, .needs_release = false };
+        const arg_ty = ty orelse return .{ .reg = orig_reg, .needs_release = false };
+        if (isFormatStringType(arg_ty)) {
+            const view = try self.newTmp();
+            self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ view, orig_reg }) catch return CodegenError.CodegenError;
+            return .{ .reg = view, .needs_release = true };
+        }
+        if (lowering_rules.typeIsPointerScalarValue(arg_ty)) {
+            switch (lowering_rules.planStrEqArg(true, self.strEqSliceMaterialization(arg))) {
+                .slice_direct => return .{ .reg = orig_reg, .needs_release = false },
+                .cstr_from_ptr => {
+                    const view = try self.newTmp();
+                    self.stack_alloc_bindings.put(view, {}) catch return CodegenError.OutOfMemory;
+                    self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{view}) catch return CodegenError.CodegenError;
+                    try self.emitCstrFromPtrInline(view, orig_reg);
+                    return .{ .reg = view, .needs_release = true };
+                },
+                .passthrough => return .{ .reg = orig_reg, .needs_release = false },
+            }
+        }
+        return .{ .reg = orig_reg, .needs_release = false };
+    }
+
+    /// Inline CSTR_FROM_PTR shape (sci sa_std/ffi.sa:12-17) for content
+    /// comparison: scan the length with emitCstrLenInline, then SLICE_NEW
+    /// with the scanned CONTENT length. Deliberately NOT the macro's
+    /// len+1: STR_EQ requires equal lengths before comparing bytes, so a
+    /// view whose length includes the NUL can never equal a content-length
+    /// literal slice (14802/18001 evidence).
+    fn emitCstrFromPtrInline(self: *Codegen, out_reg: []const u8, ptr_reg: []const u8) CodegenError!void {
+        const len_reg = try self.newTmp();
+        try self.emitCstrLenInline(len_reg, ptr_reg);
+        self.outPrint("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ out_reg, ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+        try self.emitRelease(len_reg);
     }
 
     fn emitHashMapMacros(self: *Codegen) CodegenError!void {
@@ -14912,18 +15087,6 @@ pub const Codegen = struct {
         return false;
     }
 
-    /// CLOSING-F: a str_eq operand typed as a bare pointer is a true
-    /// C string (NUL-terminated), unless its register already holds a
-    /// Slice: a string literal (materialized as a Slice temp by
-    /// genExpr) or an inferred-slice local (`let s = "lit"`).
-    /// Mirrors the len() raw-pointer materialization split.
-    fn strEqOperandIsBareCstr(self: *Codegen, arg: *const ast.Node, ty: *const ast.Type) bool {
-        if (!(ty.* == .primitive and ty.primitive == .raw_ptr)) return false;
-        if (arg.* == .literal) return false;
-        if (arg.* == .identifier and self.inferred_string_slice_locals.contains(arg.identifier)) return false;
-        return true;
-    }
-
     /// CLOSING-F: fixed-array element types whose value register
     /// denotes the element's storage address (plain structs, tuples,
     /// nested arrays — the aggregate-image types). Runtime handle
@@ -16363,8 +16526,17 @@ pub const Codegen = struct {
                 // transferred, so it still needs its own release.
                 var copied_result_source: ?[]const u8 = null;
                 if (ret.value) |v| {
+                    // DEF-DEMOS-STACKESCAPE-LITERAL-RETURN (CLOSING-D):
+                    // `fn get() -> ptr { return "hi"; }` used to materialize
+                    // the literal as a Slice in a stack slot and return the
+                    // slot address (StackEscape 1025). A `ptr` return wants
+                    // the static constant address, exactly as a `ptr` call
+                    // argument already gets from
+                    // genRawPointerStringLiteralArg.
                     const raw_val_reg = if (self.current_fn_ret_ty != null and lowering_rules.isStringType(self.current_fn_ret_ty.?) and v.* == .literal and v.literal == .string_val)
                         try self.genOwnedStringLiteral(v.literal.string_val, hoisted_allocs)
+                    else if (self.current_fn_ret_ty != null and self.current_fn_ret_ty.?.* == .primitive and self.current_fn_ret_ty.?.primitive == .raw_ptr and v.* == .literal and v.literal == .string_val)
+                        try self.genRawPointerStringLiteralArg(v.literal.string_val)
                     else
                         try self.genExpr(v, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
@@ -19357,6 +19529,10 @@ pub const Codegen = struct {
                 acc = reg;
                 break;
             }
+            if (try self.genStringOrdExpr(cbin, lty, rty, hoisted_allocs)) |reg| {
+                acc = reg;
+                break;
+            }
             if (try self.genStructArithmeticExpr(cbin, lty, rty, hoisted_allocs)) |reg| {
                 acc = reg;
                 break;
@@ -19529,6 +19705,7 @@ pub const Codegen = struct {
                 if (try self.genSpaceshipExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructEqualityExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructOrdExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
+                if (try self.genStringOrdExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructArithmeticExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 return try self.genBinaryExprFallback(&bin, expr, left_ty, right_ty, hoisted_allocs);
             },
@@ -20817,11 +20994,23 @@ pub const Codegen = struct {
                             // (species text-backend parse/fnv failures).
                             const inner = try self.genExpr(call.args[0], hoisted_allocs);
                             const reg = try self.newTmp();
-                            const materialization: lowering_rules.StringBindingMaterialization = if (call.args[0].* == .identifier and self.inferred_string_slice_locals.contains(call.args[0].identifier)) .inferred_slice else .other;
+                            // A string literal always materializes as a Slice
+                            // (stack_alloc Slice_SIZE + SLICE_NEW), so len()
+                            // must read its length field, not NUL-scan the
+                            // slice struct as a C string (which returned the
+                            // low bytes of the data pointer as a length).
+                            const materialization: lowering_rules.StringBindingMaterialization = if (call.args[0].* == .literal and call.args[0].literal == .string_val) .inferred_slice else if (call.args[0].* == .identifier and self.inferred_string_slice_locals.contains(call.args[0].identifier)) .inferred_slice else .other;
                             switch (lowering_rules.planLenRawPtrReceiver(materialization)) {
                                 .slice_len_field => self.outPrint("    EXPAND STRING_LEN {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError,
-                                .cstr_len_scan => self.outPrint("    EXPAND CSTR_LEN {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError,
+                                .cstr_len_scan => try self.emitCstrLenInline(reg, inner),
                             }
+                            // DEF-DEMOS-STACKESCAPE-LITERAL-RETURN follow-up
+                            // (CLOSING-D): the scanned inner register (e.g.
+                            // a `get() -> ptr` call result) is consumed by
+                            // the scan and must be retired, mirroring the
+                            // format-string len() path. Literals and plain
+                            // identifiers report false here and pass through.
+                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(inner);
                             return reg;
                         }
                     }
@@ -20835,54 +21024,17 @@ pub const Codegen = struct {
                     const right_ty = self.tc.expr_types.get(call.args[1]) orelse return CodegenError.CodegenError;
                     const left = try self.genExpr(call.args[0], hoisted_allocs);
                     const right = try self.genExpr(call.args[1], hoisted_allocs);
-                    var left_cstr_view = false;
-                    var right_cstr_view = false;
-                    const left_arg = if (isFormatStringType(left_ty)) blk: {
-                        const view = try self.newTmp();
-                        self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ view, left }) catch return CodegenError.CodegenError;
-                        break :blk view;
-                    } else if (self.strEqOperandIsBareCstr(call.args[0], left_ty)) blk: {
-                        // CLOSING-F: STR_EQ loads Slice_ptr/Slice_len
-                        // from its operand address; a bare C-string
-                        // pointer must first be materialized into a
-                        // Slice (ptr + scanned length), exactly like a
-                        // string-literal operand. Passing the raw
-                        // pointer made STR_EQ read the string's own
-                        // bytes as ptr/len, so str_eq with a `ptr`
-                        // parameter always returned false
-                        // (rosetta 90_app_shell / 94_graphql_router /
-                        // 95_repl_shell).
-                        const len_reg = try self.newTmp();
-                        self.outPrint("    EXPAND CSTR_LEN {s}, {s}\n", .{ len_reg, left }) catch return CodegenError.CodegenError;
-                        const view = try self.newTmp();
-                        self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{view}) catch return CodegenError.CodegenError;
-                        self.outPrint("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ view, left, len_reg }) catch return CodegenError.CodegenError;
-                        try self.emitRelease(len_reg);
-                        left_cstr_view = true;
-                        break :blk view;
-                    } else left;
-                    const right_arg = if (isFormatStringType(right_ty)) blk: {
-                        const view = try self.newTmp();
-                        self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ view, right }) catch return CodegenError.CodegenError;
-                        break :blk view;
-                    } else if (self.strEqOperandIsBareCstr(call.args[1], right_ty)) blk: {
-                        const len_reg = try self.newTmp();
-                        self.outPrint("    EXPAND CSTR_LEN {s}, {s}\n", .{ len_reg, right }) catch return CodegenError.CodegenError;
-                        const view = try self.newTmp();
-                        self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{view}) catch return CodegenError.CodegenError;
-                        self.outPrint("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ view, right, len_reg }) catch return CodegenError.CodegenError;
-                        try self.emitRelease(len_reg);
-                        right_cstr_view = true;
-                        break :blk view;
-                    } else right;
+                    // DEF-DEMOS-STR-EQ-RAW-PTR (CLOSING-D): a raw-ptr
+                    // operand carries no length field; STR_EQ reads
+                    // Slice_len at +8, so materialize both sides to
+                    // slices first (literals / inferred-slice bindings
+                    // pass through untouched).
+                    const left_arg = try self.materializeStrEqSliceFromReg(left, call.args[0], left_ty);
+                    const right_arg = try self.materializeStrEqSliceFromReg(right, call.args[1], right_ty);
                     const reg = try self.newTmp();
-                    self.outPrint("    EXPAND STR_EQ {s}, {s}, {s}\n", .{ reg, left_arg, right_arg }) catch return CodegenError.CodegenError;
-                    // A CStr view lives in a stack_alloc Slice cell: like
-                    // a string literal's own slice temp it is retired by
-                    // the frame, and an explicit release traps
-                    // StackEscape — only the StringBuf view is released.
-                    if (!left_cstr_view and !std.mem.eql(u8, left_arg, left)) try self.emitRelease(left_arg);
-                    if (!right_cstr_view and !std.mem.eql(u8, right_arg, right)) try self.emitRelease(right_arg);
+                    self.outPrint("    EXPAND STR_EQ {s}, {s}, {s}\n", .{ reg, left_arg.reg, right_arg.reg }) catch return CodegenError.CodegenError;
+                    if (left_arg.needs_release) try self.emitRelease(left_arg.reg);
+                    if (right_arg.needs_release) try self.emitRelease(right_arg.reg);
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(left);
                     if (callArgNeedsRelease(call.args[1])) try self.emitRelease(right);
                     return reg;
@@ -23350,6 +23502,10 @@ pub const Codegen = struct {
                 // not the scrutinee pointer against a freshly allocated literal.
                 const switch_val_ty = self.resolvedTypeForExpr(swe.val) orelse self.tc.expr_types.get(swe.val);
                 const switch_enum_decl = if (switch_val_ty) |ty| self.enumDeclForValueType(ty) else null;
+                // DEF-DEMOS-STRING-COMPARE (CLOSING-D): a string-like
+                // scrutinee compares arms by content (STR_EQ), not by
+                // register identity.
+                const switch_scrutinee_is_string = if (switch_val_ty) |ty| lowering_rules.isStringType(ty) or lowering_rules.typeIsPointerScalarValue(ty) else false;
 
                 var cases_labels = std.array_list.Managed([]const u8).init(self.allocator);
                 var check_labels = std.array_list.Managed([]const u8).init(self.allocator);
@@ -23409,6 +23565,8 @@ pub const Codegen = struct {
                         previous_cond = null;
                     }
                     const is_default = isSwitchDefaultPattern(case.pattern);
+                    const pat_ty = self.resolvedTypeForExpr(case.pattern) orelse self.tc.expr_types.get(case.pattern);
+                    const pat_is_string = (case.pattern.* == .literal and case.pattern.literal == .string_val) or (pat_ty != null and (lowering_rules.isStringType(pat_ty.?) or lowering_rules.typeIsPointerScalarValue(pat_ty.?)));
                     const is_eq = if (is_default) "" else try self.newTmp();
                     if (!is_default) {
                         if (switch_enum_decl) |decl| {
@@ -23438,6 +23596,18 @@ pub const Codegen = struct {
                                 self.outPrint("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
                                 if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
                             }
+                        } else if (switch_scrutinee_is_string and pat_is_string) {
+                            // DEF-DEMOS-STRING-COMPARE (CLOSING-D): string
+                            // arms compare by content. Both sides are
+                            // materialized to slices inside the check block
+                            // itself, so no view outlives the check.
+                            const val_arg = try self.materializeStrEqSliceFromReg(val_reg, swe.val, switch_val_ty);
+                            const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
+                            const pat_arg = try self.materializeStrEqSliceFromReg(pat_reg, case.pattern, pat_ty);
+                            self.outPrint("    EXPAND STR_EQ {s}, {s}, {s}\n", .{ is_eq, val_arg.reg, pat_arg.reg }) catch return CodegenError.CodegenError;
+                            if (val_arg.needs_release) try self.emitRelease(val_arg.reg);
+                            if (pat_arg.needs_release) try self.emitRelease(pat_arg.reg);
+                            if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
                         } else {
                             const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
                             self.outPrint("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;

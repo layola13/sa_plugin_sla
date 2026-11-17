@@ -1,0 +1,41 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+
+// CLOSING-D regression: DEF-DEMOS-STR-EQ-RAW-PTR.
+// Pre-fix: TEXT str_eq passed raw operand registers to EXPAND STR_EQ,
+// whose macro reads Slice_len at +8; a `ptr` operand carries no length
+// field, so the comparison was always false. Post-fix: raw-ptr operands
+// are materialized to slices (inline CSTR_FROM_PTR) first.
+
+fn postings_for(term: ptr) -> i32 {
+    if str_eq(term, "rust") == true {
+        return 2;
+    } else {
+        if str_eq(term, "sla") == true {
+            return 3;
+        } else {
+            return 0;
+        };
+    };
+}
+
+fn get() -> ptr {
+    return "hi";
+}
+
+fn main() -> i32 {
+    println("{}", postings_for("sla"));
+    return 0;
+}
+
+@test "str eq raw ptr param"() {
+    if postings_for("sla") != 3 { panic(8801); };
+    if postings_for("rust") != 2 { panic(8802); };
+    if postings_for("zzz") != 0 { panic(8803); };
+}
+
+@test "str eq raw ptr call result"() {
+    if !str_eq(get(), "hi") { panic(8804); };
+    if str_eq(get(), "bye") { panic(8805); };
+}

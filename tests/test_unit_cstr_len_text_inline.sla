@@ -1,0 +1,23 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+// CLOSING-D regression: DEF-DEMOS-CSTR-LEN-TEXT (Jev R196 A_text_inline).
+// Pre-fix: the test program assembled with no CSTR_LEN definition at all
+// (UndefinedMacro 1060 — the ffi.sa import pre-scan never walked
+// if-conditions), and len("lit") NUL-scanned the slice struct as a C
+// string (exe printed 4 for len("hello") + len("world")).
+// Post-fix: CSTR_LEN is inlined at the call site; string literals read
+// the slice length field.
+
+fn main() -> i32 {
+    let t = len("hello") + len("world");
+    println("{}", t);
+    return 0;
+}
+
+@test "cstr len text inline"() {
+    if len("hello") + len("world") != 10 { panic(6901); };
+    let a = "hello";
+    let b = "world";
+    if len(a) + len(b) != 10 { panic(6902); };
+}

@@ -1,0 +1,45 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+// CLOSING-D regression: DEF-DEMOS-STRING-COMPARE shape A.
+// Pre-fix: `<`/`>` on strings fell to scalar slt/sgt on the operand
+// registers (address comparison): every `<` false, every `>` true.
+// Post-fix: lexicographic comparison via EXPAND STR_CMP.
+
+fn c1() -> i32 {
+    if "ab" < "abc" { return -1; };
+    return 9;
+}
+
+fn c2() -> i32 {
+    if "abc" > "ab" { return 1; };
+    return 9;
+}
+
+fn c3() -> i32 {
+    if "ab" < "ab" { return 9; };
+    return 0;
+}
+
+fn c4() -> i32 {
+    if "x" < "y" { return -1; };
+    return 9;
+}
+
+fn c5() -> i32 {
+    if "y" > "x" { return 1; };
+    return 9;
+}
+
+fn main() -> i32 {
+    println("{},{},{},{},{}", c1(), c2(), c3(), c4(), c5());
+    return 0;
+}
+
+@test "string lt gt literals"() {
+    if c1() != -1 { panic(12201); };
+    if c2() != 1 { panic(12202); };
+    if c3() != 0 { panic(12203); };
+    if c4() != -1 { panic(12204); };
+    if c5() != 1 { panic(12205); };
+}

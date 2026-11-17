@@ -1,0 +1,29 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+// CLOSING-D regression: DEF-DEMOS-FLOAT-CAST-TEMP.
+// A cast that materializes a fresh temp (`f as i32`) was never retired by
+// the println/format paths (callArgNeedsRelease(cast) is false), so the
+// build-exe form trapped MemoryLeak 1012 at @main exit. Note: the @test
+// form passed even pre-fix; the regression is exercised by the exe form
+// of basic/100_math_floor (prints "5\n7", exit 0).
+
+fn abs_i(x: int) -> int {
+    if x < 0 {
+        return 0 - x;
+    };
+    return x;
+}
+
+fn main() -> i32 {
+    println("{}", abs_i(0 - 5));
+    let f = 7.9;
+    println("{}", f as i32);
+    return 0;
+}
+
+@test "float cast temp"() {
+    if abs_i(0 - 5) != 5 { panic(10001); };
+    let f = 7.9;
+    if (f as i32) != 7 { panic(10002); };
+}

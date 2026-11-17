@@ -1,0 +1,53 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+// CLOSING-D regression: DEF-DEMOS-STRING-COMPARE shape B.
+// Pre-fix: string switch arms compared register identity (`eq` on slice
+// slots / raw pointers) and never matched. Post-fix: string arms compare
+// by content (EXPAND STR_EQ on materialized slices).
+
+fn pick() -> i32 {
+    let r: i32 = 0;
+    switch "a" {
+        "a" => { r = 1; },
+        "b" => { r = 2; },
+        default => {},
+    };
+    return r;
+}
+
+fn pick_z() -> i32 {
+    let r: i32 = 0;
+    switch "z" {
+        "a" => { r = 1; },
+        "b" => { r = 2; },
+        default => {},
+    };
+    return r;
+}
+
+fn pick_bound(s: ptr) -> i32 {
+    let r: i32 = 9;
+    switch s {
+        "a" => { r = 1; },
+        "b" => { r = 2; },
+        default => {},
+    };
+    return r;
+}
+
+fn main() -> i32 {
+    println("{},{},{}", pick(), pick_z(), pick_bound("b"));
+    return 0;
+}
+
+@test "string switch literal scrutinee"() {
+    if pick() != 1 { panic(12601); };
+    if pick_z() != 0 { panic(12602); };
+}
+
+@test "string switch bound ptr scrutinee"() {
+    if pick_bound("b") != 2 { panic(18001); };
+    if pick_bound("a") != 1 { panic(18002); };
+    if pick_bound("z") != 9 { panic(18003); };
+}

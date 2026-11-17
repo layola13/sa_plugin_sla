@@ -2581,6 +2581,19 @@ pub const Codegen = struct {
     /// release for owning registers, a forget for load-class
     /// registers (whose release is mask-ineffective, see above).
     fn emitBranchSettle(self: *Codegen, name: []const u8) CodegenError!void {
+        // DEF-TEXT-BRANCH-MERGE-STACKSLOT-RELEASE: a stack-slot
+        // register (an assigned-value / addressable home emitted as
+        // `name = stack_alloc N`) is released implicitly at scope
+        // exit and can never be released explicitly -- a bare
+        // `!name` on it traps StackEscape 1025 (slaredis
+        // @sla__run_server_goroutine, where the `aof` slot was
+        // store-moved into an AofJob literal in one branch). The
+        // store-move only moved the slot's value; the slot register
+        // itself is untouched by the store, and the sibling side's
+        // compensation release is likewise a no-op for slots (see
+        // the stack_alloc guard in emitRelease), so both merge
+        // predecessors already agree and no settle is emitted.
+        if (self.stack_alloc_bindings.contains(self.resolveBindingName(name))) return;
         if (self.isLoadClassBinding(name)) {
             self.outPrint("    ^{s}\n", .{name}) catch return CodegenError.CodegenError;
         } else {

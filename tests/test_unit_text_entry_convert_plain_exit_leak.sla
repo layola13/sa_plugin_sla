@@ -1,0 +1,46 @@
+@import "sa_std/vec.sa"
+
+// DEF-TEXT-ENTRY-CONVERT-PLAIN-EXIT-LEAK regression: a struct
+// binding obtained from a call (`let m = make_entry()`) whose
+// Vec fields are migrated one by one into a Vec element's fields
+// through a borrow (`s.entries[i].field = m.field`, replace
+// semantics: each source field is re-nulled with an empty Vec, so
+// `m` stays a whole, live struct that still owns its remaining
+// fields) is never retired at the void function's exit -- no field
+// drops and no release of `m` are emitted, and the SA host traps
+// MemoryLeak 1012 on register `m` (slaredis
+// @sla__entry_convert_plain, store.sla). Fails on the base head
+// (the build is rejected), passes after the fix.
+
+struct Entry {
+    key: Vec<u8>,
+    pack: Vec<u8>,
+    hfields: Vec<Vec<u8>>,
+    hvalues: Vec<Vec<u8>>,
+    enc: u8,
+}
+
+struct Store {
+    entries: Vec<Entry>,
+}
+
+fn make_entry() -> Entry {
+    return Entry { key: Vec::new(), pack: Vec::new(), hfields: Vec::new(), hvalues: Vec::new(), enc: 1 };
+}
+
+fn convert_plain(s: &Store, i: u64) {
+    if s.entries[i].enc != 1 {
+        return;
+    };
+    let m = make_entry();
+    s.entries[i].hfields = m.hfields;
+    s.entries[i].hvalues = m.hvalues;
+    s.entries[i].enc = 0;
+}
+
+@test "entry convert plain exit leak"() {
+    let st = Store { entries: Vec::new() };
+    st.entries.push(make_entry());
+    convert_plain(&st, 0);
+    if st.entries[0].enc != 0 { panic(4711); };
+}

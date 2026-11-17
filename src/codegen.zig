@@ -16565,6 +16565,17 @@ pub const Codegen = struct {
                             if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
                             try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
                             try self.emitReplaceSourceNullText(stmt, hoisted_allocs);
+                            // DEF-TEXT-ENTRY-CONVERT-PLAIN-EXIT-LEAK: this
+                            // arm returns early, bypassing genStmt's
+                            // trailing epilogue, so when the statement is
+                            // a block's last the checker-attached
+                            // block-exit cleanups on it are silently
+                            // dropped (slaredis entry_convert_plain: the
+                            // migrated-from `m` was never retired and the
+                            // host trapped MemoryLeak 1012 at the exit).
+                            // Run them here, exactly as the epilogue
+                            // would.
+                            if (!stmtTerminates(stmt)) try self.emitStmtExitCleanups(stmt);
                             return;
                         }
                         // Array (non-Vec) of struct elements: genExpr on the
@@ -16589,6 +16600,11 @@ pub const Codegen = struct {
                                 try self.finishIndexAddress(addr);
                                 try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
                                 try self.emitReplaceSourceNullText(stmt, hoisted_allocs);
+                                // DEF-TEXT-ENTRY-CONVERT-PLAIN-EXIT-LEAK:
+                                // array twin of the Vec arm above -- the
+                                // early return must run the statement's
+                                // attached block-exit cleanups first.
+                                if (!stmtTerminates(stmt)) try self.emitStmtExitCleanups(stmt);
                                 return;
                             }
                         }

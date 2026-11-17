@@ -282,6 +282,7 @@ pub const Codegen = struct {
     mpsc_sender_dummy_bindings: std.StringHashMap(void),
     string_buf_bindings: std.StringHashMap(void),
     inferred_string_slice_locals: std.StringHashMap(void),
+    struct_literal_bound_locals: std.StringHashMap(void),
     vec_buf_bindings: std.StringHashMap(void),
     growvec_buf_bindings: std.StringHashMap(void),
     hashmap_bindings: std.StringHashMap(void),
@@ -407,6 +408,7 @@ pub const Codegen = struct {
             .mpsc_sender_dummy_bindings = std.StringHashMap(void).init(allocator),
             .string_buf_bindings = std.StringHashMap(void).init(allocator),
             .inferred_string_slice_locals = std.StringHashMap(void).init(allocator),
+            .struct_literal_bound_locals = std.StringHashMap(void).init(allocator),
             .vec_buf_bindings = std.StringHashMap(void).init(allocator),
             .growvec_buf_bindings = std.StringHashMap(void).init(allocator),
             .hashmap_bindings = std.StringHashMap(void).init(allocator),
@@ -500,6 +502,7 @@ pub const Codegen = struct {
         self.mpsc_sender_dummy_bindings.deinit();
         self.string_buf_bindings.deinit();
         self.inferred_string_slice_locals.deinit();
+        self.struct_literal_bound_locals.deinit();
         self.vec_buf_bindings.deinit();
         self.hashmap_bindings.deinit();
         self.btree_map_bindings.deinit();
@@ -6410,8 +6413,17 @@ pub const Codegen = struct {
         // stores the literal's slice slot into the field); scanning it as
         // a C string reads pointer bytes and breaks previously-passing
         // basic/132. The store convention is its own defect (struct-
-        // literal site, follow-up); pass field values through untouched.
-        if (arg.* == .field_expr) return .{ .reg = orig_reg, .needs_release = false };
+        // literal site, follow-up).
+        // CLOSING-COMBINED2 (diagnosed adjustment): the passthrough is
+        // only sound when the field's base is a local bound directly to
+        // a struct literal in this function (the basic/132 shape). A
+        // field read on any other base holds whatever the last store
+        // put there -- for ptr params assigned into fields (the
+        // rosetta/55 Builder shape) that is a genuine C-string data
+        // pointer, and passing it through makes STR_EQ read string
+        // bytes as a Slice header. Such operands fall through to the
+        // normal classification below and are wrapped as C strings.
+        if (arg.* == .field_expr and arg.field_expr.expr.* == .identifier and self.struct_literal_bound_locals.contains(arg.field_expr.expr.identifier)) return .{ .reg = orig_reg, .needs_release = false };
         const arg_ty = ty orelse return .{ .reg = orig_reg, .needs_release = false };
         if (isFormatStringType(arg_ty)) {
             const view = try self.newTmp();
@@ -10187,6 +10199,7 @@ pub const Codegen = struct {
         self.mpsc_receiver_alias_channels.clearRetainingCapacity();
         self.string_buf_bindings.clearRetainingCapacity();
         self.inferred_string_slice_locals.clearRetainingCapacity();
+        self.struct_literal_bound_locals.clearRetainingCapacity();
         self.vec_buf_bindings.clearRetainingCapacity();
         self.hashmap_bindings.clearRetainingCapacity();
         self.btree_map_bindings.clearRetainingCapacity();
@@ -10561,6 +10574,7 @@ pub const Codegen = struct {
         self.mpsc_receiver_alias_channels.clearRetainingCapacity();
         self.string_buf_bindings.clearRetainingCapacity();
         self.inferred_string_slice_locals.clearRetainingCapacity();
+        self.struct_literal_bound_locals.clearRetainingCapacity();
         self.vec_buf_bindings.clearRetainingCapacity();
         self.hashmap_bindings.clearRetainingCapacity();
         self.btree_map_bindings.clearRetainingCapacity();
@@ -13079,6 +13093,7 @@ pub const Codegen = struct {
             self.mpsc_receiver_alias_channels.clearRetainingCapacity();
             self.string_buf_bindings.clearRetainingCapacity();
             self.inferred_string_slice_locals.clearRetainingCapacity();
+            self.struct_literal_bound_locals.clearRetainingCapacity();
             self.vec_buf_bindings.clearRetainingCapacity();
             self.hashmap_bindings.clearRetainingCapacity();
             self.btree_map_bindings.clearRetainingCapacity();
@@ -15696,6 +15711,21 @@ pub const Codegen = struct {
                     } else {
                         _ = self.inferred_string_slice_locals.remove(let.name);
                     }
+                }
+                if (let.value.* == .struct_literal) {
+                    // CLOSING-COMBINED2: genStructLiteralInto stores a
+                    // string literal's Slice-slot address (not the data
+                    // pointer) into ptr fields, so a field read on a
+                    // literal-bound local still holds a Slice record
+                    // address. Record the binding so the str_eq
+                    // materializer can tell it apart from a field
+                    // holding a genuine C-string pointer (e.g. a
+                    // builder result whose fields came from ptr
+                    // params). Mirrors the inferred_string_slice_locals
+                    // bookkeeping above.
+                    self.struct_literal_bound_locals.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                } else {
+                    _ = self.struct_literal_bound_locals.remove(let.name);
                 }
                 try self.markOwnedCollectionBinding(let.name, let_ty);
                 if (is_hoisted) {

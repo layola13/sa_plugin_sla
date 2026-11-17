@@ -1,0 +1,59 @@
+// CLOSING-F regression: for-in over a fixed array of plain structs.
+// The TEXT codegen bound the loop variable with an unconditional
+// scalar load (`msg = load elem_ptr+0 as ptr`), which read the
+// element's first word (its packed field bytes) as a pointer; field
+// access on the loop variable then dereferenced garbage and the
+// process died with signal 11 (rosetta 66_actor_mailbox). Aggregate
+// elements are stored as inline images and an aggregate value
+// register denotes the image address, so the loop variable must be
+// bound to the element address. Controls: for-in over a scalar array
+// keeps the load path.
+struct Message {
+    actor: i32,
+    payload: i32,
+}
+
+fn sum_local() -> i32 {
+    let inbox = [
+        Message { actor: 1, payload: 2 },
+        Message { actor: 2, payload: 3 },
+    ];
+    let total = 0;
+    for message in inbox {
+        total = total + message.actor + message.payload;
+    }
+    return total;
+}
+
+fn sum_param(inbox: [Message; 2]) -> i32 {
+    let total = 0;
+    for message in inbox {
+        total = total + message.actor;
+    }
+    return total;
+}
+
+fn sum_scalars() -> i32 {
+    let xs = [10, 20, 12];
+    let total = 0;
+    for x in xs {
+        total = total + x;
+    }
+    return total;
+}
+
+@test "for in over struct array binds element address"() {
+    if sum_local() != 8 {
+        panic(31401);
+    };
+    let inbox = [
+        Message { actor: 5, payload: 0 },
+        Message { actor: 7, payload: 0 },
+    ];
+    if sum_param(inbox) != 12 {
+        panic(31402);
+    };
+    if sum_scalars() != 42 {
+        panic(31403);
+    };
+}

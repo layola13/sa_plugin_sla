@@ -4955,6 +4955,22 @@ pub fn receiverInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "Receiver");
 }
 
+/// CLOSING-F: an mpsc endpoint parameter (Sender/Receiver, not
+/// explicitly `^`-marked in the source) borrows the channel handle
+/// at the ABI level, and a by-value argument for it does not
+/// transfer ownership. The handle aliases a channel object whose
+/// single runtime release is the creator's receiver-side MPSC_FREE;
+/// as an owned (^) parameter the callee's exit release raw-freed the
+/// same object a second time (double free in threaded channel
+/// programs, rosetta/126_mpmc_channel — masked while the creator
+/// side leaked the channel register and the program never ran).
+/// Shared by the checker (call-arg consumption) and both emitters
+/// (parameter capability) so the three never disagree.
+pub fn paramIsMpscEndpointBorrow(param: ast.Param) bool {
+    if (param.is_move) return false;
+    return senderInnerType(param.ty) != null or receiverInnerType(param.ty) != null;
+}
+
 pub fn atomicPtrInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "AtomicPtr");
 }
@@ -7149,7 +7165,7 @@ pub fn valueArgTransfersOwnershipFromParam(
     const ty = arg_ty orelse target.ty;
     return planValueArgTransfersOwnership(.{
         .param_is_present = true,
-        .param_is_borrow = target.is_borrow,
+        .param_is_borrow = target.is_borrow or paramIsMpscEndpointBorrow(target),
         .param_is_move = target.is_move,
         .param_is_by_value_raw_pointer = byValueRawPointerParam(target),
         .arg_is_borrow_like = isBorrowLikeType(ty),

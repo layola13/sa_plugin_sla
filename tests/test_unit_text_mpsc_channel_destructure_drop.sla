@@ -1,0 +1,74 @@
+// CLOSING-F regression: `let (tx, rx) = mpsc::channel()` destructure.
+// The receiver binding is an alias register (`rx = add chan, 0`) for
+// the channel object register produced by MPSC_NEW, but the TEXT
+// codegen's name-based exit cleanup resolved "rx" through the alias
+// and only emitted a plain forget of the alias register. The channel
+// object register itself was never retired (the MPSC_FREE branch is
+// keyed by the object register), so it stayed Active at function exit
+// and the host verifier trapped MemoryLeak (rosetta
+// 62_channel_pingpong / 126_mpmc_channel). Fix: record the
+// alias -> channel mapping at creation and let emitRelease of the
+// alias retire the object register with MPSC_FREE.
+// Companion defects in the same accounting family (126): a cloned
+// Sender binding was never retired (the sender release path was a
+// blanket no-op, correct only for the creation binding whose register
+// holds the literal 0), and a Sender parameter was passed with owned
+// (^) capability, so the callee's exit release raw-freed the shared
+// channel object and the creator's MPSC_FREE freed it again (double
+// free, masked by the leak). Sender/Receiver are copyable runtime
+// handle words (the Chan rule), and non-creation sender bindings now
+// retire with a plain forget.
+@import "sa_std/core/result.sa"
+@import "sa_std/sync/mpsc.sa"
+@import "sa_std/thread.sa"
+
+fn pair_only() -> i32 {
+    let (tx, rx) = mpsc::channel();
+    return 0;
+}
+
+fn clone_only() -> i32 {
+    let (tx, rx) = mpsc::channel();
+    let left = tx.clone();
+    return 0;
+}
+
+fn send_pair(tx: Sender<i32>, a: i32, b: i32) -> i32 {
+    tx.send(a).unwrap();
+    tx.send(b).unwrap();
+    return 0;
+}
+
+fn spawn_roundtrip() -> i32 {
+    let (tx, rx) = mpsc::channel();
+    let left = tx.clone();
+    let producer = thread::spawn(^|| send_pair(left, 1, 2));
+    producer.join().unwrap();
+    let first = rx.recv().unwrap();
+    let second = rx.recv().unwrap();
+    return first + second;
+}
+
+fn roundtrip() -> i32 {
+    let (tx, rx) = mpsc::channel();
+    tx.send(41);
+    match rx.recv() {
+        Ok(x) => { return x + 1; },
+        Err(e) => { return -1; },
+    };
+}
+
+@test "mpsc channel destructure retires channel register"() {
+    if pair_only() != 0 {
+        panic(31201);
+    };
+    if roundtrip() != 42 {
+        panic(31202);
+    };
+    if clone_only() != 0 {
+        panic(31203);
+    };
+    if spawn_roundtrip() != 3 {
+        panic(31204);
+    };
+}

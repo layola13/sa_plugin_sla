@@ -278,6 +278,8 @@ pub const Codegen = struct {
     mpsc_sender_bindings: std.StringHashMap(void),
     mpsc_sender_channels: std.StringHashMap([]const u8),
     mpsc_receiver_bindings: std.StringHashMap(void),
+    mpsc_receiver_alias_channels: std.StringHashMap([]const u8),
+    mpsc_sender_dummy_bindings: std.StringHashMap(void),
     string_buf_bindings: std.StringHashMap(void),
     inferred_string_slice_locals: std.StringHashMap(void),
     vec_buf_bindings: std.StringHashMap(void),
@@ -401,6 +403,8 @@ pub const Codegen = struct {
             .mpsc_sender_bindings = std.StringHashMap(void).init(allocator),
             .mpsc_sender_channels = std.StringHashMap([]const u8).init(allocator),
             .mpsc_receiver_bindings = std.StringHashMap(void).init(allocator),
+            .mpsc_receiver_alias_channels = std.StringHashMap([]const u8).init(allocator),
+            .mpsc_sender_dummy_bindings = std.StringHashMap(void).init(allocator),
             .string_buf_bindings = std.StringHashMap(void).init(allocator),
             .inferred_string_slice_locals = std.StringHashMap(void).init(allocator),
             .vec_buf_bindings = std.StringHashMap(void).init(allocator),
@@ -492,6 +496,8 @@ pub const Codegen = struct {
         self.mpsc_sender_bindings.deinit();
         self.mpsc_sender_channels.deinit();
         self.mpsc_receiver_bindings.deinit();
+        self.mpsc_receiver_alias_channels.deinit();
+        self.mpsc_sender_dummy_bindings.deinit();
         self.string_buf_bindings.deinit();
         self.inferred_string_slice_locals.deinit();
         self.vec_buf_bindings.deinit();
@@ -1352,7 +1358,33 @@ pub const Codegen = struct {
         }
         if (self.global_const_bindings.contains(resolved_name)) return;
         if (self.consumed_bindings.contains(resolved_name)) return;
-        if (self.mpsc_sender_bindings.contains(resolved_name)) return;
+        if (self.mpsc_receiver_alias_channels.get(resolved_name)) |chan_reg| {
+            // CLOSING-F: the receiver binding is an alias register for
+            // the channel object register; retiring the receiver must
+            // retire the object register itself (MPSC_FREE), or the
+            // channel register stays Active at function exit
+            // (MemoryLeak in every mpsc::channel() destructure —
+            // rosetta 62_channel_pingpong / 126_mpmc_channel).
+            if (!std.mem.eql(u8, chan_reg, resolved_name) and !self.consumed_bindings.contains(chan_reg)) {
+                self.outPrint("    EXPAND MPSC_FREE {s}\n", .{chan_reg}) catch return CodegenError.CodegenError;
+                self.consumed_bindings.put(chan_reg, {}) catch return CodegenError.OutOfMemory;
+            }
+        }
+        if (self.mpsc_sender_bindings.contains(resolved_name)) {
+            // CLOSING-F: the creation-site sender binding holds the
+            // literal 0 (the real handle lives in the channel
+            // register), so retiring it is a no-op. Every other sender
+            // binding (a clone result, or a binding the sender was
+            // transferred to) holds a real alias register of the
+            // channel object and must be retired with a plain forget,
+            // or it stays Active at function exit (MemoryLeak in
+            // rosetta/126_mpmc_channel's `let left = tx.clone()`).
+            if (!self.mpsc_sender_dummy_bindings.contains(resolved_name)) {
+                self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+                self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
+            }
+            return;
+        }
         if (self.mpsc_receiver_bindings.contains(resolved_name)) {
             self.outPrint("    EXPAND MPSC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
@@ -2117,6 +2149,10 @@ pub const Codegen = struct {
             self.mpsc_sender_bindings.put(dst, {}) catch return CodegenError.OutOfMemory;
             if (self.mpsc_sender_channels.get(src)) |chan| {
                 self.mpsc_sender_channels.put(dst, chan) catch return CodegenError.OutOfMemory;
+            }
+            if (self.mpsc_sender_dummy_bindings.contains(src)) {
+                self.mpsc_sender_dummy_bindings.put(dst, {}) catch return CodegenError.OutOfMemory;
+                _ = self.mpsc_sender_dummy_bindings.remove(src);
             }
             _ = self.mpsc_sender_bindings.remove(src);
             _ = self.mpsc_sender_channels.remove(src);
@@ -4123,7 +4159,7 @@ pub const Codegen = struct {
 
     fn abiParamPrefix(self: *Codegen, p: ast.Param) []const u8 {
         return lowering_rules.sharedAbiParamPrefix(
-            p.is_borrow,
+            p.is_borrow or lowering_rules.paramIsMpscEndpointBorrow(p),
             p.is_move,
             p.ty.* == .borrow,
             lowering_rules.byValueRawPointerParam(p),
@@ -4133,7 +4169,7 @@ pub const Codegen = struct {
     }
 
     fn abiParamNeedsBorrowArg(p: ast.Param) bool {
-        return lowering_rules.abiParamNeedsBorrowArg(p.is_borrow, p.ty);
+        return lowering_rules.abiParamNeedsBorrowArg(p.is_borrow, p.ty) or lowering_rules.paramIsMpscEndpointBorrow(p);
     }
 
     fn abiReturnTypeString(ty: *const ast.Type) []const u8 {
@@ -7357,6 +7393,17 @@ pub const Codegen = struct {
                         }
                     }
                 }
+                if (lowering_rules.isStrEqCall(call) and call.args.len == 2) {
+                    // CLOSING-F: str_eq materializes a bare-pointer
+                    // operand into a Slice with CSTR_LEN (see the
+                    // isStrEqCall branch in genCallExpr), so such a
+                    // call needs the ffi.sa import like len()/format.
+                    for (call.args) |arg| {
+                        if (self.tc.expr_types.get(arg)) |ty| {
+                            if (ty.* == .primitive and ty.primitive == .raw_ptr) return true;
+                        }
+                    }
+                }
                 if (call.callee) |callee| {
                     if (self.exprNeedsFfiCstrMacros(callee)) return true;
                 }
@@ -7370,6 +7417,28 @@ pub const Codegen = struct {
             .index_expr => |idx| return self.exprNeedsFfiCstrMacros(idx.target) or self.exprNeedsFfiCstrMacros(idx.index),
             .slice_expr => |slc| return self.exprNeedsFfiCstrMacros(slc.target) or self.exprNeedsFfiCstrMacros(slc.start) or self.exprNeedsFfiCstrMacros(slc.end),
             .closure_literal => |lit| return self.exprNeedsFfiCstrMacros(lit.body),
+            // CLOSING-F: if/match/switch were not descended into, so a
+            // CSTR_LEN emitter (len, format, str_eq) inside a condition,
+            // guard, or arm body never triggered the ffi.sa import and
+            // trapped UndefinedMacro at assembly (the demos' dispatch
+            // shape is `if str_eq(cmd, "...") == true`). Mirrors the
+            // vec-macro walker's cases.
+            .if_expr => |ife| return self.ifExprNeedsSelf(exprNeedsFfiCstrMacros, blockNeedsFfiCstrMacros, ife),
+            .match_expr => |mat| {
+                if (self.exprNeedsFfiCstrMacros(mat.val)) return true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsFfiCstrMacros(guard)) return true;
+                    if (self.blockNeedsFfiCstrMacros(case.body)) return true;
+                }
+                return false;
+            },
+            .switch_expr => |swe| {
+                if (self.exprNeedsFfiCstrMacros(swe.val)) return true;
+                for (swe.cases) |case| {
+                    if (self.exprNeedsFfiCstrMacros(case.pattern) or self.blockNeedsFfiCstrMacros(case.body)) return true;
+                }
+                return false;
+            },
             .await_expr => |aw| return self.exprNeedsFfiCstrMacros(aw.expr),
             .try_expr => |tr| return self.exprNeedsFfiCstrMacros(tr.expr),
             .struct_literal => |lit| for (lit.fields) |field| if (self.exprNeedsFfiCstrMacros(field.value)) return true,
@@ -9925,8 +9994,10 @@ pub const Codegen = struct {
         self.inline_thread_handles.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
         self.mpsc_sender_bindings.clearRetainingCapacity();
+        self.mpsc_sender_dummy_bindings.clearRetainingCapacity();
         self.mpsc_sender_channels.clearRetainingCapacity();
         self.mpsc_receiver_bindings.clearRetainingCapacity();
+        self.mpsc_receiver_alias_channels.clearRetainingCapacity();
         self.string_buf_bindings.clearRetainingCapacity();
         self.inferred_string_slice_locals.clearRetainingCapacity();
         self.vec_buf_bindings.clearRetainingCapacity();
@@ -10291,8 +10362,10 @@ pub const Codegen = struct {
         self.inline_thread_handles.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
         self.mpsc_sender_bindings.clearRetainingCapacity();
+        self.mpsc_sender_dummy_bindings.clearRetainingCapacity();
         self.mpsc_sender_channels.clearRetainingCapacity();
         self.mpsc_receiver_bindings.clearRetainingCapacity();
+        self.mpsc_receiver_alias_channels.clearRetainingCapacity();
         self.string_buf_bindings.clearRetainingCapacity();
         self.inferred_string_slice_locals.clearRetainingCapacity();
         self.vec_buf_bindings.clearRetainingCapacity();
@@ -12807,8 +12880,10 @@ pub const Codegen = struct {
             self.inline_thread_handles.clearRetainingCapacity();
             self.consumed_bindings.clearRetainingCapacity();
             self.mpsc_sender_bindings.clearRetainingCapacity();
+            self.mpsc_sender_dummy_bindings.clearRetainingCapacity();
             self.mpsc_sender_channels.clearRetainingCapacity();
             self.mpsc_receiver_bindings.clearRetainingCapacity();
+            self.mpsc_receiver_alias_channels.clearRetainingCapacity();
             self.string_buf_bindings.clearRetainingCapacity();
             self.inferred_string_slice_locals.clearRetainingCapacity();
             self.vec_buf_bindings.clearRetainingCapacity();
@@ -14826,6 +14901,42 @@ pub const Codegen = struct {
         return lowering_rules.callArgNeedsRelease(arg);
     }
 
+    /// CLOSING-F: an index expression whose result register is a fresh
+    /// temp must be retired by the address computation that consumed
+    /// it. callArgNeedsRelease alone misses materializing casts
+    /// (`arr[q as usize]`): the cast result temp stayed Active at
+    /// function exit (MemoryLeak in rosetta/190_base64_encode_simd).
+    fn indexResultNeedsRelease(self: *Codegen, index: *const ast.Node) bool {
+        if (callArgNeedsRelease(index)) return true;
+        if (index.* == .cast_expr) return self.exprResultRegNeedsRelease(index);
+        return false;
+    }
+
+    /// CLOSING-F: a str_eq operand typed as a bare pointer is a true
+    /// C string (NUL-terminated), unless its register already holds a
+    /// Slice: a string literal (materialized as a Slice temp by
+    /// genExpr) or an inferred-slice local (`let s = "lit"`).
+    /// Mirrors the len() raw-pointer materialization split.
+    fn strEqOperandIsBareCstr(self: *Codegen, arg: *const ast.Node, ty: *const ast.Type) bool {
+        if (!(ty.* == .primitive and ty.primitive == .raw_ptr)) return false;
+        if (arg.* == .literal) return false;
+        if (arg.* == .identifier and self.inferred_string_slice_locals.contains(arg.identifier)) return false;
+        return true;
+    }
+
+    /// CLOSING-F: fixed-array element types whose value register
+    /// denotes the element's storage address (plain structs, tuples,
+    /// nested arrays — the aggregate-image types). Runtime handle
+    /// types (String, Vec, channels, cells, ...) keep the load path:
+    /// their element slot holds the handle word itself.
+    fn forInArrayElemBindsAddress(elem_ty: *const ast.Type) bool {
+        return switch (elem_ty.*) {
+            .user_defined => |ud| !lowering_rules.isExcludedAggregateHomeName(ud.name),
+            .tuple, .array => true,
+            else => false,
+        };
+    }
+
     fn exprResultNeedsRelease(expr: *const ast.Node) bool {
         return lowering_rules.exprResultNeedsRelease(expr);
     }
@@ -15567,6 +15678,10 @@ pub const Codegen = struct {
                         if (self.mpsc_sender_channels.get(val_reg)) |chan| {
                             self.mpsc_sender_channels.put(let.name, chan) catch return CodegenError.OutOfMemory;
                         }
+                        if (self.mpsc_sender_dummy_bindings.contains(val_reg)) {
+                            self.mpsc_sender_dummy_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                            _ = self.mpsc_sender_dummy_bindings.remove(val_reg);
+                        }
                         _ = self.mpsc_sender_bindings.remove(val_reg);
                         _ = self.mpsc_sender_channels.remove(val_reg);
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
@@ -15788,10 +15903,12 @@ pub const Codegen = struct {
                         self.outPrint("    {s} = 0\n", .{let.names[0]}) catch return CodegenError.CodegenError;
                         self.outPrint("    EXPAND MPSC_NEW {s}, 1024\n", .{chan_reg}) catch return CodegenError.CodegenError;
                         self.mpsc_sender_bindings.put(let.names[0], {}) catch return CodegenError.OutOfMemory;
+                        self.mpsc_sender_dummy_bindings.put(let.names[0], {}) catch return CodegenError.OutOfMemory;
                         self.mpsc_sender_channels.put(let.names[0], chan_reg) catch return CodegenError.OutOfMemory;
                         self.mpsc_sender_channels.put(let.names[1], chan_reg) catch return CodegenError.OutOfMemory;
                         self.mpsc_receiver_bindings.put(chan_reg, {}) catch return CodegenError.OutOfMemory;
                         const rx_alias = try self.pushBindingAlias(let.names[1]);
+                        self.mpsc_receiver_alias_channels.put(rx_alias, chan_reg) catch return CodegenError.OutOfMemory;
                         self.outPrint("    {s} = add {s}, 0\n", .{ rx_alias, chan_reg }) catch return CodegenError.CodegenError;
                         return;
                     }
@@ -15955,6 +16072,10 @@ pub const Codegen = struct {
                         self.mpsc_sender_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
                         if (self.mpsc_sender_channels.get(val_reg)) |chan| {
                             self.mpsc_sender_channels.put(c.name, chan) catch return CodegenError.OutOfMemory;
+                        }
+                        if (self.mpsc_sender_dummy_bindings.contains(val_reg)) {
+                            self.mpsc_sender_dummy_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
+                            _ = self.mpsc_sender_dummy_bindings.remove(val_reg);
                         }
                         _ = self.mpsc_sender_bindings.remove(val_reg);
                         _ = self.mpsc_sender_channels.remove(val_reg);
@@ -16446,9 +16567,26 @@ pub const Codegen = struct {
                         }
                         const elem_ptr = try self.newTmp();
                         self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ elem_ptr, start_reg, byte_offset }) catch return CodegenError.CodegenError;
-                        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ f.var_name, elem_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
-                        try self.emitRelease(byte_offset);
-                        try self.emitRelease(elem_ptr);
+                        if (forInArrayElemBindsAddress(arr.elem)) {
+                            // CLOSING-F: an aggregate element is stored
+                            // as an inline image in the array, and an
+                            // aggregate value register denotes the image
+                            // address. Loading the element as a scalar
+                            // read its first word as a pointer, and
+                            // field access on the loop variable then
+                            // dereferenced garbage (signal 11 in
+                            // rosetta/66_actor_mailbox). Bind the
+                            // element address instead; the loop-continue
+                            // release of the variable retires it, like
+                            // the loaded value in the scalar case, so
+                            // elem_ptr is not released separately here.
+                            self.outPrint("    {s} = add {s}, 0\n", .{ f.var_name, elem_ptr }) catch return CodegenError.CodegenError;
+                            try self.emitRelease(byte_offset);
+                        } else {
+                            self.outPrint("    {s} = load {s}+0 as {s}\n", .{ f.var_name, elem_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+                            try self.emitRelease(byte_offset);
+                            try self.emitRelease(elem_ptr);
+                        }
                     } else if (protocol_at_key) |at_key| {
                         const lowered_at = try self.loweredFuncSymbol(at_key);
                         defer self.allocator.free(lowered_at);
@@ -17570,7 +17708,7 @@ pub const Codegen = struct {
             // resp_write_command stopped building). The base travels
             // in slot_base_reg and is released after ptr (see
             // finishIndexAddress).
-            if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+            if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
             return .{
                 .ptr = ptr_reg,
                 .elem_ty = elem_ty,
@@ -17593,7 +17731,7 @@ pub const Codegen = struct {
             try self.emitRelease(offset_reg);
             // DEF-SLAREDIS-BUILD-MAIN: same deferred base release as
             // the vecLike branch above (slot_base_reg).
-            if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+            if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
             return .{
                 .ptr = ptr_reg,
                 .elem_ty = elem_ty,
@@ -17619,7 +17757,7 @@ pub const Codegen = struct {
         const ptr_reg = try self.newTmp();
         self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(offset_reg);
-        if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+        if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
         return .{
             .ptr = ptr_reg,
             .elem_ty = arr.elem,
@@ -20697,20 +20835,54 @@ pub const Codegen = struct {
                     const right_ty = self.tc.expr_types.get(call.args[1]) orelse return CodegenError.CodegenError;
                     const left = try self.genExpr(call.args[0], hoisted_allocs);
                     const right = try self.genExpr(call.args[1], hoisted_allocs);
+                    var left_cstr_view = false;
+                    var right_cstr_view = false;
                     const left_arg = if (isFormatStringType(left_ty)) blk: {
                         const view = try self.newTmp();
                         self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ view, left }) catch return CodegenError.CodegenError;
+                        break :blk view;
+                    } else if (self.strEqOperandIsBareCstr(call.args[0], left_ty)) blk: {
+                        // CLOSING-F: STR_EQ loads Slice_ptr/Slice_len
+                        // from its operand address; a bare C-string
+                        // pointer must first be materialized into a
+                        // Slice (ptr + scanned length), exactly like a
+                        // string-literal operand. Passing the raw
+                        // pointer made STR_EQ read the string's own
+                        // bytes as ptr/len, so str_eq with a `ptr`
+                        // parameter always returned false
+                        // (rosetta 90_app_shell / 94_graphql_router /
+                        // 95_repl_shell).
+                        const len_reg = try self.newTmp();
+                        self.outPrint("    EXPAND CSTR_LEN {s}, {s}\n", .{ len_reg, left }) catch return CodegenError.CodegenError;
+                        const view = try self.newTmp();
+                        self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{view}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ view, left, len_reg }) catch return CodegenError.CodegenError;
+                        try self.emitRelease(len_reg);
+                        left_cstr_view = true;
                         break :blk view;
                     } else left;
                     const right_arg = if (isFormatStringType(right_ty)) blk: {
                         const view = try self.newTmp();
                         self.outPrint("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ view, right }) catch return CodegenError.CodegenError;
                         break :blk view;
+                    } else if (self.strEqOperandIsBareCstr(call.args[1], right_ty)) blk: {
+                        const len_reg = try self.newTmp();
+                        self.outPrint("    EXPAND CSTR_LEN {s}, {s}\n", .{ len_reg, right }) catch return CodegenError.CodegenError;
+                        const view = try self.newTmp();
+                        self.outPrint("    {s} = stack_alloc Slice_SIZE\n", .{view}) catch return CodegenError.CodegenError;
+                        self.outPrint("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ view, right, len_reg }) catch return CodegenError.CodegenError;
+                        try self.emitRelease(len_reg);
+                        right_cstr_view = true;
+                        break :blk view;
                     } else right;
                     const reg = try self.newTmp();
                     self.outPrint("    EXPAND STR_EQ {s}, {s}, {s}\n", .{ reg, left_arg, right_arg }) catch return CodegenError.CodegenError;
-                    if (!std.mem.eql(u8, left_arg, left)) try self.emitRelease(left_arg);
-                    if (!std.mem.eql(u8, right_arg, right)) try self.emitRelease(right_arg);
+                    // A CStr view lives in a stack_alloc Slice cell: like
+                    // a string literal's own slice temp it is retired by
+                    // the frame, and an explicit release traps
+                    // StackEscape — only the StringBuf view is released.
+                    if (!left_cstr_view and !std.mem.eql(u8, left_arg, left)) try self.emitRelease(left_arg);
+                    if (!right_cstr_view and !std.mem.eql(u8, right_arg, right)) try self.emitRelease(right_arg);
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(left);
                     if (callArgNeedsRelease(call.args[1])) try self.emitRelease(right);
                     return reg;

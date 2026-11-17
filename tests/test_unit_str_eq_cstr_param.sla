@@ -1,0 +1,59 @@
+// CLOSING-F regression: str_eq with a bare-pointer (`ptr`) operand.
+// STR_EQ loads Slice_ptr/Slice_len from its operand address, but the
+// TEXT codegen passed a raw C-string pointer straight through, so
+// STR_EQ read the string's own bytes as ptr/len and the comparison
+// always returned false (rosetta 90_app_shell / 94_graphql_router /
+// 95_repl_shell: every command dispatch missed). A bare-pointer
+// operand must be materialized into a Slice first (CSTR_LEN +
+// SLICE_NEW), like a string-literal operand. Controls: literal vs
+// literal was always correct; a bare pointer compared against a
+// different literal must stay false.
+@import "sa_std/string.sa"
+
+fn via_param(s: ptr) -> bool {
+    return str_eq(s, "sync");
+}
+
+fn via_two_params(a: ptr, b: ptr) -> bool {
+    return str_eq(a, b);
+}
+
+@test "str eq ptr param vs literal"() {
+    if via_param("sync") != true {
+        panic(31101);
+    };
+    if via_param("async") != false {
+        panic(31102);
+    };
+}
+
+@test "str eq ptr param vs ptr param"() {
+    if via_two_params("ping", "ping") != true {
+        panic(31103);
+    };
+    if via_two_params("ping", "pong") != false {
+        panic(31104);
+    };
+}
+
+fn dispatch(s: ptr) -> i32 {
+    if str_eq(s, "sync") == true {
+        return 1;
+    };
+    if str_eq(s, "status") == true {
+        return 2;
+    };
+    return 0;
+}
+
+@test "str eq dispatch in if conditions"() {
+    if dispatch("sync") != 1 {
+        panic(31105);
+    };
+    if dispatch("status") != 2 {
+        panic(31106);
+    };
+    if dispatch("bogus") != 0 {
+        panic(31107);
+    };
+}

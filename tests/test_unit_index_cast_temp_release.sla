@@ -1,0 +1,50 @@
+// CLOSING-F regression: indexing with a materializing cast index,
+// `table[q as usize]`. The cast produces a fresh result temp, but
+// genIndexAddress retired the index register only when
+// callArgNeedsRelease(index) held — and that predicate excludes cast
+// expressions (they are not call arguments). The cast temp therefore
+// stayed Active at function exit and the host verifier trapped
+// MemoryLeak (rosetta 190_base64_encode_simd). Fix: genIndexAddress
+// also retires the index when the cast-aware predicate
+// exprResultRegNeedsRelease says the expression materialized a temp.
+// Control: a constant index was always fine.
+@import "sa_std/string.sa"
+
+fn via_cast_index() -> u8 {
+    let b64: [u8; 64] = [
+        65u8, 66, 67, 68, 69, 70, 71, 72,
+        73, 74, 75, 76, 77, 78, 79, 80,
+        81, 82, 83, 84, 85, 86, 87, 88,
+        89, 90, 97, 98, 99, 100, 101, 102,
+        103, 104, 105, 106, 107, 108, 109, 110,
+        111, 112, 113, 114, 115, 116, 117, 118,
+        119, 120, 121, 122, 48, 49, 50, 51,
+        52, 53, 54, 55, 56, 57, 43, 47,
+    ];
+    let n = 7;
+    let q = n + 12;
+    return b64[q as usize];
+}
+
+fn via_const_index() -> u8 {
+    let b64: [u8; 64] = [
+        65u8, 66, 67, 68, 69, 70, 71, 72,
+        73, 74, 75, 76, 77, 78, 79, 80,
+        81, 82, 83, 84, 85, 86, 87, 88,
+        89, 90, 97, 98, 99, 100, 101, 102,
+        103, 104, 105, 106, 107, 108, 109, 110,
+        111, 112, 113, 114, 115, 116, 117, 118,
+        119, 120, 121, 122, 48, 49, 50, 51,
+        52, 53, 54, 55, 56, 57, 43, 47,
+    ];
+    return b64[19];
+}
+
+@test "cast index temp is retired"() {
+    if via_cast_index() != 84u8 {
+        panic(31301);
+    };
+    if via_const_index() != 84u8 {
+        panic(31302);
+    };
+}

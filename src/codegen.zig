@@ -10683,6 +10683,21 @@ pub const Codegen = struct {
                     let_copy.name = alias;
                     var node = ast.Node{ .let_stmt = let_copy };
                     try self.genStmt(&node, hoisted_allocs);
+                    // CLOSING-LIVE-LEAK-FIX (DEF-TEXT-HP-CONNECT-EARLY-
+                    // RETURN-LEAK): the let was generated through a
+                    // renamed stack copy, so genStmt's epilogue lookup
+                    // (tc.cleanups keyed by node pointer) missed the
+                    // block-exit cleanups the checker attached to the
+                    // original statement. An owned local declared in
+                    // both arms of an if/else (a repeated let) that is
+                    // only borrowed inside its arm reached the merge
+                    // with no drop and trapped MemoryLeak at function
+                    // exit (hp_serve_connect's trailing `resp`). Emit
+                    // the cleanups here, against the original node,
+                    // exactly as the epilogue would -- the same pattern
+                    // as the user-macro inline path
+                    // (DEF-TEXT31-USER-MACRO-AGG-LOCAL-LEAK).
+                    if (!stmtTerminates(stmt)) try self.emitStmtExitCleanups(stmt);
                     try self.rememberLoopBodyTopLevelLocal(alias);
                 } else {
                     try self.genStmt(stmt, hoisted_allocs);

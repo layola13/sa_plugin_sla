@@ -1,0 +1,75 @@
+@import "sa_std/string.sa"
+@import "sa_std/vec.sa"
+
+// DEF-TEXT-HP-CONNECT-EARLY-RETURN-LEAK regression (CLOSING-LIVE-
+// LEAK-FIX): an owned local declared in BOTH arms of an if/else --
+// a "repeated let", let-bound more than once in the function -- and
+// only borrowed inside its arm received no block-exit drop on
+// either arm. genBlockInner generates repeated lets through a
+// renamed alias copy (DEF-9 alias tmp), and genStmt's epilogue
+// looks the checker's block-exit cleanups up by AST node pointer,
+// so the copy silently missed the cleanup list the checker keyed
+// by the original (arm-final) statement: the value reached the
+// merge still Active and the host verifier trapped
+// error[MemoryLeak] at function exit. Found via
+// test_unit_decl_http_proxy_live.sla's hp_serve_connect, whose
+// trailing if/else declares `resp: String` in both arms; latent
+// since long before, unmasked when sci 9ea048f72 began checking
+// function-exit leaks at every function boundary. The fix mirrors
+// DEF-TEXT31-USER-MACRO-AGG-LOCAL-LEAK: genBlockInner emits
+// emitStmtExitCleanups for the original statement after generating
+// the alias copy. Pre-fix this file traps MemoryLeak before any
+// test runs; post-fix the arm-exit drops are emitted on both arms.
+
+fn rld_borrow(s: &String) -> u64 {
+    return len(s);
+}
+
+fn rld_string_arms(mode: u64) {
+    if mode == 1 {
+        let resp: String = format("AAAA probe");
+        let w = rld_borrow(&resp);
+    } else {
+        let resp: String = format("BBBB probe!");
+        let w = rld_borrow(&resp);
+    }
+}
+
+fn rld_vec_arms(mode: u64) {
+    if mode == 1 {
+        let v: Vec<u8> = Vec::new();
+        let w = len(v);
+    } else {
+        let v: Vec<u8> = Vec::new();
+        let w = len(v);
+    }
+}
+
+fn rld_string_arms_loop(mode: u64) {
+    let k: i32 = 0;
+    while k < 3 {
+        if mode == 1 {
+            let resp: String = format("AAAA probe");
+            let w = rld_borrow(&resp);
+        } else {
+            let resp: String = format("BBBB probe!");
+            let w = rld_borrow(&resp);
+        };
+        k = k + 1;
+    }
+}
+
+@test "repeated let branch-local string drop"() {
+    rld_string_arms(1);
+    rld_string_arms(2);
+}
+
+@test "repeated let branch-local vec drop"() {
+    rld_vec_arms(1);
+    rld_vec_arms(2);
+}
+
+@test "repeated let branch-local drop in loop"() {
+    rld_string_arms_loop(1);
+    rld_string_arms_loop(2);
+}

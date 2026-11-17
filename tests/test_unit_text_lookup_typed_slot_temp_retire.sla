@@ -1,0 +1,39 @@
+@import "sa_std/vec.sa"
+
+// DEF-TEXT-LOOKUP-TYPED-SLOT-TEMP-RETIRE regression: a Vec index
+// read whose index is a materializing cast (`entries[idx as u64]`)
+// inside a tuple-returning function leaves the cast result register
+// Active at the return point. genVecIndexRead retired the index
+// register only under callArgNeedsRelease, which excludes cast
+// results, so the fresh cast temp was never released and the SA
+// host traps MemoryLeak 1012 on it (slaredis
+// @sla__lookup_typed_slot, commands.sla). Fails on the base head
+// (the build is rejected), passes after the fix.
+
+struct Entry {
+    key: Vec<u8>,
+    kind: u8,
+}
+
+struct Store {
+    entries: Vec<Entry>,
+}
+
+fn lookup_kind(s: &Store, idx: i64) -> (i64, i64) {
+    if s.entries[idx as u64].kind != 7 {
+        return (-2, idx);
+    };
+    return (idx, idx);
+}
+
+@test "lookup typed slot temp retire"() {
+    let st = Store { entries: Vec::new() };
+    st.entries.push(Entry { key: Vec::new(), kind: 7 });
+    st.entries.push(Entry { key: Vec::new(), kind: 9 });
+    let (a, b) = lookup_kind(&st, 0);
+    if a != 0 { panic(4712); };
+    if b != 0 { panic(4713); };
+    let (c, d) = lookup_kind(&st, 1);
+    if c != -2 { panic(4714); };
+    if d != 1 { panic(4715); };
+}

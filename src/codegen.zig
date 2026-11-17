@@ -18571,7 +18571,12 @@ pub const Codegen = struct {
         try self.emitRelease(offset_reg);
         try self.emitRelease(data_reg);
         try self.emitRelease(len_reg);
-        if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+        // DEF-TEXT-LOOKUP-TYPED-SLOT-TEMP-RETIRE: like the address
+        // paths (genIndexAddress), the read path must also retire a
+        // materializing cast's fresh index temp; callArgNeedsRelease
+        // excludes cast results, so `entries[idx as u64]` left the
+        // cast register Active at function exit (MemoryLeak 1012).
+        if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
         if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
         if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
         return reg;

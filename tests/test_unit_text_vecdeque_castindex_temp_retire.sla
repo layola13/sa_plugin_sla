@@ -1,0 +1,22 @@
+@import "sa_std/vec.sa"
+@import "sa_std/vec_deque.sa"
+
+// DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE (audit, VecDeque index
+// arm): a VecDeque index read whose index is a materializing cast
+// (`q[idx as u64]`) inside a value-returning function leaves the
+// cast result register Active at the return point. The index arm
+// retired the index register only under callArgNeedsRelease, which
+// excludes cast results, so the host traps MemoryLeak 1012. Fails
+// on the base head, passes after the fix (predicate aligned to
+// indexResultNeedsRelease).
+
+fn get_at(q: VecDeque<i64>, idx: i64) -> i64 {
+    return q[idx as u64];
+}
+
+@test "vecdeque cast index temp retire"() {
+    let q: VecDeque<i64> = VecDeque::new();
+    q.push_back(9);
+    q.push_back(10);
+    if get_at(q, 1) != 10 { panic(4791); };
+}

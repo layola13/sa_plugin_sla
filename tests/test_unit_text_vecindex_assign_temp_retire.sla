@@ -1,0 +1,25 @@
+@import "sa_std/vec.sa"
+
+// DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE (audit, genIndexAssign
+// generic arm): a whole-element Vec index assignment whose index is
+// a materializing cast (`v[idx as u64] = val`) inside a
+// value-returning function leaves the cast result register Active
+// at the return point. genIndexAssign retired the index register
+// only under callArgNeedsRelease, which excludes cast results, so
+// the host traps MemoryLeak 1012. Fails on the base head, passes
+// after the fix (predicate aligned to indexResultNeedsRelease).
+
+fn set_elem(v: &Vec<i64>, idx: i64, val: i64) -> i64 {
+    v[idx as u64] = val;
+    return 1;
+}
+
+@test "vec index assign temp retire"() {
+    let v: Vec<i64> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    let r = set_elem(&v, 1, 99);
+    if r != 1 { panic(4761); };
+    if v[1] != 99 { panic(4762); };
+}

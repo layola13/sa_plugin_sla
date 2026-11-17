@@ -1,0 +1,42 @@
+@import "sa_std/vec.sa"
+
+// DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE regression: a Vec index
+// FIELD assignment whose index is a materializing cast
+// (`entries[idx as u64].expire_ms = ...`) inside a value-returning
+// function leaves the cast result register Active at the return
+// point. The genStmt Vec-index field-assign arm retired the index
+// register only under callArgNeedsRelease, which excludes cast
+// results, so the fresh cast temp was never released and the SA
+// host traps MemoryLeak 1012 on it (slaredis @sla__cmd_expire,
+// commands.sla). Fails on the base head (the build is rejected),
+// passes after the fix.
+
+struct Entry {
+    key: Vec<u8>,
+    expire_ms: i64,
+}
+
+struct Store {
+    entries: Vec<Entry>,
+}
+
+fn set_expire(s: &Store, idx: i64, val: i64) -> i64 {
+    if val <= 0 {
+        s.entries[idx as u64].expire_ms = 9223372036854775807;
+    } else {
+        s.entries[idx as u64].expire_ms = val * 1000;
+    };
+    return 1;
+}
+
+@test "vec index field assign temp retire"() {
+    let st = Store { entries: Vec::new() };
+    st.entries.push(Entry { key: Vec::new(), expire_ms: 0 });
+    st.entries.push(Entry { key: Vec::new(), expire_ms: 0 });
+    let r = set_expire(&st, 1, 5);
+    if r != 1 { panic(4751); };
+    if st.entries[1].expire_ms != 5000 { panic(4752); };
+    let r2 = set_expire(&st, 0, 0 - 3);
+    if r2 != 1 { panic(4753); };
+    if st.entries[0].expire_ms != 9223372036854775807 { panic(4754); };
+}

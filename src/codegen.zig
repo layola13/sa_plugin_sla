@@ -1863,7 +1863,14 @@ pub const Codegen = struct {
                     try self.emitRelease(slot_reg);
                     try self.emitRelease(offset_reg);
                     try self.emitRelease(data_reg);
-                    if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+                    // DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE (audit,
+                    // emitReplaceSourceNullText arm): the nulling
+                    // recompute must retire a materializing cast's fresh
+                    // index temp like every other index sequence;
+                    // callArgNeedsRelease excludes cast results, so the
+                    // recomputed `items[idx as u64]` temp stayed Active
+                    // at function exit (MemoryLeak 1012).
+                    if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
                     if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
                     if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
                 } else {
@@ -16560,7 +16567,15 @@ pub const Codegen = struct {
                             try self.emitRelease(offset_reg);
                             try self.emitRelease(data_reg);
                             try self.emitRelease(len_reg);
-                            if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+                            // DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE:
+                            // like the read path (genVecIndexRead), the
+                            // field-assign arm must also retire a
+                            // materializing cast's fresh index temp;
+                            // callArgNeedsRelease excludes cast results,
+                            // so `entries[idx as u64].expire_ms = v` left
+                            // the cast register Active at function exit
+                            // (MemoryLeak 1012, slaredis @sla__cmd_expire).
+                            if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
                             if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
                             if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
                             try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
@@ -18493,7 +18508,12 @@ pub const Codegen = struct {
                 try self.emitRelease(offset_reg);
                 try self.emitRelease(data_reg);
                 try self.emitRelease(len_reg);
-                if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+                // DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE (audit,
+                // genIndexAssign inline-POD arm): same index-retire
+                // predicate as the read/field-assign paths — a
+                // materializing cast index temp must be retired here
+                // too (proven leak, MemoryLeak 1012).
+                if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
                 if (value.* == .identifier and self.storedIdentifierNeedsRelease(value, elem_ty)) {
                     try self.emitRelease(val_reg);
                 } else {
@@ -18508,7 +18528,12 @@ pub const Codegen = struct {
             try self.emitRelease(offset_reg);
             try self.emitRelease(data_reg);
             try self.emitRelease(len_reg);
-            if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+            // DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE (audit,
+            // genIndexAssign generic arm): same index-retire predicate
+            // as the read/field-assign paths — a materializing cast
+            // index temp must be retired here too (proven leak,
+            // MemoryLeak 1012).
+            if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
             try self.finishStoredValueAfterSlotStore(value, elem_ty, val_reg);
             if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
             if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
@@ -20705,7 +20730,13 @@ pub const Codegen = struct {
                     const value_ty = self.resolvedTypeForExpr(expr) orelse hm.value;
                     const reg = try self.genLoadSlotValue(value_ptr, value_ty);
                     try self.emitRelease(value_ptr);
-                    if (callArgNeedsRelease(idx.index)) try self.emitRelease(key_reg);
+                    // DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE (audit,
+                    // HashMap index arm): a materializing cast key's
+                    // fresh temp must be retired like a cast index;
+                    // callArgNeedsRelease excludes cast results (proven
+                    // leak, MemoryLeak 1012). Non-materializing casts
+                    // stay unreleased via castResultMaterializesTemp.
+                    if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(key_reg);
                     if (keyRegIsOwnedLiteralString(idx.index, hm.key)) try self.emitRelease(key_reg);
                     // DEF-TEXT-IDX-CALLRET-LEAK: retire an owned call-result target temp (identifier targets are locals, correctly untouched).
                     if (callArgNeedsRelease(idx.target)) try self.emitRelease(map_reg);
@@ -20740,7 +20771,12 @@ pub const Codegen = struct {
                     const index_reg = try self.genExpr(idx.index, hoisted_allocs);
                     const reg = try self.newTmp();
                     self.outPrint("    EXPAND VEC_DEQUE_GET {s}, {s}, {s}\n", .{ reg, deque_reg, index_reg }) catch return CodegenError.CodegenError;
-                    if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+                    // DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE (audit,
+                    // VecDeque index arm): a materializing cast index's
+                    // fresh temp must be retired like a Vec cast index;
+                    // callArgNeedsRelease excludes cast results (proven
+                    // leak, MemoryLeak 1012).
+                    if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
                     // DEF-TEXT-IDX-CALLRET-LEAK: retire an owned call-result target temp (identifier targets are locals, correctly untouched).
                     if (callArgNeedsRelease(idx.target)) try self.emitRelease(deque_reg);
                     return reg;

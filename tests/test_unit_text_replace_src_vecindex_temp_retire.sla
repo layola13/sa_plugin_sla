@@ -1,0 +1,37 @@
+@import "sa_std/vec.sa"
+
+// DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE (audit,
+// emitReplaceSourceNullText index arm): a replace-source assignment
+// whose source place is a Vec index read with a materializing cast
+// index (`b.item = s.items[idx as u64]`, source spine root owned)
+// makes the post-store nulling recompute the source address from
+// the same index expression. That recompute retired its index
+// register only under callArgNeedsRelease, which excludes cast
+// results, so the second cast temp stayed Active at the return
+// point and the host traps MemoryLeak 1012. (With a borrowed source
+// root the checker records no replace annotation —
+// placeSpineRootOwned — and the arm never runs.) Fails on the base
+// head, passes after the fix.
+
+struct Bag {
+    item: Vec<u8>,
+}
+
+struct Store2 {
+    items: Vec<Vec<u8>>,
+}
+
+fn move_into(b: &Bag, s: Store2, idx: i64) -> i64 {
+    b.item = s.items[idx as u64];
+    return 1;
+}
+
+@test "replace src vec index temp retire"() {
+    let bag = Bag { item: Vec::new() };
+    let st = Store2 { items: Vec::new() };
+    let inner: Vec<u8> = Vec::new();
+    st.items.push(inner);
+    let r = move_into(&bag, st, 0);
+    if r != 1 { panic(4773); };
+    if len(bag.item) != 0 { panic(4774); };
+}

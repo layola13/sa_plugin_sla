@@ -1,0 +1,30 @@
+@import "sa_std/vec.sa"
+
+// DEF-TEXT-VECINDEX-FIELDASSIGN-TEMP-RETIRE (audit, genIndexAssign
+// inline-POD arm): a whole-element Vec index assignment of a
+// single-word all-scalar struct element (the structDeclIsInlinePod
+// shape) whose index is a materializing cast (`v[idx as u64] = val`)
+// inside a value-returning function leaves the cast result register
+// Active at the return point. The POD arm retired the index register
+// only under callArgNeedsRelease, which excludes cast results, so
+// the host traps MemoryLeak 1012. Fails on the base head, passes
+// after the fix.
+
+struct One {
+    a: i64,
+}
+
+fn set_one(v: &Vec<One>, idx: i64, val: One) -> i64 {
+    v[idx as u64] = val;
+    return 1;
+}
+
+@test "vec index assign pod temp retire"() {
+    let v: Vec<One> = Vec::new();
+    v.push(One { a: 1 });
+    v.push(One { a: 2 });
+    let p = One { a: 90 };
+    let r = set_one(&v, 1, p);
+    if r != 1 { panic(4765); };
+    if v[1].a != 90 { panic(4766); };
+}

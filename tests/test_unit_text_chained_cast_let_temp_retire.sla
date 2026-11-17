@@ -1,0 +1,56 @@
+// DEF-TEXT-CHAINED-CAST-LET-LEAK: a chained cast `(x as A) as B`
+// materialises the inner cast result in a fresh temp; the outer
+// cast's lowering copies that temp non-destructively (so the outer
+// `as` works on an independent register) but, on the defective
+// codegen, never retired the inner temp afterwards -- it stayed
+// Active to function exit and the verifier trapped
+// error[MemoryLeak] (1012). Pre-fix the tests below fail with
+// MemoryLeak on the inner cast temp; post-fix all pass and the
+// values are exact.
+
+fn get_small() -> i16 {
+    return -7;
+}
+
+fn get_tiny() -> i8 {
+    return -100;
+}
+
+fn get_big() -> i16 {
+    return 20000;
+}
+
+fn chain_i16_i32_i64() -> i64 {
+    let v: i64 = (get_small() as i32) as i64;
+    return v;
+}
+
+fn chain_i8_i64_i32() -> i32 {
+    let v: i32 = (get_tiny() as i64) as i32;
+    return v;
+}
+
+fn chain_i16_i64_i32() -> i32 {
+    let v: i32 = (get_big() as i64) as i32;
+    return v;
+}
+
+fn chain_ret() -> i64 {
+    return (get_small() as i32) as i64;
+}
+
+@test "chained cast let i16 to i32 to i64"() {
+    if chain_i16_i32_i64() != -7 { panic(38201); };
+}
+
+@test "chained cast let i8 to i64 to i32"() {
+    if chain_i8_i64_i32() != -100 { panic(38202); };
+}
+
+@test "chained cast let i16 to i64 to i32"() {
+    if chain_i16_i64_i32() != 20000 { panic(38203); };
+}
+
+@test "chained cast return position"() {
+    if chain_ret() != -7 { panic(38204); };
+}

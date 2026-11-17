@@ -20240,6 +20240,12 @@ pub const Codegen = struct {
                     // case above.
                     const copied = try self.newTmp();
                     try self.emitPrimitiveCopy(copied, inner, src_ty);
+                    // DEF-TEXT-CHAINED-CAST-LET-LEAK: the copy above is
+                    // non-consuming, so the inner cast's result temp is
+                    // dead once copied -- retire it when the inner cast
+                    // materialised it, or it stays Active to function
+                    // exit and the verifier traps MemoryLeak.
+                    if (self.exprResultRegNeedsRelease(cast.expr)) try self.emitRelease(inner);
                     src_reg = copied;
                 } else if (cast.expr.* != .identifier and cast.expr.* != .cast_expr and src_ty.* == .primitive and
                     !std.mem.startsWith(u8, inner, "^") and !std.mem.startsWith(u8, inner, "&"))

@@ -1,0 +1,88 @@
+// DEF-TEXT-FOR-RANGE-BINDING-RETIRE: a for-range over named bounds
+// (`for x in a..b`) retired the start bound's register when the range
+// was built into the counter slot, but the retirement was never
+// recorded in the codegen consumption bookkeeping, so scope-exit
+// cleanup released the binding a second time and the SA verifier
+// rejected the program with UseAfterMove (trap 1009, expected
+// Consumed / actual Consumed). Literal bounds were unaffected, which
+// is why the shape escaped the census. Kit's mandel_par.sla
+// (strip_sum over row_start..row_end) is the field case.
+
+fn range_sum_params(a: i32, b: i32) -> i64 {
+    let total: i64 = 0;
+    for x in a..b {
+        total = total + (x as i64);
+    }
+    return total;
+}
+
+fn range_sum_locals(a: i32, b: i32) -> i64 {
+    let lo = a;
+    let hi = b;
+    let total: i64 = 0;
+    for x in lo..hi {
+        total = total + (x as i64);
+    }
+    return total;
+}
+
+fn range_sum_param_start(a: i32) -> i64 {
+    let total: i64 = 0;
+    for x in a..10 {
+        total = total + (x as i64);
+    }
+    return total;
+}
+
+fn range_sum_param_end(b: i32) -> i64 {
+    let total: i64 = 0;
+    for x in 0..b {
+        total = total + (x as i64);
+    }
+    return total;
+}
+
+fn range_grid_sum(row_start: i32, row_end: i32) -> i64 {
+    let total: i64 = 0;
+    for row in row_start..row_end {
+        for col in 0..3 {
+            total = total + ((row + col) as i64);
+        }
+    }
+    return total;
+}
+
+@test "for range over parameter bounds"() {
+    let got = range_sum_params(0, 4);
+    if got != 6 {
+        panic(3101);
+    };
+}
+
+@test "for range over local bounds"() {
+    let got = range_sum_locals(1, 5);
+    if got != 10 {
+        panic(3102);
+    };
+}
+
+@test "for range with parameter start and literal end"() {
+    let got = range_sum_param_start(7);
+    if got != 24 {
+        panic(3103);
+    };
+}
+
+@test "for range with literal start and parameter end"() {
+    let got = range_sum_param_end(4);
+    if got != 6 {
+        panic(3104);
+    };
+}
+
+@test "for range strip over parameter rows with literal inner bound"() {
+    let got = range_grid_sum(2, 4);
+    if got != 21 {
+        panic(3105);
+    };
+}

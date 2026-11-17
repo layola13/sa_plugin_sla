@@ -16852,6 +16852,16 @@ pub const Codegen = struct {
                 if (end_reg != null) {
                     self.outPrint("    store {s}+0, {s} as i64\n", .{ counter_slot, start_reg }) catch return CodegenError.CodegenError;
                     self.outPrint("    !{s}\n", .{start_reg}) catch return CodegenError.CodegenError;
+                    // DEF-TEXT-FOR-RANGE-BINDING-RETIRE: the `!` above
+                    // retires the start bound's register for real (the
+                    // SA mask becomes Consumed), but the consumption was
+                    // never recorded, so the loop-exit cleanup released
+                    // a named start binding (`for x in a..b`) a second
+                    // time and the verifier rejected the program with
+                    // UseAfterMove (expected Consumed, actual Consumed).
+                    // Record it like a constructor payload retired by a
+                    // visible release: consumed only, no store-move entry.
+                    try self.markConstructorMovedBinding(f.start, start_reg);
                 } else {
                     self.outPrint("    store {s}+0, 0 as i64\n", .{counter_slot}) catch return CodegenError.CodegenError;
                 }

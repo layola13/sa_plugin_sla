@@ -1,0 +1,23 @@
+// CLOSING-E regression: rosetta/125 (FIX-125, patch 7).
+// ONCE_GET_OR_INIT's %init_fn is invoked as `call %init_fn()` inside the
+// macro body, so it needs the declared function symbol (@sla__init_42),
+// not the closure record ({0, &vtable}) -- a record pointer is not a
+// declared callee (UnknownRegister 1007). Failed before patch 7, passes after.
+@import "sa_std/sync/once.sa"
+
+fn init_42() -> i32 {
+    return 42;
+}
+
+fn init_99() -> i32 {
+    return 99;
+}
+
+@test "closing-e once get or init fn symbol"() {
+    let value = ONCE_NEW();
+    let first: i32 = ONCE_GET_OR_INIT(value, init_42);
+    let second: i32 = ONCE_GET_OR_INIT(value, init_99);
+    if first + second != 84 {
+        panic(125100);
+    };
+}

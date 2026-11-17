@@ -1343,6 +1343,15 @@ pub const Codegen = struct {
                 if (release_plan.release_dynamic_borrow) {
                     self.outPrint("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
                 }
+                // CLOSING-E (rosetta/107): mirror the direct handle path
+                // above -- the plan retires the handle register itself
+                // (consume_handle_value), and this loop already records
+                // that consumption in consumed_bindings, so a later
+                // cleanup entry for the guard emits nothing. Without the
+                // `!` here the guard register stayed Active at function
+                // exit whenever the cell's cleanup ran first
+                // (MemoryLeak 1012, register second_ref).
+                if (release_plan.consume_handle_value) self.outPrint("    !{s}\n", .{handle_name}) catch return CodegenError.CodegenError;
                 if (handle.cell_release_temp) |temp| {
                     if (release_plan.release_owner_temps) try self.emitRelease(temp);
                 }
@@ -7547,6 +7556,8 @@ pub const Codegen = struct {
                 .return_stmt => |ret| if (ret.value) |v| if (self.exprNeedsFfiCstrMacros(v)) return true,
                 .for_stmt => |f| if (self.exprNeedsFfiCstrMacros(f.start) or (if (f.end) |e| self.exprNeedsFfiCstrMacros(e) else false) or self.blockNeedsFfiCstrMacros(f.body)) return true,
                 .while_stmt => |w| if (self.exprNeedsFfiCstrMacros(w.cond) or self.blockNeedsFfiCstrMacros(w.body)) return true,
+                .block_stmt => |b| if (self.blockNeedsFfiCstrMacros(b.body)) return true,
+                .arena_stmt => |a| if (self.blockNeedsFfiCstrMacros(a.body)) return true,
                 else => {},
             }
         }
@@ -7556,7 +7567,7 @@ pub const Codegen = struct {
     fn exprNeedsFfiCstrMacros(self: *Codegen, expr: *const ast.Node) bool {
         switch (expr.*) {
             .call_expr => |call| {
-                if (lowering_rules.isBareLenUnaryCall(call)) {
+                if (lowering_rules.isLenCall(call) and call.args.len == 1) {
                     if (self.tc.expr_types.get(call.args[0])) |ty| {
                         if (ty.* == .primitive and ty.primitive == .raw_ptr) return true;
                     }
@@ -7588,6 +7599,7 @@ pub const Codegen = struct {
             .borrow_expr => |b| return self.exprNeedsFfiCstrMacros(b.expr),
             .move_expr => |m| return self.exprNeedsFfiCstrMacros(m.expr),
             .deref_expr => |d| return self.exprNeedsFfiCstrMacros(d.expr),
+            .cast_expr => |c| return self.exprNeedsFfiCstrMacros(c.expr),
             .field_expr => |f| return self.exprNeedsFfiCstrMacros(f.expr),
             .index_expr => |idx| return self.exprNeedsFfiCstrMacros(idx.target) or self.exprNeedsFfiCstrMacros(idx.index),
             .slice_expr => |slc| return self.exprNeedsFfiCstrMacros(slc.target) or self.exprNeedsFfiCstrMacros(slc.start) or self.exprNeedsFfiCstrMacros(slc.end),
@@ -10414,6 +10426,12 @@ pub const Codegen = struct {
                 const tail_expr = f.body[f.body.len - 1].expr_stmt;
                 var tail_reg = if (lowering_rules.isStringType(f.ret_ty) and tail_expr.* == .literal and tail_expr.literal == .string_val)
                     try self.genOwnedStringLiteral(tail_expr.literal.string_val, &hoisted_allocs)
+                else if (tail_expr.* == .tuple_literal and f.ret_ty.* == .tuple and f.ret_ty.tuple.elems.len == tail_expr.tuple_literal.elements.len)
+                    blk: {
+                        const tuple_reg = try self.newTmp();
+                        try self.genTupleLiteralInto(tuple_reg, &tail_expr.tuple_literal, f.ret_ty, &hoisted_allocs);
+                        break :blk tuple_reg;
+                    }
                 else
                     try self.genExpr(tail_expr, &hoisted_allocs);
                 if (!self.async_pending_return_emitted) {
@@ -11061,7 +11079,7 @@ pub const Codegen = struct {
         const last = block[block.len - 1];
         if (last.* != .expr_stmt) return CodegenError.CodegenError;
         const value_expr = last.expr_stmt;
-        const value_reg = try self.genExpr(value_expr, hoisted_allocs);
+        const value_reg = try self.genExprWithExpectedTy(value_expr, target_ty, hoisted_allocs);
         const value_ty = self.tc.expr_types.get(value_expr) orelse return CodegenError.CodegenError;
 
         if (value_expr.* == .identifier and value_ty.* == .primitive) {
@@ -13703,10 +13721,17 @@ pub const Codegen = struct {
                         };
                     }
                 }
-                const arg_reg = if (param != null)
-                    try self.genExpr(arg, hoisted_allocs)
-                else
-                    try self.genCallArg(arg, hoisted_allocs);
+                // CLOSING-E (rosetta/47): a tuple literal passed as a
+                // call argument is built against the parameter's tuple
+                // type, not its own element-inferred type.
+                const arg_reg = if (param) |target_param| arg_blk: {
+                    if (arg.* == .tuple_literal and target_param.ty.* == .tuple and target_param.ty.tuple.elems.len == arg.tuple_literal.elements.len) {
+                        const tuple_reg = try self.newTmp();
+                        try self.genTupleLiteralInto(tuple_reg, &arg.tuple_literal, target_param.ty, hoisted_allocs);
+                        break :arg_blk tuple_reg;
+                    }
+                    break :arg_blk try self.genExpr(arg, hoisted_allocs);
+                } else try self.genCallArg(arg, hoisted_allocs);
                 const abi_moves_arg = if (param) |target_param|
                     std.mem.eql(u8, self.abiParamPrefix(target_param), "^")
                 else
@@ -14227,6 +14252,16 @@ pub const Codegen = struct {
         arg: *ast.Node,
         hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!LoweredCallArg {
+        // CLOSING-E (rosetta/125): a macro parameter the body calls as
+        // `call %param(...)` takes the declared function symbol, not a
+        // closure record -- see importedMacroFnSymbolArg.
+        if (lowering_rules.importedMacroFnSymbolArg(plan.macro_name, call_arg_index)) {
+            if (arg.* == .identifier and self.tc.funcs.contains(arg.identifier)) {
+                const lowered = try self.loweredFuncSymbol(arg.identifier);
+                const sym = try std.fmt.allocPrint(self.allocator, "@{s}", .{lowered});
+                return .{ .reg = sym, .release_after_call = false };
+            }
+        }
         if (try self.genImportedMacroFnObjectArg(arg, hoisted_allocs)) |fn_obj| return fn_obj;
         const arg_ty = try self.importedMacroArgType(arg);
         if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| {
@@ -14715,6 +14750,36 @@ pub const Codegen = struct {
         const peeled = lowering_rules.peelBorrowPointerType(recv_ty);
         if (lowering_rules.hashMapTypes(peeled)) |mt| return mt.value;
         return null;
+    }
+
+    /// CLOSING-E (rosetta/46): the default argument of unwrap_or is
+    /// substituted into an EXPAND macro, whose body moves the register
+    /// it is given (`__default = %default_value`). A Copy-typed binding
+    /// (parameter or local) keeps its checker-planned exit cleanup and
+    /// may be read again, so hand the macro a fresh copy and leave the
+    /// binding's register untouched -- the same contract a plain call
+    /// gives Copy arguments. Scoped to scalars and raw_ptr (no heap
+    /// allocation, so no SOME/NONE-arm ownership question: a fresh
+    /// scalar temp behaves exactly like a literal default, which the
+    /// corpus already covers). Tuple/struct Copy defaults still pass
+    /// through: copying them would orphan an allocation in the macro's
+    /// SOME arm, which needs a macro-level NONE-arm move -- a separate
+    /// fork, recorded in the line RESULT, not attempted here.
+    fn genUnwrapOrDefaultReg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
+        const reg = try self.genExpr(arg, hoisted_allocs);
+        if (arg.* != .identifier) return reg;
+        const ty = self.resolvedTypeForExpr(arg) orelse self.tc.expr_types.get(arg) orelse return reg;
+        if (!self.typeIsCopyValue(ty)) return reg;
+        if (ty.* == .primitive) {
+            const copy = try self.newTmp();
+            switch (ty.primitive) {
+                .raw_ptr => self.outPrint("    {s} = ptr_add {s}, 0\n", .{ copy, reg }) catch return CodegenError.CodegenError,
+                .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize, .integer => self.outPrint("    {s} = add {s}, 0\n", .{ copy, reg }) catch return CodegenError.CodegenError,
+                else => return reg,
+            }
+            return copy;
+        }
+        return reg;
     }
 
     fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
@@ -15780,7 +15845,7 @@ pub const Codegen = struct {
                 } else if (let.value.* == .enum_literal) {
                     try self.genEnumLiteralInto(let.name, &let.value.enum_literal, hoisted_allocs);
                 } else if (let.value.* == .tuple_literal) {
-                    try self.genTupleLiteralInto(let.name, &let.value.tuple_literal, hoisted_allocs);
+                    try self.genTupleLiteralInto(let.name, &let.value.tuple_literal, let_ty, hoisted_allocs);
                 } else if (let.value.* == .array_literal) {
                     try self.genArrayLiteralInto(let.name, let.value, &let.value.array_literal, hoisted_allocs);
                 } else if (let.value.* == .repeat_array_literal) {
@@ -16190,7 +16255,7 @@ pub const Codegen = struct {
                 } else if (c.value.* == .enum_literal) {
                     try self.genEnumLiteralInto(c.name, &c.value.enum_literal, hoisted_allocs);
                 } else if (c.value.* == .tuple_literal) {
-                    try self.genTupleLiteralInto(c.name, &c.value.tuple_literal, hoisted_allocs);
+                    try self.genTupleLiteralInto(c.name, &c.value.tuple_literal, const_ty, hoisted_allocs);
                 } else if (c.value.* == .array_literal) {
                     try self.genArrayLiteralInto(c.name, c.value, &c.value.array_literal, hoisted_allocs);
                 } else if (c.value.* == .repeat_array_literal) {
@@ -16537,6 +16602,12 @@ pub const Codegen = struct {
                         try self.genOwnedStringLiteral(v.literal.string_val, hoisted_allocs)
                     else if (self.current_fn_ret_ty != null and self.current_fn_ret_ty.?.* == .primitive and self.current_fn_ret_ty.?.primitive == .raw_ptr and v.* == .literal and v.literal == .string_val)
                         try self.genRawPointerStringLiteralArg(v.literal.string_val)
+                    else if (v.* == .tuple_literal and self.current_fn_ret_ty != null and self.current_fn_ret_ty.?.* == .tuple and self.current_fn_ret_ty.?.tuple.elems.len == v.tuple_literal.elements.len)
+                        blk: {
+                            const tuple_reg = try self.newTmp();
+                            try self.genTupleLiteralInto(tuple_reg, &v.tuple_literal, self.current_fn_ret_ty, hoisted_allocs);
+                            break :blk tuple_reg;
+                        }
                     else
                         try self.genExpr(v, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
@@ -17099,7 +17170,7 @@ pub const Codegen = struct {
                     }
                 }
                 if (literal_field.value.* == .identifier and field_ty != null and self.typeIsCopyStruct(field_ty.?)) {
-                    const source_reg = try self.genExpr(literal_field.value, hoisted_allocs);
+                    const source_reg = try self.genExprWithExpectedTy(literal_field.value, field_ty, hoisted_allocs);
                     const copied = try self.newTmp();
                     try self.genCopyValueInto(copied, source_reg, field_ty.?);
                     // REG2-D3: settle the copy with the consume marker
@@ -17108,7 +17179,7 @@ pub const Codegen = struct {
                     const move_copied = try std.fmt.allocPrint(self.allocator, "^{s}", .{copied});
                     self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_copied, layout.ty_str }) catch return CodegenError.CodegenError;
                 } else {
-                    const raw_val_reg = try self.genExpr(literal_field.value, hoisted_allocs);
+                    const raw_val_reg = try self.genExprWithExpectedTy(literal_field.value, field_ty, hoisted_allocs);
                     if (literal_field.value.* == .identifier and self.tc.literal_consumed_values.contains(literal_field.value)) {
                         // TEXT35-OWNERSHIP (DEF-TEXT-LITERAL-BORROW-
                         // CONSUME): same consuming store as the main
@@ -17236,7 +17307,32 @@ pub const Codegen = struct {
 
         self.outPrint("    {s} = alloc {}\n", .{ target, total_size }) catch return CodegenError.CodegenError;
         for (lit.elements, 0..) |elem, i| {
-            const val_reg = try self.genExpr(elem, hoisted_allocs);
+            // CLOSING-E (rosetta/35, second mechanism): the checker
+            // types a string literal as raw_ptr, but genExpr
+            // materializes it as a Slice record. A raw_ptr-typed slot
+            // must hold the C-string address, not the record pointer
+            // (fold/into_iter loads the slot as ptr and .len()
+            // CSTR-scans it; scanning record bytes gave a garbage
+            // length). Same for an inferred-Slice let binding used as
+            // an element: its record's data pointer is the C string.
+            if (eff_ty.* == .primitive and eff_ty.primitive == .raw_ptr) {
+                if (elem.* == .literal and elem.literal == .string_val) {
+                    const ptr_reg = try self.genRawPointerStringLiteralArg(elem.literal.string_val);
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, ptr_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(ptr_reg);
+                    continue;
+                }
+                if (elem.* == .identifier and self.inferred_string_slice_locals.contains(elem.identifier)) {
+                    const src_reg = try self.genExpr(elem, hoisted_allocs);
+                    const ptr_reg = try self.newTmp();
+                    self.outPrint("    {s} = load {s}+0 as ptr\n", .{ ptr_reg, src_reg }) catch return CodegenError.CodegenError;
+                    self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, ptr_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(ptr_reg);
+                    continue;
+                }
+            }
+            const elem_expected: ?*const ast.Type = if (eff_ty.* == .tuple) eff_ty else null;
+            const val_reg = try self.genExprWithExpectedTy(elem, elem_expected, hoisted_allocs);
             // DEF-BATCH1-R4: an owned element temporary (non-Copy value,
             // not an identifier binding) moves into the array: store it
             // with a consume, the same transfer rule struct field stores
@@ -17314,7 +17410,20 @@ pub const Codegen = struct {
             self.outPrint("    EXPAND SLA_ARRAY_FILL_U8 {s}, {s}, {}\n", .{ target, value_reg, arr.len }) catch return CodegenError.CodegenError;
             if (callArgNeedsRelease(lit.value)) try self.emitRelease(value_reg);
         } else if (elem_is_scalar) {
-            const value_reg = try self.genExpr(lit.value, hoisted_allocs);
+            // CLOSING-E (rosetta/35, same class as genArrayLiteralInto):
+            // a raw_ptr element holding a string literal (or an
+            // inferred-Slice binding) must store the C-string address.
+            const value_reg = if (arr.elem.* == .primitive and arr.elem.primitive == .raw_ptr and lit.value.* == .literal and lit.value.literal == .string_val)
+                try self.genRawPointerStringLiteralArg(lit.value.literal.string_val)
+            else if (arr.elem.* == .primitive and arr.elem.primitive == .raw_ptr and lit.value.* == .identifier and self.inferred_string_slice_locals.contains(lit.value.identifier))
+                blk: {
+                    const src_reg = try self.genExpr(lit.value, hoisted_allocs);
+                    const ptr_reg = try self.newTmp();
+                    self.outPrint("    {s} = load {s}+0 as ptr\n", .{ ptr_reg, src_reg }) catch return CodegenError.CodegenError;
+                    break :blk ptr_reg;
+                }
+            else
+                try self.genExpr(lit.value, hoisted_allocs);
             const elem_ty_str = typeString(arr.elem);
             if (arr.len > bulk_array_threshold) {
                 // DEF-R2-GIANT-FILL bulk fill (mirrors the SAB backend):
@@ -17377,22 +17486,52 @@ pub const Codegen = struct {
         }
     }
 
+    /// CLOSING-E (rosetta/47): generate an expression against an
+    /// optional contextual type. Only tuple literals use the context
+    /// today (their layout must follow the declared tuple type);
+    /// everything else delegates to genExpr unchanged.
+    fn genExprWithExpectedTy(self: *Codegen, expr: *ast.Node, expected_ty: ?*const ast.Type, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
+        if (expr.* == .tuple_literal) {
+            if (expected_ty) |ty| {
+                if (ty.* == .tuple and ty.tuple.elems.len == expr.tuple_literal.elements.len) {
+                    const reg = try self.newTmp();
+                    try self.genTupleLiteralInto(reg, &expr.tuple_literal, expected_ty, hoisted_allocs);
+                    return reg;
+                }
+            }
+        }
+        return try self.genExpr(expr, hoisted_allocs);
+    }
+
     fn genTupleLiteralInto(
         self: *Codegen,
         target: []const u8,
         lit: *const ast.TupleLiteral,
+        expected_ty: ?*const ast.Type,
         hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
+        // CLOSING-E (rosetta/47, DEF-TEXT-TUPLE-PROJ-SUBWORD-OFFSET):
+        // when the caller supplies a tuple type of matching arity, its
+        // element types drive layout and size; otherwise fall back to
+        // element-inferred types (plain inference keeps working).
+        const use_expected = if (expected_ty) |ty| ty.* == .tuple and ty.tuple.elems.len == lit.elements.len else false;
         var elems = std.array_list.Managed(*ast.Type).init(self.allocator);
-        for (lit.elements) |elem| {
-            try elems.append(self.tc.expr_types.get(elem) orelse return CodegenError.CodegenError);
+        if (use_expected) {
+            for (expected_ty.?.tuple.elems) |elem_ty| {
+                try elems.append(elem_ty);
+            }
+        } else {
+            for (lit.elements) |elem| {
+                try elems.append(self.tc.expr_types.get(elem) orelse return CodegenError.CodegenError);
+            }
         }
         const tuple = ast.TupleType{ .elems = try elems.toOwnedSlice() };
 
         self.outPrint("    {s} = alloc {}\n", .{ target, tupleSize(tuple) }) catch return CodegenError.CodegenError;
         for (lit.elements, 0..) |elem, i| {
             const layout = tupleFieldLayout(tuple, i) orelse return CodegenError.CodegenError;
-            const val_reg = try self.genExpr(elem, hoisted_allocs);
+            const elem_expected: ?*const ast.Type = if (use_expected) tuple.elems[i] else null;
+            const val_reg = try self.genExprWithExpectedTy(elem, elem_expected, hoisted_allocs);
             // TEXT-RESIDUAL-109 (pool family): a bare identifier (or an
             // explicit move of one) as a non-Copy tuple element is a
             // genuine register transfer into the aggregate — the same
@@ -20116,7 +20255,7 @@ pub const Codegen = struct {
             },
             .tuple_literal => |lit| {
                 const reg = try self.newTmp();
-                try self.genTupleLiteralInto(reg, &lit, hoisted_allocs);
+                try self.genTupleLiteralInto(reg, &lit, null, hoisted_allocs);
                 return reg;
             },
             .array_literal => |lit| {
@@ -21733,7 +21872,7 @@ pub const Codegen = struct {
                             if (lowering_rules.isUnwrapOrCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const default_reg = try self.genExpr(call.args[1], hoisted_allocs);
+                                const default_reg = try self.genUnwrapOrDefaultReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND OPTION_UNWRAP_OR {s}, {s}, {s}\n", .{ reg, recv_reg, default_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
@@ -21911,7 +22050,7 @@ pub const Codegen = struct {
                             if (lowering_rules.isUnwrapOrCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const default_reg = try self.genExpr(call.args[1], hoisted_allocs);
+                                const default_reg = try self.genUnwrapOrDefaultReg(call.args[1], hoisted_allocs);
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND RESULT_UNWRAP_OR {s}, {s}, {s}\n", .{ reg, recv_reg, default_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);

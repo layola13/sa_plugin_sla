@@ -1,0 +1,26 @@
+// CLOSING-E regression: rosetta/107 (FIX-107, patch 1).
+// emitRelease's "release the cell and its guards" path (Path B) only did
+// bookkeeping and never emitted `!guard`, so a guard register was never
+// released when the cell's cleanup ran first (MemoryLeak 1012 second_ref).
+// Failed before FIX-107, passes after.
+@import "sa_std/core/refcell.sa"
+
+fn refcell_borrow_sum() -> i32 {
+    let value = RefCell::new(7);
+    let first = 0;
+    {
+        let borrowed = value.borrow();
+        first = *borrowed;
+    }
+    *value.borrow_mut() = 9;
+    let second_ref = value.borrow();
+    let second = *second_ref;
+    return first + second;
+}
+
+@test "closing-e refcell guard released with cell"() {
+    let got = refcell_borrow_sum();
+    if got != 16 {
+        panic(107100);
+    };
+}

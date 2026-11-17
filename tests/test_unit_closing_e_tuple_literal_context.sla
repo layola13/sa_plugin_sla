@@ -1,0 +1,42 @@
+// CLOSING-E regression: rosetta/47 + DEF-TEXT-TUPLE-PROJ-SUBWORD-OFFSET.
+// A tuple literal must be built against the type its position declares:
+// integer literals infer i64, so (3, 8) in a (i32, i32) position was stored
+// at word stride +0/+8 while projections read packed +0/+4 and the second
+// element read 0. Failed before FIX-47 (patch 5), passes after.
+fn swap(a: (i32, i32)) -> (i32, i32) {
+    (a.1, a.0)
+}
+
+fn make() -> (i32, i32) {
+    (3, 8)
+}
+
+@test "closing-e tuple literal call arg"() {
+    let pair = swap((3, 8));
+    if pair.0 != 8 {
+        panic(47100);
+    };
+    if pair.1 != 3 {
+        panic(47101);
+    };
+}
+
+@test "closing-e tuple literal annotated let"() {
+    let t: (i32, i32) = (3, 8);
+    if t.0 != 3 {
+        panic(47102);
+    };
+    if t.1 != 8 {
+        panic(47103);
+    };
+}
+
+@test "closing-e tuple literal return position"() {
+    let t = make();
+    if t.0 != 3 {
+        panic(47104);
+    };
+    if t.1 != 8 {
+        panic(47105);
+    };
+}

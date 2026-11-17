@@ -736,6 +736,18 @@ pub fn importedMacroDirectCallConsumesValueArg(macro_name: []const u8, call_arg_
         std.mem.eql(u8, macro_name, "SLA_FS_BUFFER_FREE")) and call_arg_index == 0;
 }
 
+/// CLOSING-E (rosetta/125): an imported-macro parameter the macro body
+/// invokes as `call %param(...)` needs the declared function symbol, not
+/// the closure record genImportedMacroFnObjectArg materializes (a record
+/// pointer is not a declared callee: UnknownRegister 1007 "callee is not
+/// declared"). ONCE_GET_OR_INIT %init_fn is such a parameter (call arg
+/// index 1). Other macros with the same shape (RESULT_MAP_OK %map_fn,
+/// ITER_FIND_U64 %pred_fn, ...) share the latent defect and need entries
+/// here once a repro lands.
+pub fn importedMacroFnSymbolArg(macro_name: []const u8, call_arg_index: usize) bool {
+    return std.mem.eql(u8, macro_name, "ONCE_GET_OR_INIT") and call_arg_index == 1;
+}
+
 /// Address-exposure macros: the body publishes the operand's address as a
 /// plain integer, so the value escapes to a ptr-typed FFI surface. A fn
 /// value taking this route must be materialized as a fn object (the

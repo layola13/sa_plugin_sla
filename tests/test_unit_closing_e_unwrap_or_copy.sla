@@ -1,0 +1,20 @@
+// CLOSING-E regression: rosetta/46 (FIX-46, patch 3).
+// unwrap_or's default value was moved-retired by the EXPAND macro body,
+// but the checker still emitted `!fallback` at the exit cleanup for a
+// Copy-typed parameter (UseAfterMove). Failed before FIX-46, passes after.
+@import "sa_std/core/option.sa"
+
+fn choose(opt: Option<i32>, fallback: i32) -> i32 {
+    opt.unwrap_or(fallback)
+}
+
+@test "closing-e unwrap or copy default"() {
+    let value = choose(Some(9), 1);
+    if value != 9 {
+        panic(46100);
+    };
+    let other = choose(None, 1);
+    if other != 1 {
+        panic(46101);
+    };
+}

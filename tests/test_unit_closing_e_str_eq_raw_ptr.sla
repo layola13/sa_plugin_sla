@@ -1,0 +1,62 @@
+// CLOSING-E regression: rosetta/88 + rosetta/55 (FIX-88/55, patches 4+6).
+// STR_EQ compares Slice records. A raw_ptr operand holding a C string must
+// be wrapped (CSTR_LEN + SLICE_NEW); a string literal operand already holds
+// a Slice record and must pass through -- re-wrapping it made CSTR_LEN scan
+// the record's pointer bytes and STR_EQ always fail. Failed before patch 6,
+// passes after.
+@import "sa_std/string.sa"
+
+fn postings_for(term: ptr) -> i32 {
+    if str_eq(term, "rust") == true {
+        return 2;
+    } else {
+        if str_eq(term, "sla") == true {
+            return 3;
+        } else {
+            return 0;
+        };
+    };
+}
+
+struct Builder {
+    method: ptr,
+    path: ptr,
+}
+
+impl Builder {
+    fn new() -> Self {
+        return Self { method: "GET", path: "/" };
+    }
+
+    fn method(self, method: ptr) -> Self {
+        self.method = method;
+        return self;
+    }
+
+    fn path(self, path: ptr) -> Self {
+        self.path = path;
+        return self;
+    }
+}
+
+@test "closing-e str eq fn param ptr vs literal"() {
+    if postings_for("sla") != 3 {
+        panic(88100);
+    };
+    if postings_for("rust") != 2 {
+        panic(88101);
+    };
+    if postings_for("go") != 0 {
+        panic(88102);
+    };
+}
+
+@test "closing-e str eq struct field ptr vs literal"() {
+    let b = Builder::new().method("POST").path("/api");
+    if str_eq(b.method, "POST") == false {
+        panic(88103);
+    };
+    if str_eq(b.path, "/api") == false {
+        panic(88104);
+    };
+}

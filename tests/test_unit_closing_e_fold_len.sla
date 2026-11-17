@@ -1,0 +1,14 @@
+// CLOSING-E regression: rosetta/35 (FIX-35 + FIX-35b, patches 2/2b).
+// The ffi/CSTR import scan missed method-form `x.len()` and recursion
+// broke at cast/if/match/block/arena nodes, so EXPAND CSTR_LEN was
+// UndefinedMacro; then a string literal's raw_ptr checker type vs Slice
+// record materialization made CSTR_LEN read record bytes. Failed before
+// FIX-35/35b, passes after.
+@import "sa_std/string.sa"
+
+@test "closing-e iterator fold string len"() {
+    let total: usize = ["sa", "asm", "!!"].into_iter().fold(0, |acc: usize, item: ptr| acc + (item.len() as usize));
+    if total != 7 {
+        panic(35100);
+    };
+}

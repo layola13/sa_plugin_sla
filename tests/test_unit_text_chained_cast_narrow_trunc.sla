@@ -1,0 +1,95 @@
+// DEF-TEXT-CHAINED-CAST-NARROW-TRUNC: a chained cast through a
+// *narrowing* inner cast, `(x as A) as B` with A narrower than x's
+// type, must observe A's truncation before the outer cast widens.
+// On the defective TEXT codegen the chained branch copied the inner
+// cast's raw result temp without width-canonicalising it to A, so
+// the outer cast widened the untruncated bits: `(20000 as u8) as i64`
+// evaluated to 20000 instead of 32. (The SAB route gives 32.) The
+// tests below assert the truncated VALUES; pre-fix they fail on the
+// value assertions, post-fix all pass.
+
+fn get_big() -> i16 {
+    return 20000;
+}
+
+fn get_mid() -> i32 {
+    return 32769;
+}
+
+fn get_neg() -> i64 {
+    return -1;
+}
+
+fn get_wide() -> i64 {
+    return 4294967297;
+}
+
+fn get_small() -> i16 {
+    return -7;
+}
+
+fn get_neg129() -> i16 {
+    return -129;
+}
+
+fn chain_u8_trunc() -> i64 {
+    let v: i64 = (get_big() as u8) as i64;
+    return v;
+}
+
+fn chain_i16_sign() -> i64 {
+    let v: i64 = (get_mid() as i16) as i64;
+    return v;
+}
+
+fn chain_u32_mask() -> i64 {
+    let v: i64 = (get_neg() as u32) as i64;
+    return v;
+}
+
+fn chain_i32_trunc() -> i64 {
+    let v: i64 = (get_wide() as i32) as i64;
+    return v;
+}
+
+fn chain_i8_sign() -> i64 {
+    let v: i64 = (get_neg129() as i8) as i64;
+    return v;
+}
+
+fn chain_widen_control() -> i64 {
+    let v: i64 = (get_small() as i32) as i64;
+    return v;
+}
+
+fn chain_trunc_ret() -> i64 {
+    return (get_big() as u8) as i64;
+}
+
+@test "chained cast narrowing u8 truncation value"() {
+    if chain_u8_trunc() != 32 { panic(38401); };
+}
+
+@test "chained cast narrowing i16 sign value"() {
+    if chain_i16_sign() != -32767 { panic(38402); };
+}
+
+@test "chained cast narrowing u32 mask value"() {
+    if chain_u32_mask() != 4294967295 { panic(38403); };
+}
+
+@test "chained cast narrowing i32 truncation value"() {
+    if chain_i32_trunc() != 1 { panic(38404); };
+}
+
+@test "chained cast narrowing i8 sign value"() {
+    if chain_i8_sign() != 127 { panic(38405); };
+}
+
+@test "chained cast widening control value"() {
+    if chain_widen_control() != -7 { panic(38406); };
+}
+
+@test "chained cast narrowing return position value"() {
+    if chain_trunc_ret() != 32 { panic(38407); };
+}

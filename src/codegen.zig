@@ -3742,6 +3742,27 @@ pub const Codegen = struct {
                         return;
                     }
                     if (isStringLikeType(ty)) {
+                        if (ty.* == .primitive and ty.primitive == .raw_ptr and arg.* != .identifier and !self.rawPtrOperandHoldsSliceRecord(arg)) {
+                            // CLOSING-COMBINED2: a non-identifier raw_ptr
+                            // operand that does not hold a Slice record
+                            // is a C-string data pointer; STRING_PTR /
+                            // STRING_LEN would read the string bytes as
+                            // a Slice header (rosetta/55 exe printed
+                            // empty). Scan the content length and print
+                            // the bytes directly, mirroring
+                            // emitFormatPushStringLike's raw_ptr arm.
+                            // Identifier operands keep the historical
+                            // path: a param may legitimately carry a
+                            // caller's Slice slot address.
+                            const ptr_reg = try self.genExpr(arg, hoisted_allocs);
+                            const len_reg = try self.newTmp();
+                            try self.emitCstrLenInline(len_reg, ptr_reg);
+                            self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                            try self.emitRelease(len_reg);
+                            if (callArgNeedsRelease(arg)) try self.emitRelease(ptr_reg);
+                            try self.emitPrintlnNewline();
+                            return;
+                        }
                         const slice_reg = try self.genExpr(arg, hoisted_allocs);
                         const ptr_reg = try self.newTmp();
                         const len_reg = try self.newTmp();
@@ -3805,6 +3826,19 @@ pub const Codegen = struct {
                     }
 
                     if (isStringLikeType(ty)) {
+                        if (ty.* == .primitive and ty.primitive == .raw_ptr and arg.* != .identifier and !self.rawPtrOperandHoldsSliceRecord(arg)) {
+                            // CLOSING-COMBINED2: see the single-arg
+                            // branch above -- C-string data pointer,
+                            // scan and print bytes directly.
+                            const ptr_reg = try self.genExpr(arg, hoisted_allocs);
+                            const len_reg = try self.newTmp();
+                            try self.emitCstrLenInline(len_reg, ptr_reg);
+                            self.outPrint("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                            try self.emitRelease(len_reg);
+                            if (callArgNeedsRelease(arg)) try self.emitRelease(ptr_reg);
+                            i += 2;
+                            continue;
+                        }
                         const slice_reg = try self.genExpr(arg, hoisted_allocs);
                         const ptr_reg = try self.newTmp();
                         const len_reg = try self.newTmp();
@@ -6405,6 +6439,19 @@ pub const Codegen = struct {
         if (arg.* == .literal and arg.literal == .string_val) return .inferred_slice;
         if (arg.* == .identifier and self.inferred_string_slice_locals.contains(arg.identifier)) return .inferred_slice;
         return .other;
+    }
+
+    /// CLOSING-COMBINED2: a raw_ptr operand holds a Slice record
+    /// (slot address) only when it is a string literal (genExpr
+    /// materializes it as a record), an inferred-slice local, or a
+    /// field read on a struct-literal-bound local (genStructLiteralInto
+    /// stores slot addresses into ptr fields). Other raw_ptr operands
+    /// hold C-string data pointers.
+    fn rawPtrOperandHoldsSliceRecord(self: *Codegen, arg: *const ast.Node) bool {
+        if (arg.* == .literal and arg.literal == .string_val) return true;
+        if (arg.* == .identifier and self.inferred_string_slice_locals.contains(arg.identifier)) return true;
+        if (arg.* == .field_expr and arg.field_expr.expr.* == .identifier and self.struct_literal_bound_locals.contains(arg.field_expr.expr.identifier)) return true;
+        return false;
     }
 
     fn materializeStrEqSliceFromReg(self: *Codegen, orig_reg: []const u8, arg: *const ast.Node, ty: ?*const ast.Type) CodegenError!StrEqSliceArg {

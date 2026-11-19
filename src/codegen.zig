@@ -9810,6 +9810,138 @@ pub const Codegen = struct {
         self.out.items.len = write;
     }
 
+    fn identTokenAt(text: []const u8, start: usize) []const u8 {
+        var end = start;
+        while (end < text.len) : (end += 1) {
+            const c = text[end];
+            const is_ident = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                (c >= '0' and c <= '9') or c == '_';
+            if (!is_ident) break;
+        }
+        return text[start..end];
+    }
+
+    /// A1 minimum-import prune (form B, R441): generate() emits five std
+    /// imports unconditionally, and the SA flattener expands each one even
+    /// when the program never references the module (~206 ms of the hello
+    /// cold-compile floor for the set). Like the thread-runtime prune
+    /// above, decide from the final generated text: delete each import
+    /// line whose marker tokens never occur. Markers are the symbols the
+    /// module itself defines (sci 5ee4ba7b sa_std, read off the files):
+    ///   string.sa        EXPAND names STRING_*/STR_*/*_TO_STRING/
+    ///                    *_STRING_BUF (exactly its 232 [MACRO] defs)
+    ///   string_format.sa EXPAND names FORMAT_*/STRFMT*
+    ///   io/print.sai     call @sa_print_bytes
+    ///   fmt.sai          call @sa_fmt_* / @sa_mem_free
+    ///   core/panic.sa    EXPAND PANIC/PANIC_MSG/TODO/UNIMPLEMENTED/
+    ///                    UNREACHABLE
+    /// EXPAND SLICE_* names are defined by core/slice.sa, which among the
+    /// five only string.sa and string_format.sa import; when no string
+    /// markers are present they keep string_format.sa (the smaller
+    /// closure) as the slice provider. The same provider rule covers
+    /// core/mem.sa's @export face (sa_mem_set / sa_mem_copy /
+    /// sa_mem_copy_nonoverlapping): codegen's own SLA_ARRAY_FILL_U8
+    /// expansion and its direct mem_copy emissions call them, and among
+    /// the five only the string files' vec.sa chain reaches mem.sa.
+    /// (The FILL macro's definition body, emitted into every output,
+    /// contains a literal "call @sa_mem_set" line, so the marker is the
+    /// EXPAND token, never that call.) Two std files rely on that same
+    /// path without importing slice themselves (cow.sa via borrow.sa's
+    /// COW_SLICE_EQ_U64, alloc/string.sa's SLICE_NEW — audit script in
+    /// the A1 line directory), so a direct import of either also keeps
+    /// string_format.sa. Matching is by token (the identifier right
+    /// after "EXPAND " / "call @"), never raw substrings, so marker
+    /// names inside string-literal data cannot false-positive; a missed
+    /// marker fails loudly at flatten time, never silently.
+    fn pruneUnusedStdImports(self: *Codegen) void {
+        const output = self.out.items;
+        var need_string = false;
+        var need_format = false;
+        var need_print = false;
+        var need_fmt = false;
+        var need_panic = false;
+        var need_slice = std.mem.indexOf(u8, output, "@import \"sa_std/cow.sa\"") != null or
+            std.mem.indexOf(u8, output, "@import \"sa_std/alloc/string.sa\"") != null;
+        var need_mem = false;
+
+        var pos: usize = 0;
+        while (std.mem.indexOfPos(u8, output, pos, "EXPAND ")) |at| {
+            const tok = identTokenAt(output, at + "EXPAND ".len);
+            if (tok.len > 0) {
+                if (std.mem.eql(u8, tok, "PANIC") or std.mem.eql(u8, tok, "PANIC_MSG") or
+                    std.mem.eql(u8, tok, "TODO") or std.mem.eql(u8, tok, "UNIMPLEMENTED") or
+                    std.mem.eql(u8, tok, "UNREACHABLE"))
+                {
+                    need_panic = true;
+                } else if (std.mem.startsWith(u8, tok, "FORMAT_") or
+                    std.mem.startsWith(u8, tok, "STRFMT"))
+                {
+                    need_format = true;
+                } else if (std.mem.startsWith(u8, tok, "SLICE_")) {
+                    need_slice = true;
+                } else if (std.mem.eql(u8, tok, "SLA_ARRAY_FILL_U8")) {
+                    need_mem = true;
+                } else if (std.mem.startsWith(u8, tok, "STRING_") or
+                    std.mem.startsWith(u8, tok, "STR_") or
+                    std.mem.endsWith(u8, tok, "_TO_STRING") or
+                    std.mem.endsWith(u8, tok, "_STRING_BUF"))
+                {
+                    need_string = true;
+                }
+            }
+            pos = at + "EXPAND ".len;
+        }
+
+        pos = 0;
+        while (std.mem.indexOfPos(u8, output, pos, "call @")) |at| {
+            const tok = identTokenAt(output, at + "call @".len);
+            if (std.mem.eql(u8, tok, "sa_print_bytes")) {
+                need_print = true;
+            } else if (std.mem.startsWith(u8, tok, "sa_fmt_") or
+                std.mem.eql(u8, tok, "sa_mem_free"))
+            {
+                need_fmt = true;
+            } else if (std.mem.eql(u8, tok, "sa_mem_copy") or
+                std.mem.eql(u8, tok, "sa_mem_copy_nonoverlapping"))
+            {
+                need_mem = true;
+            }
+            pos = at + "call @".len;
+        }
+
+        if ((need_slice or need_mem) and !need_string) need_format = true;
+        if (need_string and need_format and need_print and need_fmt and need_panic) return;
+
+        const Line = struct { text: []const u8, keep: bool };
+        const lines = [_]Line{
+            .{ .text = "@import \"sa_std/string.sa\"\n", .keep = need_string },
+            .{ .text = "@import \"sa_std/string_format.sa\"\n", .keep = need_format },
+            .{ .text = "@import \"sa_std/io/print.sai\"\n", .keep = need_print },
+            .{ .text = "@import \"sa_std/fmt.sai\"\n", .keep = need_fmt },
+            .{ .text = "@import \"sa_std/core/panic.sa\"\n", .keep = need_panic },
+        };
+        var read: usize = 0;
+        var write: usize = 0;
+        while (read < self.out.items.len) {
+            const at_line_start = read == 0 or self.out.items[read - 1] == '\n';
+            if (at_line_start) {
+                var skipped = false;
+                for (lines) |line| {
+                    if (!line.keep and std.mem.startsWith(u8, self.out.items[read..], line.text)) {
+                        read += line.text.len;
+                        skipped = true;
+                        break;
+                    }
+                }
+                if (skipped) continue;
+            }
+            self.out.items[write] = self.out.items[read];
+            write += 1;
+            read += 1;
+        }
+        self.out.items.len = write;
+    }
+
     pub fn generate(self: *Codegen, program: *ast.Node) CodegenError![]const u8 {
         if (program.* != .program) return CodegenError.CodegenError;
         self.global_const_bindings.clearRetainingCapacity();
@@ -10076,6 +10208,7 @@ pub const Codegen = struct {
         try self.emitCloneHelpers();
 
         self.pruneUnusedThreadRuntimeImport();
+        self.pruneUnusedStdImports();
         return self.out.toOwnedSlice() catch return CodegenError.OutOfMemory;
     }
 

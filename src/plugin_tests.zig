@@ -11210,3 +11210,164 @@ test "diag evidence G-1: main frontend reports a missing import as FileNotFound,
         plugin_imports.resolveImportFile(arena.allocator(), ".", "definitely_missing_diag_evidence.sla"),
     );
 }
+
+test "a1 prune drops unreferenced unconditional std imports from generated SA" {
+    // A1 form B (R441): generate() used to emit five std imports
+    // unconditionally; pruneUnusedStdImports now deletes each line whose
+    // marker tokens never occur in the final SA text. The absence
+    // assertions below fail on the pre-prune codegen (all five lines
+    // always present) and pass after; the presence assertions guard
+    // against over-pruning.
+    var original_cwd = try sio.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+    try tdir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const string_line = "@import \"sa_std/string.sa\"";
+    const format_line = "@import \"sa_std/string_format.sa\"";
+    const print_line = "@import \"sa_std/io/print.sai\"";
+    const fmt_line = "@import \"sa_std/fmt.sai\"";
+    const panic_line = "@import \"sa_std/core/panic.sa\"";
+    const all_lines = [_][]const u8{ string_line, format_line, print_line, fmt_line, panic_line };
+
+    const Case = struct {
+        source: []const u8,
+        present: []const []const u8,
+        absent: []const []const u8,
+    };
+    const cases = [_]Case{
+        // Import-free program: every unconditional import is pruned.
+        .{
+            .source =
+            \\fn main() -> i32 {
+            \\    return 0;
+            \\}
+            ,
+            .present = &.{},
+            .absent = &all_lines,
+        },
+        // Formatted print of an integer: print + fmt survive, the
+        // string macro file does not.
+        .{
+            .source =
+            \\fn main() -> i32 {
+            \\    println("{}", 42);
+            \\    return 0;
+            \\}
+            ,
+            .present = &.{print_line},
+            .absent = &.{string_line},
+        },
+        // Bare string literal print: codegen constant-folds the
+        // literal to @const utf8 + call @sa_print_bytes, so no slice
+        // or format machinery is referenced at all and only the
+        // print import survives.
+        .{
+            .source =
+            \\fn main() -> i32 {
+            \\    println("hi");
+            \\    return 0;
+            \\}
+            ,
+            .present = &.{print_line},
+            .absent = &.{ string_line, format_line, fmt_line, panic_line },
+        },
+        // format() builds a String through string_format.sa macros.
+        .{
+            .source =
+            \\fn main() -> i32 {
+            \\    let s = format("v={}", 3);
+            \\    println(s);
+            \\    return 0;
+            \\}
+            ,
+            .present = &.{format_line},
+            .absent = &.{},
+        },
+        // String parameter + str_eq: string.sa markers are emitted, so
+        // the string import must survive the prune.
+        .{
+            .source =
+            \\fn echo(s: String) -> String {
+            \\    return s;
+            \\}
+            \\
+            \\fn main() -> i32 {
+            \\    let r = echo("hi");
+            \\    if !str_eq(r, "hi") { panic(1); };
+            \\    return 0;
+            \\}
+            ,
+            .present = &.{string_line},
+            .absent = &.{},
+        },
+        // panic with a message lowers to EXPAND PANIC_MSG, which
+        // only core/panic.sa provides; a bare panic(code) instead
+        // lowers to the SA panic instruction and needs no import.
+        .{
+            .source =
+            \\fn main() -> i32 {
+            \\    let x = 7;
+            \\    if x == 2 { panic("boom"); };
+            \\    return 0;
+            \\}
+            ,
+            .present = &.{panic_line},
+            .absent = &.{ string_line, format_line },
+        },
+        // A u8 repeat-array literal expands SLA_ARRAY_FILL_U8, whose
+        // body calls @sa_mem_set (core/mem.sa @export). Among the
+        // five, only string_format.sa's vec.sa chain reaches mem.sa,
+        // so it stays as the provider while string.sa is pruned.
+        // (Gate regression: def_sab_fmt_bool_i1 + the two
+        // import-chain tests failed with UnknownRegister before
+        // this marker existed.)
+        .{
+            .source =
+            \\fn main() -> i32 {
+            \\    let a = [0u8; 16];
+            \\    let b = a[0];
+            \\    return b as i32;
+            \\}
+            ,
+            .present = &.{format_line},
+            .absent = &.{string_line},
+        },
+    };
+
+    for (cases, 0..) |case, case_idx| {
+        try tdir.writeFile(.{ .sub_path = "main.sla", .data = case.source });
+        stderr_buf.clearRetainingCapacity();
+        const sa_code = (try compileSlaToSaString(
+            arena.allocator(),
+            "main.sla",
+            "main.test.sa",
+            stderr_fw.writer(),
+        )) orelse {
+            try stderr_fw.writer().flush();
+            std.debug.print("{s}", .{stderr_buf.items});
+            return error.TestUnexpectedResult;
+        };
+        for (case.present) |line| {
+            if (std.mem.indexOf(u8, sa_code, line) == null) {
+                std.debug.print("a1 prune case {d}: expected present: {s}\nSA:\n{s}\n", .{ case_idx, line, sa_code });
+            }
+            try std.testing.expect(std.mem.indexOf(u8, sa_code, line) != null);
+        }
+        for (case.absent) |line| {
+            if (std.mem.indexOf(u8, sa_code, line) != null) {
+                std.debug.print("a1 prune case {d}: expected absent: {s}\nSA:\n{s}\n", .{ case_idx, line, sa_code });
+            }
+            try std.testing.expect(std.mem.indexOf(u8, sa_code, line) == null);
+        }
+    }
+}

@@ -1,0 +1,41 @@
+// Demo 02 — the sanctioned way for a value to cross a task boundary:
+// ownership transfer through a channel, not a shared borrow.
+// Two channels (request/response), 50 ping-pong rounds. The worker owns
+// both channel ends; main owns neither borrow across the spawn.
+// Verified 2026-11-20 on sa 0.1.9 + sa_plugin_sla 2b65a1dd: prints 50, rc=0.
+@import "sa_std/task.sai"
+@import "sa_std/thread.sa"
+@import "sa_std/core/result.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+fn pp_worker(req: Chan<u64>, resp: Chan<u64>) {
+    let i = 0;
+    while i < 50 {
+        let (v, closed) = req.recv();
+        if closed { panic(9601); };
+        resp.send(v + 1);
+        i = i + 1;
+    }
+}
+
+fn main() -> i32 {
+    let req: Chan<u64> = Chan::new(0);
+    let resp: Chan<u64> = Chan::new(0);
+    let h = thread::spawn(^|| pp_worker(req, resp));
+    let i = 0;
+    let last: u64 = 0;
+    while i < 50 {
+        req.send(i as u64);
+        let (r, closed) = resp.recv();
+        if closed { panic(9602); };
+        last = r;
+        i = i + 1;
+    }
+    let jr = h.join();
+    println("{}", last);
+    req.destroy();
+    resp.destroy();
+    if last != 50 { return 1; };
+    return 0;
+}

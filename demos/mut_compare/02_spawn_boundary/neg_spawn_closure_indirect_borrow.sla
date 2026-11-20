@@ -1,0 +1,22 @@
+// NEGATIVE DEMO — `sa sla check` must REJECT this file with BorrowEscape.
+// Indirect capture: the borrow is first bound to `r`, then the closure
+// captures `r`. The guard follows the binding (sa_plugin_sla 2b65a1dd;
+// Rust sla b06c05ee rejects the same file the same way).
+@import "sa_std/thread.sa"
+@import "sa_std/core/result.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+fn modify(value: &i32) -> void {
+    *value += 10;
+}
+
+fn main() -> i32 {
+    let number = 100;
+    let r = &number;
+    let h = thread::spawn(^|| modify(r));
+    println("{}", number);
+    let st = h.join().unwrap();
+    println("{}", number);
+    return 0;
+}

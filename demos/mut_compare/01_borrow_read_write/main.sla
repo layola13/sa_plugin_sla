@@ -1,0 +1,42 @@
+// Demo 01 — one borrow type covers read and write (SLA vs Rust &mut).
+// Rust needs two signatures: read(&i32) and modify(&mut i32).
+// SLA uses one: both functions take &i32. The SA Referee decides
+// Locked_Read / Locked_Mut from the actual load/store instructions,
+// so the signature does not change when an implementation starts writing.
+// The direct translation of the Rust &mut example needs no Cell/RefCell.
+// Verified 2026-11-20 on sa 0.1.9 + sa_plugin_sla 2b65a1dd: prints 100, 110.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+fn read(value: &i32) -> void {
+    println("{}", *value);
+}
+
+fn modify(value: &i32) -> void {
+    *value += 10;
+}
+
+fn modify_binop(value: &i32) -> void {
+    *value = *value + 10;
+}
+
+fn main() -> i32 {
+    let number = 100;
+    read(&number);
+    modify(&number);
+    println("{}", number);
+    return 0;
+}
+
+@test "mut_compare 01 borrow read and write"() {
+    let number = 100;
+    read(&number);
+    modify(&number);
+    if number != 110 {
+        panic(1);
+    };
+    modify_binop(&number);
+    if number != 120 {
+        panic(2);
+    };
+}

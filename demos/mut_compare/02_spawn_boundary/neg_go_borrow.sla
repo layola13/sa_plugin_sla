@@ -1,0 +1,19 @@
+// NEGATIVE DEMO — `sa sla check` must REJECT this file. A borrow (&number)
+// must not cross a task boundary. The `go` form already had this guard;
+// the closure form is rejected with BorrowEscape since sa_plugin_sla 2b65a1dd.
+@import "sa_std/task.sai"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+fn modify(value: &i32) -> void {
+    *value += 10;
+}
+
+fn main() -> i32 {
+    let number = 100;
+    let h = go modify(&number);
+    number = 200;
+    let st = sa_task_join(h);
+    println("{}", number);
+    return 0;
+}

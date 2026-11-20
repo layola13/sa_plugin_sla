@@ -1,0 +1,21 @@
+// NEGATIVE DEMO — `sa sla check` must REJECT this file with BorrowEscape.
+// A closure passed to thread::spawn must not capture a borrow of an
+// enclosing-scope place (sa_plugin_sla 2b65a1dd, DEF-SLA-SPAWN-CLOSURE-BORROW-ESCAPE).
+// Before that fix this file checked, built, and ran, printing 210.
+@import "sa_std/thread.sa"
+@import "sa_std/core/result.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+fn modify(value: &i32) -> void {
+    *value += 10;
+}
+
+fn main() -> i32 {
+    let number = 100;
+    let h = thread::spawn(^|| modify(&number));
+    number = 200;
+    let r = h.join().unwrap();
+    println("{}", number);
+    return 0;
+}

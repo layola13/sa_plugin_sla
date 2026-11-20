@@ -3395,22 +3395,37 @@ pub const Parser = struct {
                 return node;
             },
             .ampersand => {
+                // Borrow operand at precedence 8, same convention as
+                // prefix `-`/`!`: binary +/- (7) and */% (8) stay
+                // OUTSIDE the borrow — `&x + y` reads `(&x) + y`,
+                // never `&(x + y)` — while `as` (9) and postfix call/
+                // index/field (10) still fold into the operand.
                 self.advance();
-                const expr = try self.parseExpr(6);
+                const expr = try self.parseExpr(8);
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .borrow_expr = .{ .expr = expr } };
                 return node;
             },
             .caret => {
+                // Move operand at precedence 8, same convention as
+                // prefix `-`/`!` (see .ampersand): binary +/- (7) and
+                // */% (8) stay OUTSIDE the move.
                 self.advance();
-                const expr = try self.parseExpr(6);
+                const expr = try self.parseExpr(8);
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .move_expr = .{ .expr = expr } };
                 return node;
             },
             .asterisk => {
+                // DEF-SLA-CHECKER-BINOP-DEREF-OPERAND: deref operand at
+                // precedence 8, same convention as prefix `-`/`!` (see
+                // .ampersand): binary +/- (7) and */% (8) stay OUTSIDE
+                // the deref — `*value + 10` reads `(*value) + 10`,
+                // never `*(value + 10)` (the old precedence 6 folded
+                // every binary op into the operand, so the checker saw
+                // a borrow on the left of `+` and rejected it).
                 self.advance();
-                const expr = try self.parseExpr(6);
+                const expr = try self.parseExpr(8);
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .deref_expr = .{ .expr = expr } };
                 return node;

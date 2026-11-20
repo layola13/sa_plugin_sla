@@ -4068,6 +4068,257 @@ pub const TypeChecker = struct {
         }
     }
 
+    /// DEF-SLA-SPAWN-CLOSURE-BORROW-ESCAPE: whether a type is or
+    /// contains a borrow. Unlike typeForbiddenAcrossBoundary this
+    /// treats closures and futures as ordinary cargo: thread::spawn
+    /// exists to move futures onto OS threads (the async pool) and
+    /// its own argument is a closure, so only borrows — the values
+    /// that alias the spawner frame — are poison at that boundary.
+    fn typeContainsBorrow(self: *TypeChecker, ty: *ast.Type, depth: usize) bool {
+        if (depth > 8) return false;
+        switch (ty.*) {
+            .borrow => return true,
+            .pointer => |inner| return self.typeContainsBorrow(inner, depth + 1),
+            .array => |arr| return self.typeContainsBorrow(arr.elem, depth + 1),
+            .tuple => |tup| {
+                for (tup.elems) |elem| if (self.typeContainsBorrow(elem, depth + 1)) return true;
+                return false;
+            },
+            .user_defined => |ud| {
+                if (self.structs.get(ud.name)) |decl| {
+                    for (decl.fields) |field| if (self.typeContainsBorrow(field.ty, depth + 1)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    /// The closure literal handed to thread::spawn, peeling the
+    /// move (`^`) wrapper; mirrors codegen's closureLiteralFromExpr.
+    fn spawnClosureLiteralOf(expr: *const ast.Node) ?*const ast.ClosureLiteral {
+        return switch (expr.*) {
+            .closure_literal => |*lit| lit,
+            .move_expr => |mv| spawnClosureLiteralOf(mv.expr),
+            else => null,
+        };
+    }
+
+    /// DEF-SLA-SPAWN-CLOSURE-BORROW-ESCAPE: the `go` boundary rejects
+    /// borrowed spawn parameters (checkGoExpr), but a closure handed
+    /// to thread::spawn runs on another OS thread while its captures
+    /// are materialized from the spawner's frame slots, so frame
+    /// places alias across the boundary. Three shapes are rejected
+    /// at the spawn site:
+    ///   - a borrow created inside the body against an enclosing
+    ///     place (`modify(&number)`, `&local.field`, `&local[i]`);
+    ///   - a borrow-typed (or borrow-containing) enclosing binding
+    ///     used by the body (`let r = &number; spawn(^|| f(r))`);
+    ///   - an assignment to an enclosing place from inside the body.
+    /// Owned captures — Arc clones, futures, fn pointers, plain
+    /// values — are the supported pattern and pass untouched, as do
+    /// borrows of closure-local bindings (the thread's own frame).
+    fn checkSpawnClosureBorrowEscape(self: *TypeChecker, lit: ast.ClosureLiteral, scope: *Scope) TypeError!void {
+        var bound = std.StringHashMap(void).init(self.allocator);
+        defer bound.deinit();
+        var added = std.array_list.Managed([]const u8).init(self.allocator);
+        defer added.deinit();
+        for (lit.params) |p| try self.spawnGuardBind(&bound, &added, p.name);
+        try self.walkSpawnBoundaryNode(lit.body, scope, &bound, &added);
+    }
+
+    fn spawnGuardBind(self: *TypeChecker, bound: *std.StringHashMap(void), added: *std.array_list.Managed([]const u8), name: []const u8) TypeError!void {
+        _ = self;
+        if (bound.contains(name)) return;
+        bound.put(name, {}) catch return TypeError.OutOfMemory;
+        added.append(name) catch return TypeError.OutOfMemory;
+    }
+
+    fn spawnGuardUnbindTo(self: *TypeChecker, bound: *std.StringHashMap(void), added: *std.array_list.Managed([]const u8), mark: usize) void {
+        _ = self;
+        while (added.items.len > mark) {
+            const name = added.orderedRemove(added.items.len - 1);
+            _ = bound.remove(name);
+        }
+    }
+
+    fn walkSpawnBoundaryBlock(self: *TypeChecker, stmts: []const *ast.Node, scope: *Scope, bound: *std.StringHashMap(void), added: *std.array_list.Managed([]const u8)) TypeError!void {
+        const mark = added.items.len;
+        defer self.spawnGuardUnbindTo(bound, added, mark);
+        for (stmts) |stmt| try self.walkSpawnBoundaryNode(stmt, scope, bound, added);
+    }
+
+    fn walkSpawnBoundaryNode(self: *TypeChecker, node: *const ast.Node, scope: *Scope, bound: *std.StringHashMap(void), added: *std.array_list.Managed([]const u8)) TypeError!void {
+        switch (node.*) {
+            .borrow_expr => |b| {
+                if (rootIdentifier(b.expr)) |root| {
+                    if (!bound.contains(root) and scope.lookup(root) != null) {
+                        self.setError("thread::spawn: closure borrows `{s}` from the enclosing scope, which would dangle or race across the thread boundary; pass an owned value (such as an Arc clone) or a raw pointer instead", .{root});
+                        return TypeError.BorrowEscape;
+                    }
+                }
+                try self.walkSpawnBoundaryNode(b.expr, scope, bound, added);
+            },
+            .identifier => |name| {
+                if (!bound.contains(name)) {
+                    if (scope.lookup(name)) |sym| {
+                        if (self.typeContainsBorrow(sym.ty, 0)) {
+                            self.setError("thread::spawn: closure captures borrowed value `{s}` from the enclosing scope, which would dangle or race across the thread boundary; pass an owned value (such as an Arc clone) or a raw pointer instead", .{name});
+                            return TypeError.BorrowEscape;
+                        }
+                    }
+                }
+            },
+            .closure_literal => |inner| {
+                const mark = added.items.len;
+                for (inner.params) |p| try self.spawnGuardBind(bound, added, p.name);
+                try self.walkSpawnBoundaryNode(inner.body, scope, bound, added);
+                self.spawnGuardUnbindTo(bound, added, mark);
+            },
+            .let_stmt => |let| {
+                try self.walkSpawnBoundaryNode(let.value, scope, bound, added);
+                try self.spawnGuardBind(bound, added, let.name);
+            },
+            .const_stmt => |c| {
+                try self.walkSpawnBoundaryNode(c.value, scope, bound, added);
+                try self.spawnGuardBind(bound, added, c.name);
+            },
+            .var_stmt => |v| try self.spawnGuardBind(bound, added, v.name),
+            .let_destructure_stmt => |let| {
+                try self.walkSpawnBoundaryNode(let.value, scope, bound, added);
+                for (let.names) |n| try self.spawnGuardBind(bound, added, n);
+                if (let.rest_name) |n| try self.spawnGuardBind(bound, added, n);
+            },
+            .let_else_stmt => |let| {
+                try self.walkSpawnBoundaryNode(let.value, scope, bound, added);
+                try self.walkSpawnBoundaryBlock(let.else_block, scope, bound, added);
+                for (let.pattern.bindings) |n| try self.spawnGuardBind(bound, added, n);
+            },
+            .assign_stmt => |assign| {
+                if (rootIdentifier(assign.target)) |root| {
+                    if (!bound.contains(root) and scope.lookup(root) != null) {
+                        self.setError("thread::spawn: closure writes `{s}` in the enclosing scope, which would race across the thread boundary; pass an owned value (such as an Arc clone) or a raw pointer instead", .{root});
+                        return TypeError.BorrowEscape;
+                    }
+                }
+                try self.walkSpawnBoundaryNode(assign.target, scope, bound, added);
+                try self.walkSpawnBoundaryNode(assign.value, scope, bound, added);
+            },
+            .block_stmt => |blk| try self.walkSpawnBoundaryBlock(blk.body, scope, bound, added),
+            .arena_stmt => |a| try self.walkSpawnBoundaryBlock(a.body, scope, bound, added),
+            .unsafe_expr => |ue| try self.walkSpawnBoundaryBlock(ue.body, scope, bound, added),
+            .expr_stmt => |e| try self.walkSpawnBoundaryNode(e, scope, bound, added),
+            .return_stmt => |ret| {
+                if (ret.value) |v| try self.walkSpawnBoundaryNode(v, scope, bound, added);
+            },
+            .defer_stmt => |d| try self.walkSpawnBoundaryNode(d.call, scope, bound, added),
+            .release_stmt => |rel| {
+                if (!bound.contains(rel.var_name)) {
+                    if (scope.lookup(rel.var_name)) |sym| {
+                        if (self.typeContainsBorrow(sym.ty, 0)) {
+                            self.setError("thread::spawn: closure releases borrowed value `{s}` from the enclosing scope, which would dangle or race across the thread boundary; pass an owned value (such as an Arc clone) or a raw pointer instead", .{rel.var_name});
+                            return TypeError.BorrowEscape;
+                        }
+                    }
+                }
+            },
+            .for_stmt => |f| {
+                try self.walkSpawnBoundaryNode(f.start, scope, bound, added);
+                if (f.end) |e| try self.walkSpawnBoundaryNode(e, scope, bound, added);
+                const mark = added.items.len;
+                try self.spawnGuardBind(bound, added, f.var_name);
+                try self.walkSpawnBoundaryBlock(f.body, scope, bound, added);
+                self.spawnGuardUnbindTo(bound, added, mark);
+            },
+            .while_stmt => |w| {
+                try self.walkSpawnBoundaryNode(w.cond, scope, bound, added);
+                const mark = added.items.len;
+                if (w.let_pattern) |pat| for (pat.bindings) |n| try self.spawnGuardBind(bound, added, n);
+                try self.walkSpawnBoundaryBlock(w.body, scope, bound, added);
+                self.spawnGuardUnbindTo(bound, added, mark);
+            },
+            .if_expr => |ife| {
+                try self.walkSpawnBoundaryNode(ife.cond, scope, bound, added);
+                const mark = added.items.len;
+                if (ife.let_chain) |chain| {
+                    for (chain) |cond| {
+                        try self.walkSpawnBoundaryNode(cond.value, scope, bound, added);
+                        for (cond.pattern.bindings) |n| try self.spawnGuardBind(bound, added, n);
+                    }
+                }
+                try self.walkSpawnBoundaryBlock(ife.then_block, scope, bound, added);
+                self.spawnGuardUnbindTo(bound, added, mark);
+                if (ife.else_block) |else_block| try self.walkSpawnBoundaryBlock(else_block, scope, bound, added);
+            },
+            .match_expr => |mat| {
+                try self.walkSpawnBoundaryNode(mat.val, scope, bound, added);
+                for (mat.cases) |case| {
+                    const mark = added.items.len;
+                    for (case.pattern.bindings) |n| try self.spawnGuardBind(bound, added, n);
+                    if (case.guard) |g| try self.walkSpawnBoundaryNode(g, scope, bound, added);
+                    try self.walkSpawnBoundaryBlock(case.body, scope, bound, added);
+                    self.spawnGuardUnbindTo(bound, added, mark);
+                }
+            },
+            .switch_expr => |swe| {
+                try self.walkSpawnBoundaryNode(swe.val, scope, bound, added);
+                for (swe.cases) |case| try self.walkSpawnBoundaryBlock(case.body, scope, bound, added);
+            },
+            .select_stmt => |sel| {
+                for (sel.cases) |case| {
+                    try self.walkSpawnBoundaryNode(case.call, scope, bound, added);
+                    const mark = added.items.len;
+                    if (case.bind_name) |n| try self.spawnGuardBind(bound, added, n);
+                    if (case.bind_closed) |n| try self.spawnGuardBind(bound, added, n);
+                    try self.walkSpawnBoundaryBlock(case.body, scope, bound, added);
+                    self.spawnGuardUnbindTo(bound, added, mark);
+                }
+                if (sel.default_body) |b| try self.walkSpawnBoundaryBlock(b, scope, bound, added);
+                if (sel.timeout_expr) |e| try self.walkSpawnBoundaryNode(e, scope, bound, added);
+                if (sel.timeout_body) |b| try self.walkSpawnBoundaryBlock(b, scope, bound, added);
+            },
+            .go_expr => |g| try self.walkSpawnBoundaryNode(g.call, scope, bound, added),
+            .call_expr => |call| {
+                if (call.callee) |callee| try self.walkSpawnBoundaryNode(callee, scope, bound, added);
+                for (call.args) |arg| try self.walkSpawnBoundaryNode(arg, scope, bound, added);
+            },
+            .binary_expr => |bin| {
+                try self.walkSpawnBoundaryNode(bin.left, scope, bound, added);
+                try self.walkSpawnBoundaryNode(bin.right, scope, bound, added);
+            },
+            .move_expr => |m| try self.walkSpawnBoundaryNode(m.expr, scope, bound, added),
+            .deref_expr => |d| try self.walkSpawnBoundaryNode(d.expr, scope, bound, added),
+            .cast_expr => |c| try self.walkSpawnBoundaryNode(c.expr, scope, bound, added),
+            .try_expr => |t| try self.walkSpawnBoundaryNode(t.expr, scope, bound, added),
+            .await_expr => |a| try self.walkSpawnBoundaryNode(a.expr, scope, bound, added),
+            .field_expr => |f| try self.walkSpawnBoundaryNode(f.expr, scope, bound, added),
+            .index_expr => |ix| {
+                try self.walkSpawnBoundaryNode(ix.target, scope, bound, added);
+                try self.walkSpawnBoundaryNode(ix.index, scope, bound, added);
+            },
+            .slice_expr => |s| {
+                try self.walkSpawnBoundaryNode(s.target, scope, bound, added);
+                try self.walkSpawnBoundaryNode(s.start, scope, bound, added);
+                try self.walkSpawnBoundaryNode(s.end, scope, bound, added);
+            },
+            .struct_literal => |lit| {
+                for (lit.fields) |field| try self.walkSpawnBoundaryNode(field.value, scope, bound, added);
+                if (lit.update_expr) |u| try self.walkSpawnBoundaryNode(u, scope, bound, added);
+            },
+            .enum_literal => |lit| {
+                for (lit.fields) |field| try self.walkSpawnBoundaryNode(field.value, scope, bound, added);
+            },
+            .tuple_literal => |lit| {
+                for (lit.elements) |e| try self.walkSpawnBoundaryNode(e, scope, bound, added);
+            },
+            .array_literal => |lit| {
+                for (lit.elements) |e| try self.walkSpawnBoundaryNode(e, scope, bound, added);
+            },
+            .repeat_array_literal => |lit| try self.walkSpawnBoundaryNode(lit.value, scope, bound, added),
+            else => {},
+        }
+    }
+
     /// The goroutine entry receives exactly one word: pointer,
     /// word-sized scalar, function pointer, or a Chan handle.
     fn goParamIsWordOrPtr(ty: *ast.Type) bool {
@@ -9242,6 +9493,13 @@ pub const TypeChecker = struct {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const closure_ty = try self.checkExpr(call.args[0], scope);
                         if (closure_ty.* != .closure or closure_ty.closure.params.len != 0) return TypeError.TypeMismatch;
+                        // DEF-SLA-SPAWN-CLOSURE-BORROW-ESCAPE: the go
+                        // boundary has always rejected borrowed spawn
+                        // parameters; apply the equivalent guard to a
+                        // closure literal handed to thread::spawn.
+                        if (spawnClosureLiteralOf(call.args[0])) |lit| {
+                            try self.checkSpawnClosureBorrowEscape(lit.*, scope);
+                        }
                         const ret_ty = if (closure_ty.closure.ret.* == .primitive and closure_ty.closure.ret.primitive == .integer)
                             try self.makeI32Type()
                         else

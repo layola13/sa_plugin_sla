@@ -65,7 +65,7 @@
     let j: u64 = 0;
     while j < n {
         let b: u8 = 0;
-        SLICE_GET(b, sl, j);
+        SLICE_GET_U8(b, sl, j);
         if b != PTR_BYTE_AT(sp, j) { panic(81600 + (j as i32)); };
         j = j + 1;
     }
@@ -81,12 +81,12 @@
     }
     let sl: Slice<u8> = VEC_AS_SLICE(v);
     let b: u8 = 0;
-    SLICE_GET(b, sl, 2);
+    SLICE_GET_U8(b, sl, 2);
     if b != 32 { panic(81511); };
     let j: u64 = 0;
     while j < 4 {
         let b: u8 = 0;
-        SLICE_GET(b, sl, j);
+        SLICE_GET_U8(b, sl, j);
         if b != ((j as u8) + 30) { panic(81700 + (j as i32)); };
         j = j + 1;
     }

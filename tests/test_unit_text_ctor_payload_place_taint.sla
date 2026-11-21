@@ -48,10 +48,10 @@ fn verify3() -> Result<Vec<u8>, i32> {
             if len(v) != 2 { panic(26924); };
             let sl: Slice<u8> = VEC_AS_SLICE(v);
             let b0: u8 = 0;
-            SLICE_GET(b0, sl, 0);
+            SLICE_GET_U8(b0, sl, 0);
             if b0 != 7 { panic(26925); };
             let b1: u8 = 0;
-            SLICE_GET(b1, sl, 1);
+            SLICE_GET_U8(b1, sl, 1);
             if b1 != 9 { panic(26926); };
         },
         Err(e) => { panic(26927); },

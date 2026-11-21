@@ -4936,6 +4936,21 @@ pub fn executorTaskBufferPlan(ty: *const ast.Type) ?ExecutorTaskBufferPlan {
 }
 
 pub fn vecElementSlotSize(ty: *const ast.Type) usize {
+    // VECFIX phase 1 (compact stride): primitive scalars narrower than
+    // a word store at their ABI width -- a Vec<u8> buffer is a packed
+    // byte buffer, not one word per byte. Every stride consumer (the
+    // emitters' offset arithmetic, the sa_vec_* runtime, the typed
+    // SLICE/VEC getters) takes this value as the byte stride and the
+    // runtime stores/loads dispatch on it, so the surface moves as
+    // one. Aggregates and pointers keep the historical word slot:
+    // their slot holds a single handle word.
+    switch (ty.*) {
+        .primitive => |prim| switch (prim) {
+            .boolean, .u8, .i8, .u16, .i16, .u32, .i32, .f32 => return abiTypeSize(ty),
+            else => {},
+        },
+        else => {},
+    }
     return @max(abiTypeSize(ty), 8);
 }
 

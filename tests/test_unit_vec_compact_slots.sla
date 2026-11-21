@@ -1,0 +1,233 @@
+@import "sa_std/vec.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/core/slice.sa"
+@import "sa_std/vec_packed.sla"
+
+// VECFIX phase 1 regression: primitive scalar Vec elements are stored
+// packed at their ABI width (u8 = 1B, u16 = 2B, i32 = 4B slots)
+// instead of one 8-byte word slot per element. The surface tests pin
+// push / index / index-assign / pop / remove / slice / iter
+// correctness per width -- they fail if any stride consumer is left
+// on the word layout. The raw-image tests pin the representation
+// itself -- they fail on the pre-fix word-slot layout.
+
+@test "vec u8 compact surface"() {
+    let v: Vec<u8> = Vec::new();
+    let i: int = 0;
+    while i < 256 {
+        v.push(((i * 7 + 3) % 256) as u8);
+        i = i + 1;
+    }
+    if (len(v) as u64) != 256 { panic(901); };
+    let j: int = 0;
+    while j < 256 {
+        if v[j] != (((j * 7 + 3) % 256) as u8) { panic(902); };
+        j = j + 1;
+    }
+    v[10] = 200 as u8;
+    if v[10] != 200 { panic(903); };
+    if v[9] != (((9 * 7 + 3) % 256) as u8) { panic(904); };
+    if v[11] != (((11 * 7 + 3) % 256) as u8) { panic(905); };
+    let last = v.pop().unwrap();
+    if last != (((255 * 7 + 3) % 256) as u8) { panic(906); };
+    if (len(v) as u64) != 255 { panic(907); };
+    let head = v.remove(0);
+    if head != (3 as u8) { panic(908); };
+    if v[0] != (((1 * 7 + 3) % 256) as u8) { panic(909); };
+}
+
+@test "vec u16 compact surface"() {
+    let v: Vec<u16> = Vec::new();
+    v.push(4660 as u16);
+    v.push(255 as u16);
+    v.push(65535 as u16);
+    v.push(0 as u16);
+    if v[0] != 4660 { panic(911); };
+    if v[1] != 255 { panic(912); };
+    if v[2] != 65535 { panic(913); };
+    if v[3] != 0 { panic(914); };
+    v[1] = 48879 as u16;
+    if v[1] != 48879 { panic(915); };
+    if v[0] != 4660 { panic(916); };
+    if v[2] != 65535 { panic(917); };
+    let p = v.pop().unwrap();
+    if p != 0 { panic(918); };
+    let r = v.remove(0);
+    if r != 4660 { panic(919); };
+    if v[0] != 48879 { panic(920); };
+    if (len(v) as u64) != 2 { panic(921); };
+}
+
+@test "vec i32 compact signed surface"() {
+    let v: Vec<i32> = Vec::new();
+    let a: i32 = 0 - 1;
+    let b: i32 = 0 - 123456;
+    let c: i32 = 0 - 99999;
+    let d: i32 = 2147483647;
+    v.push(a);
+    v.push(b);
+    v.push(c);
+    v.push(d);
+    if v[0] != a { panic(931); };
+    if v[1] != b { panic(932); };
+    if v[2] != c { panic(933); };
+    if v[3] != d { panic(934); };
+    v[1] = 0 - 777 as i32;
+    if v[1] != (0 - 777) { panic(935); };
+    if v[0] != a { panic(936); };
+    if v[2] != c { panic(937); };
+    let p = v.pop().unwrap();
+    if p != d { panic(938); };
+    let p2 = v.pop().unwrap();
+    if p2 != c { panic(939); };
+    let r = v.remove(0);
+    if r != a { panic(940); };
+}
+
+@test "vec bool compact surface"() {
+    let v: Vec<bool> = Vec::new();
+    let i: int = 0;
+    while i < 30 {
+        v.push(i % 3 == 0);
+        i = i + 1;
+    }
+    let count: int = 0;
+    let j: int = 0;
+    while j < 30 {
+        if v[j] { count = count + 1; };
+        j = j + 1;
+    }
+    if count != 10 { panic(941); };
+    let p = v.pop().unwrap();
+    if p { panic(942); };
+}
+
+@test "vec i32 iter sum"() {
+    let v: Vec<i32> = Vec::new();
+    let i: int = 0;
+    while i < 100 {
+        v.push(i as i32);
+        i = i + 1;
+    }
+    let total: int = v.iter().sum();
+    if total != 4950 { panic(955); };
+}
+
+@test "vec u8 slice view"() {
+    let v: Vec<u8> = Vec::new();
+    let i: int = 0;
+    while i < 100 {
+        v.push(i as u8);
+        i = i + 1;
+    }
+    let sl: Slice<u8> = VEC_AS_SLICE(v);
+    let n: u64 = 0;
+    SLICE_GET_LEN(n, sl);
+    if n != 100 { panic(952); };
+    let ssum: int = 0;
+    let j: int = 0;
+    while j < 100 {
+        ssum = ssum + (sl[j] as int);
+        j = j + 1;
+    }
+    if ssum != 4950 { panic(953); };
+    let b: u8 = 0;
+    SLICE_GET_U8(b, sl, 77);
+    if b != 77 { panic(954); };
+}
+
+@test "vec u8 raw image is packed"() {
+    let v: Vec<u8> = Vec::new();
+    v.push(104 as u8);
+    v.push(105 as u8);
+    v.push(106 as u8);
+    let p: ptr = VEC_AS_PTR(v);
+    let b0: u8 = PTR_BYTE_AT(p, 0);
+    let b1: u8 = PTR_BYTE_AT(p, 1);
+    let b2: u8 = PTR_BYTE_AT(p, 2);
+    if b0 != 104 { panic(961); };
+    if b1 != 105 { panic(962); };
+    if b2 != 106 { panic(963); };
+}
+
+@test "vec u16 raw image is packed"() {
+    let v: Vec<u16> = Vec::new();
+    v.push(4660 as u16);
+    v.push(43981 as u16);
+    let p: ptr = VEC_AS_PTR(v);
+    let b0: u8 = PTR_BYTE_AT(p, 0);
+    let b1: u8 = PTR_BYTE_AT(p, 1);
+    let b2: u8 = PTR_BYTE_AT(p, 2);
+    let b3: u8 = PTR_BYTE_AT(p, 3);
+    if b0 != 52 { panic(964); };
+    if b1 != 18 { panic(965); };
+    if b2 != 205 { panic(966); };
+    if b3 != 171 { panic(967); };
+}
+
+@test "vec i32 raw image is packed"() {
+    let v: Vec<i32> = Vec::new();
+    let a: i32 = 0 - 2;
+    v.push(a);
+    v.push(70000 as i32);
+    let p: ptr = VEC_AS_PTR(v);
+    let b0: u8 = PTR_BYTE_AT(p, 0);
+    let b1: u8 = PTR_BYTE_AT(p, 1);
+    let b4: u8 = PTR_BYTE_AT(p, 4);
+    let b5: u8 = PTR_BYTE_AT(p, 5);
+    let b6: u8 = PTR_BYTE_AT(p, 6);
+    let b7: u8 = PTR_BYTE_AT(p, 7);
+    if b0 != 254 { panic(968); };
+    if b1 != 255 { panic(969); };
+    if b4 != 112 { panic(970); };
+    if b5 != 17 { panic(975); };
+    if b6 != 1 { panic(976); };
+    if b7 != 0 { panic(977); };
+}
+
+@test "vec u8 large buffer byte integrity"() {
+    let v: Vec<u8> = Vec::new();
+    let i: int = 0;
+    while i < 100000 {
+        v.push(((i * 31 + i / 251) % 256) as u8);
+        i = i + 1;
+    }
+    if (len(v) as u64) != 100000 { panic(971); };
+    let bad: int = 0;
+    let j: int = 0;
+    while j < 100000 {
+        if v[j] != (((j * 31 + j / 251) % 256) as u8) { bad = bad + 1; };
+        j = j + 1;
+    }
+    if bad != 0 { panic(972); };
+    let p: ptr = VEC_AS_PTR(v);
+    let s1: u8 = PTR_BYTE_AT(p, 4096);
+    if s1 != (((4096 * 31 + 4096 / 251) % 256) as u8) { panic(973); };
+    let s2: u8 = PTR_BYTE_AT(p, 99999);
+    if s2 != (((99999 * 31 + 99999 / 251) % 256) as u8) { panic(974); };
+}
+
+@test "vec packed extend export roundtrip"() {
+    let src: [u8; 6] = [0u8; 6];
+    src[0] = 52;
+    src[1] = 18;
+    src[2] = 255;
+    src[3] = 0;
+    src[4] = 1;
+    src[5] = 128;
+    let sp: ptr = PTR_BYTE_ADD(&src, 0);
+    let v: Vec<u16> = Vec::new();
+    v = sa_vec_u16_extend_packed(v, sp, 3);
+    if v[0] != 4660 { panic(981); };
+    if v[1] != 255 { panic(982); };
+    if v[2] != 32769 { panic(983); };
+    let dst: [u8; 6] = [0u8; 6];
+    let dp: ptr = PTR_BYTE_ADD(&dst, 0);
+    let (st, n) = sa_vec_export_packed_u16(&v, dp, 6);
+    if st != 0 { panic(984); };
+    if n != 6 { panic(985); };
+    if dst[0] != 52 { panic(986); };
+    if dst[1] != 18 { panic(987); };
+    if dst[4] != 1 { panic(988); };
+    if dst[5] != 128 { panic(989); };
+}

@@ -46,10 +46,10 @@ fn http_status(nm: Vec<u8>) -> u64 {
     SLICE_GET_LEN(n, sl);
     if n != 4 { return 1; };
     let b0: u8 = 0;
-    SLICE_GET(b0, sl, 0);
+    SLICE_GET_U8(b0, sl, 0);
     if b0 != 104 { return 2; };
     let b3: u8 = 0;
-    SLICE_GET(b3, sl, 3);
+    SLICE_GET_U8(b3, sl, 3);
     if b3 != 112 { return 3; };
     return 0;
 }

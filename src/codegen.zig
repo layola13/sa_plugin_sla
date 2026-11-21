@@ -4170,11 +4170,14 @@ pub const Codegen = struct {
     fn vecElementSlotSize(self: *Codegen, ty: *const ast.Type) usize {
         _ = self;
         // The slot stride must match the shared lowering rule (and SAB):
-        // aggregate elements occupy one pointer-sized slot in a Vec buffer.
-        // The std macros this backend expands (SLICE_GET & friends) hardcode
-        // an 8-byte stride, and sa_vec_push stores a single word per slot;
-        // using the struct's inline size here desynchronized push-built
-        // buffers from slice reads at index >= 1.
+        // aggregate elements occupy one pointer-sized slot in a Vec
+        // buffer, while primitive scalars narrower than a word use
+        // their compact ABI width (VECFIX phase 1) -- sa_vec_push and
+        // the other runtime entry points dispatch their stores/loads
+        // on the same elem_size, so push-built buffers and index reads
+        // stay in lockstep. (The std word macros -- SLICE_GET & friends
+        // -- are a separate word-element contract; they never carry
+        // compact-scalar vecs.)
         return lowering_rules.vecElementSlotSize(ty);
     }
 
@@ -18656,7 +18659,14 @@ pub const Codegen = struct {
                 if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
                 return;
             }
-            self.outPrint("    store {s}+0, {s} as u64\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+            // VECFIX phase 1: a compact-scalar slot is only its ABI
+            // width wide; a full-word store would stomp the following
+            // slots. Other elements keep the historical word store.
+            if (self.vecElementSlotSize(elem_ty) < 8) {
+                self.outPrint("    store {s}+0, {s} as {s}\n", .{ ptr_reg, val_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+            } else {
+                self.outPrint("    store {s}+0, {s} as u64\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+            }
             try self.emitRelease(ptr_reg);
             try self.emitRelease(offset_reg);
             try self.emitRelease(data_reg);
@@ -21694,8 +21704,18 @@ pub const Codegen = struct {
                     const none_label = try self.newLabel("L_VEC_POP_NONE");
                     const end_label = try self.newLabel("L_VEC_POP_END");
                     self.outPrint("    {s} = alloc 8\n", .{value_slot}) catch return CodegenError.CodegenError;
-                    self.outPrint("    {s} = call @sa_vec_try_pop(&{s}, &{s})\n", .{ ok_reg, recv_reg, value_slot }) catch return CodegenError.CodegenError;
-                    self.outPrint("    {s} = load {s}+0 as u64\n", .{ value_reg, value_slot }) catch return CodegenError.CodegenError;
+                    // VECFIX phase 1: the sized pop walks the buffer at
+                    // the element's slot stride; the legacy 2-arg entry
+                    // keeps the word stride for word-layout callers.
+                    self.outPrint("    {s} = call @sa_vec_try_pop_sized(&{s}, &{s}, {})\n", .{ ok_reg, recv_reg, value_slot, self.vecElementSlotSize(pop_elem_ty) }) catch return CodegenError.CodegenError;
+                    // A compact scalar's bytes sit in the out slot's low
+                    // bytes (the sized pop zeroes the rest); load it at
+                    // its own width so sign extension is the type's.
+                    if (self.vecElementSlotSize(pop_elem_ty) < 8) {
+                        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ value_reg, value_slot, typeString(pop_elem_ty) }) catch return CodegenError.CodegenError;
+                    } else {
+                        self.outPrint("    {s} = load {s}+0 as u64\n", .{ value_reg, value_slot }) catch return CodegenError.CodegenError;
+                    }
                     try self.emitRelease(value_slot);
                     self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, some_label, none_label }) catch return CodegenError.CodegenError;
                     self.outPrint("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;

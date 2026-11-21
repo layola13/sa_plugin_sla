@@ -1,0 +1,165 @@
+@import "sa_std/vec.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/core/slice.sa"
+@import "sa_std/vec_packed.sla"
+
+// VECFIX phase 2 regression: Vec push codegen emits an inline
+// len<cap fast path (typed element store at the compact stride plus
+// len bookkeeping) and falls back to the @sa_vec_push call only when
+// growth is needed. These tests pin the observable behaviour across
+// the fast/call boundary: long growth-crossing push runs, push after
+// pop reusing spare capacity, interleaved push / index-assign / pop,
+// literal-built vecs, inline struct elements and handle elements.
+// The landed baseline emits the same behaviour through the extern
+// call, only slower, so this file passes on both plugins; the
+// phase-2 evidence is the runtime arm measurements in RESULT.md.
+
+struct Pair2 { a: i64, b: i64 }
+
+@test "vec push fastpath growth crossing i64"() {
+    let v: Vec<i64> = Vec::new();
+    let i: int = 0;
+    while i < 1000 {
+        v.push((i * 3 + 1) as i64);
+        i = i + 1;
+    }
+    if (len(v) as u64) != 1000 { panic(4301); };
+    let j: int = 0;
+    while j < 1000 {
+        if v[j] != ((j * 3 + 1) as i64) { panic(4302); };
+        j = j + 1;
+    }
+}
+
+@test "vec push fastpath growth crossing u8 compact"() {
+    let v: Vec<u8> = Vec::new();
+    let i: int = 0;
+    while i < 5000 {
+        v.push(((i * 13 + 7) % 256) as u8);
+        i = i + 1;
+    }
+    if (len(v) as u64) != 5000 { panic(4311); };
+    let bad: int = 0;
+    let j: int = 0;
+    while j < 5000 {
+        if v[j] != (((j * 13 + 7) % 256) as u8) { bad = bad + 1; };
+        j = j + 1;
+    }
+    if bad != 0 { panic(4312); };
+}
+
+@test "vec push fastpath after pop reuse"() {
+    let v: Vec<i64> = Vec::new();
+    let i: int = 0;
+    while i < 64 {
+        v.push(i as i64);
+        i = i + 1;
+    }
+    let k: int = 0;
+    while k < 40 {
+        let x = v.pop().unwrap();
+        if x != ((63 - k) as i64) { panic(4321); };
+        k = k + 1;
+    }
+    if (len(v) as u64) != 24 { panic(4322); };
+    let m: int = 0;
+    while m < 40 {
+        v.push((1000 + m) as i64);
+        m = m + 1;
+    }
+    if (len(v) as u64) != 64 { panic(4323); };
+    let j: int = 0;
+    while j < 24 {
+        if v[j] != (j as i64) { panic(4324); };
+        j = j + 1;
+    }
+    let n: int = 0;
+    while n < 40 {
+        if v[24 + n] != ((1000 + n) as i64) { panic(4325); };
+        n = n + 1;
+    }
+}
+
+@test "vec push fastpath interleaved assign pop"() {
+    let v: Vec<i32> = Vec::new();
+    let i: int = 0;
+    while i < 100 {
+        v.push(i as i32);
+        if i % 10 == 0 {
+            v[i] = (i * 10) as i32;
+        };
+        i = i + 1;
+    }
+    if v[0] != 0 { panic(4331); };
+    if v[10] != 100 { panic(4332); };
+    if v[50] != 500 { panic(4333); };
+    if v[90] != 900 { panic(4334); };
+    if v[99] != 99 { panic(4335); };
+    let p = v.pop().unwrap();
+    if p != 99 { panic(4336); };
+    let p2 = v.pop().unwrap();
+    if p2 != 98 { panic(4337); };
+    if (len(v) as u64) != 98 { panic(4338); };
+}
+
+@test "vec push fastpath literal built"() {
+    let v: Vec<i64> = vec(10, 20, 30);
+    let i: int = 0;
+    while i < 50 {
+        v.push((100 + i) as i64);
+        i = i + 1;
+    }
+    if (len(v) as u64) != 53 { panic(4341); };
+    if v[0] != 10 { panic(4342); };
+    if v[2] != 30 { panic(4343); };
+    if v[3] != 100 { panic(4344); };
+    if v[52] != 149 { panic(4345); };
+    let w: Vec<i32> = vec(1, 2, 3, 4);
+    let k: int = 0;
+    while k < 40 {
+        w.push((k + 5) as i32);
+        k = k + 1;
+    }
+    if (len(w) as u64) != 44 { panic(4346); };
+    if w[0] != 1 { panic(4347); };
+    if w[3] != 4 { panic(4348); };
+    if w[4] != 5 { panic(4349); };
+    if w[43] != 44 { panic(4350); };
+}
+
+@test "vec push fastpath struct elems"() {
+    let v: Vec<Pair2> = Vec::new();
+    let i: int = 0;
+    while i < 100 {
+        v.push(Pair2 { a: i as i64, b: (i * 2) as i64 });
+        i = i + 1;
+    }
+    if (len(v) as u64) != 100 { panic(4361); };
+    let j: int = 0;
+    while j < 100 {
+        if v[j].a != (j as i64) { panic(4362); };
+        if v[j].b != ((j * 2) as i64) { panic(4363); };
+        j = j + 1;
+    }
+}
+
+@test "vec push fastpath vec of vec"() {
+    let outer: Vec<Vec<i64>> = Vec::new();
+    let i: int = 0;
+    while i < 20 {
+        let inner: Vec<i64> = Vec::new();
+        inner.push(i as i64);
+        inner.push((i * 10) as i64);
+        outer.push(inner);
+        i = i + 1;
+    }
+    if (len(outer) as u64) != 20 { panic(4371); };
+    let j: int = 0;
+    while j < 20 {
+        let inner = outer.pop().unwrap();
+        if inner[0] != ((19 - j) as i64) { panic(4372); };
+        if inner[1] != (((19 - j) * 10) as i64) { panic(4373); };
+        j = j + 1;
+    }
+    if (len(outer) as u64) != 0 { panic(4374); };
+}

@@ -4271,6 +4271,69 @@ pub const Codegen = struct {
         }
     }
 
+    /// VECFIX phase 2: store type for an inlined Vec push fast path --
+    /// the same width rule as the genIndexAssign slot store: compact
+    /// slots (phase 1) take the element's own type, everything else
+    /// stores the full word.
+    fn vecPushStoreType(self: *Codegen, elem_ty: *const ast.Type) []const u8 {
+        return if (self.vecElementSlotSize(elem_ty) < 8) typeString(elem_ty) else "u64";
+    }
+
+    /// VECFIX phase 2 (DIAG fix candidate 2): emit a Vec push with
+    /// the len<cap fast path inlined. The historical path is one
+    /// EXPAND VEC_PUSH, i.e. a full @sa_vec_push extern call per
+    /// element (DIAG M1: 25-50 ns/op). When the buffer already has
+    /// room, the fast path does the bounds bookkeeping, the element
+    /// store at the phase-1 compact stride, and the len bump inline;
+    /// only the growth case (len == cap, sa_vec_push's own grow
+    /// condition) falls back to the EXPAND, which keeps the exact
+    /// historical semantics (geometric growth, handle rebinding).
+    /// The vec handle is never consumed on the fast path and the
+    /// value register is untouched on both paths, so callers'
+    /// post-push ownership handling is unchanged.
+    fn emitVecPushFastPath(self: *Codegen, vec_reg: []const u8, value_reg: []const u8, elem_ty: *const ast.Type) CodegenError!void {
+        const slot_size = self.vecElementSlotSize(elem_ty);
+        return self.emitVecPushFastPathSized(vec_reg, value_reg, slot_size, self.vecPushStoreType(elem_ty));
+    }
+
+    fn emitVecPushFastPathSized(self: *Codegen, vec_reg: []const u8, value_reg: []const u8, slot_size: usize, store_ty: []const u8) CodegenError!void {
+        const len_reg = try self.newTmp();
+        const cap_reg = try self.newTmp();
+        const room_reg = try self.newTmp();
+        const fast_label = try self.newLabel("L_VPUSH_FAST");
+        const call_label = try self.newLabel("L_VPUSH_CALL");
+        const done_label = try self.newLabel("L_VPUSH_DONE");
+        self.outPrint("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = load {s}+Vec_cap as u64\n", .{ cap_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ult {s}, {s}\n", .{ room_reg, len_reg, cap_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ room_reg, fast_label, call_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{fast_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{room_reg}) catch return CodegenError.CodegenError;
+        const buf_reg = try self.newTmp();
+        const off_reg = try self.newTmp();
+        const dst_reg = try self.newTmp();
+        const new_len_reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+Vec_ptr as ptr\n", .{ buf_reg, vec_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = mul {s}, {}\n", .{ off_reg, len_reg, slot_size }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ dst_reg, buf_reg, off_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as {s}\n", .{ dst_reg, value_reg, store_ty }) catch return CodegenError.CodegenError;
+        self.outPrint("    {s} = add {s}, 1\n", .{ new_len_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+Vec_len, {s} as u64\n", .{ vec_reg, new_len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{new_len_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{dst_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{off_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{buf_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{len_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{cap_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{call_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{room_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{len_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{cap_reg}) catch return CodegenError.CodegenError;
+        self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ vec_reg, value_reg, slot_size }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
+    }
+
     fn ptrReadVolatileMacroName(ty: *const ast.Type) ?[]const u8 {
         return lowering_rules.ptrReadVolatileMacroName(ty);
     }
@@ -19404,7 +19467,7 @@ pub const Codegen = struct {
         const key_reg = try self.newTmp();
         self.outPrint("    {s} = load {s}+BTreeMapEntry_key_ptr as {s}\n", .{ key_reg, entry_reg, key_str }) catch return CodegenError.CodegenError;
         try self.emitRelease(entry_reg);
-        self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ out_reg, key_reg, self.vecElementSlotSize(key_ty) }) catch return CodegenError.CodegenError;
+        try self.emitVecPushFastPath(out_reg, key_reg, key_ty);
         try self.emitRelease(key_reg);
         const next_idx = try self.newTmp();
         self.outPrint("    {s} = add {s}, 1\n", .{ next_idx, idx_reg }) catch return CodegenError.CodegenError;
@@ -19672,7 +19735,7 @@ pub const Codegen = struct {
                 try self.emitRelease(item_reg);
             },
             .collect => {
-                self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ out_reg.?, item_reg, stride }) catch return CodegenError.CodegenError;
+                try self.emitVecPushFastPathSized(out_reg.?, item_reg, stride, if (stride < 8) elem_str else "u64");
                 try self.emitRelease(item_reg);
             },
             .find, .max => {
@@ -19942,7 +20005,7 @@ pub const Codegen = struct {
         const item_reg = try self.newTmp();
         self.outPrint("    {s} = load {s}+0 as {s}\n", .{ item_reg, slot_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
         const mapped_reg = try self.genInlineClosureUnary(mapper, item_reg, hoisted_allocs);
-        self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ out_reg, mapped_reg, self.vecElementSlotSize(out_ty) }) catch return CodegenError.CodegenError;
+        try self.emitVecPushFastPath(out_reg, mapped_reg, out_ty);
         try self.emitRelease(off_reg);
         try self.emitRelease(slot_reg);
         try self.emitRelease(item_reg);
@@ -21469,7 +21532,6 @@ pub const Codegen = struct {
                     self.outPrint("    EXPAND VEC_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     const vec_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                     const elem_ty = vecElementType(vec_ty) orelse return CodegenError.CodegenError;
-                    const elem_size = self.vecElementSlotSize(elem_ty);
                     const elem_transfers_ownership = self.vecElementPushConsumesSource(elem_ty);
                     for (call.args) |arg| {
                         const raw_arg_reg = try self.genExpr(arg, hoisted_allocs);
@@ -21477,7 +21539,7 @@ pub const Codegen = struct {
                         // their packed word (see the push method arm).
                         if (self.inlinePodElement(elem_ty)) {
                             const word = try self.inlinePodWordOfValue(raw_arg_reg);
-                            self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ reg, word, elem_size }) catch return CodegenError.CodegenError;
+                            try self.emitVecPushFastPath(reg, word, elem_ty);
                             try self.emitForgetMovedValue(word);
                             if (self.callArgResultTempNeedsRelease(arg, raw_arg_reg)) try self.emitRelease(raw_arg_reg);
                             continue;
@@ -21486,7 +21548,7 @@ pub const Codegen = struct {
                         // push method for live-binding elements.
                         const arg_copy = try self.pushArgCopyMaterialization(arg, raw_arg_reg, elem_ty);
                         const arg_reg = arg_copy orelse raw_arg_reg;
-                        self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ reg, arg_reg, elem_size }) catch return CodegenError.CodegenError;
+                        try self.emitVecPushFastPath(reg, arg_reg, elem_ty);
                         // DEF-ZRANGE: same rule as the push method -- a
                         // heap-handle element temp is consumed by the
                         // store into the Vec, never released.
@@ -21649,7 +21711,7 @@ pub const Codegen = struct {
                             if (lowering_rules.growVecElementType(recv_ty) != null) {
                                 self.outPrint("    EXPAND GROWVEC_PUSH {s}, {s}, {}\n", .{ recv_reg, word, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
                             } else {
-                                self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, word, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                                try self.emitVecPushFastPath(recv_reg, word, elem_ty);
                             }
                             try self.emitForgetMovedValue(word);
                             // The word is a byte copy: identifier args
@@ -21670,7 +21732,7 @@ pub const Codegen = struct {
                     if (lowering_rules.growVecElementType(recv_ty) != null) {
                         self.outPrint("    EXPAND GROWVEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
                     } else {
-                        self.outPrint("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                        try self.emitVecPushFastPath(recv_reg, arg_reg, elem_ty);
                     }
                     // POD / shallow-copy elements (including pure enums and structs of
                     // them) must remain usable after push so patterns like

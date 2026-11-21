@@ -148,7 +148,7 @@ fn use_two(param: ParamSet<Pos, Vel>) -> ParamSet<Pos, Vel> {
 
 ## 单元测试建议
 
-编译器侧建议至少增加以下测试，全部优先用默认/SAB 后端验证，不使用 generated-SA 作为完成依据。
+编译器侧建议至少增加以下测试，优先用默认 SA 文本路径验证；显式 `--test-backend sab` 可另行验证已密封的 SAB 优化方向，不使用 generated-SA 作为完成依据。
 
 ### 测试 1：宽度 1/2/3 生成 struct 与构造器
 
@@ -261,7 +261,7 @@ return_ r243
 - `TableErasedRelationshipTwoPairMutParamSet` 到 `TableErasedRelationshipSevenPairMutParamSet`
 - `TableErasedObserverTwoPairMutParamSet` 到 `TableErasedObserverSixPairMutParamSet`
 
-逐步替换为单一模板或少量模板声明，并扩到 Bevy 当前 limit 8。验收命令优先使用默认/SAB 多线程：
+逐步替换为单一模板或少量模板声明，并扩到 Bevy 当前 limit 8。验收命令优先使用默认 SA 文本路径（多线程）：
 
 ```bash
 cd /home/vscode/projects/sla_ecs

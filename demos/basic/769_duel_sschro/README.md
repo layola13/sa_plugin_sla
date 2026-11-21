@@ -7,8 +7,8 @@
 - 绕行：大数恒偶（`S(n)=2s(n)` 探针六值连验）；半数精确整除（596 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/769_duel_sschro/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/769_duel_sschro/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/769_duel_sschro/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/769_duel_sschro/main.sla -o /tmp/basic_769 && /tmp/basic_769

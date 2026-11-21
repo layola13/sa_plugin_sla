@@ -6,8 +6,8 @@ Schröder–Delannoy 桥式 `S(n)=D(n,n)-D(n+1,n-1)`（`n=2：6`，`n=3：22`，
 - 绕行：`D(6,4)=1289` 高位差项（`1683-1289=394`；探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/622_schro_delan/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/622_schro_delan/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/622_schro_delan/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/622_schro_delan/main.sla -o /tmp/basic_622 && /tmp/basic_622

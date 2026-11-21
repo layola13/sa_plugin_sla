@@ -6,8 +6,8 @@ Bell 二类行和桥续高位 `bsum(11)=678570`，`bsum(12)=4213597`（行和恒
 - 绕行：无（行和桥双实现互锁，探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/912_bell_rowsum11/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/912_bell_rowsum11/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/912_bell_rowsum11/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/912_bell_rowsum11/main.sla -o /tmp/basic_912 && /tmp/basic_912

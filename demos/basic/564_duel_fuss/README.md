@@ -6,8 +6,8 @@ Fuss 对峙：商式 `C(3n,n)/(2n+1) ==` 三元卷积 `T(n)=Σ_{i+j+k=n-1}T(i)T(
 - 绕行：内层上界 `b < m - a` 收窄（和式 `a+b≤m-1` 天然约束，记 README）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/564_duel_fuss/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/564_duel_fuss/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/564_duel_fuss/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/564_duel_fuss/main.sla -o /tmp/basic_564 && /tmp/basic_564

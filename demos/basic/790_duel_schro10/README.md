@@ -6,8 +6,8 @@
 - 绕行：商式十一项 `1+55+990+8580+42042+126126+240240+291720+218790+92378+16796` 手算复核
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/790_duel_schro10/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/790_duel_schro10/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/790_duel_schro10/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/790_duel_schro10/main.sla -o /tmp/basic_790 && /tmp/basic_790

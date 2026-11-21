@@ -6,8 +6,8 @@ Narayana 续三向：行和 × Catalan 商式 × Catalan 卷积（`n=9：4862` �
 - 绕行：卷积递归 `n=9` 双后端秒级（探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/855_tri_nar9/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/855_tri_nar9/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/855_tri_nar9/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/855_tri_nar9/main.sla -o /tmp/basic_855 && /tmp/basic_855

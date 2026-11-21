@@ -31,8 +31,7 @@ SLA/SA 的改进项，先补地基再继续。总体路线图与排期见 sala
   （tests/sa_std_runtime.zig 的 bidi 用例）；本演示证明的是 SLA 表面。
 
 ```bash
-export PATH=/content/sa_all/sci/zig-out/bin:$PATH
-SA_PLUGIN_DEV=1 sa build-exe demos/cxu/01_bridge_stdio/main.sla
+SA_PLUGIN_DEV=1 sa sla build-exe demos/cxu/01_bridge_stdio/main.sla -o./main
 ./main    # 输出 d1 bridge stdio ok，退出码 0
 SA_PLUGIN_DEV=1 sa sla test demos/cxu/01_bridge_stdio/main.sla
 ```

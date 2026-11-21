@@ -6,8 +6,8 @@ Rogers-Ramanujan 第一恒等式（小规模）：相邻部差 `≥2` 的分拆�
 - 绕行：递归深度 ≤8 小规模一次绿（07/120 递归先例）；`{1,4,6}` 三段直写（529 同例）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/537_rr1/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/537_rr1/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/537_rr1/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/537_rr1/main.sla -o /tmp/basic_537 && /tmp/basic_537

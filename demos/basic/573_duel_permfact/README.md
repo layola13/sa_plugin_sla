@@ -6,8 +6,8 @@
 - 绕行：降乘与升乘双序同值（572 降序，此处 `fact` 升序，记 README）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/573_duel_permfact/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/573_duel_permfact/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/573_duel_permfact/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/573_duel_permfact/main.sla -o /tmp/basic_573 && /tmp/basic_573

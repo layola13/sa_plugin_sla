@@ -24,7 +24,7 @@
 | `docs/direct_sab_historical_69_corpus.md` | 历史语料 69 文件 | 当时 134/134 | 当时语料只有 134 个 |
 | `docs/roadmap_status_cn.md` §1 | No-fallback sweep | 58/69（2026-07-01） | **已过期**：语料现为 194 个，且 sweep 实为 192/194 |
 
-**结论**：README 的 76% 是 build-exe 口径，不能直接与 sab-build 口径混用。若要继续用「76%」叙事，必须先统一口径；建议以本报告的 87.9%（sab build 严格）为准绳，另单列 build-exe 指标。
+**结论**：README 的 76% 是 build-exe 口径（SA 文本生产路径的端到端成熟度），不能直接与 sab-build 口径混用。87.9%（sab build 严格，277/315）是已密封 SAB 优化方向的快照，不代表默认生产路径的能力上限，不应作为 headline 准绳；headline 指标仍为 build-exe 口径，另单列 sab-build 快照。
 
 ### 关于 `VerificationTrap`
 

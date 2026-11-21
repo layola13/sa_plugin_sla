@@ -6,8 +6,8 @@
 - 绕行：半递归 `rsch(6)/2` 探针同形 8s 级（探针三线绿；`ssho(5)=197` 低位陪锁）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/775_tri_sschro/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/775_tri_sschro/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/775_tri_sschro/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/775_tri_sschro/main.sla -o /tmp/basic_775 && /tmp/basic_775

@@ -6,7 +6,6 @@
 - 绕行：`kind` 整型分派（无枚举 `==` 坑，#25 口径）；三 `if` 独立
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/521_tri_classify/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/521_tri_classify/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/521_tri_classify/main.sla -o /tmp/basic_521 && /tmp/basic_521

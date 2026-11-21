@@ -6,8 +6,8 @@ Eulerian-B 续对称性：`B(6,1)=B(6,5)=722`，`B(7,1)=B(7,6)=2179`（镜像双
 - 绕行：镜像对调用各自独立建表（表形 `w` 各异，双边同值锁定）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/811_eulb_sym67/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/811_eulb_sym67/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/811_eulb_sym67/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/811_eulb_sym67/main.sla -o /tmp/basic_811 && /tmp/basic_811

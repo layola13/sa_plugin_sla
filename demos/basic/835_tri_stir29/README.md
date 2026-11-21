@@ -6,8 +6,8 @@ Stirling 二类续三向：建表行和 × Bell 二项递推 × Aitken 三角（
 - 绕行：Pascal 首列逐行置 1（Stirling 表首列恒零，组合表须首列置 1，探针纠偏；三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/835_tri_stir29/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/835_tri_stir29/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/835_tri_stir29/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/835_tri_stir29/main.sla -o /tmp/basic_835 && /tmp/basic_835

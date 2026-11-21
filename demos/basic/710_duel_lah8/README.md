@@ -6,8 +6,8 @@ Lah 高位对峙：建表 vs 商式（`(8,3)：141120 对 141120`；`(8,4)：588
 - 绕行：`21·40320/6=141120` 大值先乘后除精确（中间积 `846720` 值域内，探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/710_duel_lah8/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/710_duel_lah8/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/710_duel_lah8/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/710_duel_lah8/main.sla -o /tmp/basic_710 && /tmp/basic_710

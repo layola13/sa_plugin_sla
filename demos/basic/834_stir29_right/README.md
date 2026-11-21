@@ -6,8 +6,8 @@ Stirling 二类第 10 行右部 `S(10,7)=5880`，`S(10,8)=750`，`S(10,9)=45`（
 - 绕行：`266+7·28=462` 双项手算复核（探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/834_stir29_right/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/834_stir29_right/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/834_stir29_right/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/834_stir29_right/main.sla -o /tmp/basic_834 && /tmp/basic_834

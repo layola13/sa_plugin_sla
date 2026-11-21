@@ -6,8 +6,8 @@ Delannoy 续高位对峙：建表 vs 直和（`(6,6)：8989 对 8989`；`(7,7)�
 - 绕行：直和八项 `1+98+1764+9800+19600+14112+3136+128=48639` 手算复核（会师仲裁）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/759_duel_delan7/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/759_duel_delan7/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/759_duel_delan7/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/759_duel_delan7/main.sla -o /tmp/basic_759 && /tmp/basic_759

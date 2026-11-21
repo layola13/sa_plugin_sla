@@ -6,8 +6,8 @@ Motzkin 直和高位 `M(9)=835`，`M(10)=2188`（633 体例续高位；同式再
 - 绕行：直和六项 `1+45+420+1050+630+42=2188` 精确求和（探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/754_motz_alt910/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/754_motz_alt910/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/754_motz_alt910/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/754_motz_alt910/main.sla -o /tmp/basic_754 && /tmp/basic_754

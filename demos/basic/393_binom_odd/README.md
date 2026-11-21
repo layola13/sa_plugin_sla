@@ -6,7 +6,6 @@
 - 绕行：`&` 加括号（145 优先级坑口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/393_binom_odd/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/393_binom_odd/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/393_binom_odd/main.sla -o /tmp/basic_393 && /tmp/basic_393

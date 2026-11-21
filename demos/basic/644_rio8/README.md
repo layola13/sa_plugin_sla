@@ -6,8 +6,8 @@ Riordan 高位三 `R(8)=91`（`R(7)=36` 低位锚；短递推一步 `7·117/9`�
 - 绕行：`7·(2·36+3·15)/9=7·117/9=91` 先乘后除精确（596 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/644_rio8/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/644_rio8/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/644_rio8/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/644_rio8/main.sla -o /tmp/basic_644 && /tmp/basic_644

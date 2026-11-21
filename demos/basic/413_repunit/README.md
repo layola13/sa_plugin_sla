@@ -6,7 +6,6 @@ repunit 数（`R(5)=11111`；352 的 1 串版）。
 - 绕行：无（纯 `int` 循环复用 `is_prime`）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/413_repunit/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/413_repunit/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/413_repunit/main.sla -o /tmp/basic_413 && /tmp/basic_413

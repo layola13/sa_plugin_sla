@@ -6,8 +6,8 @@ Lah 边值 `L(9,9)=1`，`L(9,8)=72=9·8`，`L(9,7)=2016`（对角边恒等 `L(n,
 - 绕行：`C(8,7)·9!/40320=72` 商式手算复核（探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/841_lah_edge9/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/841_lah_edge9/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/841_lah_edge9/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/841_lah_edge9/main.sla -o /tmp/basic_841 && /tmp/basic_841

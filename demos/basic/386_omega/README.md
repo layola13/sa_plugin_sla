@@ -7,7 +7,6 @@
 - 绕行：无（嵌套 while 试除；余因子收尾）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/386_omega/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/386_omega/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/386_omega/main.sla -o /tmp/basic_386 && /tmp/basic_386

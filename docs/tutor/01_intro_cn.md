@@ -38,6 +38,8 @@ Sla 没有任何运行时垃圾回收器、引用计数扫描线程或隐式内�
 
 ## 4. 编译器 CLI 命令行工具
 
+> **命令形式（sala 推荐）**：命令首选顶层 `sla <command>` 写法，与 `sa sla <command>` 完全等价（去掉 `sa ` 前缀即可，参数不变）；`sla slab …` 同理为 `sla sab …` 的短别名。
+
 Sla 作为 SA 环境的插件运行。如果你在开发模式下使用它，可以使用 `SA_PLUGIN_DEV=1` 环境变量前缀；如果是生产环境，则正常使用 `sa` CLI 调取。
 
 Sla 插件提供项目初始化、能力发现、编译、SAB、检查和测试命令：
@@ -72,7 +74,7 @@ Sla 插件提供项目初始化、能力发现、编译、SAB、检查和测试�
   ```
 
 ### B. 可执行文件构建 (`sa sla build-exe`)
-将 `.sla` 源文件一步编译为本地可执行文件。当前实现默认走直接 SAB 主线：插件从 SLA AST/type-checker 结果生成 SAB bytes，写入稳定托管路径 `.sla-cache/sab/...`，再调用底层 `sa build-exe <managed.sab>`。这不是 `sla -> sa -> sab`，也不会在源码旁默认生成 `.sa` 或 `.sab`。
+将 `.sla` 源文件一步编译为本地可执行文件。默认走 SA 文本路径：插件先生成同级 `.sa`，再调用底层 `sa build-exe`。仅显式 `--test-backend sab` 时走已密封的 SAB 优化方向：从 SLA AST/type-checker 结果生成 SAB bytes，写入稳定托管路径 `.sla-cache/sab/...`，再调用 `sa build-exe <managed.sab>`。
 * **基本语法**：
   ```bash
   sa sla build-exe <input_file.sla> [sa build-exe options]
@@ -87,7 +89,7 @@ Sla 插件提供项目初始化、能力发现、编译、SAB、检查和测试�
   ```
 
 ### B2. SAB 二进制构建 (`sa sla sab` / `sa slab`)
-SAB 是 SA 的二进制 IR。SLA 的 SAB 主线直接输出 SAB，不经过 `.sa` 文本。
+SAB 是 SA 的二进制 IR。`sla sab …` 是已密封 SAB 优化方向的显式 opt-in 入口，直接输出 SAB，不经过 `.sa` 文本；默认构建与测试始终走 SA 文本。
 * **生成托管 SAB**：
   ```bash
   SA_PLUGIN_DEV=1 sa sla sab build tests/test_sab_direct.sla
@@ -121,7 +123,7 @@ SAB 是 SA 的二进制 IR。SLA 的 SAB 主线直接输出 SAB，不经过 `.sa
 
 ### D. 单元测试运行器 (`sa sla test`)
 用于编译和执行定义了 `@test` 块的测试代码。
-Sla 编译器默认会把该 `.sla` 文件编译为托管 SAB `.sla-cache/sab/...`，接着在底层调用 `sa test <managed.sab>` 执行所有未忽略的测试块，并展示最终的通过状态。只有显式传 `--test-backend sa` 时才会使用旧的 `<input_file>.test.sa` 文本测试后端。
+Sla 编译器默认（auto）会把该 `.sla` 文件编译为同级 `<input_file>.test.sa`（SA 文本路径，默认用后删除），接着在底层调用 `sa test` 执行所有未忽略的测试块，并展示最终的通过状态。只有显式传 `--test-backend sab` 时才会走已密封的 SAB 优化方向（托管 SAB `.sla-cache/sab/...`）。
 * **基本语法**：
   ```bash
   sa sla test <input_file.sla> [extra_args]

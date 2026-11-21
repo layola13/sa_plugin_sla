@@ -7,8 +7,8 @@ Eulerian-B 型建表 `B(n,m)=(2m+1)·B(n-1,m)+(2n-2m+1)·B(n-1,m-1)`（546 范�
 - 绕行：初值记忆以行和仲裁纠偏（`B(2,1)=6` 非 `4`，和 `8=2^2·2!`）；`B(2,1)=6` 端点守卫
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/676_eulb/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/676_eulb/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/676_eulb/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/676_eulb/main.sla -o /tmp/basic_676 && /tmp/basic_676

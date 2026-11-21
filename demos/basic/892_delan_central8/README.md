@@ -6,8 +6,8 @@ Delannoy 续中央列 `8989,48639,265729`（`D(6,6)`，`D(7,7)`，`D(8,8)`；中
 - 绕行：`265729-48639=217090` 中央差手算复核（探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/892_delan_central8/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/892_delan_central8/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/892_delan_central8/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/892_delan_central8/main.sla -o /tmp/basic_892 && /tmp/basic_892

@@ -7,8 +7,8 @@ Fine 数短递推 `F(n)=[2(2n-1)(2F(n-1)+F(n-2))-F(n-1)(n+1)]/[2(n+1)]`（精确
 - 绕行：`F(0)=1`、`F(1)=0` 双基守卫；分子整体先乘后除（596 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/656_fine/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/656_fine/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/656_fine/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/656_fine/main.sla -o /tmp/basic_656 && /tmp/basic_656

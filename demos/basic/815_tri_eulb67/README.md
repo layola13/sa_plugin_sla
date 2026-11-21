@@ -6,8 +6,8 @@ Eulerian-B 续三向：建表行和 × 交错和行和 × 公式（`n=7：645120
 - 绕行：三源异构（建表/交错/公式）同值锁定；`ebsum(6)=46080` 低位陪锁
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/815_tri_eulb67/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/815_tri_eulb67/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/815_tri_eulb67/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/815_tri_eulb67/main.sla -o /tmp/basic_815 && /tmp/basic_815

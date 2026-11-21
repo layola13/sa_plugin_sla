@@ -6,8 +6,8 @@ Catalan 续三向：商式 × 卷积 × 比值递推（`n=9：4862` 三锁）。
 - 绕行：五实现六档互验（商/卷积/中央商表/差式/比值，探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/865_tri_cat9/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/865_tri_cat9/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/865_tri_cat9/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/865_tri_cat9/main.sla -o /tmp/basic_865 && /tmp/basic_865

@@ -6,8 +6,8 @@
 - 绕行：`!6=265` 大值双锁（递推与容斥独立算出同值）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/568_duel_derange/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/568_duel_derange/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/568_duel_derange/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/568_duel_derange/main.sla -o /tmp/basic_568 && /tmp/basic_568

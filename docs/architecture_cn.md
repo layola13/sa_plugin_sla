@@ -210,7 +210,7 @@ pub fn smartPointerDerefType(ty) // 可解引用的智能指针
 
 ### SAB 结构化发射器 (`sab_codegen.zig`)
 - 直接发射结构化 SAB 字节（二进制格式）
-- direct AST→SAB 是唯一发射路径；不支持的特性返回 `UnsupportedSabDirectFeature` 响亮报错，不存在回退到 SA 文本的兼容路径（禁止 SAB 降级文本，治理口径见 sala 仓《SAB 格式白皮书（规范）》§4.2）
+- 在已密封的 SAB 优化方向内，direct AST→SAB 是该路径的发射方式；不支持的特性返回 `UnsupportedSabDirectFeature` 响亮报错（禁止 SAB 降级文本，白皮书 §4.2——禁静默回退，不是路线优先级）。默认生产路径是 SA 文本；若未来解封，SAB 的唯一形态将是 text → SAB 单向转换，前端永不直接发射 SAB。
 
 ### 历史回退路径（已移除）
 
@@ -271,25 +271,27 @@ SAB 托管工件位于 `.sla-cache/sab/`：
 
 ## 8. 完整的 CLI 管线图
 
+> **命令形式（sala 推荐）**：命令首选顶层 `sla <command>` 写法，与 `sa sla <command>` 完全等价（去掉 `sa ` 前缀即可，参数不变）；`sla slab …` 同理为 `sla sab …` 的短别名。
+
 ### `sa sla build <file>`
 ```
 read → source_expand → parse → @import → monomorphize → contracts → typecheck
   → rewriteImports → codegen.generate → .sa 文件
 ```
 
-### `sa sla build-exe <file>`
+### `sla build-exe <file>`（默认 SA 文本路径；仅 `--test-backend sab` 走 SAB）
 ```
 read → source_expand → parse → @import → monomorphize → contracts → typecheck
-  → sab_codegen.generate → .sab（不支持的特性响亮报错，无回退）
-  → sa build-exe <sab>
+  → codegen.generate → .sa（默认）／显式 `--test-backend sab` 时 → sab_codegen.generate → .sla-cache/sab/….sab
+  → sa build-exe <产物>
 ```
 
-### `sa sla test <file>`
+### `sla test <file>`（默认 auto = SA 文本路径；仅 `--test-backend sab` 走 SAB）
 ```
 read → source_expand → parse → @import → test_filter → monomorphize → contracts
   → typecheck → reachable-decl-filter
-  → sab_codegen.generate → .sla-cache/sab/...sab（不支持的特性响亮报错，无回退）
-  → sa test <sab>
+  → codegen.generate → <stem>.test.sa（默认，用后删除；`SLA_KEEP_TEST_SA` 可保留）／显式 `--test-backend sab` 时 → sab_codegen.generate → .sla-cache/sab/….sab
+  → sa test <产物>
 ```
 
 ---

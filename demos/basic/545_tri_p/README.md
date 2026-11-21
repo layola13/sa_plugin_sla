@@ -6,8 +6,8 @@
 - 绕行：行和另断言 `row_sum(8)=22`（`1+4+5+5+3+2+1+1` 手算复核）；三表各自独立
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/545_tri_p/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/545_tri_p/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/545_tri_p/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/545_tri_p/main.sla -o /tmp/basic_545 && /tmp/basic_545

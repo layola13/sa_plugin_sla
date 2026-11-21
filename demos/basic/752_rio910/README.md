@@ -6,8 +6,8 @@ Riordan 续高位 `R(8)=91`，`R(9)=232`，`R(10)=603`（短递推续高位；64
 - 绕行：`8·290/10=232`、`9·737/11=603` 先乘后除精确（596 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/752_rio910/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/752_rio910/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/752_rio910/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/752_rio910/main.sla -o /tmp/basic_752 && /tmp/basic_752

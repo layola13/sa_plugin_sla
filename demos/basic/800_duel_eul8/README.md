@@ -6,8 +6,8 @@ Eulerian 续高位二对峙：建表 vs 交错和（`(8,2)：4293 对 4293`；`(
 - 绕行：`(8,2)` 交错四项 `6561-2304+36=4293` 手算复核（探针同形三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/800_duel_eul8/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/800_duel_eul8/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/800_duel_eul8/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/800_duel_eul8/main.sla -o /tmp/basic_800 && /tmp/basic_800

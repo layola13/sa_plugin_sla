@@ -6,8 +6,8 @@ Ballot 反射差式 `B(n,k)=C(n+k,k)-C(n+k,k-1)`（`B(4,2)=9`，`B(5,3)=28`，`B
 - 绕行：`k=0` 提前返回 `1`（`C(n,-1)` 无定义，守卫前置）；差式天然避负数字面量坑（436 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/651_ballot_reflect/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/651_ballot_reflect/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/651_ballot_reflect/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/651_ballot_reflect/main.sla -o /tmp/basic_651 && /tmp/basic_651

@@ -6,8 +6,8 @@ Bell 续高位二项递推 `bell(n+1)=sum C(n,k)·bell(k)`（`B(8)=4140`，`B(9)
 - 绕行：九项和 `1+8+56+280+1050+2912+5684+7016+4140=21147` 手算复核
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/776_bell9/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/776_bell9/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/776_bell9/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/776_bell9/main.sla -o /tmp/basic_776 && /tmp/basic_776

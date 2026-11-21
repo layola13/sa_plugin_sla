@@ -6,8 +6,8 @@ Stirling 二类双实现对峙：建表 vs 递归（`(7,2)：63 对 63`；`(7,3)
 - 绕行：递归三守卫（`k=0` 嵌套判 `n` + 越界 + 对角；689 同形复用）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/699_duel_stir27/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/699_duel_stir27/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/699_duel_stir27/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/699_duel_stir27/main.sla -o /tmp/basic_699 && /tmp/basic_699

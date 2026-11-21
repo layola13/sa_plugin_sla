@@ -7,8 +7,8 @@ Delannoy 续三向：拍扁建表 × 二项直和 × 容斥和（`(7,7)：48639 
 - 绕行：容斥八项手算复核（会师仲裁；`ddel2(5,5)=1683` 低位陪锁）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/765_tri_delan7/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/765_tri_delan7/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/765_tri_delan7/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/765_tri_delan7/main.sla -o /tmp/basic_765 && /tmp/basic_765

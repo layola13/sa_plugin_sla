@@ -6,7 +6,6 @@
 - 绕行：无（纯 `int` 闭式；三连乘恒被 6 整除）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/470_tetrahedral/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/470_tetrahedral/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/470_tetrahedral/main.sla -o /tmp/basic_470 && /tmp/basic_470

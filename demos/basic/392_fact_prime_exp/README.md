@@ -6,7 +6,6 @@
 - 绕行：无（`d <= n` 乘法步进；纯 `int` 除法）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/392_fact_prime_exp/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/392_fact_prime_exp/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/392_fact_prime_exp/main.sla -o /tmp/basic_392 && /tmp/basic_392

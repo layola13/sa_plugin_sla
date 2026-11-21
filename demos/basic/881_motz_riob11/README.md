@@ -6,8 +6,8 @@ Motzkin-Riordan 续桥三 `R(11)=1585`，`R(12)=4213`，`M(11)=1585+4213=5798`�
 - 绕行：桥恒等 `M(n)=R(n)+R(n+1)` 双值连验（探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/881_motz_riob11/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/881_motz_riob11/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/881_motz_riob11/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/881_motz_riob11/main.sla -o /tmp/basic_881 && /tmp/basic_881

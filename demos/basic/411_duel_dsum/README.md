@@ -6,7 +6,6 @@
 - 绕行：递归基 `n < 10` 直接返回（07_fact 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/411_duel_dsum/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/411_duel_dsum/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/411_duel_dsum/main.sla -o /tmp/basic_411 && /tmp/basic_411

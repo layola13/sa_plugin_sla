@@ -6,8 +6,8 @@ Lah 首列对峙：`L(n,1) == fact(n)`（`n=4`：`24` 对 `24`；`n=5`：`120` �
 - 绕行：同下标直对（无差一，记 README 与 583 区分）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/594_duel_lahcol/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/594_duel_lahcol/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/594_duel_lahcol/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/594_duel_lahcol/main.sla -o /tmp/basic_594 && /tmp/basic_594

@@ -6,8 +6,8 @@ Schröder 高位二对峙：迭代 vs 递归（`n=5：394 对 394`；`n=6：1806
 - 绕行：`rsch(6)` 递归扇出最大但两后端秒级（探针：sab 0.3s / sa 8s，无超时风险）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/614_duel_schro6/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/614_duel_schro6/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/614_duel_schro6/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/614_duel_schro6/main.sla -o /tmp/basic_614 && /tmp/basic_614

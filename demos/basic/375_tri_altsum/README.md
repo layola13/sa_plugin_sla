@@ -6,7 +6,6 @@
 - 绕行：无（`0 - n/2` 表负数，避一元负号解析坑；逆序有符号 `int`）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/375_tri_altsum/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/375_tri_altsum/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/375_tri_altsum/main.sla -o /tmp/basic_375 && /tmp/basic_375

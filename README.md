@@ -8,7 +8,7 @@ Safe ASM (SA) 的 Sla 编译器与工具插件。提供 Sla → SA 编译能力�
 
 ## 状态
 
-> 项目处于 1.0 之前的活跃开发阶段，**SAB 路径是主线**。
+> 项目处于 1.0 之前的活跃开发阶段，**SA 文本是唯一生产路径；SAB 已于 2026-11-15 密封（sab-sealed-2026-11-15），仅为显式 opt-in 的优化方向**。
 > 具体、可核实的进度指标（no-fallback sweep、Y 型共享 lowering 覆盖率、fallback 移除率）以
 > [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) 为准，本 README 不硬编码这些百分比以免过期。
 
@@ -40,16 +40,18 @@ SA_PLUGIN_DEV=1 sa sla build-exe /tmp/sla_app/src/main.sla -o /tmp/main    # 编
 
 ## 命令参考
 
+> **命令形式（sala 推荐）**：命令首选顶层 `sla <command>` 写法，与 `sa sla <command>` 完全等价（去掉 `sa ` 前缀即可，参数不变）；`sla slab …` 同理为 `sla sab …` 的短别名。
+
 - `sa sla init [path]`：创建最小 SLA 二进制项目，含 `sa.mod`、`src/main.sla`，并把 `.sla-cache/` 写入 `.gitignore`。
 - `sa sla skills [--json]`：列出 SLA 插件能力。文本模式还会把 `.codex/skills/sla/SKILL.md` 和 `.claude/skills/sla/SKILL.md` 写入当前目录。
 - `sa sla build <file>`：把一个 `.sla` 源文件编译为经校验的 `.sa` 汇编文件。
-- `sa sla build-exe <file>`：走 direct SAB 路径把 `.sla` 编译为原生可执行文件，用 `.sla-cache/sab/...` 下的托管输入交给委派的 `sa build-exe`。
+- `sla build-exe <file>`：默认走 SA 文本路径，先发射 `.sa` 再编译为原生可执行文件；仅显式 `--test-backend sab` 时走 direct SAB 托管路径（`.sla-cache/sab/...`）。
 - `sa sla sab build <file>`：把 `.sla` 直接编译为 SAB 字节。默认托管产物写在 `.sla-cache/sab/`；用 `--out <file.sab>` 额外写出一个可见 SAB 文件。
 - `sa sla sab workspace`：解析当前 `sa.mod` workspace 成员，走托管 SAB 编译，再委派给 `sa build-exe`。用 `-p <package>` 选择成员，`--sab-out <file.sab>` 额外写出检查用产物。
 - `sa sla sab disasm <file.sab>`：反汇编 SAB 文件用于调试；不属于编译路径。
-- `sa slab ...`：`sa sla sab ...` 的短别名。
+- `sla slab ...` / `sa slab ...`：`sla sab ...` / `sa sla sab ...` 的短别名（build / workspace / disasm 三个子命令）。
 - `sa sla check <file>`：对 `.sla` 源文件做词法、语法、类型检查，不发射最终 SA 汇编。
-- `sa sla test <file>`：把 `.sla` 测试文件编译为 `.sla-cache/sab/` 下的托管 SAB 并经 `sa test` 运行。默认 `auto` 后端走 SAB 主线；仅在调试遗留 `.test.sa` 路径时用 `--test-backend sa`，或用 `--test-backend sab` 明确指定严格 SAB 模式。
+- `sla test <file>`：默认 `auto` 后端走 SA 文本路径（生产路径），编译为同级 `<stem>.test.sa` 并经 `sa test` 运行（默认用后删除，可用 `SLA_KEEP_TEST_SA` 保留）；仅显式 `--test-backend sab` 时走已密封的 SAB 优化方向。
 
 更多可复制的调用示例见下方 [Installation](#installation) 与 [Rosetta Demos](#rosetta-demos)。
 
@@ -61,7 +63,7 @@ Sla 直接导入 SA 顶层 `sa_std` 包：
 @import "sa_std/io/print.sai"
 ```
 
-Sla 编译器在类型检查前加载导入的 `.sai` / `.sal` 契约，因此导入的 std 契约里的 extern 函数对 Sla 代码可用。默认从 `SA_STD_DIR`（已设置时）解析 `sa_std/...`，否则从 `$HOME/projects/sci/sa_std` 解析。
+Sla 编译器在类型检查前加载导入的 `.sai` / `.sal` 契约，因此导入的 std 契约里的 extern 函数对 Sla 代码可用。sa_std 解析顺序（按 sala）：编译期内置配置 → `SA_STD_DIR`（已设置时）→ `$SCI_ROOT/sa_std` → `$HOME/projects/sci/sa_std` → `$HOME/.sa/std` → 相对位置候选，取首个通过校验的。
 
 Sla 源码默认使用编译器托管的生命周期清理。用户面 `.sla` 代码不需要显式 `!x;` 释放；生成的 `.sa` 仍可能包含 `!` 指令，因为那是 SA 的所有权原语。Sla 有意不加 `drop` 关键字或 `drop()` 函数。
 
@@ -69,7 +71,7 @@ Sla 源码默认使用编译器托管的生命周期清理。用户面 `.sla` �
 
 ## 性能
 
-SLA 编译性能的核心事实：**direct（AST→SAB）是唯一发射路径，未覆盖特性直接响亮报错，不存在回退慢路径**。历史上的 SA 兼容回退路径已于 2026-09-28 移除（提交 `e96e6b39`）；当时实测回退段是最大瓶颈（见下表标注），因此 direct 覆盖率至今仍是编译性能的关键变量，而非编译器稳态速度。
+SLA 编译性能的核心事实：**默认生产路径是 SA 文本；direct（AST→SAB）是已密封的优化方向，仅显式 opt-in**，未覆盖特性直接响亮报错，不存在静默回退。历史上的 SA 兼容回退路径已于 2026-09-28 移除（提交 `e96e6b39`）。SAB 不加速单次编译，冷编译耗时主体在宿主后端；热编译/增量缓存是与 SAB 无关的独立机制。Direct-SAB 覆盖率数字是该密封路径的快照，不代表默认生产路径的能力上限。
 
 以下数字取自 [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) §6 与 [`docs/compilation_optimization_cn.md`](docs/compilation_optimization_cn.md)，均为单文件、特定 fixture 上的微观测量（机器未标定），**不作性能保证**：
 
@@ -93,14 +95,14 @@ tools/bench_sla_pipeline.sh --runs 3 --out /tmp/sla_pipeline_bench.jsonl
 
 ## 工作原理（简述）
 
-`.sa` 与 `.sab` 是两条独立的用户面编译主线，但内部正在收敛为 Y 型契约：
+用户面编译主线只有一条：SA 文本（生产路径）。SAB 是已密封的优化方向，仅显式 opt-in；两者内部共享 Y 型前端主干与 lowering 规则：
 
 ```
 SLA AST/typecheck ── 共享 lowering 规则/plan ──┬── SA 文本 emitter
                                               └── SAB 结构化 emitter
 ```
 
-SAB 生成把 SAB 字节直接写到托管产物路径，不创建 `.test.sa`、也不调用遗留文本测试后端，除非显式 `--test-backend sa`。SAB 只有 direct AST→SAB 一条发射路径；对尚未覆盖的 SA 指令族与 SLA 特性，`sab_codegen` 以 `UnsupportedSabDirectFeature` 响亮报错并使编译失败——不存在 in-memory SA 兼容路径（该路径已于 2026-09-28 移除，提交 `e96e6b39`；禁止 SAB 降级文本的治理口径见 [SAB 格式白皮书](https://github.com/layola13/sala/blob/main/content/03_sa_asm/08_sab_whitepaper.html) §4.2）。
+在显式 `--test-backend sab` 的已密封 SAB 路径内，SAB 生成把 SAB 字节直接写到托管产物路径，不创建 `.test.sa`。SAB 已于 2026-11-15 密封，仅为显式 opt-in 的优化方向；其 direct AST→SAB 发射器是该密封路径内的实现，未覆盖特性以 `UnsupportedSabDirectFeature` 响亮报错（禁止 SAB 降级文本，白皮书 §4.2——这是禁静默回退，不是路线优先级）。若未来解封，SAB 的唯一形态将是 SA 工具链内的 text → SAB 单向转换，前端永不直接发射 SAB。
 
 架构与快路径覆盖范围的完整说明见：
 

@@ -6,8 +6,8 @@ Eulerian-B 行和即公式：`ebsum(3)=48`，`ebsum(4)=384`，`ebsum(5)=3840`（
 - 绕行：`p2f(5)=32·120=3840` 同值陪锁（230 迭代体例复用；`2^n` 连乘避 `>>`，515 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/684_eulb_fact/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/684_eulb_fact/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/684_eulb_fact/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/684_eulb_fact/main.sla -o /tmp/basic_684 && /tmp/basic_684

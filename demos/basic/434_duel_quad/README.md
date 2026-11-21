@@ -6,7 +6,6 @@
 - 绕行：无（四元组恒为两重叠三元组之并；纯 `int` 判定）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/434_duel_quad/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/434_duel_quad/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/434_duel_quad/main.sla -o /tmp/basic_434 && /tmp/basic_434

@@ -458,7 +458,9 @@ SLA 不包含追踪式 GC。它依赖所有权、编译器插入的清理，以�
 
 **101. SLA 是先编译为 `.sa` 再转换为 SAB 吗？**
 
-从用户可见的流水线来看不是。`sa sla build` 仍然是 `.sa` 文本主线，而 `sa sla sab build`、`sa sla sab workspace`、`sa slab build`、`sa slab workspace` 以及默认的 `sa sla test` 路径会产生 SAB 产物。SAB 路径使用直接的 AST/类型检查器到 SAB 的编码器作为唯一发射路径。当某个特性尚未被该直接编码器覆盖时，编译会以 `UnsupportedSabDirectFeature` 响亮失败；插件绝不会改道走 SA 文本。（此前内存中的 SA 兼容回退已在 2026-09-28 移除，提交 `e96e6b39`；参见 sala 仓库中 SAB 格式白皮书 §4.2，`content/03_sa_asm/08_sab_whitepaper.html`。）
+> **命令形式（sala 推荐）**：命令首选顶层 `sla <command>` 写法，与 `sa sla <command>` 完全等价（去掉 `sa ` 前缀即可，参数不变）；`sla slab …` 同理为 `sla sab …` 的短别名。
+
+从用户可见的流水线来看不是。`sla build` 是 `.sa` 文本生产路径；`sla sab build` / `sla sab workspace` / `sla slab …` 是已密封 SAB 优化方向的显式 opt-in 入口；默认的 `sla test`（auto）走 SA 文本路径，仅显式 `--test-backend sab` 时产生 SAB 产物。在显式 SAB 路径内，direct AST→SAB 编码器未覆盖特性时以 `UnsupportedSabDirectFeature` 响亮失败，绝不静默改道走 SA 文本（白皮书 §4.2 是禁静默回退，不是路线优先级）。
 
 **102. `sa sla sab build` 默认把输出写到哪里？**
 
@@ -482,4 +484,4 @@ SLA 不包含追踪式 GC。它依赖所有权、编译器插入的清理，以�
 
 **107. `sa sla test` 默认使用什么后端？**
 
-`sa sla test` 默认使用 `--test-backend auto`，它会写入托管的 `.sla-cache/sab/...` 产物，并把该 SAB 文件传给 `sa test`。auto 模式使用 SAB 主线：直接的 AST 到 SAB 编码器是唯一的 SAB 发射路径，尚未覆盖的特性会响亮失败而不是回退。它不会回退到 `.test.sa`；使用 `--test-backend sa` 可强制走旧的 `.sa` 文本测试后端。当命令需要明确表明严格的 SAB 意图时，使用 `--test-backend sab`。
+`sla test` 默认使用 `--test-backend auto`，即 SA 文本路径（生产路径）：写同级 `<stem>.test.sa` 并传给 `sa test`（默认用后删除，`SLA_KEEP_TEST_SA` 可保留）。`--test-backend sa` 与默认同路；当命令需要明确表明 SAB 意图时，使用 `--test-backend sab` 显式 opt-in 已密封的 SAB 优化方向（未覆盖特性响亮失败，不回退）。

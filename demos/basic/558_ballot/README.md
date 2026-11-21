@@ -7,8 +7,8 @@ Ballot 数 `ballot(p,q)=(p-q+1)·C(p+q,q)/(p+1)`（`p≥q`，先乘后除精确�
 - 绕行：`ballot(5,0)=1` 单候选端点；中间积值域内无溢出（记 README）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/558_ballot/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/558_ballot/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/558_ballot/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/558_ballot/main.sla -o /tmp/basic_558 && /tmp/basic_558

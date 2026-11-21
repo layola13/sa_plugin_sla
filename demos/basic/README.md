@@ -11,7 +11,7 @@
 ## Commands
 
 ```bash
-export PATH="/tmp/gotools/zig-x86_64-linux-0.14.1:/content/sa_all/sci/zig-out/bin:$PATH"
+export PATH="/tmp/gotools/zig-x86_64-linux-0.17.0:/content/sa_all/sci/zig-out/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/01_hello/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/01_hello/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_hello && /tmp/basic_01_hello

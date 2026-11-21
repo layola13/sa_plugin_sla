@@ -6,8 +6,8 @@
 - 绕行：双签名皆（项数，起点），对峙点取同形传参（578 同例教训内化）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/579_duel_risefall/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/579_duel_risefall/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/579_duel_risefall/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/579_duel_risefall/main.sla -o /tmp/basic_579 && /tmp/basic_579

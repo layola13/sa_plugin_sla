@@ -6,7 +6,6 @@
 - 绕行：无（`r * k % m` 逐项取模防溢出）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/402_units_prod/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/402_units_prod/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/402_units_prod/main.sla -o /tmp/basic_402 && /tmp/basic_402

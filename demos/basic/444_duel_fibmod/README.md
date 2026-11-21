@@ -6,7 +6,6 @@
 - 绕行：周期上界 `6m`（Pisano 周期必落界内；返回 0 判缺界，7 无碍）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/444_duel_fibmod/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/444_duel_fibmod/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/444_duel_fibmod/main.sla -o /tmp/basic_444 && /tmp/basic_444

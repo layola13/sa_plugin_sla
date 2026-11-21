@@ -6,8 +6,8 @@ Lah 对峙：商式 `==` 递推（`(4,2)`：`36` 对 `36`；`(5,3)`：`120` 对 
 - 绕行：双表各自独立（534 同例）；商除链与递推权和式互锁
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/590_duel_lah/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/590_duel_lah/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/590_duel_lah/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/590_duel_lah/main.sla -o /tmp/basic_590 && /tmp/basic_590

@@ -6,7 +6,6 @@
 - 绕行：递归累积器显式传参（无默认参数，#8 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/412_duel_rev/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/412_duel_rev/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/412_duel_rev/main.sla -o /tmp/basic_412 && /tmp/basic_412

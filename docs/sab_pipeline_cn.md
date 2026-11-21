@@ -4,7 +4,7 @@
 
 ## 目标
 
-SAB 是 SA 的二进制 IR 文件格式，不是 `.sa` 文本压缩包，也不是把 `.sa` source 放进 section 的容器。本插件现在保留两条并行主线：
+SAB 是 SA 的二进制 IR 文件格式，不是 `.sa` 文本压缩包，也不是把 `.sa` source 放进 section 的容器。本插件的用户面主线只有一条：SA 文本（生产路径）。SAB 是已密封的优化方向，仅显式 opt-in；本文只记该密封路径的管线、覆盖面与报错边界。以下两条是该密封路径内的两种输出形态，不是两条并行主线：
 
 - `sa sla build`：继续输出 `.sa` 文本，服务调试和现有文本链路。
 - `sa sla sab ...` / `sa slab ...`：从 SLA 前端直接输出 SAB bytes，供 SA compiler 读取 `.sab` 后进入 verifier/backend/linker。
@@ -50,6 +50,8 @@ SA_PLUGIN_DEV=1 sa sla skills --json
 
 ## CLI 行为
 
+> **命令形式（sala 推荐）**：命令首选顶层 `sla <command>` 写法，与 `sa sla <command>` 完全等价（去掉 `sa ` 前缀即可，参数不变）；`sla slab …` 同理为 `sla sab …` 的短别名。
+
 ### `sa sla init` / `sa sla skills`
 
 ```bash
@@ -90,7 +92,7 @@ workspace 模式从当前目录解析 `sa.mod`，选择默认 member 或 `-p/--p
 - `--emit-sab` 会额外写 sibling `.sab`，用于人工检查。
 - 传给 `sa build-exe` 的输入是稳定 `.sla-cache/sab/...` 路径，便于 SA 增量缓存命中。
 
-`sa sla build-exe <file.sla>` 也走同一直接 SAB 托管路径：先生成 `.sla-cache/sab/...`，再调用 `sa build-exe <managed.sab> ...`。它不再生成临时 `.sa` 文本作为中间主链路。
+`sla build-exe <file.sla>` 默认走 SA 文本路径，先生成同级 `.sa` 再调用 `sa build-exe`；仅显式 `--test-backend sab` 时走 direct SAB 托管路径（`.sla-cache/sab/...`）。
 
 ### `sa sla test`
 
@@ -98,10 +100,10 @@ workspace 模式从当前目录解析 `sa.mod`，选择默认 member 或 `-p/--p
 sa sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]
 ```
 
-默认 `auto` 后端走 SAB 主线：SLA 前端生成 `.sla-cache/sab/...`，然后调用 `sa test <managed.sab> ...`。直接 AST-to-SAB 是唯一发射路径；如果它遇到尚未覆盖的 SLA 特性，`sab_codegen` 返回 `UnsupportedSabDirectFeature` 并响亮报错、编译失败，不会改走任何文本或兼容路径（内存 SA-compatible 回退已于 2026-09-28 移除，提交 `e96e6b39`；禁止 SAB 降级文本的治理口径见 [SAB 格式白皮书](https://github.com/layola13/sala/blob/main/content/03_sa_asm/08_sab_whitepaper.html) §4.2）。SCI 的通用 SAB v4 encoder 覆盖 SA `InstKind` / `OpKind` / operand tag，并保留函数寄存器、native register、package identity、upstream location 等后端元数据；v4 不再保存每条 instruction 的完整 `.sa` raw_text。
+默认 `auto` 后端走 SA 文本路径（生产路径），写同级 `<stem>.test.sa` 后调用 `sa test`（默认用后删除）。仅显式 `--test-backend sab` 时走已密封的 SAB 优化方向：SLA 前端生成 `.sla-cache/sab/...`，未覆盖特性以 `UnsupportedSabDirectFeature` 响亮报错，不会改走任何文本或兼容路径（禁止 SAB 降级文本是禁静默回退，白皮书 §4.2，不是路线优先级）。SCI 的通用 SAB v4 encoder 覆盖 SA `InstKind` / `OpKind` / operand tag，并保留函数寄存器、native register、package identity、upstream location 等后端元数据；v4 不再保存每条 instruction 的完整 `.sa` raw_text。
 
-- `--test-backend sab`：强制 SAB 主线；适合验证不会走旧 `.test.sa` 后端。
-- `--test-backend sa`：强制旧 `.test.sa` 文本测试路径。
+- `--test-backend sab`：显式 opt-in 已密封的 SAB 优化方向。
+- `--test-backend sa`：显式指定与默认同路的 SA 文本路径。
 - `--emit-sab`：额外写 sibling `.sab` 供人工检查；托管 SAB 仍在 `.sla-cache/sab/`。
 
 ### `sa sla sab disasm`
@@ -183,7 +185,7 @@ direct lowering 失败即直接报错（历史上曾有 `SLA_SAB_NO_FALLBACK` �
 - Direct var/control-flow 回归：`zig build test -Dtest-filter="sla sab backend lowers var scalar slots directly" --summary all` 通过；`SLA_SAB_NO_FALLBACK=1 SLA_PROFILE=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_var_phase1.sla --test-backend sab --jobs 1 --trace-panic` 通过，覆盖 scalar `var` stack slots、assignment、if branch merge 后读取和基础 while。该轮同时修复 direct SAB 分支条件 cleanup：临时条件在 then/else 或 loop body/exit 各自释放，局部/参数条件不被错误消费。
 - Direct no-fallback 更新：`tests/test_unit_fn_ptr_value.sla --filter "thread closure captures function pointer callee"` 和 `/home/vscode/projects/sla_ecs/lib/parallel.sla` 已通过 no-fallback 验证。普通闭包调用、聚焦 zero-arg 逃逸线程闭包、捕获函数指针 callee 以及对应 spawn wrapper 已覆盖；剩余缺口是把该入口函数/function-object lowering 泛化到更多导出闭包形态，并把调用/实参 materialization 规则上移到共享 lowering 计划层，不能通过在编译器内写 `thread` 特例解决。
 - SAB 端到端：`SA_PLUGIN_DEV=1 sa sla sab build tests/test_unit_fn_ptr_value.sla --out /tmp/test_unit_fn_ptr_value_v4.sab` 后，`/home/vscode/projects/sci/zig-out/bin/sa test /tmp/test_unit_fn_ptr_value_v4.sab --compile-only` 通过；`test_unit_spaceship_cmp.sla` 与 `test_unit_using_static_extension.sla` 同样通过。
-- 性能点测：同一 `test_unit_fn_ptr_value`，`sa test <v4.sab> --compile-only` 约 3.31s-4.39s，raw `.sa` 路径约 11.31s；SA 后端吃 SAB 已明显加速。`sa sla sab build` 前端生成 SAB 仍比 `sa sla build` 慢，本轮测得约 3.66s vs 0.12s，剩余瓶颈在 SLA->SAB 生成阶段的 SA-compatible flatten/verify/encode 与缓存写入。
+- 性能点测（历史单点，未复核）：同一 `test_unit_fn_ptr_value`，`sa test <v4.sab> --compile-only` 约 3.31s-4.39s，raw `.sa` 路径约 11.31s。按 sala 现行口径（2026-11-15），SAB 不加速单次编译，冷编译耗时主体在宿主后端，与输入是文本还是 SAB 无关；该点测结论不再作为 SAB 的速度依据。`sa sla sab build` 前端生成 SAB 仍比 `sa sla build` 慢，本轮测得约 3.66s vs 0.12s，剩余瓶颈在 SLA->SAB 生成阶段的 SA-compatible flatten/verify/encode 与缓存写入。
 - 插件构建：`zig build`，通过。
 - 默认托管 SAB：`timeout 120s ./zig-out/bin/sla-local-cli sla sab build tests/test_sab_direct.sla`，输出 `.sla-cache/sab/test_sab_direct-...sab`。
 - 显式落盘：`timeout 120s ./zig-out/bin/sla-local-cli sla sab build tests/test_sab_direct.sla --out /tmp/sla_direct_out.sab`，`/tmp/sla_direct_out.sab` magic 为 `53 41 42 00`。

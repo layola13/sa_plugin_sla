@@ -1,6 +1,6 @@
 # Sla Rosetta Demos
 
-This catalog contains 300 Rust/Sla comparison demos derived from `/home/vscode/projects/sci/demos/rosetta`.
+This catalog contains 315 Rust/Sla comparison demos derived from `/home/vscode/projects/sci/demos/rosetta`.
 Each demo keeps the Rust reference as `main.rs` and adds a Sla companion as `main.sla`.
 
 ## Commands

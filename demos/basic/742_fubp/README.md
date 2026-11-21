@@ -6,8 +6,8 @@
 - 绕行：表版与商版系数源异构（建表拍扁 vs 乘式约分，730 同式复用）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/742_fubp/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/742_fubp/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/742_fubp/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/742_fubp/main.sla -o /tmp/basic_742 && /tmp/basic_742

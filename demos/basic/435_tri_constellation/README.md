@@ -6,7 +6,6 @@
 - 绕行：深嵌套 `if` 逐层收窄（代替四元 `&&`）；三计数器独立
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/435_tri_constellation/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/435_tri_constellation/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/435_tri_constellation/main.sla -o /tmp/basic_435 && /tmp/basic_435

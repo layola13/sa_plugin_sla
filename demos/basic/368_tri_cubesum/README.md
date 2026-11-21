@@ -6,7 +6,6 @@
 - 绕行：无（逆序用有符号 `int`，`i >= 1` 到 0 即停）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/368_tri_cubesum/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/368_tri_cubesum/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/368_tri_cubesum/main.sla -o /tmp/basic_368 && /tmp/basic_368

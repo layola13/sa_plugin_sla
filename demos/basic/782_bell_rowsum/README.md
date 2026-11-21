@@ -6,8 +6,8 @@ Bell 二类行和桥 `bsum(9)=21147`，`bsum(10)=115975`（行和恒等续高位
 - 绕行：`S(10,*)` 十项 `1+511+9330+34105+42525+22827+5880+750+45+1` 手算复核
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/782_bell_rowsum/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/782_bell_rowsum/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/782_bell_rowsum/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/782_bell_rowsum/main.sla -o /tmp/basic_782 && /tmp/basic_782

@@ -7,8 +7,8 @@ Pascal 行生成：`C(8,k+1)=C(8,k)·(8-k)/(k+1)` 乘法式逐项整除（350 �
 - 绕行：逐项皆精确整除（350 同例）；行号硬编码 8（无默认参数 #8 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/554_pascal_row/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/554_pascal_row/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/554_pascal_row/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/554_pascal_row/main.sla -o /tmp/basic_554 && /tmp/basic_554

@@ -6,8 +6,8 @@ Fine 高位三 `F(8)=622`（`F(7)=186` 低位锚；短递推一步 `[30·429-167
 - 绕行：`[12870-1674]/18=622` 分子先算后除精确（596 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/664_fine8/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/664_fine8/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/664_fine8/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/664_fine8/main.sla -o /tmp/basic_664 && /tmp/basic_664

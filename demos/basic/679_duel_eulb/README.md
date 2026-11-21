@@ -7,8 +7,8 @@ Eulerian-B 双实现对峙：建表 vs 交错和（`(4,2)：230 对 230`；`(5,2
 - 绕行：`%2` 判奇偶（515 口径）；奇底数幂天然正（`1^5=1` 尾项守卫）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/679_duel_eulb/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/679_duel_eulb/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/679_duel_eulb/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/679_duel_eulb/main.sla -o /tmp/basic_679 && /tmp/basic_679

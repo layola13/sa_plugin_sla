@@ -14,9 +14,9 @@ Evidence refreshed on 2026-07-12:
 - Current `tests/test_unit_*.sla` membership: 134 files.
 - Historical files missing from the current tree: 0.
 - Current files added since the historical baseline: 65.
-- The current strict local direct-SAB no-fallback sweep passed 134/134.
-- The current installed/dev-dispatched strict direct-SAB no-fallback sweep passed 134/134.
-- Therefore every historical member is present and passed in both sweeps: 69/69.
+- The 2026-07-12 strict local direct-SAB no-fallback sweep (sealed-path snapshot) passed 134/134.
+- The 2026-07-12 strict installed/dev-dispatched direct-SAB no-fallback sweep (sealed-path snapshot) passed 134/134.
+- Therefore every historical member was present and passed in both sweeps at that time: 69/69. (SAB sealed 2026-11-15; this is a historical snapshot of the sealed optimization path, not the current mainline corpus.)
 
 Comparison command:
 

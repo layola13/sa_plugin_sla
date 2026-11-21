@@ -6,8 +6,8 @@ Fuss-Catalan 三元数 `fuss(3,n)=C(3n,n)/(2n+1)`（`n=2→3`，`n=3→12`，`n=
 - 绕行：`fuss(1)=1` 退化端点（`C(3,1)/3=1`）；商除数 `2n+1` 恒精确整除
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/560_fuss/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/560_fuss/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/560_fuss/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/560_fuss/main.sla -o /tmp/basic_560 && /tmp/basic_560

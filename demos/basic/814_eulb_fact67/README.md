@@ -6,8 +6,8 @@ Eulerian-B 行和桥续高位：`ebsum(6)=46080`，`ebsum(7)=645120`（`p2f` 陪
 - 绕行：`p2f(7)=128·5040=645120` 同值陪锁（684 体例续高位；`2^n` 连乘避 `>>`）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/814_eulb_fact67/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/814_eulb_fact67/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/814_eulb_fact67/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/814_eulb_fact67/main.sla -o /tmp/basic_814 && /tmp/basic_814

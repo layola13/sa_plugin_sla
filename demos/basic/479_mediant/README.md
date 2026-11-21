@@ -6,7 +6,6 @@
 - 绕行：百分位打包（分子分母皆小量；`>=` 即判出界）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/479_mediant/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/479_mediant/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/479_mediant/main.sla -o /tmp/basic_479 && /tmp/basic_479

@@ -7,7 +7,7 @@ Standalone binary per platform, powered by the SA compiler.
 
 ```sh
 npm install -g @slalang/sla
-sla --version   # sla 0.1.3
+sla --version   # sla 0.1.8
 sla check main.sla
 ```
 
@@ -29,7 +29,7 @@ without any environment setup.
 
 ## Version sync
 
-Follows the `@salang/sa` line (currently 0.1.3): same version, exact pins.
+Follows the `@salang/sa` line (currently 0.1.8): same version, exact pins.
 
 ## Source & license
 

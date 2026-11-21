@@ -6,7 +6,6 @@
 - 绕行：`d != 0` 守卫（商余同步推进；441 同例）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/496_contfrac/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/496_contfrac/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/496_contfrac/main.sla -o /tmp/basic_496 && /tmp/basic_496

@@ -6,8 +6,8 @@ Stirling 二类 Bell 桥 `bell(n+1)=sum C(n,k)·bell(k)`（`bell(6)=203`，`bell
 - 绕行：`bell(5)=52` 小值守卫；递归深度止 `8`（`2^8` 扇出内，两后端秒级）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/703_stir2_bell/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/703_stir2_bell/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/703_stir2_bell/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/703_stir2_bell/main.sla -o /tmp/basic_703 && /tmp/basic_703

@@ -5,6 +5,8 @@
 > **关联**：[`architecture_cn.md`](./architecture_cn.md)、[`testing_and_verification_cn.md`](./testing_and_verification_cn.md)
 >
 > **2026-11-05 状态注**：本文是 2026-07-01 的进度快照，下文指标与「回退」叙述均为当时状态。SA 兼容回退路径已于 2026-09-28 整体移除（提交 `e96e6b39`）：SAB 路径现为 direct-only、未覆盖特性以 `UnsupportedSabDirectFeature` 响亮报错，`SLA_SAB_NO_FALLBACK` 不再被源码读取。SAB 契约的现行口径以 sala 仓 [SAB 格式白皮书（规范）](https://github.com/layola13/sala/blob/main/content/03_sa_asm/08_sab_whitepaper.html) 为准，插件侧现状见 [`sab_pipeline_cn.md`](./sab_pipeline_cn.md) 与 [`architecture_cn.md`](./architecture_cn.md)。
+>
+> **2026-11-15 密封更新**：SAB 已密封（sab-sealed-2026-11-15），SA 文本是唯一生产路径；SAB 仅为显式 opt-in 的优化方向，其等价性维护不再推进，本文的 direct-SAB 指标是该密封路径的快照，不代表默认生产路径的能力上限。
 
 ---
 
@@ -161,15 +163,15 @@ Option 闭包方法                       58%        81%       48/64
 
 **目标**：在调用/标准/控制流/导入阶段稳定后处理 async/await；重用共享 Future/task 表面元数据和状态机规则
 
-### Phase 9：回退删除门禁
+### Phase 9：回退删除门禁（历史目标；SAB 密封后关闭）
 
-**目标**：完整的 no-fallback sweep 从 58/69 到 69/69
+**目标（2026-07-01 历史）**：完整的 no-fallback sweep 从 58/69 到 69/69
 
 **完成定义**：
 ```
 Y/shared-lowering: 100%
 Direct SAB fallback-removal: 100%
-No-fallback sweep: 69/69 (local) + 69/69 (host)
+No-fallback sweep: 69/69 (local) + 69/69 (host) —— SAB 密封（2026-11-15）后，该 parity 工作线已关闭，剩余格子降级为优化队列，不再是 close-out / 打 tag 的前置条件。
 所有宏展开和借用/优先级目标已完成
 progress.md 和 tasks.md 已同步
 已验证的 commits 已完成

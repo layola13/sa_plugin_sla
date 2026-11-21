@@ -7,7 +7,6 @@ Golomb 双实现对峙（纯递归 vs 外层迭代；453 的自指版）。
   死变量 `a` 已删（`b` 直赋）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/522_duel_golomb/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/522_duel_golomb/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/522_duel_golomb/main.sla -o /tmp/basic_522 && /tmp/basic_522

@@ -6,7 +6,6 @@
 - 绕行：`if` 在 `while` 体内照常加 `;`（418 同例；禁的只是 `while}` 后 `;`）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/426_prim_pyth/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/426_prim_pyth/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/426_prim_pyth/main.sla -o /tmp/basic_426 && /tmp/basic_426

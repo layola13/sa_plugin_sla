@@ -7,8 +7,8 @@ Ballot 三角建表 `B(n,k)=B(n-1,k)+B(n,k-1)`（上三角守卫，546 范式变
 - 绕行：`nn<=mm` 上三角守卫（`k>n` 格恒零，探针三线绿）；首列留 `1`（546 同式）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/646_ballot/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/646_ballot/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/646_ballot/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/646_ballot/main.sla -o /tmp/basic_646 && /tmp/basic_646

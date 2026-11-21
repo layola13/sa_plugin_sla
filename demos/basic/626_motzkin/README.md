@@ -7,8 +7,8 @@ Motzkin 数递推 `M(n)=M(n-1)+sum M(k)·M(n-2-k)`（迭代建表，546 范式�
 - 绕行：`M(0)=1`、`M(1)=1` 双基守卫；内层上界 `ii-2`（`n=2` 只计 `k=0` 一项）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/626_motzkin/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/626_motzkin/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/626_motzkin/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/626_motzkin/main.sla -o /tmp/basic_626 && /tmp/basic_626

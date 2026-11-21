@@ -40,8 +40,10 @@ Sla 语言内置测试支持，使用 `@test` 声明：
 
 ### 1.2 运行测试
 
+> **命令形式（sala 推荐）**：命令首选顶层 `sla <command>` 写法，与 `sa sla <command>` 完全等价（去掉 `sa ` 前缀即可，参数不变）；`sla slab …` 同理为 `sla sab …` 的短别名。
+
 ```bash
-# 默认后端（SAB，推荐）
+# 默认后端（SA 文本，auto；推荐日常使用）
 sa sla test tests/test_unit_basic.sla
 
 # 指定后端
@@ -62,7 +64,7 @@ sa sla test tests/test_unit_basic.sla --test-backend sab
 
 | 后端 | 命令 | 说明 |
 |------|------|------|
-| `auto`（默认） | 直接 SAB（唯一发射路径），未覆盖特性响亮报错 | 推荐日常使用 |
+| `auto`（默认） | SA 文本路径（生产路径），写 `<stem>.test.sa`（默认用后删除）；未覆盖特性在显式 SAB 路径上响亮报错 | 推荐日常使用 |
 | `sab` | 明确要求 SAB 路径，不支持则报错 | CI 中验证直接路径 |
 | `sa` | 传统 SA 文本后端（生成 `.test.sa`） | 显式调试文本路径时用 |
 
@@ -70,7 +72,7 @@ sa sla test tests/test_unit_basic.sla --test-backend sab
 
 ## 2. No-Fallback 测试
 
-**No-fallback** 现为 SAB 路径的无条件行为，是 Y 型架构完成度的核心指标：SA 兼容回退已于 2026-09-28 移除（提交 `e96e6b39`），任何不受支持的特性都会以 `UnsupportedSabDirectFeature` 直接报错，不存在静默回退。历史上的 `SLA_SAB_NO_FALLBACK=1` 开关不再被源码读取，下文命令已去除该变量。因此 no-fallback sweep 就是 SAB 路径的普通通过率。
+**No-fallback** 现为显式 SAB 路径的无条件行为（回退已于 2026-09-28 移除，未覆盖特性以 `UnsupportedSabDirectFeature` 直接报错）。No-fallback sweep 是已密封 SAB 优化方向的覆盖快照，是 Y 型架构在该密封路径上的完成度指标，不代表默认 SA 文本生产路径的能力上限。
 
 ### 2.1 运行 No-Fallback 全面扫描
 
@@ -131,8 +133,8 @@ SLA_SAB_TRACE_UNSUPPORTED=1 timeout 180s \
 | **3. 单元测试** | `zig build test --summary all` | 所有 Zig 单元测试通过 |
 | **4. 插件安装** | `sa plugin install --dev .` | 插件正确安装到 SA 环境 |
 | **5. CLI 可用** | `SA_PLUGIN_DEV=1 sa sla help` | 安装后的 CLI 命令可用 |
-| **6. 本地 No-Fallback** | 本地扫描（见 §2.1） | 新增功能通过 direct SAB |
-| **7. Host No-Fallback** | 主机扫描（见 §2.2） | 安装后通过 direct SAB |
+| **6. 本地 No-Fallback（仅显式 SAB 路径）** | 本地扫描（见 §2.1） | 新增功能先通过默认 SA 文本路径；显式 `--test-backend sab` 时另行验证已密封的 SAB 优化方向 |
+| **7. Host No-Fallback（仅显式 SAB 路径）** | 主机扫描（见 §2.2） | 同上（安装后） |
 | **8. SA 文本对等性** | `--test-backend sa` 对比 | 新增功能与 SA 文本后端输出一致 |
 | **9. 回归检查** | 存放回归测试列表 | 已有功能不被破坏 |
 | **10. Diff 检查** | `git diff --check` | 无空格问题、无意外变更 |

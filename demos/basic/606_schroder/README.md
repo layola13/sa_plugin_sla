@@ -7,8 +7,8 @@
 - 绕行：`S(0)=1`、`S(1)=2` 双基守卫（`n<2` 跳建表循环）；`>>`/`^` 未知算子一律绕行（515 口径）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/606_schroder/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/606_schroder/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/606_schroder/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/606_schroder/main.sla -o /tmp/basic_606 && /tmp/basic_606

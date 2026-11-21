@@ -6,8 +6,8 @@ Delannoy 第 7 列纵深 `D(4,7)=2241`，`D(5,7)=7183`，`D(6,7)=19825`（列视
 - 绕行：`D(3,7)=575` 小值守卫；列值即转置行值（对称恒等复用）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/763_delan_col7/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/763_delan_col7/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/763_delan_col7/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/763_delan_col7/main.sla -o /tmp/basic_763 && /tmp/basic_763

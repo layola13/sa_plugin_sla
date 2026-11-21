@@ -6,8 +6,8 @@ Motzkin 高位二 `M(7)=127`（`M(6)=51` 低位锚；卷积和 `76`）。
 - 绕行：六项卷积 `21+9+8+8+9+21=76` 手算复核（探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/631_motz7/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/631_motz7/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/631_motz7/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/631_motz7/main.sla -o /tmp/basic_631 && /tmp/basic_631

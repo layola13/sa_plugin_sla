@@ -6,8 +6,8 @@
 - 绕行：同核（`F(n)=sum C·F`）异源（表/商）交叉确证系数源（730 体例）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/743_duel_fubp/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/743_duel_fubp/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/743_duel_fubp/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/743_duel_fubp/main.sla -o /tmp/basic_743 && /tmp/basic_743

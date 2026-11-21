@@ -7,8 +7,8 @@ Lah 双实现对峙：建表 vs 商式（`(7,3)：12600 对 12600`；`(7,4)：42
 - 绕行：`15·5040/6=12600` 先乘后除精确（596 口径）；`k=0` 提前返零守卫
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/709_duel_lah7/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/709_duel_lah7/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/709_duel_lah7/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/709_duel_lah7/main.sla -o /tmp/basic_709 && /tmp/basic_709

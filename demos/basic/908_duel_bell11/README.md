@@ -6,8 +6,8 @@ Bell 高位三对峙：二项递推 vs Aitken 三角（`n=10：115975` 双锁，
 - 绕行：无（双实现互锁，探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/908_duel_bell11/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/908_duel_bell11/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/908_duel_bell11/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/908_duel_bell11/main.sla -o /tmp/basic_908 && /tmp/basic_908

@@ -6,7 +6,6 @@ Golomb 自描述数列（`G(9)=5`；448 的自指版）。
 - 绕行：`n==1` 单基（内层先收敛；深度 10 安全）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/516_golomb/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/516_golomb/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/516_golomb/main.sla -o /tmp/basic_516 && /tmp/basic_516

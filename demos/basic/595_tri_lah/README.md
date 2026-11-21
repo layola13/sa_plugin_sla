@@ -6,8 +6,8 @@
 - 绕行：商式B另断言 `lah_b(4,2)=36`（`6·6` 手算复核）；三源各自独立
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/595_tri_lah/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/595_tri_lah/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/595_tri_lah/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/595_tri_lah/main.sla -o /tmp/basic_595 && /tmp/basic_595

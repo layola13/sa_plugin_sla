@@ -6,7 +6,6 @@
 - 绕行：`n < 2` 守卫（`σ(1)=1≠2` 天然为 0，守卫保语义显式）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/523_perfect_count/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/523_perfect_count/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/523_perfect_count/main.sla -o /tmp/basic_523 && /tmp/basic_523

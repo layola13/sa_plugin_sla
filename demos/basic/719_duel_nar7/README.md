@@ -6,8 +6,8 @@ Narayana 行和对峙：行和 vs Catalan 商式（`n=6：132 对 132`；`n=7：
 - 绕行：商式 `C(14,7)/8=429` 大值精确整除（596 口径；探针三线绿）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/719_duel_nar7/main.sla
+# SAB 已密封（sab-sealed-2026-11-15），--test-backend sab 仅为显式 opt-in；生产路径是 SA 文本（默认 auto / --test-backend sa）。
 SA_PLUGIN_DEV=1 sa sla test demos/basic/719_duel_nar7/main.sla --test-backend sab
 SA_PLUGIN_DEV=1 sa sla test demos/basic/719_duel_nar7/main.sla --test-backend sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/719_duel_nar7/main.sla -o /tmp/basic_719 && /tmp/basic_719

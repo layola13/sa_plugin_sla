@@ -6,7 +6,6 @@
 - 绕行：`n == 0` 提前返回 0（空循环得乘法单位元 1 是错值）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/407_dprod/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/407_dprod/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/407_dprod/main.sla -o /tmp/basic_407 && /tmp/basic_407

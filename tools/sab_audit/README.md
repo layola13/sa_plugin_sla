@@ -135,10 +135,6 @@ future regeneration performed on top of a modified std.
 
 ## Doctrine anchors
 
-- SAB is the production path; SA text is the teaching /
-  decompile-debug mirror (user ruling 2026-11-03 23:41). The audit
-  defaults to the production target set {SAB}: SAB gaps are hard
-  findings, text-only gaps are listed as mirror-distortion
-  findings. The test target set is {SAB, text} (both hard).
+- SA text is the only production path; SAB structured artifacts were sealed on 2026-11-15 (tag `sab-sealed-2026-11-15`) and are positioned as an optimization direction, enabled only on explicit opt-in (`--test-backend sab` or `sa sla sab ...`). The audit defaults to the production target set {SA text}: SA-text gaps are hard findings, SAB-only gaps are listed as opt-in-path findings. The test target set is {SAB, text} (both hard).
 - No fallback: a missing registration is a loud finding, never a
   reroute through the other backend (user ruling 2026-11-03 23:40).

@@ -6,7 +6,6 @@ Catalan 数（`C(2n,n)/(n+1)`；350 的商式版）。
 - 绕行：无（纯 `int` 循环复用 `binom`）
 
 ```bash
-export PATH="/content/sa_all/sci/zig-out/bin:/tmp/gotools/go/bin:$PATH"
 SA_PLUGIN_DEV=1 sa sla check demos/basic/351_catalan/main.sla
 SA_PLUGIN_DEV=1 sa sla test demos/basic/351_catalan/main.sla
 SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/351_catalan/main.sla -o /tmp/basic_351 && /tmp/basic_351

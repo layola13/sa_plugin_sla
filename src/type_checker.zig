@@ -7875,6 +7875,17 @@ pub const TypeChecker = struct {
                 if (let.ty != null and val_ty.* == .array and declared_ty.* == .array) {
                     self.expr_types.put(let.value, declared_ty) catch return TypeError.OutOfMemory;
                 }
+                // Vec-literal element-type unification (DEF-ROSETTA32):
+                // a `vec(...)` literal's recorded type comes from arg
+                // inference alone (bare int literals default to i64),
+                // while every read of the binding uses the declared
+                // Vec<T>. With compact element slots the two disagree
+                // on the push stride. Record the declared type for the
+                // literal (same pattern as the array case above) so
+                // codegen derives the element slot size from T.
+                if (let.ty != null and let.value.* == .call_expr and let.value.call_expr.associated_target == null and std.mem.eql(u8, let.value.call_expr.func_name, "vec") and val_ty.* == .user_defined and declared_ty.* == .user_defined and std.mem.eql(u8, val_ty.user_defined.name, "Vec") and val_ty.user_defined.generics.len == 1 and std.mem.eql(u8, declared_ty.user_defined.name, "Vec") and declared_ty.user_defined.generics.len == 1) {
+                    self.expr_types.put(let.value, declared_ty) catch return TypeError.OutOfMemory;
+                }
                 if (!self.valueAssignableTo(declared_ty, val_ty)) {
                     if (declared_ty.* == .user_defined and std.mem.eql(u8, declared_ty.user_defined.name, "Slice") and declared_ty.user_defined.generics.len == 1 and val_ty.* == .borrow) {
                         if (arrayType(val_ty.borrow)) |arr| {

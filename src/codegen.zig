@@ -21765,7 +21765,13 @@ pub const Codegen = struct {
                     const some_label = try self.newLabel("L_VEC_POP_SOME");
                     const none_label = try self.newLabel("L_VEC_POP_NONE");
                     const end_label = try self.newLabel("L_VEC_POP_END");
-                    self.outPrint("    {s} = alloc 8\n", .{value_slot}) catch return CodegenError.CodegenError;
+                    // DIAG fix-4 (pop out slot): the try_pop out slot is a
+                    // scratch word, not a heap value -- keep it on the stack
+                    // (mirrors genVecDequeRotateLeft's pop_slot). Registered
+                    // in stack_alloc_bindings so the emitRelease below is a
+                    // no-op (a `!` on a stack slot is a StackEscape trap).
+                    try self.stack_alloc_bindings.put(value_slot, {});
+                    self.outPrint("    {s} = stack_alloc 8\n", .{value_slot}) catch return CodegenError.CodegenError;
                     // VECFIX phase 1: the sized pop walks the buffer at
                     // the element's slot stride; the legacy 2-arg entry
                     // keeps the word stride for word-layout callers.
@@ -22385,6 +22391,55 @@ pub const Codegen = struct {
                             }
                             if (lowering_rules.isUnwrapCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
+                                // FUSED pop().unwrap() (DIAG fix-4): when the
+                                // receiver is a direct Vec.pop() call, skip
+                                // the heap Option box entirely and run
+                                // try_pop straight into the result, panicking
+                                // on None like OPTION_UNWRAP does. Saves 2
+                                // heap malloc/free per call (the try_pop out
+                                // slot + the 16-byte Option box). The out
+                                // slot lives on the stack, mirroring
+                                // genVecDequeRotateLeft's pop_slot.
+                                // Inline-POD elements are NOT fused (their
+                                // materialized record keeps the Option box
+                                // shape); they fall through to OPTION_UNWRAP.
+                                if (call.args[0].* == .call_expr) {
+                                    const inner = &call.args[0].call_expr;
+                                    if (lowering_rules.isPopCall(inner.*) and inner.args.len == 1) {
+                                        if (self.tc.expr_types.get(inner.args[0])) |pop_recv_ty| {
+                                            if (vecElementType(pop_recv_ty)) |pop_elem_ty| {
+                                                if (!self.inlinePodElement(pop_elem_ty)) {
+                                                    const recv_reg = try self.genExpr(inner.args[0], hoisted_allocs);
+                                                    const ok_reg = try self.newTmp();
+                                                    const value_slot = try self.newTmp();
+                                                    const result_reg = try self.newTmp();
+                                                    const some_label = try self.newLabel("L_VEC_POP_UNWRAP_SOME");
+                                                    const none_label = try self.newLabel("L_VEC_POP_UNWRAP_NONE");
+                                                    const end_label = try self.newLabel("L_VEC_POP_UNWRAP_END");
+                                                    try self.stack_alloc_bindings.put(value_slot, {});
+                                                    self.outPrint("    {s} = stack_alloc 8\n", .{value_slot}) catch return CodegenError.CodegenError;
+                                                    self.outPrint("    {s} = call @sa_vec_try_pop_sized(&{s}, &{s}, {})\n", .{ ok_reg, recv_reg, value_slot, self.vecElementSlotSize(pop_elem_ty) }) catch return CodegenError.CodegenError;
+                                                    self.outPrint("    br {s} -> {s}, {s}\n\n", .{ ok_reg, some_label, none_label }) catch return CodegenError.CodegenError;
+                                                    self.outPrint("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
+                                                    self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                                                    if (self.vecElementSlotSize(pop_elem_ty) < 8) {
+                                                        self.outPrint("    {s} = load {s}+0 as {s}\n", .{ result_reg, value_slot, typeString(pop_elem_ty) }) catch return CodegenError.CodegenError;
+                                                    } else {
+                                                        self.outPrint("    {s} = load {s}+0 as u64\n", .{ result_reg, value_slot }) catch return CodegenError.CodegenError;
+                                                    }
+                                                    self.outPrint("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                                    self.outPrint("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+                                                    self.outPrint("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                                                    self.outPrint("    EXPAND PANIC_MSG 17, *OPTION_UNWRAP_PANIC, 39\n", .{}) catch return CodegenError.CodegenError;
+                                                    self.outPrint("    {s} = add 0, 0\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                                    self.outPrint("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                                    if (callArgNeedsRelease(inner.args[0])) try self.emitRelease(recv_reg);
+                                                    return result_reg;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
                                 self.outPrint("    EXPAND OPTION_UNWRAP {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;

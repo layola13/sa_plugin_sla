@@ -1,0 +1,4 @@
+// task112 C-guard fixture: an empty @test body must never be emitted as a
+// header-only hollow stub. The build must refuse loudly instead.
+@test "task112 empty body must be refused"() {
+}

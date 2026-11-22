@@ -99,7 +99,7 @@ pub fn testFilterSelectsNoTests(
 
     const sla_base_dir = std.fs.path.dirname(file) orelse ".";
     var p = parser_mod.Parser.initWithDirAndOptions(allocator, expanded_content, sla_base_dir, .{
-        .parse_test_bodies = false,
+        .parse_test_bodies = true,
     });
     const prog = p.parseProgram() catch |err| {
         try p.printDiagnostic(stderr, file, err);
@@ -680,10 +680,11 @@ fn runSlaFrontend(
 
     stage_start = sio.nanoTimestamp();
     const sla_base_dir = std.fs.path.dirname(file) orelse ".";
-    // Check/compile roots skip test bodies for wall-clock. Test codegen must parse
-    // them: otherwise prune/reachability never sees roots such as generic_func_ref
-    // inside `@test` and transitive templates are not loaded/specialized.
-    const parse_test_bodies = options.prune_for_test_codegen or (options.test_filter != null and options.test_filter.?.len != 0);
+    // Task 112 (B): every artifact-emitting root parse materializes @test bodies.
+    // The old build/check condition skipped them, hollowing emitted @test decls to
+    // a header + empty body (false green). codegen.genTestDecl now refuses any
+    // empty body at emission (C).
+    const parse_test_bodies = true;
     var p = parser_mod.Parser.initWithDirAndOptions(allocator, expanded_content, sla_base_dir, .{
         .parse_test_bodies = parse_test_bodies,
     });
@@ -699,11 +700,14 @@ fn runSlaFrontend(
         SlaModuleTable.initWithParserOptions(allocator, .{
             .parse_function_bodies = false,
             .parse_macro_bodies = false,
-            .parse_test_bodies = false,
+            .parse_test_bodies = true,
             .prescan_sla_import_types = false,
         })
     else
-        SlaModuleTable.init(allocator);
+        SlaModuleTable.initWithParserOptions(allocator, .{
+            .parse_test_bodies = true,
+            .prescan_sla_import_types = false,
+        });
     import_modules.decl_target = options.decl_target;
     defer import_modules.deinit();
     var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);

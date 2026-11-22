@@ -10856,6 +10856,13 @@ pub const Codegen = struct {
     }
 
     fn genTestDecl(self: *Codegen, t: *const ast.TestDecl) CodegenError!void {
+        if (t.body.len == 0) {
+            self.tc.setCodegenDiag(
+                "Task 112 (C): refusing to emit hollow @test \"{s}\" - the @test body is empty (skipped before emission); never write a header-only @test stub.",
+                .{t.name},
+            );
+            return CodegenError.CodegenError;
+        }
         self.store_moved_bindings.clearRetainingCapacity();
         self.addressable_bindings.clearRetainingCapacity();
         self.assigned_bindings.clearRetainingCapacity();

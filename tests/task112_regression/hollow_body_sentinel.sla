@@ -1,0 +1,7 @@
+// task112 regression fixture.
+// The @test body below is an always-failing assertion: if the body survives
+// compilation, running the test panics (rc != 0). If the build path hollows
+// the body, the emitted @test is a header-only stub and the assertion is lost.
+@test "task112 hollow-body sentinel: must fail if body survives"() {
+    if 1 == 1 { panic(112112); };
+}

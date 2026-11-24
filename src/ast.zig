@@ -131,6 +131,7 @@ pub const TraitDecl = struct {
 pub const Field = struct {
     name: []const u8,
     ty: *Type,
+    is_const: bool = false,
 };
 
 pub const FuncDecl = struct {

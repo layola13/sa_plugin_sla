@@ -1,0 +1,32 @@
+// Reversed Mutability Model, step 1 (experimental): field-level `const`
+// in struct definitions. A const field may be set at construction time
+// (struct literal) and read freely afterwards; ordinary fields of the
+// same struct stay mutable.
+
+struct Account {
+    const id: u64,
+    balance: i64,
+    tag: i64,
+}
+
+fn make_account() -> Account {
+    return Account { id: 7, balance: 100, tag: 1 };
+}
+
+fn bump(a: Account) -> i64 {
+    a.balance = a.balance + 50;
+    return a.balance;
+}
+
+@test "const field construct and read"() {
+    let a = make_account();
+    if a.id != 7 { panic(9201); };
+    if a.balance != 100 { panic(9202); };
+}
+
+@test "ordinary fields stay mutable"() {
+    let a = make_account();
+    if bump(a) != 150 { panic(9203); };
+    a.tag = 42;
+    if a.tag != 42 { panic(9204); };
+}

@@ -5088,7 +5088,7 @@ pub const TypeChecker = struct {
                 .ty => |ty| {
                     if (self.structDeclForType(ty)) |src_decl| {
                         for (src_decl.fields) |field| {
-                            fields.append(.{ .name = field.name, .ty = field.ty }) catch return null;
+                            fields.append(.{ .name = field.name, .ty = field.ty, .is_const = field.is_const }) catch return null;
                         }
                     } else {
                         fields.append(.{ .name = alias.name, .ty = ty }) catch return null;
@@ -8066,6 +8066,25 @@ pub const TypeChecker = struct {
                     if (rwLockReadGuardInnerType(deref_target_ty) != null) {
                         self.setError("cannot assign through RwLock read guard", .{});
                         return TypeError.TypeMismatch;
+                    }
+                }
+                // Reversed Mutability Model step 1: a field declared
+                // `const` in its struct definition may only be set at
+                // construction (struct literal); any later store through
+                // a field-access target is rejected.
+                if (assign.target.* == .field_expr) {
+                    const fexpr = assign.target.field_expr;
+                    const base_ty = try self.checkExpr(fexpr.expr, scope);
+                    const peeled = @constCast(lowering_rules.peelBorrowPointerType(base_ty));
+                    if (peeled.* == .user_defined) {
+                        if (self.structDeclForType(peeled)) |decl| {
+                            for (decl.fields) |fld| {
+                                if (fld.is_const and std.mem.eql(u8, fld.name, fexpr.field_name)) {
+                                    self.setError("ConstFieldStore: cannot assign to const field `{s}` of struct `{s}` after construction", .{ fexpr.field_name, decl.name });
+                                    return TypeError.CompileError;
+                                }
+                            }
+                        }
                     }
                 }
                 const target_ty = if (assign.target.* == .identifier) blk: {

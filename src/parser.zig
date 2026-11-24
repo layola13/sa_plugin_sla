@@ -848,12 +848,13 @@ pub const Parser = struct {
         } else {
             try self.expect(.l_brace);
             while (self.peek() != .r_brace and self.peek() != .eof) {
+                const f_is_const = self.match(.keyword_const);
                 const f_tok = self.tok;
                 try self.expect(.identifier);
                 const f_name = self.lexeme(f_tok.loc);
                 try self.expect(.colon);
                 const f_ty = try self.parseType();
-                try fields.append(.{ .name = f_name, .ty = f_ty });
+                try fields.append(.{ .name = f_name, .ty = f_ty, .is_const = f_is_const });
                 _ = self.match(.comma);
             }
             try self.expect(.r_brace);

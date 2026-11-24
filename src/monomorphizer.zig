@@ -273,7 +273,7 @@ pub const Monomorphizer = struct {
                 var new_fields = std.array_list.Managed(ast.Field).init(self.allocator);
                 for (s.fields) |f| {
                     const new_ty = try self.specializeType(f.ty);
-                    try new_fields.append(.{ .name = f.name, .ty = new_ty });
+                    try new_fields.append(.{ .name = f.name, .ty = new_ty, .is_const = f.is_const });
                 }
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
@@ -296,7 +296,7 @@ pub const Monomorphizer = struct {
                         .inline_struct => |fields| {
                             var new_fields = std.array_list.Managed(ast.Field).init(self.allocator);
                             for (fields) |f| {
-                                try new_fields.append(.{ .name = f.name, .ty = try self.specializeType(f.ty) });
+                                try new_fields.append(.{ .name = f.name, .ty = try self.specializeType(f.ty), .is_const = f.is_const });
                             }
                             try new_components.append(.{ .inline_struct = try new_fields.toOwnedSlice() });
                         },
@@ -312,7 +312,7 @@ pub const Monomorphizer = struct {
                     var new_fields = std.array_list.Managed(ast.Field).init(self.allocator);
                     for (variant.fields) |f| {
                         const new_ty = try self.specializeType(f.ty);
-                        try new_fields.append(.{ .name = f.name, .ty = new_ty });
+                        try new_fields.append(.{ .name = f.name, .ty = new_ty, .is_const = f.is_const });
                     }
                     try new_variants.append(.{ .name = variant.name, .fields = try new_fields.toOwnedSlice() });
                 }

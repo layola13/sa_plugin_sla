@@ -1,0 +1,11 @@
+// expect: ConstFieldStore
+// neg: assigning to a const field after construction must be rejected
+struct Account {
+    const id: u64,
+    balance: i64,
+}
+fn main() -> i32 {
+    let a = Account { id: 7, balance: 100 };
+    a.id = 8;
+    return 0;
+}

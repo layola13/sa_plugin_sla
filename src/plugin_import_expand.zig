@@ -236,6 +236,15 @@ fn resolvedImportDeclaresReferencedSurface(resolved: ResolvedImport, referenced_
 }
 
 fn resolvedImportNeedsTransitiveContractScan(resolved: ResolvedImport) bool {
+    // .sai/.sal contract shims are thin forwarders whose only content is an
+    // @import of the canonical file (Phase 1 modularization, 2026-11-22).
+    // They declare no surface of their own, so without this the nested
+    // import is dropped from the emitted .sa and the Zig verifier never
+    // sees the declaration (sa_time_unix_s undefined in build-exe while
+    // sa check passes). Retain a shim when it forwards to another file.
+    if (std.mem.endsWith(u8, resolved.path, ".sai") or std.mem.endsWith(u8, resolved.path, ".sal")) {
+        return std.mem.indexOf(u8, resolved.source, "@import") != null;
+    }
     if (!std.mem.endsWith(u8, resolved.path, ".sa")) return false;
     return std.mem.indexOf(u8, resolved.source, "@import") != null or
         std.mem.indexOf(u8, resolved.source, "@expand_tuple") != null;

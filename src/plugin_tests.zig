@@ -11371,3 +11371,53 @@ test "a1 prune drops unreferenced unconditional std imports from generated SA" {
         }
     }
 }
+
+test "sla nested contract shim import is retained in generated SA" {
+    // Layer-2 regression (shim defect, Muse 7665): a .sai shim imported by a
+    // NESTED .sla file was dropped from the emitted .sa, so the declaration
+    // never reached the checker (sa check passed via its own recursive
+    // contract loading, but the SA-text front-end failed with Undefined
+    // call: sa_time_unix_s). On the pre-fix plugin this test fails at the
+    // front-end check (no SA is produced); after the fix the SA is
+    // produced and retains the shim import line, which the assertion
+    // below verifies.
+    // Note: cwd is NOT changed to the tmp dir, so sa_std resolves via the
+    // repo-root-relative candidates (../sci/sa_std in the standard sibling
+    // layout); only the probe files live in the tmp dir.
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+    try tdir.makeDir("sub");
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data =
+        \\@import "sub/helper.sla"
+        \\fn main() -> i32 { let s: i64 = helper_now(); return 0; }
+    });
+    try tdir.writeFile(.{ .sub_path = "sub/helper.sla", .data =
+        \\@import "sa_std/time.sai"
+        \\fn helper_now() -> i64 { return sa_time_unix_s(); }
+    });
+    const main_path = try tdir.realpathAlloc(std.testing.allocator, "main.sla");
+    defer std.testing.allocator.free(main_path);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+
+    const sa_code = (try compileSlaToSaString(
+        arena.allocator(),
+        main_path,
+        "main.test.sa",
+        stderr_fw.writer(),
+    )) orelse {
+        try stderr_fw.writer().flush();
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    const shim_line = "@import \"sa_std/time.sai\"";
+    if (std.mem.indexOf(u8, sa_code, shim_line) == null) {
+        std.debug.print("nested shim import missing from generated SA:\n{s}\n", .{sa_code});
+    }
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, shim_line) != null);
+}

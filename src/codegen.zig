@@ -1874,7 +1874,7 @@ pub const Codegen = struct {
                     if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
                     if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
                 } else {
-                    const addr = try self.genIndexAddress(&idx, hoisted_allocs);
+                    const addr = try self.genIndexAddress(&idx, hoisted_allocs, 87);
                     self.outPrint("    store {s}+0, {s} as {s}\n", .{ addr.ptr, empty_reg, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
                     try self.finishIndexAddress(addr);
                 }
@@ -14508,7 +14508,7 @@ pub const Codegen = struct {
                 break :blk loaded;
             },
             .index => blk: {
-                const address = try self.genIndexAddress(&arg.index_expr, hoisted_allocs);
+                const address = try self.genIndexAddress(&arg.index_expr, hoisted_allocs, 32);
                 try self.rememberIndexAddressSource(address);
                 const loaded = try self.newTmp();
                 self.outPrint("    {s} = load {s}+0 as {s}\n", .{ loaded, address.ptr, typeString(arg_ty) }) catch return CodegenError.CodegenError;
@@ -14540,7 +14540,7 @@ pub const Codegen = struct {
                 break :blk projection.ptr;
             },
             .index => blk: {
-                const address = try self.genIndexAddress(&arg.index_expr, hoisted_allocs);
+                const address = try self.genIndexAddress(&arg.index_expr, hoisted_allocs, 32);
                 try self.rememberIndexAddressSource(address);
                 break :blk address.ptr;
             },
@@ -16811,7 +16811,7 @@ pub const Codegen = struct {
                             if (arr.elem.* == .user_defined and self.tc.structs.contains(arr.elem.user_defined.name)) {
                                 const layout = try self.fieldAddressLayout(arr.elem, field.field_name);
                                 const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
-                                const addr = try self.genIndexAddress(&idx, hoisted_allocs);
+                                const addr = try self.genIndexAddress(&idx, hoisted_allocs, 87);
                                 const elem_reg = try self.newTmp();
                                 self.outPrint("    {s} = load {s}+0 as ptr\n", .{ elem_reg, addr.ptr }) catch return CodegenError.CodegenError;
                                 const val_reg = try self.genExpr(assign.value, hoisted_allocs);
@@ -18420,10 +18420,32 @@ pub const Codegen = struct {
         return try self.newTmp();
     }
 
+    /// 159(a): bounds check for an index against a runtime length
+    /// (or a compile-time array length). Mirrors genVecIndexRead: ult,
+    /// br, miss -> panic(<code>), hit -> !in_bounds. The caller loads
+    /// the length into len_reg and releases it after the check.
+    fn emitIndexBoundsCheck(
+        self: *Codegen,
+        index_reg: []const u8,
+        len_reg: []const u8,
+        panic_code: u32,
+    ) CodegenError!void {
+        const in_bounds_reg = try self.newTmp();
+        const hit_label = try self.newLabel("L_INDEX_OK");
+        const miss_label = try self.newLabel("L_INDEX_OOB");
+        self.outPrint("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    panic({})\n\n", .{panic_code}) catch return CodegenError.CodegenError;
+        self.outPrint("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
+        self.outPrint("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
+    }
+
     fn genIndexAddress(
         self: *Codegen,
         idx: *const ast.IndexExpr,
         hoisted_allocs: *const std.array_list.Managed([]const u8),
+        panic_code: u32,
     ) CodegenError!IndexAddress {
         const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
 
@@ -18443,6 +18465,10 @@ pub const Codegen = struct {
             const base_reg = try self.newTmp();
             self.outPrint("    {s} = load {s}+0 as ptr\n", .{ base_reg, vec_reg }) catch return CodegenError.CodegenError;
             const index_reg = try self.genExpr(idx.index, hoisted_allocs);
+            const len_def = if (lowering_rules.growVecElementType(target_ty) != null) "GrowVec_len" else "Vec_len";
+            const len_reg = try self.newTmp();
+            self.outPrint("    {s} = load {s}+{s} as u64\n", .{ len_reg, vec_reg, len_def }) catch return CodegenError.CodegenError;
+            try self.emitIndexBoundsCheck(index_reg, len_reg, panic_code);
             const offset_reg = try self.newTmp();
             self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
             const ptr_reg = try self.newTmp();
@@ -18458,6 +18484,7 @@ pub const Codegen = struct {
             // in slot_base_reg and is released after ptr (see
             // finishIndexAddress).
             if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+            try self.emitRelease(len_reg);
             return .{
                 .ptr = ptr_reg,
                 .elem_ty = elem_ty,
@@ -18473,6 +18500,9 @@ pub const Codegen = struct {
             const base_reg = try self.newTmp();
             self.outPrint("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_reg, slice_reg }) catch return CodegenError.CodegenError;
             const index_reg = try self.genExpr(idx.index, hoisted_allocs);
+            const len_reg = try self.newTmp();
+            self.outPrint("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+            try self.emitIndexBoundsCheck(index_reg, len_reg, panic_code);
             const offset_reg = try self.newTmp();
             self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
             const ptr_reg = try self.newTmp();
@@ -18481,6 +18511,7 @@ pub const Codegen = struct {
             // DEF-SLAREDIS-BUILD-MAIN: same deferred base release as
             // the vecLike branch above (slot_base_reg).
             if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+            try self.emitRelease(len_reg);
             return .{
                 .ptr = ptr_reg,
                 .elem_ty = elem_ty,
@@ -18501,12 +18532,16 @@ pub const Codegen = struct {
         } else null;
         const base_reg = base_tmp orelse base_source_reg;
         const index_reg = try self.genExpr(idx.index, hoisted_allocs);
+        const len_reg = try self.newTmp();
+        try self.emitIntConst(len_reg, @as(i64, @intCast(arr.len)));
+        try self.emitIndexBoundsCheck(index_reg, len_reg, panic_code);
         const offset_reg = try self.newTmp();
         self.outPrint("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, typeSize(arr.elem) }) catch return CodegenError.CodegenError;
         const ptr_reg = try self.newTmp();
         self.outPrint("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(offset_reg);
         if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+        try self.emitRelease(len_reg);
         return .{
             .ptr = ptr_reg,
             .elem_ty = arr.elem,
@@ -18598,7 +18633,7 @@ pub const Codegen = struct {
             // packed image has the record layout). Going through
             // genExpr would materialize a copy and a store through
             // this projection would be lost.
-            const addr = try self.genIndexAddress(&field.expr.index_expr, hoisted_allocs);
+            const addr = try self.genIndexAddress(&field.expr.index_expr, hoisted_allocs, 87);
             if (addr.base_tmp) |t| try self.emitRelease(t);
             try self.releaseIndexSlotBase(addr);
             if (addr.release_base_reg) try self.emitRelease(addr.base_reg);
@@ -18752,7 +18787,7 @@ pub const Codegen = struct {
             if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
             return;
         }
-        const addr = try self.genIndexAddress(idx, hoisted_allocs);
+        const addr = try self.genIndexAddress(idx, hoisted_allocs, 87);
         const val_reg = try self.genExpr(value, hoisted_allocs);
         {
             const base_key = try self.dropPlaceKeyText(idx.target);
@@ -20343,7 +20378,7 @@ pub const Codegen = struct {
                 if (borrow.expr.* == .index_expr) {
                     if (index_target_ty) |target_ty| {
                         if (lowering_rules.vecLikeElementType(target_ty) != null) {
-                            const address = try self.genIndexAddress(&borrow.expr.index_expr, hoisted_allocs);
+                            const address = try self.genIndexAddress(&borrow.expr.index_expr, hoisted_allocs, 32);
                             try self.rememberIndexAddressSource(address);
                             // The SA-text consumption model for a borrow
                             // of a pointer-backed value is the record
@@ -20433,7 +20468,7 @@ pub const Codegen = struct {
                         return projection.ptr;
                     },
                     .index => {
-                        const address = try self.genIndexAddress(&borrow.expr.index_expr, hoisted_allocs);
+                        const address = try self.genIndexAddress(&borrow.expr.index_expr, hoisted_allocs, 32);
                         try self.rememberIndexAddressSource(address);
                         try self.releaseIndexSlotBase(address);
                         return address.ptr;
@@ -20994,7 +21029,7 @@ pub const Codegen = struct {
                     if (callArgNeedsRelease(idx.target)) try self.emitRelease(deque_reg);
                     return reg;
                 }
-                const addr = try self.genIndexAddress(&idx, hoisted_allocs);
+                const addr = try self.genIndexAddress(&idx, hoisted_allocs, 32);
                 const value_ty = self.resolvedTypeForExpr(expr) orelse addr.elem_ty;
                 const reg = try self.genLoadSlotValue(addr.ptr, value_ty);
                 try self.finishIndexAddress(addr);

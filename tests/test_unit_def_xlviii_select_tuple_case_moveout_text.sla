@@ -1,0 +1,99 @@
+// DEF-TEXT-SELECT-TUPLE-CASE-MOVEOUT-FREE (xlviii) regression:
+// an aggregate (tuple/struct) binding whose value is a channel slot
+// address alias — select recv case binding, or a statement-level recv
+// binding — must NOT be cell-freed at retirement: the slot is scratch
+// storage owned by the select/recv lowering, not a heap cell owned by
+// the binding. On the pre-fix compiler every test below aborts with
+// signal 6 (glibc: free(): double free detected in tcache 2) after
+// the values have already printed correctly.
+// The 5th test (recv-expr + destructure) is a guard: it was green
+// before the fix and must stay green — its temp is a real heap cell,
+// not a slot alias, so the cell free still applies to it.
+
+@import "sa_std/task.sai"
+
+struct PairMsg {
+    a: u64,
+    b: u64,
+}
+
+@test "xlviii select tuple recv case retires without cell free"() {
+    let c: Chan<(u64, u64)> = Chan::new(1);
+    c.send((7, 9));
+    let a: u64 = 0;
+    let b: u64 = 0;
+    select {
+        case let t = c.recv() {
+            a = t.0;
+            b = t.1;
+        }
+        timeout(5000000) {
+            panic(9540);
+        }
+    }
+    if a != 7 { panic(9541); };
+    if b != 9 { panic(9542); };
+    c.destroy();
+}
+
+@test "xlviii statement recv tuple binding retires without cell free"() {
+    let c: Chan<(u64, u64)> = Chan::new(1);
+    c.send((7, 9));
+    let (t, closed) = c.recv();
+    if closed { panic(9543); };
+    if t.0 != 7 { panic(9544); };
+    if t.1 != 9 { panic(9545); };
+    c.destroy();
+}
+
+@test "xlviii select struct recv case retires without cell free"() {
+    let c: Chan<PairMsg> = Chan::new(1);
+    c.send(PairMsg { a: 7, b: 9 });
+    let a: u64 = 0;
+    let b: u64 = 0;
+    select {
+        case let p = c.recv() {
+            a = p.a;
+            b = p.b;
+        }
+        timeout(5000000) {
+            panic(9546);
+        }
+    }
+    if a != 7 { panic(9547); };
+    if b != 9 { panic(9548); };
+    c.destroy();
+}
+
+@test "xlviii select tuple case retires across loop iterations"() {
+    let c: Chan<(u64, u64)> = Chan::new(3);
+    c.send((1, 2));
+    c.send((3, 4));
+    c.send((5, 6));
+    let sum: u64 = 0;
+    let i: u64 = 0;
+    while i < 3 {
+        select {
+            case let t = c.recv() {
+                sum = sum + t.0 + t.1;
+            }
+            timeout(5000000) {
+                panic(9549);
+            }
+        }
+        i = i + 1;
+    }
+    if sum != 21 { panic(9550); };
+    c.destroy();
+}
+
+@test "xlviii recv-expr destructure stays green"() {
+    let c: Chan<(u64, u64)> = Chan::new(1);
+    c.send((7, 9));
+    let pair = c.recv();
+    let (t, closed) = pair;
+    if closed { panic(9552); };
+    if t.0 != 7 { panic(9553); };
+    if t.1 != 9 { panic(9554); };
+    c.destroy();
+}

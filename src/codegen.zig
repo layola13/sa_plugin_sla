@@ -293,6 +293,17 @@ pub const Codegen = struct {
     // They own nothing they point at, so emitRelease must retire only
     // the register and never run the deep value drop on them.
     borrow_param_bindings: std.StringHashMap(void),
+    /// (xlviii) DEF-TEXT-SELECT-TUPLE-CASE-MOVEOUT-FREE: let bindings
+    /// whose register aliases a channel scratch slot (a select case
+    /// binding over `__sel_sp_N`, or a plain recv binding over
+    /// `&__slot_N`, plain-cast to an aggregate type). The binding owns
+    /// no heap cell of its own, so emitRelease must never emit the
+    /// aggregate cell free for it; element/field drops of owned
+    /// children still run. Keyed by the binding's emitted register
+    /// name (source name, or the tmp alias when genBlockInner renamed
+    /// a shadowing let); cleared per function with the other
+    /// per-function maps in genFuncDeclNamed.
+    slot_aliased_bindings: std.StringHashMap(void),
     /// TEXT35-OWNERSHIP (DEF-TEXT-SHADOW-CLEANUP-RESOLUTION): parameters
     /// whose body register is the bare parameter name (no entry alias
     /// was pushed for them). Exit paths consult it to retire a parameter
@@ -424,6 +435,7 @@ pub const Codegen = struct {
             .hashset_bindings = std.StringHashMap(void).init(allocator),
             .btree_set_bindings = std.StringHashMap(void).init(allocator),
             .borrow_param_bindings = std.StringHashMap(void).init(allocator),
+            .slot_aliased_bindings = std.StringHashMap(void).init(allocator),
             .fn_param_bindings = std.StringHashMap(void).init(allocator),
             .bare_name_bindings = std.StringHashMap(void).init(allocator),
             .borrow_source_temps = std.StringHashMap([]const u8).init(allocator),
@@ -517,6 +529,7 @@ pub const Codegen = struct {
         self.btree_map_bindings.deinit();
         self.hashset_bindings.deinit();
         self.btree_set_bindings.deinit();
+        self.slot_aliased_bindings.deinit();
         self.borrow_param_bindings.deinit();
         self.fn_param_bindings.deinit();
         self.bare_name_bindings.deinit();
@@ -1549,7 +1562,14 @@ pub const Codegen = struct {
                             if (binding_ty.* == .tuple) {
                                 try self.emitTupleElementDropsText(resolved_name, binding_ty, resolved_name, self.current_drop_node);
                             }
-                            try self.emitAggregateCellFree(resolved_name);
+                            // (xlviii) DEF-TEXT-SELECT-TUPLE-CASE-MOVEOUT-FREE:
+                            // a slot-aliased binding owns no heap cell;
+                            // never free the channel scratch slot. Owned
+                            // children were already retired by the
+                            // element/field drops above.
+                            if (!self.slot_aliased_bindings.contains(resolved_name)) {
+                                try self.emitAggregateCellFree(resolved_name);
+                            }
                         }
                     } else |_| {}
                 }
@@ -10597,6 +10617,7 @@ pub const Codegen = struct {
         self.hashset_bindings.clearRetainingCapacity();
         self.btree_set_bindings.clearRetainingCapacity();
         self.borrow_param_bindings.clearRetainingCapacity();
+        self.slot_aliased_bindings.clearRetainingCapacity();
         self.fn_param_bindings.clearRetainingCapacity();
         self.bare_name_bindings.clearRetainingCapacity();
         self.borrow_source_temps.clearRetainingCapacity();
@@ -10995,6 +11016,7 @@ pub const Codegen = struct {
         self.hashset_bindings.clearRetainingCapacity();
         self.btree_set_bindings.clearRetainingCapacity();
         self.borrow_param_bindings.clearRetainingCapacity();
+        self.slot_aliased_bindings.clearRetainingCapacity();
         self.fn_param_bindings.clearRetainingCapacity();
         self.bare_name_bindings.clearRetainingCapacity();
         self.borrow_source_temps.clearRetainingCapacity();
@@ -13563,6 +13585,7 @@ pub const Codegen = struct {
             self.hashset_bindings.clearRetainingCapacity();
             self.btree_set_bindings.clearRetainingCapacity();
             self.borrow_param_bindings.clearRetainingCapacity();
+        self.slot_aliased_bindings.clearRetainingCapacity();
             self.fn_param_bindings.clearRetainingCapacity();
             self.bare_name_bindings.clearRetainingCapacity();
             self.borrow_source_temps.clearRetainingCapacity();
@@ -16136,6 +16159,34 @@ pub const Codegen = struct {
     /// cast chain rooted at a bare identifier, and `val_reg` is exactly
     /// that identifier's register -- the shape the checker treats as a
     /// non-consuming copy while a bare SA assignment would move it.
+    /// (xlviii) DEF-TEXT-SELECT-TUPLE-CASE-MOVEOUT-FREE: true when a
+    /// let binds an aggregate value that is only an alias of a channel
+    /// scratch slot: a plain cast of a `__sel_sp_N` select-slot pointer
+    /// or a `&__slot_N` recv-slot borrow to an aggregate-home type
+    /// (tuple, or a user-defined struct per isAggregateHomeType — the
+    /// same predicate the emitRelease cell-free site uses, so only
+    /// bindings that could actually reach the cell free are marked).
+    /// Both slot names are generated only by syntax_lowering
+    /// (freshName); no user-written identifier can denote one. The
+    /// binding owns no heap cell, so its scope-exit retire must skip
+    /// the aggregate cell free (see the emitRelease guard);
+    /// element/field drops of owned children still run.
+    fn slotAliasedAggregateBinding(self: *Codegen, value: *const ast.Node, ty: *const ast.Type) bool {
+        if (!self.isAggregateHomeType(ty)) return false;
+        if (value.* != .cast_expr) return false;
+        const inner = value.cast_expr.expr;
+        if (inner.* == .identifier) {
+            const name = inner.identifier;
+            return std.mem.startsWith(u8, name, "__sel_sp_") or std.mem.startsWith(u8, name, "__slot_");
+        }
+        if (inner.* == .borrow_expr) {
+            const src = inner.borrow_expr.expr;
+            if (src.* != .identifier) return false;
+            return std.mem.startsWith(u8, src.identifier, "__slot_");
+        }
+        return false;
+    }
+
     fn identityCastAliasOfBinding(self: *Codegen, value: *const ast.Node, val_reg: []const u8) bool {
         var node = value;
         while (node.* == .cast_expr) {
@@ -16212,6 +16263,17 @@ pub const Codegen = struct {
                     return;
                 }
                 try self.rememberLocalBindingType(let.name, let_ty);
+                // (xlviii) DEF-TEXT-SELECT-TUPLE-CASE-MOVEOUT-FREE:
+                // a select/recv case binding aliases the channel
+                // scratch slot; record it so its scope-exit retire
+                // never frees the slot (see the emitRelease guard).
+                // let.name is the emitted register here (the source
+                // name, or the tmp alias when genBlockInner renamed
+                // a shadowing let), which is exactly what emitRelease
+                // resolves to at retire time.
+                if (self.slotAliasedAggregateBinding(let.value, let_ty)) {
+                    self.slot_aliased_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                }
                 // P1: a held iterator chain (`let c = v.iter().rev();`)
                 // is a non-owning view of its source collection. It
                 // materializes no register, is not registered as an

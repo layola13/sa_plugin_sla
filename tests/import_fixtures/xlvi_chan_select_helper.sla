@@ -1,0 +1,43 @@
+// (xlvi) regression helper: the select/chan use lives in an IMPORTED
+// module, so `sa_std/task.sai` reaches the SA text only through the
+// import-retention filter. On the unpatched compiler the filter drops
+// task.sai and the SA verifier rejects `call @sa_chan_select` with
+// trap 1007 (UnknownRegister: callee is not declared).
+
+@import "sa_std/task.sai"
+
+fn xlvi_try_send_u64(ch: Chan<u64>, value: u64) -> bool {
+    select {
+        case ch.send(value) {
+            return true;
+        }
+        default {
+            return false;
+        }
+    }
+}
+
+fn xlvi_try_recv_u64(ch: Chan<u64>) -> (u64, bool) {
+    select {
+        case let (v, closed) = ch.recv() {
+            if closed {
+                return (0 as u64, true);
+            };
+            return (v, false);
+        }
+        default {
+            return (0 as u64, false);
+        }
+    }
+}
+
+fn xlvi_send_timeout_u64(ch: Chan<u64>, value: u64, timeout_ns: i64) -> bool {
+    select {
+        case ch.send(value) {
+            return true;
+        }
+        timeout(timeout_ns) {
+            return false;
+        }
+    }
+}

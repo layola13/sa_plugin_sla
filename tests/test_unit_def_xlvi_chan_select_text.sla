@@ -1,0 +1,32 @@
+// (xlvi) DEF-SLA-TEXT-ROUTE-CHAN-SELECT-NOEXTERN regression: on the
+// SA-text route, `select` in an imported module lowers to
+// `call @sa_chan_select`, but the text emitter never declared it --
+// the import-retention filter dropped `sa_std/task.sai` because the
+// syntactic reachability scan never recorded the lowered runtime
+// symbols. This test FAILS on the unpatched compiler (trap 1007:
+// UnknownRegister, callee is not declared) and PASSES on the patched
+// one. The root file deliberately does NOT import task.sai itself:
+// a root import is retained unconditionally and would mask the bug.
+
+@import "tests/import_fixtures/xlvi_chan_select_helper.sla"
+
+@test "xlvi select in imported module declares sa_chan_select"() {
+    let ch: Chan<u64> = Chan::new(1);
+    let ok = xlvi_try_send_u64(ch, 42 as u64);
+    if ok != true { panic(971501); };
+    let (v, closed) = xlvi_try_recv_u64(ch);
+    if closed { panic(971502); };
+    if v != 42 { panic(971503); };
+    ch.destroy();
+}
+
+@test "xlvi select timeout in imported module"() {
+    let ch: Chan<u64> = Chan::new(1);
+    let ns: i64 = 1000000;
+    let ok = xlvi_send_timeout_u64(ch, 7 as u64, ns);
+    if ok != true { panic(971504); };
+    let (v, closed) = xlvi_try_recv_u64(ch);
+    if v != 7 { panic(971505); };
+    if closed { panic(971506); };
+    ch.destroy();
+}

@@ -2525,6 +2525,24 @@ pub fn syntacticMethodCallReceiverTypeName(call: ast.CallExpr, facts: ?*const Sy
     return syntacticReceiverExprTypeName(call.args[0], facts);
 }
 
+/// (xlvi) Lowered runtime symbols for channel/task constructs. `select`,
+/// Chan method calls and `go` lower to `call @sa_chan_*` / `call
+/// @sa_task_*`, whose declarations reach SA text only through the
+/// retained `sa_std/task.sai` contract import. The syntactic scan must
+/// record the lowered names in `referenced_types`, or the
+/// import-retention filter drops task.sai for imported modules and the
+/// SA verifier rejects the call with trap 1007 (UnknownRegister).
+fn chanExternForMethod(method_name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, method_name, "new")) return "sa_chan_make";
+    if (std.mem.eql(u8, method_name, "send")) return "sa_chan_send";
+    if (std.mem.eql(u8, method_name, "recv")) return "sa_chan_recv";
+    if (std.mem.eql(u8, method_name, "close")) return "sa_chan_close";
+    if (std.mem.eql(u8, method_name, "destroy")) return "sa_chan_destroy";
+    if (std.mem.eql(u8, method_name, "len")) return "sa_chan_len";
+    if (std.mem.eql(u8, method_name, "cap")) return "sa_chan_cap";
+    return null;
+}
+
 pub fn collectSyntacticReachableExpr(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
@@ -2565,6 +2583,14 @@ pub fn collectSyntacticReachableExpr(
             if (call.associated_target != null) {
                 const target_type_name = syntacticAssociatedTargetTypeName(call, if (analysis) |a| a.current_facts else null);
                 try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name, target_type_name);
+                // (xlvi) `Chan::new` lowers to `call @sa_chan_make`.
+                if (target_type_name) |type_name| {
+                    if (std.mem.eql(u8, type_name, "Chan")) {
+                        if (chanExternForMethod(call.func_name)) |extern_name| {
+                            try referenced_types.put(extern_name, {});
+                        }
+                    }
+                }
             } else {
                 if (imported_macros) |macros| {
                     if (macros.get(call.func_name)) |macro| {
@@ -2576,6 +2602,21 @@ pub fn collectSyntacticReachableExpr(
                 try markSyntacticReachableFunc(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name);
                 const receiver_type_name = syntacticMethodCallReceiverTypeName(call, if (analysis) |a| a.current_facts else null);
                 try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name, receiver_type_name);
+                // (xlvi) `ch.send/recv/...` lowers to `call @sa_chan_*`;
+                // the receiver type comes from the block fact set.
+                if (receiver_type_name) |type_name| {
+                    if (std.mem.eql(u8, type_name, "Chan")) {
+                        if (chanExternForMethod(call.func_name)) |extern_name| {
+                            try referenced_types.put(extern_name, {});
+                        }
+                    }
+                }
+                // (xlvi) Task-handle `.monitor()` lowers to `call
+                // @sa_task_monitor`; no distinctive receiver type is
+                // available in the syntactic scan, so record on the name.
+                if (std.mem.eql(u8, call.func_name, "monitor")) {
+                    try referenced_types.put("sa_task_monitor", {});
+                }
                 if (funcs.macro_decls.contains(call.func_name)) {
                     try referenced_types.put(call.func_name, {});
                 } else if (syntacticFuncDeclForCall(funcs, modules, call.func_name) == null) {
@@ -2644,8 +2685,14 @@ pub fn collectSyntacticReachableExpr(
         },
         .unsafe_expr => |unsafe_expr| try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, unsafe_expr.body),
         .await_expr => |await_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, await_expr.expr),
-        .go_expr => |go_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, go_expr.call),
+        .go_expr => |go_expr| {
+            // (xlvi) `go` lowers to `call @sa_task_spawn[_supervised]`.
+            try referenced_types.put(if (go_expr.supervised) "sa_task_spawn_supervised" else "sa_task_spawn", {});
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, go_expr.call);
+        },
         .select_stmt => |select| {
+            // (xlvi) `select` lowers to `call @sa_chan_select`.
+            try referenced_types.put("sa_chan_select", {});
             for (select.cases) |case| {
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.call);
                 try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.body);
@@ -2786,6 +2833,8 @@ pub fn collectSyntacticReachableBlock(
             },
             .defer_stmt => |defer_stmt| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, defer_stmt.call),
             .select_stmt => |select| {
+                // (xlvi) `select` lowers to `call @sa_chan_select`.
+                try referenced_types.put("sa_chan_select", {});
                 for (select.cases) |case| {
                     try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.call);
                     if (local_facts) |*facts| clearFactsForMutationsInBlock(facts, case.body);

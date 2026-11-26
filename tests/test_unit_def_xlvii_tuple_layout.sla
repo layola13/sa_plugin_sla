@@ -1,0 +1,296 @@
+// DEF-TEXT-TUPLE-PROJ-SUBWORD-OFFSET (xlvii) regression, reopened 2026-11-26.
+// Packed tuple layout: construction, projection, fn ABI and struct fields
+// must all use the packed offsets (element size prefix sums). Before the
+// fix the 19-cell probe matrix on the fresh fef7437b plugin was 5/19:
+// the struct-field cell read 3,0 (layout), the other 13 reds died with
+// `free(): double free detected in tcache 2` (call-boundary ownership).
+// This file pins every matrix cell as an @test; each fails before the
+// fix (wrong value or SIGABRT) and passes after. Panic codes 977100+.
+//
+// Fix (src/codegen.zig, text codegen only):
+//  (1) genStructLiteralInto main loop builds tuple-literal fields against
+//      the field's declared type (genExprWithExpectedTy);
+//  (2) a tuple literal passed as a call argument is passed plain and
+//      forgotten after the call (consume_reg; a `^` on the call argument
+//      itself is rejected by the SA verifier, trap 1013);
+//  (3) a Copy-tuple identifier argument is copied at the call boundary
+//      (genTupleCopyValueInto), mirroring the Copy-struct treatment, so
+//      the caller's binding stays live after the call.
+
+fn swap_i32(a: (i32, i32)) -> (i32, i32) {
+    (a.1, a.0)
+}
+
+fn id_i32(a: (i32, i32)) -> (i32, i32) {
+    a
+}
+
+fn echo_i32(a: (i32, i32)) -> (i32, i32) {
+    a
+}
+
+fn make_i32() -> (i32, i32) {
+    (3, 8)
+}
+
+fn rot3(a: (i32, i32, i32)) -> (i32, i32, i32) {
+    (a.2, a.0, a.1)
+}
+
+fn swap_i8(a: (i8, i8)) -> (i8, i8) {
+    (a.1, a.0)
+}
+
+fn swap_i16(a: (i16, i16)) -> (i16, i16) {
+    (a.1, a.0)
+}
+
+fn swap_u8(a: (u8, u8)) -> (u8, u8) {
+    (a.1, a.0)
+}
+
+fn swap_u16(a: (u16, u16)) -> (u16, u16) {
+    (a.1, a.0)
+}
+
+fn swap_u32(a: (u32, u32)) -> (u32, u32) {
+    (a.1, a.0)
+}
+
+fn swap_bool(a: (bool, bool)) -> (bool, bool) {
+    (a.1, a.0)
+}
+
+fn swap_f32(a: (f32, f32)) -> (f32, f32) {
+    (a.1, a.0)
+}
+
+fn swap_mixed(a: (i32, i64)) -> (i64, i32) {
+    (a.1, a.0)
+}
+
+struct Holder {
+    t: (i32, i32),
+}
+
+@test "xlvii swap i32 literal call arg"() {
+    let pair = swap_i32((3, 8));
+    if pair.0 != 8 {
+        panic(977100);
+    };
+    if pair.1 != 3 {
+        panic(977101);
+    };
+}
+
+@test "xlvii param-only literal call arg"() {
+    let pair = echo_i32((3, 8));
+    if pair.0 != 3 {
+        panic(977102);
+    };
+    if pair.1 != 8 {
+        panic(977103);
+    };
+}
+
+@test "xlvii return-position tuple literal"() {
+    let t = make_i32();
+    if t.0 != 3 {
+        panic(977104);
+    };
+    if t.1 != 8 {
+        panic(977105);
+    };
+}
+
+@test "xlvii id passthrough literal call arg"() {
+    let pair = id_i32((3, 8));
+    if pair.0 != 3 {
+        panic(977106);
+    };
+    if pair.1 != 8 {
+        panic(977107);
+    };
+}
+
+@test "xlvii annotated local tuple literal"() {
+    let t: (i32, i32) = (3, 8);
+    if t.0 != 3 {
+        panic(977108);
+    };
+    if t.1 != 8 {
+        panic(977109);
+    };
+}
+
+@test "xlvii untyped local tuple literal"() {
+    let t = (3, 8);
+    if t.0 != 3 {
+        panic(977110);
+    };
+    if t.1 != 8 {
+        panic(977111);
+    };
+}
+
+@test "xlvii struct field tuple literal"() {
+    let h = Holder { t: (3, 8) };
+    if h.t.0 != 3 {
+        panic(977112);
+    };
+    if h.t.1 != 8 {
+        panic(977113);
+    };
+}
+
+@test "xlvii triple rotate literal call arg"() {
+    let t = rot3((3, 8, 13));
+    if t.0 != 13 {
+        panic(977114);
+    };
+    if t.1 != 3 {
+        panic(977115);
+    };
+    if t.2 != 8 {
+        panic(977116);
+    };
+}
+
+@test "xlvii swap i8 literal call arg"() {
+    let pair = swap_i8((3, 8));
+    if pair.0 != 8 {
+        panic(977117);
+    };
+    if pair.1 != 3 {
+        panic(977118);
+    };
+}
+
+@test "xlvii swap i16 literal call arg"() {
+    let pair = swap_i16((3, 8));
+    if pair.0 != 8 {
+        panic(977119);
+    };
+    if pair.1 != 3 {
+        panic(977120);
+    };
+}
+
+@test "xlvii swap u8 literal call arg"() {
+    let pair = swap_u8((3, 8));
+    if pair.0 != 8 {
+        panic(977121);
+    };
+    if pair.1 != 3 {
+        panic(977122);
+    };
+}
+
+@test "xlvii swap u16 literal call arg"() {
+    let pair = swap_u16((3, 8));
+    if pair.0 != 8 {
+        panic(977123);
+    };
+    if pair.1 != 3 {
+        panic(977124);
+    };
+}
+
+@test "xlvii swap u32 literal call arg"() {
+    let pair = swap_u32((3, 8));
+    if pair.0 != 8 {
+        panic(977125);
+    };
+    if pair.1 != 3 {
+        panic(977126);
+    };
+}
+
+@test "xlvii swap bool literal call arg"() {
+    let pair = swap_bool((true, false));
+    if pair.0 != false {
+        panic(977127);
+    };
+    if pair.1 != true {
+        panic(977128);
+    };
+}
+
+@test "xlvii swap bool reversed literal call arg"() {
+    let pair = swap_bool((false, true));
+    if pair.0 != true {
+        panic(977129);
+    };
+    if pair.1 != false {
+        panic(977130);
+    };
+}
+
+@test "xlvii swap f32 literal call arg"() {
+    let pair = swap_f32((3.0, 8.0));
+    let expect0: f32 = 8.0;
+    let expect1: f32 = 3.0;
+    if pair.0 != expect0 {
+        panic(977131);
+    };
+    if pair.1 != expect1 {
+        panic(977132);
+    };
+}
+
+@test "xlvii swap mixed i32 i64 literal call arg"() {
+    let pair = swap_mixed((3, 8));
+    if pair.0 != 8 {
+        panic(977133);
+    };
+    if pair.1 != 3 {
+        panic(977134);
+    };
+}
+
+@test "xlvii f32 untyped local tuple literal"() {
+    let t = (3.0, 8.0);
+    let expect0: f32 = 3.0;
+    let expect1: f32 = 8.0;
+    if t.0 != expect0 {
+        panic(977135);
+    };
+    if t.1 != expect1 {
+        panic(977136);
+    };
+}
+
+@test "xlvii named binding swap keeps caller binding live"() {
+    let t: (i32, i32) = (3, 8);
+    let pair = swap_i32(t);
+    if pair.0 != 8 {
+        panic(977137);
+    };
+    if pair.1 != 3 {
+        panic(977138);
+    };
+    // Copy semantics: the caller's binding is still live after the call.
+    if t.0 != 3 {
+        panic(977139);
+    };
+    if t.1 != 8 {
+        panic(977140);
+    };
+}
+
+@test "xlvii named binding id keeps caller binding live"() {
+    let t: (i32, i32) = (3, 8);
+    let pair = id_i32(t);
+    if pair.0 != 3 {
+        panic(977141);
+    };
+    if pair.1 != 8 {
+        panic(977142);
+    };
+    if t.0 != 3 {
+        panic(977143);
+    };
+    if t.1 != 8 {
+        panic(977144);
+    };
+}

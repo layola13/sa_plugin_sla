@@ -14133,7 +14133,18 @@ pub const Codegen = struct {
                 const target_param = param orelse return CodegenError.CodegenError;
                 const source_reg = try self.genExpr(arg, hoisted_allocs);
                 const copied = try self.newTmp();
-                try self.genCopyValueInto(copied, source_reg, target_param.ty);
+                if (target_param.ty.* == .tuple) {
+                    // DEF-TEXT-TUPLE-PROJ-SUBWORD-OFFSET (xlvii): a Copy
+                    // tuple identifier argument is copied at the
+                    // boundary with the packed tuple layout
+                    // (genTupleCopyValueInto), not the struct copier
+                    // (genCopyValueInto is struct only). The callee
+                    // owns and frees the copy; the caller's binding
+                    // stays live.
+                    try self.genTupleCopyValueInto(copied, source_reg, target_param.ty);
+                } else {
+                    try self.genCopyValueInto(copied, source_reg, target_param.ty);
+                }
                 // The Copy-struct parameter's SA contract is a plain
                 // pointer (no ^ capability), so the copy cannot be
                 // move-passed; but the callee owns the by-value
@@ -14218,14 +14229,28 @@ pub const Codegen = struct {
                 // CLOSING-E (rosetta/47): a tuple literal passed as a
                 // call argument is built against the parameter's tuple
                 // type, not its own element-inferred type.
-                const arg_reg = if (param) |target_param| arg_blk: {
+                //
+                // DEF-TEXT-TUPLE-PROJ-SUBWORD-OFFSET (xlvii): the
+                // fresh temp is passed PLAIN and forgotten after the
+                // call (consume_reg emits a post-call `^tmp` forget).
+                // A `^` on the call argument itself is rejected by
+                // the SA verifier (CapabilityMismatch trap 1013: a
+                // Copy tuple parameter's contract is plain, not
+                // move); the post-call forget is what tells the
+                // backend the temp moved to the callee, so it does
+                // not free the temp when the call returns while the
+                // callee also frees the by-value parameter (double
+                // free in tcache 2 on every swap((3, 8)) shape).
+                // This mirrors the Copy-struct copy arm, which passes
+                // the copy plain and forgets it after the call.
+                if (param) |target_param| {
                     if (arg.* == .tuple_literal and target_param.ty.* == .tuple and target_param.ty.tuple.elems.len == arg.tuple_literal.elements.len) {
                         const tuple_reg = try self.newTmp();
                         try self.genTupleLiteralInto(tuple_reg, &arg.tuple_literal, target_param.ty, hoisted_allocs);
-                        break :arg_blk tuple_reg;
+                        break :blk .{ .reg = tuple_reg, .release_after_call = false, .consume_reg = tuple_reg };
                     }
-                    break :arg_blk try self.genExpr(arg, hoisted_allocs);
-                } else try self.genCallArg(arg, hoisted_allocs);
+                }
+                const arg_reg = if (param != null) try self.genExpr(arg, hoisted_allocs) else try self.genCallArg(arg, hoisted_allocs);
                 const abi_moves_arg = if (param) |target_param|
                     std.mem.eql(u8, self.abiParamPrefix(target_param), "^")
                 else
@@ -14389,12 +14414,24 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.array_list.Managed([]const u8),
         options: CallArgLoweringOptions,
     ) CodegenError!LoweredCallArg {
-        const copy_struct_value = options.include_copy_struct_value and
+        const copy_struct_value = (options.include_copy_struct_value and
             lowering_rules.callArgIsCopyStructValue(
                 arg,
                 options.param,
                 if (options.param) |param| self.typeIsCopyStruct(param.ty) else false,
-            );
+            )) or
+            // DEF-TEXT-TUPLE-PROJ-SUBWORD-OFFSET (xlvii): the tuple
+            // analog of callArgIsCopyStructValue, text-local only
+            // (the shared plan kind stays .copy_struct_value, and the
+            // SAB emitter never sees this classification): a Copy
+            // tuple passed by value is copied at the boundary — the
+            // callee receives a fresh copy and frees it, the caller
+            // keeps its binding. Without the copy the callee frees
+            // the caller's own cell at fn exit while the caller's
+            // scope-exit drop frees it again (double free on every
+            // swap(t) / id(t) shape with a named binding).
+            (options.include_copy_struct_value and arg.* == .identifier and
+                if (options.param) |param| param.ty.* == .tuple and !param.is_borrow and !param.is_move and self.typeIsCopyValue(param.ty) else false);
         const arg_ty = self.resolvedTypeForExpr(arg);
         // Shallow-copy materialization has struct-layout support only. Pure
         // enums still participate in copy analysis for nested struct fields,
@@ -17868,7 +17905,15 @@ pub const Codegen = struct {
                 }
             }
             if (transfer.isDeepCopy()) {
-                const source_reg = try self.genExpr(value, hoisted_allocs);
+                // DEF-TEXT-TUPLE-PROJ-SUBWORD-OFFSET (xlvii): a tuple
+                // literal in a struct field is built against the
+                // field's declared tuple type, not its own
+                // element-inferred type (bare literals infer i64, so
+                // (3, 8) in a (i32, i32) field was stored at word
+                // stride +0/+8 while projections read packed +0/+4).
+                // genExprWithExpectedTy only affects tuple literals
+                // and falls back to genExpr for every other value.
+                const source_reg = try self.genExprWithExpectedTy(value, decl_field.ty, hoisted_allocs);
                 const copied = try self.newTmp();
                 try self.genCopyValueInto(copied, source_reg, plan.field_ty);
                 // REG2-D3: settle the copy register with the consume
@@ -17879,7 +17924,10 @@ pub const Codegen = struct {
                 self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_copied, layout.ty_str }) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(value)) try self.emitRelease(source_reg);
             } else if (transfer.isDirect()) {
-                const raw_val_reg = try self.genExpr(value, hoisted_allocs);
+                // DEF-TEXT-TUPLE-PROJ-SUBWORD-OFFSET (xlvii): see the
+                // isDeepCopy arm above — tuple literals in a struct
+                // field build against the field's declared type.
+                const raw_val_reg = try self.genExprWithExpectedTy(value, decl_field.ty, hoisted_allocs);
                 if (value.* == .identifier and self.tc.literal_consumed_values.contains(value)) {
                     // TEXT35-OWNERSHIP (DEF-TEXT-LITERAL-BORROW-CONSUME):
                     // the checker consumed this binding into the literal
@@ -17905,7 +17953,10 @@ pub const Codegen = struct {
                     if (self.structFieldTempNeedsRelease(value, raw_val_reg)) try self.emitRelease(raw_val_reg);
                 }
             } else if (transfer.isMove()) {
-                const val_reg = try self.genExpr(value, hoisted_allocs);
+                // DEF-TEXT-TUPLE-PROJ-SUBWORD-OFFSET (xlvii): see the
+                // isDeepCopy arm above — tuple literals in a struct
+                // field build against the field's declared type.
+                const val_reg = try self.genExprWithExpectedTy(value, decl_field.ty, hoisted_allocs);
                 const move_reg = if (std.mem.startsWith(u8, val_reg, "^")) val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg});
                 self.outPrint("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                 try self.markMovedExprBinding(value, val_reg);

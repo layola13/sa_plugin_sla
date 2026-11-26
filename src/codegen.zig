@@ -15195,7 +15195,7 @@ pub const Codegen = struct {
                 }
                 if (b.value_index) |vi| {
                     if (i == vi) {
-                        const cell = try self.genHashMapValueSlot(arg, hoisted_allocs, self.insertArgCheckerConsumed(call.args[b.recv_index], arg));
+                        const cell = try self.genHashMapValueSlot(arg, hoisted_allocs, self.insertArgCheckerConsumed(call.args[b.recv_index], arg), b.value_ty);
                         try arg_regs.append(cell);
                         release_regs.append(null) catch return CodegenError.OutOfMemory;
                         continue;
@@ -15854,8 +15854,22 @@ pub const Codegen = struct {
         return try self.genExpr(arg, hoisted_allocs);
     }
 
-    fn genHashMapValueSlot(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8), value_consumed: bool) CodegenError![]const u8 {
+    fn genHashMapValueSlot(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8), value_consumed: bool, value_ty: ?*const ast.Type) CodegenError![]const u8 {
         const value_reg = try self.genExpr(arg, hoisted_allocs);
+        // DEF-SLA-ZIG-HASHMAP-INSERT-PARAM (xxxiv), fix A (A1): deep-copy
+        // aggregate values into a fresh cell so the map owns an
+        // independent copy. The source register keeps its original
+        // retirement (consumed -> ^v, else !v when the arg needs it).
+        // A map/set-valued value errors loudly via genDeepCloneValue's
+        // UncloneableCopy diagnostic (same calibre as .clone()) -- never
+        // a silent verbatim fallback. A null value_ty (set bridges,
+        // which never reach this call) keeps the verbatim store.
+        var stored_reg = value_reg;
+        if (value_ty) |vt| {
+            if (try self.genDeepCloneValue(value_reg, vt)) |cloned| {
+                stored_reg = cloned;
+            }
+        }
         const slot = try self.newTmp();
         // DEF-HASHMAP-XTALK (A-form): the value cell is per-entry HEAP
         // storage owned by this Map layer, never a per-call-site stack
@@ -15867,7 +15881,12 @@ pub const Codegen = struct {
         // cell is returned by emitHashMapValueCellsFreeText (clear /
         // drop) or by the insert macro's replaced branch (overwrite).
         self.outPrint("    {s} = alloc 8\n", .{slot}) catch return CodegenError.CodegenError;
-        self.outPrint("    store {s}+0, {s} as u64\n", .{ slot, value_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u64\n", .{ slot, stored_reg }) catch return CodegenError.CodegenError;
+        // The clone is consumed into the cell (mirrors the writeback
+        // .store_ptr_back arm): its ownership moves into the map.
+        if (!std.mem.eql(u8, stored_reg, value_reg)) {
+            try self.emitRelease(stored_reg);
+        }
         if (value_consumed) {
             try self.emitForgetMovedValue(value_reg);
         } else if (callArgNeedsRelease(arg)) {
@@ -23234,7 +23253,7 @@ pub const Codegen = struct {
                                 if (call.args.len != 3) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs, hashMapTypes(ty).?.key);
-                                const value_slot = try self.genHashMapValueSlot(call.args[2], hoisted_allocs, self.insertArgCheckerConsumed(call.args[0], call.args[2]));
+                                const value_slot = try self.genHashMapValueSlot(call.args[2], hoisted_allocs, self.insertArgCheckerConsumed(call.args[0], call.args[2]), hashMapTypes(ty).?.value);
                                 const reg = try self.newTmp();
                                 const map_insert_macro = if (lowering_rules.isStringType(hashMapTypes(ty).?.key)) "SLA_MAP_INSERT_STR_OPTION_U64" else "SLA_MAP_INSERT_OPTION_U64";
                                 self.outPrint("    EXPAND {s} {s}, {s}, {s}, {s}\n", .{ map_insert_macro, reg, recv_reg, key_reg, value_slot }) catch return CodegenError.CodegenError;

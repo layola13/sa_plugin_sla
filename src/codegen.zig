@@ -785,6 +785,12 @@ pub const Codegen = struct {
             self.outPrint("    {s} = {s}\n", .{ result, value_reg }) catch return CodegenError.CodegenError;
         }
         if (self.tc.cleanups.get(last)) |list| {
+            // (xli) codegen_scope_exit: block-tail cleanups retire
+            // against the last statement's own taint snapshot, not
+            // the whole-program union.
+            const prev_drop_node = self.current_drop_node;
+            self.current_drop_node = last;
+            defer self.current_drop_node = prev_drop_node;
             for (list.items) |c_name| try self.emitRelease(c_name);
         }
         return result;
@@ -1376,6 +1382,36 @@ pub const Codegen = struct {
             if (try self.releaseResultSlotRefCellHandle(resolved_name, true)) {
                 self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             }
+            // (xli) codegen_scope_exit: a stack-home aggregate binding's
+            // cell holds the heap pointer (the home cell itself is a
+            // stack slot and is never freed). Deep-drop the fields'
+            // current values from the loaded cell pointer, then free
+            // the cell, exactly once. The consumed guard is load-bearing:
+            // a manually freed binding (s5/s6b: `sa_mem_free(s)`) must
+            // not be freed again here. Borrows never own the cell.
+            if (!self.consumed_bindings.contains(resolved_name) and !self.borrow_param_bindings.contains(resolved_name)) {
+                if (self.local_binding_types.get(resolved_name)) |binding_ty| {
+                    if (self.isAggregateHomeType(binding_ty)) {
+                        if (self.tc.planValueDrop(binding_ty)) |plan| {
+                            if (plan.kind() == .deep_struct or plan.kind() == .none) {
+                                const cell_reg = try self.newTmp();
+                                self.outPrint("    {s} = load {s}+0 as ptr\n", .{ cell_reg, resolved_name }) catch return CodegenError.CodegenError;
+                                switch (plan.*) {
+                                    .deep_struct => |fields| try self.emitStructFieldDropsText(cell_reg, binding_ty, fields, resolved_name, self.current_drop_node),
+                                    .none => {
+                                        if (binding_ty.* == .tuple) {
+                                            try self.emitTupleElementDropsText(cell_reg, binding_ty, resolved_name, self.current_drop_node);
+                                        }
+                                    },
+                                    else => {},
+                                }
+                                try self.emitAggregateCellFree(cell_reg);
+                                self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
+                            }
+                        } else |_| {}
+                    }
+                }
+            }
             return;
         }
         if (self.global_const_bindings.contains(resolved_name)) return;
@@ -1493,6 +1529,30 @@ pub const Codegen = struct {
                     .none, .buffer, .buffer_growvec => {},
                 }
             } else |_| {}
+            }
+        }
+        // (xli) codegen_scope_exit: a heap-cell aggregate binding owns
+        // its cell. Free the cell exactly once at retirement, after the
+        // field drops emitted above (struct fields) or below (tuple
+        // elements). Borrows never own the cell; Vec/Arc/Rc/Box bindings
+        // are freed by their own arms above (deep_vec/deep_growvec
+        // return early; smart pointers are excluded by the plan guard);
+        // stack-home aggregates are handled at the stack_alloc early
+        // return above; consumed bindings already returned above. The
+        // cell free never recurses into fields, so a moved-out field
+        // (taint-suppressed above) cannot double-free through it.
+        if (!self.borrow_param_bindings.contains(resolved_name) and !self.stack_alloc_bindings.contains(resolved_name)) {
+            if (self.local_binding_types.get(resolved_name)) |binding_ty| {
+                if (self.isAggregateHomeType(binding_ty)) {
+                    if (self.tc.planValueDrop(binding_ty)) |plan| {
+                        if (plan.kind() == .deep_struct or plan.kind() == .none) {
+                            if (binding_ty.* == .tuple) {
+                                try self.emitTupleElementDropsText(resolved_name, binding_ty, resolved_name, self.current_drop_node);
+                            }
+                            try self.emitAggregateCellFree(resolved_name);
+                        }
+                    } else |_| {}
+                }
             }
         }
         self.outPrint("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
@@ -1761,6 +1821,39 @@ pub const Codegen = struct {
             self.outPrint("    {s} = load {s}+{} as ptr\n", .{ val_reg, struct_reg, layout.offset }) catch return CodegenError.CodegenError;
             try self.emitDeepValueDropText(val_reg, field_ty, field.plan, child_key, taint_node, true, true);
         }
+    }
+
+    /// (xli) codegen_scope_exit: deep-drop the owned elements of a heap
+    /// tuple from its cell pointer. Element keys follow the checker's
+    /// place convention (`t.0`, `t.1`, ...), so a moved-out element
+    /// stays suppressed exactly like a struct field. Scalar elements
+    /// (plan .none) are skipped, mirroring emitStructFieldDropsText.
+    fn emitTupleElementDropsText(self: *Codegen, tuple_reg: []const u8, tuple_ty: *const ast.Type, key: []const u8, taint_node: ?*const ast.Node) CodegenError!void {
+        if (tuple_ty.* != .tuple) return;
+        const tuple = tuple_ty.tuple;
+        var index: usize = 0;
+        while (index < tuple.elems.len) : (index += 1) {
+            const elem_ty = tuple.elems[index];
+            const elem_plan = self.tc.planValueDrop(elem_ty) catch continue;
+            if (elem_plan.kind() == .none) continue;
+            const layout = tupleFieldLayout(tuple, index) orelse continue;
+            const child_key = std.fmt.allocPrint(self.allocator, "{s}.{}", .{ key, index }) catch return CodegenError.OutOfMemory;
+            const val_reg = try self.newTmp();
+            self.outPrint("    {s} = load {s}+{} as ptr\n", .{ val_reg, tuple_reg, layout.offset }) catch return CodegenError.CodegenError;
+            try self.emitDeepValueDropText(val_reg, elem_ty, elem_plan, child_key, taint_node, true, true);
+        }
+    }
+
+    /// (xli) codegen_scope_exit: free a heap-cell aggregate's cell
+    /// (`call @sa_mem_free`) through a throwaway copy of the cell
+    /// pointer — the Box pattern (emitSmartPointerDropText): the call
+    /// consumes the copy, the binding register stays live for the
+    /// `!name` tail below, so no register-state divergence at merge
+    /// labels. Only the cell itself is freed, never its fields.
+    fn emitAggregateCellFree(self: *Codegen, cell_reg: []const u8) CodegenError!void {
+        const free_reg = try self.newTmp();
+        self.outPrint("    {s} = add {s}, 0\n", .{ free_reg, cell_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    call @sa_mem_free(^{s})\n", .{free_reg}) catch return CodegenError.CodegenError;
     }
 
     /// Element drops for a deep-planned Vec binding, emitted by
@@ -10806,7 +10899,16 @@ pub const Codegen = struct {
                         self.popBindingAlias(kept_aliases.items[kept_i]);
                     }
                     kept_aliases.clearRetainingCapacity();
-                    try self.emitFunctionTailParamCleanups(f, tail_expr);
+                    {
+                        // (xli) codegen_scope_exit: parameter cleanups
+                        // retire against the tail statement's taint
+                        // snapshot (taint after the whole body), not
+                        // the whole-program union.
+                        const prev_drop_node = self.current_drop_node;
+                        self.current_drop_node = f.body[f.body.len - 1];
+                        defer self.current_drop_node = prev_drop_node;
+                        try self.emitFunctionTailParamCleanups(f, tail_expr);
+                    }
                     if (tail_shadowed_param) |rname| {
                         if (!self.consumed_bindings.contains(rname)) try self.emitRelease(rname);
                     }
@@ -10843,6 +10945,12 @@ pub const Codegen = struct {
             // end of its body (fn_exit_cleanups); without them every
             // still-live parameter leaked at this implicit return.
             if (self.tc.fn_exit_cleanups.get(f)) |list| {
+                // (xli) codegen_scope_exit: void-epilogue parameter
+                // cleanups retire against the body last statement's
+                // taint snapshot, not the whole-program union.
+                const prev_drop_node = self.current_drop_node;
+                if (f.body.len > 0) self.current_drop_node = f.body[f.body.len - 1];
+                defer self.current_drop_node = prev_drop_node;
                 for (list.items) |c_name| try self.emitRelease(c_name);
             }
             try self.emitVaEndIfVariadic();
@@ -11413,6 +11521,12 @@ pub const Codegen = struct {
 
         if (!stmtTerminates(last)) {
             if (self.tc.cleanups.get(last)) |list| {
+                // (xli) codegen_scope_exit: block-tail cleanups retire
+                // against the last statement's own taint snapshot, not
+                // the whole-program union.
+                const prev_drop_node = self.current_drop_node;
+                self.current_drop_node = last;
+                defer self.current_drop_node = prev_drop_node;
                 for (list.items) |c_var| {
                     try self.emitRelease(c_var);
                 }
@@ -11453,6 +11567,12 @@ pub const Codegen = struct {
 
         if (!stmtTerminates(last)) {
             if (self.tc.cleanups.get(last)) |list| {
+                // (xli) codegen_scope_exit: block-tail cleanups retire
+                // against the last statement's own taint snapshot, not
+                // the whole-program union.
+                const prev_drop_node = self.current_drop_node;
+                self.current_drop_node = last;
+                defer self.current_drop_node = prev_drop_node;
                 for (list.items) |c_var| {
                     try self.emitRelease(c_var);
                 }
@@ -16003,6 +16123,19 @@ pub const Codegen = struct {
     /// trailing `let _ = sa_json_free(doc);` leaking its `empty` Vec).
     fn emitStmtExitCleanups(self: *Codegen, stmt: *const ast.Node) CodegenError!void {
         if (self.tc.cleanups.get(stmt)) |list| {
+            // (xli) codegen_scope_exit: retire this statement's bindings
+            // against the taint snapshot recorded at the statement
+            // itself (per-function taint after its effects), not the
+            // whole-program union. The union conflates same-named
+            // places across functions: a move-out in one function
+            // (e.g. conn_exec_all moving `pr.args`) suppressed the
+            // deep drop of an unrelated same-named binding's scope
+            // exit in another function (g_conn_step's loop). The
+            // snapshot is the correct per-scope taint for these
+            // bindings; the union only ever over-suppresses.
+            const prev_drop_node = self.current_drop_node;
+            self.current_drop_node = stmt;
+            defer self.current_drop_node = prev_drop_node;
             for (list.items) |c_var| {
                 try self.emitLexicalCleanupRelease(c_var);
             }
@@ -17083,6 +17216,12 @@ pub const Codegen = struct {
 
                 // Inject scope cleanups before return
                 if (self.tc.cleanups.get(stmt)) |list| {
+                    // (xli) codegen_scope_exit: return-path cleanups
+                    // retire against the return statement's own taint
+                    // snapshot, not the whole-program union.
+                    const prev_drop_node = self.current_drop_node;
+                    self.current_drop_node = stmt;
+                    defer self.current_drop_node = prev_drop_node;
                     for (list.items) |c_var| {
                         // TEXT35-OWNERSHIP (DEF-TEXT-SHADOW-CLEANUP-
                         // RESOLUTION): the cleanup list is name-based, so
@@ -17346,6 +17485,12 @@ pub const Codegen = struct {
 
                 self.outPrint("{s}:\n", .{loop_exit}) catch return CodegenError.CodegenError;
                 if (self.tc.cleanups.get(stmt)) |list| {
+                    // (xli) codegen_scope_exit: post-loop cleanups
+                    // retire against the loop statement's own taint
+                    // snapshot, not the whole-program union.
+                    const prev_drop_node = self.current_drop_node;
+                    self.current_drop_node = stmt;
+                    defer self.current_drop_node = prev_drop_node;
                     for (list.items) |c_var| {
                         try self.emitRelease(c_var);
                     }
@@ -17423,6 +17568,16 @@ pub const Codegen = struct {
                     _ = self.loop_break_labels.pop();
                     if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources);
                     if (!blockTerminates(w.body)) {
+                        // (xli) codegen_scope_exit: the loop-body-end
+                        // cleanups retire against the body last
+                        // statement's taint snapshot (taint after the
+                        // whole body), not the whole-program union.
+                        // The body locals' cleanup list is recorded on
+                        // that statement by the checker.
+                        const loop_drop_node: *const ast.Node = if (w.body.len > 0) w.body[w.body.len - 1] else stmt;
+                        const prev_drop_node = self.current_drop_node;
+                        self.current_drop_node = loop_drop_node;
+                        defer self.current_drop_node = prev_drop_node;
                         for (pattern.bindings) |binding| {
                             if (!blockConsumesIdentifier(w.body, binding)) {
                                 try self.emitRelease(binding);
@@ -17461,6 +17616,13 @@ pub const Codegen = struct {
                 _ = self.loop_break_labels.pop();
                 if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources);
                 if (!blockTerminates(w.body)) {
+                    // (xli) codegen_scope_exit: see the pattern arm
+                    // above — body-end cleanups retire against the body
+                    // last statement's taint snapshot, not the union.
+                    const loop_drop_node: *const ast.Node = if (w.body.len > 0) w.body[w.body.len - 1] else stmt;
+                    const prev_drop_node = self.current_drop_node;
+                    self.current_drop_node = loop_drop_node;
+                    defer self.current_drop_node = prev_drop_node;
                     try self.emitActiveLoopBodyLocalCleanups(null, false);
                     try self.emitLoopBodyTopLevelLocalCleanups(w.body);
                     self.outPrint("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
@@ -17473,6 +17635,13 @@ pub const Codegen = struct {
                 self.outPrint("{s}:\n", .{loop_exit}) catch return CodegenError.CodegenError;
             },
             .break_stmt => {
+                // (xli) codegen_scope_exit: break-path cleanups retire
+                // against the break statement's own taint snapshot
+                // (taint at the break point in this scope), not the
+                // whole-program union.
+                const prev_drop_node = self.current_drop_node;
+                self.current_drop_node = stmt;
+                defer self.current_drop_node = prev_drop_node;
                 const cleanup_list = self.tc.cleanups.getPtr(stmt);
                 if (cleanup_list) |list| {
                     for (list.items) |c_var| {
@@ -17489,6 +17658,13 @@ pub const Codegen = struct {
                 self.outPrint("    jmp {s}\n", .{break_label}) catch return CodegenError.CodegenError;
             },
             .continue_stmt => {
+                // (xli) codegen_scope_exit: continue-path cleanups
+                // retire against the continue statement's own taint
+                // snapshot, not the whole-program union (same shape
+                // as the break arm above).
+                const prev_drop_node = self.current_drop_node;
+                self.current_drop_node = stmt;
+                defer self.current_drop_node = prev_drop_node;
                 const cleanup_list = self.tc.cleanups.getPtr(stmt);
                 if (cleanup_list) |list| {
                     for (list.items) |c_var| {

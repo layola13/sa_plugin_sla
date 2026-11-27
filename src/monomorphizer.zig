@@ -32,6 +32,23 @@ pub const Monomorphizer = struct {
     last_missing_template: ?[]const u8,
     last_generic_overload_conflict: ?[]const u8,
 
+    // (lii) Lexical type environment for generic-call inference: a
+    // stack of scopes (name -> type) active while specializing a
+    // function/test/macro body. Seeded from declared parameter types
+    // and let annotations; unannotated lets contribute the
+    // shallow-inferred type of their initializer when one is
+    // available. Without it, inferGenericArgsForCall could only type
+    // literal arguments, so every call passing a local or a
+    // parameter to a generic function was left unrewritten while the
+    // template was dropped -- "Undefined call" at check time.
+    env_scopes: std.array_list.Managed(std.StringHashMap(*ast.Type)),
+    // (lii) Concrete top-level function declarations by name
+    // (exactly one declaration per name; overloaded names are
+    // absent), for typing function values and calls whose return
+    // type is needed during inference. Built by monomorphize()
+    // before specialization.
+    concrete_funcs: std.StringHashMap(*ast.FuncDecl),
+
     pub fn init(allocator: std.mem.Allocator) Monomorphizer {
         return .{
             .allocator = allocator,
@@ -46,6 +63,8 @@ pub const Monomorphizer = struct {
             .new_decls = std.array_list.Managed(*ast.Node).init(allocator),
             .last_missing_template = null,
             .last_generic_overload_conflict = null,
+            .env_scopes = std.array_list.Managed(std.StringHashMap(*ast.Type)).init(allocator),
+            .concrete_funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
         };
     }
 
@@ -80,6 +99,10 @@ pub const Monomorphizer = struct {
         self.specialized_funcs.deinit();
 
         self.new_decls.deinit();
+
+        for (self.env_scopes.items) |*scope| scope.deinit();
+        self.env_scopes.deinit();
+        self.concrete_funcs.deinit();
     }
 
     fn implHasGenericTarget(decl: *const ast.ImplDecl) bool {
@@ -192,6 +215,21 @@ pub const Monomorphizer = struct {
                     try concrete_names.put(f.name, {});
                 }
             }
+        }
+
+        // (lii) Index concrete top-level functions for call-site
+        // type inference (function values and call return types). A
+        // name shared by more than one declaration is ambiguous and
+        // is left out, so overloaded names never yield a wrong type.
+        for (program.program.decls) |decl| {
+            if (decl.* != .func_decl) continue;
+            const f = &decl.func_decl;
+            if (f.generics.len > 0) continue;
+            if (self.concrete_funcs.contains(f.name)) {
+                _ = self.concrete_funcs.remove(f.name);
+                continue;
+            }
+            try self.concrete_funcs.put(f.name, f);
         }
 
         var regular_decls = std.array_list.Managed(*ast.Node).init(self.allocator);
@@ -356,7 +394,16 @@ pub const Monomorphizer = struct {
                     try new_params.append(.{ .name = p.name, .ty = new_ty, .is_borrow = p.is_borrow, .is_move = p.is_move, .is_fallible_sugar = p.is_fallible_sugar });
                 }
                 const new_ret = try self.specializeType(f.ret_ty);
+                // (lii) Seed the environment with the declared
+                // parameter types so generic calls in the body can be
+                // inferred from them.
+                try self.envPushScope();
+                errdefer self.envPopScope();
+                for (new_params.items) |p| {
+                    try self.envDefine(p.name, try self.effectiveParamType(p));
+                }
                 const new_body = try self.specializeBlock(f.body);
+                self.envPopScope();
 
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
@@ -441,6 +488,15 @@ pub const Monomorphizer = struct {
                     try self.specializeEnumLiteralForType(let.value, declared_ty, new_ty.?)
                 else
                     try self.specializeNode(let.value);
+                // (lii) Record the binding's type for later generic
+                // calls: the annotation wins; otherwise the
+                // shallow-inferred initializer type (e.g. Vec<infer>
+                // for `Vec::new()`, refined by a later push).
+                if (new_ty) |ty| {
+                    try self.envDefine(let.name, ty);
+                } else if (try self.inferNodeType(let.value)) |inferred| {
+                    try self.envDefine(let.name, inferred);
+                }
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
                     .let_stmt = .{
@@ -470,6 +526,12 @@ pub const Monomorphizer = struct {
                     try self.specializeEnumLiteralForType(c.value, declared_ty, new_ty.?)
                 else
                     try self.specializeNode(c.value);
+                // (lii) Same recording as .let_stmt.
+                if (new_ty) |ty| {
+                    try self.envDefine(c.name, ty);
+                } else if (try self.inferNodeType(c.value)) |inferred| {
+                    try self.envDefine(c.name, inferred);
+                }
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
                     .const_stmt = .{
@@ -481,8 +543,10 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .var_stmt => |v| {
+                const new_ty = try self.specializeType(v.ty);
+                try self.envDefine(v.name, new_ty);
                 const res = try self.allocator.create(ast.Node);
-                res.* = .{ .var_stmt = .{ .name = v.name, .ty = try self.specializeType(v.ty) } };
+                res.* = .{ .var_stmt = .{ .name = v.name, .ty = new_ty } };
                 return res;
             },
             .assign_stmt => |assign| {
@@ -772,7 +836,15 @@ pub const Monomorphizer = struct {
                 for (lit.params) |p| {
                     try new_params.append(.{ .name = p.name, .ty = try self.specializeType(p.ty), .is_borrow = p.is_borrow, .is_move = p.is_move, .is_fallible_sugar = p.is_fallible_sugar });
                 }
+                // (lii) Closure parameters seed the environment for
+                // the closure body, like function parameters.
+                try self.envPushScope();
+                errdefer self.envPopScope();
+                for (new_params.items) |p| {
+                    try self.envDefine(p.name, try self.effectiveParamType(p));
+                }
                 const new_body = try self.specializeNode(lit.body);
+                self.envPopScope();
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .closure_literal = .{ .params = try new_params.toOwnedSlice(), .body = new_body } };
                 return res;
@@ -822,6 +894,11 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .call_expr => |call| {
+                // (lii) Refine a `Vec::new()` local's element type
+                // from a push/insert before specializing the call.
+                if (std.mem.eql(u8, call.func_name, "push") or std.mem.eql(u8, call.func_name, "insert")) {
+                    try self.refineVecPushTarget(call);
+                }
                 if (call.generics.len > 0 and !self.func_templates.contains(call.func_name)) {
                     var new_args = std.array_list.Managed(*ast.Node).init(self.allocator);
                     for (call.args) |arg| {
@@ -922,6 +999,122 @@ pub const Monomorphizer = struct {
         }
     }
 
+    // (lii) Lexical type environment: pushed per function body (or
+    // nested block) while specializing, popped on exit. Definitions
+    // are recorded as statements are specialized in order, so a call
+    // sees exactly the bindings declared above it.
+    fn envPushScope(self: *Monomorphizer) MonomorphizeError!void {
+        try self.env_scopes.append(std.StringHashMap(*ast.Type).init(self.allocator));
+    }
+
+    fn envPopScope(self: *Monomorphizer) void {
+        var scope = self.env_scopes.pop() orelse return;
+        scope.deinit();
+    }
+
+    fn envDefine(self: *Monomorphizer, name: []const u8, ty: *ast.Type) MonomorphizeError!void {
+        if (self.env_scopes.items.len == 0) return;
+        try self.env_scopes.items[self.env_scopes.items.len - 1].put(name, ty);
+    }
+
+    fn envLookup(self: *Monomorphizer, name: []const u8) ?*ast.Type {
+        var i = self.env_scopes.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.env_scopes.items[i].get(name)) |ty| return ty;
+        }
+        return null;
+    }
+
+    /// (lii) Effective parameter type: a `&` parameter carries the
+    /// borrow wrapper, matching the type a borrow argument has at
+    /// the call site. inferGenericArgsForCall used to compare the
+    /// bare declared type against the borrow-wrapped argument type,
+    /// so a type parameter could never be bound through a borrow
+    /// parameter (`&Vec<T>` vs `&Vec<i64>` always failed).
+    fn effectiveParamType(self: *Monomorphizer, param: ast.Param) MonomorphizeError!*ast.Type {
+        if (!param.is_borrow) return param.ty;
+        const res = try self.allocator.create(ast.Type);
+        res.* = .{ .borrow = param.ty };
+        return res;
+    }
+
+    fn makePrimitiveType(self: *Monomorphizer, prim: ast.Primitive) MonomorphizeError!*ast.Type {
+        const res = try self.allocator.create(ast.Type);
+        res.* = .{ .primitive = prim };
+        return res;
+    }
+
+    fn makeVecType(self: *Monomorphizer, elem: *ast.Type) MonomorphizeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = elem;
+        const res = try self.allocator.create(ast.Type);
+        res.* = .{ .user_defined = .{ .name = "Vec", .generics = generics } };
+        return res;
+    }
+
+    fn makeInferType(self: *Monomorphizer) MonomorphizeError!*ast.Type {
+        const res = try self.allocator.create(ast.Type);
+        res.* = .infer;
+        return res;
+    }
+
+    fn makeFnPtrTypeForDecl(self: *Monomorphizer, decl: *const ast.FuncDecl) MonomorphizeError!*ast.Type {
+        var params = std.array_list.Managed(*ast.Type).init(self.allocator);
+        for (decl.params) |p| {
+            try params.append(try self.effectiveParamType(p));
+        }
+        const res = try self.allocator.create(ast.Type);
+        res.* = .{ .fn_ptr = .{ .abi = decl.abi, .params = try params.toOwnedSlice(), .ret = decl.ret_ty, .is_variadic = decl.is_variadic } };
+        return res;
+    }
+
+    fn typeContainsInfer(self: *Monomorphizer, ty: *ast.Type) bool {
+        switch (ty.*) {
+            .infer => return true,
+            .primitive => return false,
+            .pointer, .borrow, .future => |inner| return self.typeContainsInfer(inner),
+            .array => |arr| return self.typeContainsInfer(arr.elem),
+            .tuple => |tuple| {
+                for (tuple.elems) |e| if (self.typeContainsInfer(e)) return true;
+                return false;
+            },
+            .closure => |c| {
+                for (c.params) |p| if (self.typeContainsInfer(p)) return true;
+                return self.typeContainsInfer(c.ret);
+            },
+            .fn_ptr => |f| {
+                for (f.params) |p| if (self.typeContainsInfer(p)) return true;
+                return self.typeContainsInfer(f.ret);
+            },
+            .user_defined => |ud| {
+                for (ud.generics) |g| if (self.typeContainsInfer(g)) return true;
+                return false;
+            },
+        }
+    }
+
+    /// (lii) `v.push(x)` / `v.insert(i, x)` pins the element type of
+    /// a `Vec::new()` local: the environment records `Vec::new()` as
+    /// `Vec<infer>`, and the first push refines the element to the
+    /// pushed value's type (checker convention: an unadorned integer
+    /// literal is i64). Runs on the original call node, before its
+    /// arguments are specialized. Unknown receivers and values leave
+    /// the environment untouched.
+    fn refineVecPushTarget(self: *Monomorphizer, call: ast.CallExpr) MonomorphizeError!void {
+        if (call.args.len < 2) return;
+        if (call.args[0].* != .identifier) return;
+        const recv_name = call.args[0].identifier;
+        const recv_ty = self.envLookup(recv_name) orelse return;
+        if (recv_ty.* != .user_defined) return;
+        const ud = recv_ty.user_defined;
+        if (!std.mem.eql(u8, ud.name, "Vec") or ud.generics.len != 1) return;
+        if (ud.generics[0].* != .infer) return;
+        const value_arg = if (std.mem.eql(u8, call.func_name, "push")) call.args[1] else if (call.args.len >= 3) call.args[2] else return;
+        const elem_ty = (try self.inferNodeType(value_arg)) orelse return;
+        try self.envDefine(recv_name, try self.makeVecType(elem_ty));
+    }
+
     fn inferGenericArgsForCall(self: *Monomorphizer, template: *const ast.FuncDecl, args: []const *ast.Node) MonomorphizeError!?[]const *ast.Type {
         if (template.generics.len == 0) return null;
         if (template.params.len != args.len) return null;
@@ -930,8 +1123,9 @@ pub const Monomorphizer = struct {
         @memset(inferred, null);
 
         for (template.params, args) |param, arg| {
-            const actual_ty = try self.inferNodeTypeShallow(arg) orelse return null;
-            if (!try self.collectGenericBindings(template.generics, param.ty, actual_ty, inferred)) {
+            const actual_ty = try self.inferNodeType(arg) orelse return null;
+            const template_ty = try self.effectiveParamType(param);
+            if (!try self.collectGenericBindings(template.generics, template_ty, actual_ty, inferred)) {
                 return null;
             }
         }
@@ -939,16 +1133,29 @@ pub const Monomorphizer = struct {
         const final = try self.allocator.alloc(*ast.Type, template.generics.len);
         for (inferred, 0..) |maybe_ty, i| {
             final[i] = maybe_ty orelse return null;
+            // A binding that still mentions .infer (e.g. a Vec::new()
+            // local never pushed into) has no concrete type to
+            // instantiate with; leave the call unrewritten rather
+            // than emitting a broken Vec<infer> instance.
+            if (self.typeContainsInfer(final[i])) return null;
         }
         return final;
     }
 
-    fn inferNodeTypeShallow(self: *Monomorphizer, node: *const ast.Node) MonomorphizeError!?*ast.Type {
+    /// (lii) Shallow type of an expression node, consulting the
+    /// lexical environment for identifiers. Anything it cannot type
+    /// yields null and the caller falls back to leaving the call
+    /// unrewritten (the pre-fix behaviour). An unadorned integer
+    /// literal is i64, matching the checker's literal typing: the
+    /// old i32 made every `Vec::new()` + `push(int)` refinement
+    /// disagree with the checker (`Vec<i32>` instance vs `Vec<i64>`
+    /// argument) and fail at check time.
+    fn inferNodeType(self: *Monomorphizer, node: *const ast.Node) MonomorphizeError!?*ast.Type {
         switch (node.*) {
             .literal => |lit| {
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = switch (lit) {
-                    .int_val => .{ .primitive = .i32 },
+                    .int_val => .{ .primitive = .i64 },
                     .float_val => .{ .primitive = .f64 },
                     .bool_val => .{ .primitive = .boolean },
                     .string_val => .{ .user_defined = .{ .name = "Slice", .generics = blk: {
@@ -961,10 +1168,18 @@ pub const Monomorphizer = struct {
                 };
                 return ty;
             },
+            .identifier => |name| {
+                // Locals shadow function names.
+                if (self.envLookup(name)) |ty| return ty;
+                if (self.concrete_funcs.get(name)) |decl| {
+                    return try self.makeFnPtrTypeForDecl(decl);
+                }
+                return null;
+            },
             .tuple_literal => |tuple| {
                 var elems = std.array_list.Managed(*ast.Type).init(self.allocator);
                 for (tuple.elements) |elem| {
-                    try elems.append((try self.inferNodeTypeShallow(elem)) orelse return null);
+                    try elems.append((try self.inferNodeType(elem)) orelse return null);
                 }
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .tuple = .{ .elems = try elems.toOwnedSlice() } };
@@ -972,9 +1187,9 @@ pub const Monomorphizer = struct {
             },
             .array_literal => |array| {
                 if (array.elements.len == 0) return null;
-                const elem_ty = (try self.inferNodeTypeShallow(array.elements[0])) orelse return null;
+                const elem_ty = (try self.inferNodeType(array.elements[0])) orelse return null;
                 for (array.elements[1..]) |elem| {
-                    const next_ty = (try self.inferNodeTypeShallow(elem)) orelse return null;
+                    const next_ty = (try self.inferNodeType(elem)) orelse return null;
                     if (!self.typesStructurallyEqual(elem_ty, next_ty)) return null;
                 }
                 const ty = try self.allocator.create(ast.Type);
@@ -982,20 +1197,49 @@ pub const Monomorphizer = struct {
                 return ty;
             },
             .repeat_array_literal => |array| {
-                const elem_ty = (try self.inferNodeTypeShallow(array.value)) orelse return null;
+                const elem_ty = (try self.inferNodeType(array.value)) orelse return null;
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .array = .{ .elem = elem_ty, .len = array.len } };
                 return ty;
             },
             .struct_literal => |lit| return lit.ty,
             .borrow_expr => |borrow| {
-                const inner_ty = (try self.inferNodeTypeShallow(borrow.expr)) orelse return null;
+                const inner_ty = (try self.inferNodeType(borrow.expr)) orelse return null;
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .borrow = inner_ty };
                 return ty;
             },
-            .move_expr => |move| return try self.inferNodeTypeShallow(move.expr),
+            .move_expr => |move| return try self.inferNodeType(move.expr),
             .cast_expr => |cast| return cast.ty,
+            .index_expr => |idx| {
+                const target_ty = (try self.inferNodeType(idx.target)) orelse return null;
+                if (target_ty.* == .array) return target_ty.array.elem;
+                if (target_ty.* == .user_defined and std.mem.eql(u8, target_ty.user_defined.name, "Vec") and target_ty.user_defined.generics.len == 1) {
+                    return target_ty.user_defined.generics[0];
+                }
+                return null;
+            },
+            .call_expr => |call| {
+                // `Vec::new()` / `Vec::with_capacity(n)` construct a
+                // Vec whose element type is unknown until a push (or
+                // an annotation) pins it; record Vec<infer> and let
+                // refineVecPushTarget fill it in.
+                if (call.associated_target) |target| {
+                    if (std.mem.eql(u8, target, "Vec") and (std.mem.eql(u8, call.func_name, "new") or std.mem.eql(u8, call.func_name, "with_capacity"))) {
+                        return try self.makeVecType(try self.makeInferType());
+                    }
+                }
+                // A call to a known concrete function has its declared
+                // return type. Generic templates are not in
+                // concrete_funcs, so this never recurses into
+                // inference for a template call.
+                if (call.associated_target == null) {
+                    if (self.concrete_funcs.get(call.func_name)) |decl| {
+                        return try self.specializeType(decl.ret_ty);
+                    }
+                }
+                return null;
+            },
             else => return null,
         }
     }
@@ -1120,10 +1364,18 @@ pub const Monomorphizer = struct {
     }
 
     fn specializeBlock(self: *Monomorphizer, block: []const *ast.Node) MonomorphizeError![]const *ast.Node {
+        // (lii) Every block is a fresh lexical scope: lets defined
+        // here must not leak into the enclosing scope, and lookups
+        // walk up the stack. Callers that introduce bindings
+        // (function/closure parameters) seed the parent scope before
+        // calling this.
+        try self.envPushScope();
+        errdefer self.envPopScope();
         var new_block = std.array_list.Managed(*ast.Node).init(self.allocator);
         for (block) |stmt| {
             try new_block.append(try self.specializeNode(stmt));
         }
+        self.envPopScope();
         return try new_block.toOwnedSlice();
     }
 
@@ -1451,7 +1703,16 @@ pub const Monomorphizer = struct {
 
         // Substitute inside block
         const spec_body = try self.substituteBlock(template.body, template.generics, args);
+        // (lii) Seed the environment with the substituted parameter
+        // types so nested generic calls inside the instantiated body
+        // can be inferred from them.
+        try self.envPushScope();
+        errdefer self.envPopScope();
+        for (spec_params.items) |p| {
+            try self.envDefine(p.name, try self.effectiveParamType(p));
+        }
         const fully_spec_body = try self.specializeBlock(spec_body);
+        self.envPopScope();
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{

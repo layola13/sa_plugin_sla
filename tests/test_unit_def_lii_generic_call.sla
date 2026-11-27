@@ -1,0 +1,72 @@
+// DEF-LII (lii) regression: calls to generic functions must resolve
+// by inferring type arguments from the call arguments. On the
+// pre-fix compiler every call below failed check with
+// "Undefined call: <name>": the monomorphizer could only type
+// literal arguments (inferNodeTypeShallow returned null for
+// identifiers), so a call passing a local or a parameter was left
+// unrewritten while the template was dropped from the program.
+// The fix threads a lexical type environment through
+// specialization (parameters, let annotations, Vec::new() + push
+// refinement) and compares borrow-wrapped parameter types.
+
+fn lii_len_vec<T>(v: &Vec<T>) -> i64 {
+    return len(v);
+}
+
+fn lii_first<T>(v: &Vec<T>) -> T {
+    return v[0];
+}
+
+fn lii_first_byval<T>(v: Vec<T>) -> T {
+    return v[0];
+}
+
+fn lii_id<T>(x: T) -> T {
+    return x;
+}
+
+fn lii_sort_vec<T>(v: &Vec<T>, less: fn(&T, &T) -> bool) -> i64 {
+    return len(v);
+}
+
+fn lii_less_i64(a: &i64, b: &i64) -> bool {
+    return *a < *b;
+}
+
+fn lii_sort_ints(v: &Vec<i64>) -> i64 {
+    return lii_sort_vec(v, lii_less_i64);
+}
+
+@test "generic fn called with a borrowed local Vec (G2 minim)"() {
+    let v = Vec::new();
+    v.push(3);
+    let n = lii_len_vec(&v);
+    if n != 1 { panic(44501); };
+}
+
+@test "generic fn returning the element type"() {
+    let v = Vec::new();
+    v.push(3);
+    let x = lii_first(&v);
+    if x != 3 { panic(44502); };
+}
+
+@test "generic fn called with a literal argument"() {
+    let y = lii_id(3);
+    if y != 3 { panic(44503); };
+}
+
+@test "generic fn with fn parameter called from a wrapper (G1 shape)"() {
+    let v = Vec::new();
+    v.push(3);
+    v.push(1);
+    let n = lii_sort_ints(&v);
+    if n != 2 { panic(44504); };
+}
+
+@test "generic fn by value called with an annotated local Vec"() {
+    let v: Vec<i64> = Vec::new();
+    v.push(3);
+    let x = lii_first_byval(v);
+    if x != 3 { panic(44505); };
+}

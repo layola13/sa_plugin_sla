@@ -1,0 +1,29 @@
+// DEF-LII (lii) control: the concrete (non-generic) counterpart of
+// the G2 minim must stay green. This file passed on the pre-fix
+// compiler (G3) and must keep passing after the fix.
+
+fn lii_sort_i64(v: &Vec<i64>, less: fn(&i64, &i64) -> bool) -> void {
+    let n = len(v);
+    if n < 2 {
+        return;
+    };
+    return;
+}
+
+fn lii_less_i64(a: &i64, b: &i64) -> bool {
+    return *a < *b;
+}
+
+fn lii_sort_ints(v: &Vec<i64>) -> void {
+    lii_sort_i64(v, lii_less_i64);
+    return;
+}
+
+@test "concrete control: sort wrapper over a borrowed local Vec (G3)"() {
+    let v = Vec::new();
+    v.push(3);
+    v.push(1);
+    lii_sort_ints(&v);
+    if v[0] != 3 { panic(44506); };
+    if v[1] != 1 { panic(44507); };
+}

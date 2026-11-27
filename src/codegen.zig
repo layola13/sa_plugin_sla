@@ -20558,6 +20558,9 @@ pub const Codegen = struct {
         right_ty: *const ast.Type,
         hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
+        if (bin.op == .logical_and or bin.op == .logical_or) {
+            return try self.genShortCircuitCombine(bin, l, hoisted_allocs);
+        }
         const r = try self.genExpr(bin.right, hoisted_allocs);
         const reg = try self.newTmp();
         const op = binaryOpName(bin.op, left_ty, right_ty) orelse return CodegenError.CodegenError;
@@ -20567,6 +20570,88 @@ pub const Codegen = struct {
         if (bin.op == .shl) {
             if (try self.emitShiftResultWrap(reg, self.shiftResultType(expr, bin, left_ty))) |wrapped| return wrapped;
         }
+        return reg;
+    }
+
+    /// (xviii) root B: `&&` / `||` must short-circuit. The generic
+    /// combine used to evaluate both operands and merge them with a
+    /// plain `and`/`or`, so a guarded read on the right
+    /// (`i < n && v[i] == x`) executed even when the left side had
+    /// already decided the result -- the Vec OOB trap panic(32)
+    /// behind (xlix) root B. Emit a branch diamond instead: the
+    /// left value (the short-circuit result) is stored into a bool
+    /// slot, the right operand runs only on the path that needs it
+    /// and overwrites the slot, and the merge loads the slot.
+    /// Bindings the right operand consumes are merge-compensated on
+    /// the skip path with the same differential machinery as the
+    /// if/else and match merges, so both merge predecessors agree
+    /// on Consumed; the post-merge books stay the right path's end
+    /// state, exactly as the checker treats both operands as
+    /// checked.
+    fn genShortCircuitCombine(
+        self: *Codegen,
+        bin: *const ast.BinaryExpr,
+        l: []const u8,
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
+    ) CodegenError![]const u8 {
+        var pre_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+        defer pre_consumed.deinit();
+        var pre_store_moved = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
+        defer pre_store_moved.deinit();
+        var pre_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+        defer pre_refcell_handles.deinit();
+        var live_owned = try self.snapshotLiveOwnedBindings();
+        defer live_owned.deinit();
+
+        const slot = try self.newTmp();
+        self.outPrint("    {s} = alloc 1\n", .{slot}) catch return CodegenError.CodegenError;
+        self.outPrint("    store {s}+0, {s} as u8\n", .{ slot, l }) catch return CodegenError.CodegenError;
+        const rhs_label = try self.newLabel("L_SC_RHS");
+        const skip_label = try self.newLabel("L_SC_SKIP");
+        const merge_label = try self.newLabel("L_SC_MERGE");
+        if (bin.op == .logical_and) {
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ l, rhs_label, skip_label }) catch return CodegenError.CodegenError;
+        } else {
+            self.outPrint("    br {s} -> {s}, {s}\n\n", .{ l, skip_label, rhs_label }) catch return CodegenError.CodegenError;
+        }
+
+        self.outPrint("{s}:\n", .{rhs_label}) catch return CodegenError.CodegenError;
+        const r = try self.genExpr(bin.right, hoisted_allocs);
+        self.outPrint("    store {s}+0, {s} as u8\n", .{ slot, r }) catch return CodegenError.CodegenError;
+        if (self.exprResultRegNeedsRelease(bin.right)) try self.emitRelease(r);
+
+        var rhs_end_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+        defer rhs_end_consumed.deinit();
+        var rhs_store_moved = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
+        defer rhs_store_moved.deinit();
+        var union_names = try self.mergeCompensationUnion(&live_owned, &pre_consumed, &pre_refcell_handles, &.{&rhs_end_consumed});
+        defer union_names.deinit();
+        try self.insertArmMergeCompensation(union_names.items, &rhs_end_consumed, &rhs_store_moved, &pre_store_moved, self.out.items.len);
+        self.outPrint("    jmp {s}\n\n", .{merge_label}) catch return CodegenError.CodegenError;
+
+        self.outPrint("{s}:\n", .{skip_label}) catch return CodegenError.CodegenError;
+        if (union_names.items.len > 0) {
+            var saved_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+            defer saved_consumed.deinit();
+            var saved_store_moved = self.store_moved_bindings.clone() catch return CodegenError.OutOfMemory;
+            defer saved_store_moved.deinit();
+            var saved_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
+            defer saved_borrow_sources.deinit();
+            var saved_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+            defer saved_refcell_handles.deinit();
+            try self.insertArmMergeCompensation(union_names.items, &pre_consumed, &pre_store_moved, &pre_store_moved, self.out.items.len);
+            try self.restoreConsumedBindings(&saved_consumed);
+            try self.restoreStoreMovedBindings(&saved_store_moved);
+            try self.restoreBorrowSourceTemps(&saved_borrow_sources);
+            try self.restoreRefCellBorrowHandles(&saved_refcell_handles);
+        }
+        self.outPrint("    jmp {s}\n\n", .{merge_label}) catch return CodegenError.CodegenError;
+
+        self.outPrint("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+        const reg = try self.newTmp();
+        self.outPrint("    {s} = load {s}+0 as u8\n", .{ reg, slot }) catch return CodegenError.CodegenError;
+        try self.emitRelease(slot);
+        if (self.exprResultRegNeedsRelease(bin.left)) try self.emitRelease(l);
         return reg;
     }
 

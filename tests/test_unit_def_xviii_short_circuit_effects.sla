@@ -1,0 +1,67 @@
+@import "sa_std/vec.sa"
+
+// (xviii) root B: short-circuiting is about side effects, not
+// just traps. A right operand whose evaluation is observable
+// (here: a panicking call) must be skipped when the left side
+// decides the result. The first two tests panic with code=88430
+// on the pre-fix compiler because boom() runs eagerly.
+//
+// The last two tests pin the merge-compensation behaviour of the
+// branchy lowering: a right operand that consumes an owned
+// binding leaves that binding statically consumed on BOTH paths
+// (the checker checks both operands), so the skip path must
+// retire it as well or the SA verifier rejects the merge. These
+// pass on the pre-fix compiler too (eager evaluation consumes on
+// the only path); they guard the new machinery against
+// PhiStateConflict / MemoryLeak regressions.
+
+fn boom() -> bool {
+    panic(88430);
+    return true;
+}
+
+fn sink(v: Vec<i32>) -> bool {
+    return len(v) > 0;
+}
+
+@test "and skips panicking right operand"() {
+    let a = false && boom();
+    if a {
+        panic(88421);
+    };
+}
+
+@test "or skips panicking right operand"() {
+    let b = true || boom();
+    if !b {
+        panic(88422);
+    };
+}
+
+@test "and skip path retires binding consumed by right operand"() {
+    let x: Vec<i32> = Vec::new();
+    x.push(1);
+    let r = false && sink(x);
+    if r {
+        panic(88423);
+    };
+}
+
+@test "and taken path consumes right operand binding"() {
+    let y: Vec<i32> = Vec::new();
+    y.push(1);
+    y.push(2);
+    let r = true && sink(y);
+    if !r {
+        panic(88424);
+    };
+}
+
+@test "or taken path consumes right operand binding"() {
+    let z: Vec<i32> = Vec::new();
+    z.push(3);
+    let r = false || sink(z);
+    if !r {
+        panic(88425);
+    };
+}

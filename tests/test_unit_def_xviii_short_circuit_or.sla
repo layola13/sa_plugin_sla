@@ -1,0 +1,54 @@
+@import "sa_std/vec.sa"
+
+// (xviii) root B, dual form: `||` must short-circuit. With the
+// left side true the right side must not run; the pre-fix eager
+// combine still executed the guarded read and trapped with the
+// Vec OOB panic code=32 when i == len.
+
+@test "or guard in if condition never reads past len"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(46);
+    v.push(7);
+    let i = len(v);
+    if i >= len(v) || v[i] == 46 {
+        // decided by the left side alone
+    } else {
+        panic(88411);
+    };
+}
+
+@test "or guard in let value position never reads past len"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(46);
+    v.push(7);
+    let i = len(v);
+    let ok = i >= len(v) || v[i] == 46;
+    if !ok {
+        panic(88412);
+    };
+}
+
+@test "or evaluates right side when left is false"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(46);
+    v.push(7);
+    let i = 0;
+    if !(i >= len(v) || v[i] == 46) {
+        panic(88413);
+    };
+    let j = 1;
+    if j >= len(v) || v[j] == 46 {
+        panic(88414);
+    };
+}
+
+@test "or chained guard skips the tail reads"() {
+    let v: Vec<i32> = Vec::new();
+    v.push(46);
+    v.push(7);
+    let i = len(v);
+    let ok = i >= len(v) || v[i] == 46 || v[i + 1] == 7;
+    if !ok {
+        panic(88415);
+    };
+}

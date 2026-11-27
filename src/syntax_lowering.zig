@@ -261,6 +261,17 @@ pub const Lowerer = struct {
                     try self.tc.cleanups.put(out.items[out.items.len - 1], entry.value);
                 }
             }
+                // DEF: the checker also keys drop-taint snapshots by
+                // statement node (loop-end drops consult the snapshot
+                // of the body last statement). A replaced statement
+                // loses its snapshot the same way, and codegen then
+                // falls back to the program-wide taint union, which
+                // same-named places from other functions can pollute
+                // (pr.args leak in g_conn_step). Transfer it with the
+                // cleanup list.
+                if (self.tc.drop_taint_snapshots.fetchRemove(stmt)) |snap| {
+                    try self.tc.drop_taint_snapshots.put(out.items[out.items.len - 1], snap.value);
+                }
         }
         // Release this block's synthetic heap-alloc lets (transfer
         // slots) at block exit: append their names to the cleanup

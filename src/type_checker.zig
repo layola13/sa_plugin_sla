@@ -1786,6 +1786,15 @@ pub const TypeChecker = struct {
                 defer body_taint.deinit();
                 try self.walkTaintStmts(f.body, &body_taint);
                 try unionDropTaint(taint, &body_taint);
+                // DEF loop-end drop snapshot: codegen emits the loop-body
+                // cleanup at the body's last statement (loop_drop_node).
+                // That node is snapshotted only if it carries a cleanup
+                // list; an `if` as the last statement typically has none,
+                // so the drop fell back to the program-wide union and was
+                // suppressed by same-named places from other functions.
+                // Snapshot the body-end taint here (first-wins, so an
+                // existing snapshot is untouched).
+                if (f.body.len > 0) try self.snapshotDropTaint(f.body[f.body.len - 1], &body_taint);
             },
             .while_stmt => |w| {
                 try self.walkTaintExpr(w.cond, true, taint);
@@ -1793,6 +1802,15 @@ pub const TypeChecker = struct {
                 defer body_taint.deinit();
                 try self.walkTaintStmts(w.body, &body_taint);
                 try unionDropTaint(taint, &body_taint);
+                // DEF loop-end drop snapshot: codegen emits the loop-body
+                // cleanup at the body's last statement (loop_drop_node).
+                // That node is snapshotted only if it carries a cleanup
+                // list; an `if` as the last statement typically has none,
+                // so the drop fell back to the program-wide union and was
+                // suppressed by same-named places from other functions.
+                // Snapshot the body-end taint here (first-wins, so an
+                // existing snapshot is untouched).
+                if (w.body.len > 0) try self.snapshotDropTaint(w.body[w.body.len - 1], &body_taint);
             },
             .defer_stmt => |defer_stmt| try self.walkTaintExpr(defer_stmt.call, false, taint),
             .select_stmt => |sel| {

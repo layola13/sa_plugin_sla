@@ -5010,6 +5010,27 @@ pub const TypeChecker = struct {
         };
     }
 
+    /// (lvi): calls through a fn-typed value (the closure and fn_ptr
+    /// call arms) carry parameter types as bare `*ast.Type`, where a
+    /// borrow parameter is a `.borrow` type node. Mirror the
+    /// named-path borrow branch of `checkCallArgsAgainstSignature`:
+    /// a borrow parameter requires a borrow argument of the same
+    /// inner type, with the borrow-array -> borrow-slice coercion
+    /// registered for codegen. `plainCallArgMatches` alone cannot
+    /// match a `.borrow` expectation (it unwraps the argument's
+    /// borrow before comparing), so fn values with borrow parameters
+    /// were uncallable.
+    fn fnValueCallArgMatches(self: *TypeChecker, param_ty: *const ast.Type, arg: *const ast.Node, arg_ty: *ast.Type) bool {
+        if (param_ty.* == .borrow) {
+            if (canCoerceBorrowArrayToBorrowSlice(self, @constCast(param_ty), arg_ty)) {
+                self.array_to_slice_borrow_args.put(@constCast(arg), {}) catch return false;
+                return true;
+            }
+            return arg_ty.* == .borrow and self.typesEqual(param_ty.borrow, arg_ty.borrow);
+        }
+        return self.plainCallArgMatches(param_ty, arg, arg_ty);
+    }
+
     /// #1: array element width must match exactly (stride safety).
     /// `typesEqual` is intentionally permissive across integer widths
     /// (i32 vs i64), but `[i64;N]` storage (8B stride) read as `[i32;N]`
@@ -9932,7 +9953,7 @@ pub const TypeChecker = struct {
                         if (closure.params.len != call.args.len) return TypeError.InvalidArgsCount;
                         for (closure.params, call.args) |param_ty, arg| {
                             const arg_ty = try self.checkExpr(arg, scope);
-                            if (!self.plainCallArgMatches(param_ty, arg, arg_ty)) return TypeError.TypeMismatch;
+                            if (!self.fnValueCallArgMatches(param_ty, arg, arg_ty)) return TypeError.TypeMismatch;
                             if (!self.arrayCallArgStrictMatches(param_ty, arg_ty)) return TypeError.TypeMismatch;
                         }
                         return closure.ret;
@@ -9948,7 +9969,7 @@ pub const TypeChecker = struct {
                         const fn_fixed = if (fn_ptr.is_variadic) fn_ptr.params.len else call.args.len;
                         for (fn_ptr.params, call.args[0..fn_fixed]) |param_ty, arg| {
                             const arg_ty = try self.checkExpr(arg, scope);
-                            if (!self.plainCallArgMatches(param_ty, arg, arg_ty)) return TypeError.TypeMismatch;
+                            if (!self.fnValueCallArgMatches(param_ty, arg, arg_ty)) return TypeError.TypeMismatch;
                             if (!self.arrayCallArgStrictMatches(param_ty, arg_ty)) return TypeError.TypeMismatch;
                         }
                         if (fn_ptr.is_variadic) {

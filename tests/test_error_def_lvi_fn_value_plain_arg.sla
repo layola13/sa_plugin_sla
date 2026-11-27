@@ -1,0 +1,19 @@
+// expect: TypeMismatch
+// DEF-LVI (lvi) negative control: a fn-typed parameter declared with
+// borrow parameters fn(&i64, &i64) called with PLAIN value arguments
+// must stay rejected with TypeMismatch. The language does not
+// auto-borrow for borrow parameters (the named-function path rejects
+// the identical shape), so the (lvi) fix -- which only adds the
+// borrow-vs-borrow branch to fn-value call arms -- must not turn
+// this into an acceptance. Judged by `sla check`, not the test
+// runner: this file must fail check with error.TypeMismatch.
+
+fn lvi_neg_call(f: fn(&i64, &i64) -> i64) -> i64 {
+    let a: i64 = 3;
+    let b: i64 = 4;
+    return f(a, b);
+}
+
+fn main() -> i64 {
+    return 0;
+}

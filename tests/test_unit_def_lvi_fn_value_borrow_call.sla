@@ -1,0 +1,48 @@
+// DEF-LVI (lvi) regression: calling through a fn-typed value (fn
+// parameter, local alias, or closure) whose parameters are borrows
+// must accept borrow arguments, mirroring the named-function call
+// path. On the pre-fix compiler every call below failed check with
+// error.TypeMismatch: the closure and fn_ptr call arms in the checker
+// only ran plainCallArgMatches, which cannot match a `.borrow`
+// expected type (it unwraps the argument's borrow before comparing).
+// The fix adds a borrow branch (borrow-vs-borrow comparison plus the
+// borrow-array -> borrow-slice coercion registration) to both
+// fn-value call arms via a shared helper.
+//
+// This file carries the shapes that are also runtime-clean. The
+// Vec-index borrow shape (slices.sla:323) and the borrow-parameter
+// closure shape are covered at check level by
+// tests/test_diag_def_lvi_fn_value_borrow_ok.sla: at runtime they are
+// blocked by two pre-existing defects outside (lvi)'s checker scope
+// (index-borrow registers through a borrow parameter trap
+// UseAfterMove in the SA referee on the named path too; a
+// borrow-parameter closure value is not dropped at scope exit and
+// traps MemoryLeak). Both were verified path-independently with
+// standalone build-exe probes during the (lvi) fix.
+
+fn lvi_sub(a: &i64, b: &i64) -> i64 {
+    return *a - *b;
+}
+
+fn lvi_call_param(f: fn(&i64, &i64) -> i64) -> i64 {
+    let a: i64 = 10;
+    let b: i64 = 4;
+    return f(&a, &b);
+}
+
+fn lvi_call_alias() -> i64 {
+    let g = lvi_sub;
+    let a: i64 = 9;
+    let b: i64 = 5;
+    return g(&a, &b);
+}
+
+@test "fn parameter called with borrow locals"() {
+    let r = lvi_call_param(lvi_sub);
+    if r != 6 { panic(44801); };
+}
+
+@test "fn value alias called with borrow args"() {
+    let r = lvi_call_alias();
+    if r != 4 { panic(44803); };
+}

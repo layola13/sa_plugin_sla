@@ -117,6 +117,13 @@ judge_ws DuplicateEntry "DuplicateEntry" \
 judge_ws InvalidPath "invalid path" \
     tests/diag_workspace/invalid_path "$SA" sla check
 
+# DEF-LVI (lvi): fn-value call arms must accept borrow arguments
+# (borrow-vs-borrow, mirroring the named path); plain value arguments
+# to a borrow-parameter fn value must stay TypeMismatch.
+judge FnValueBorrowPlainArg "TypeMismatch" \
+    "$SA" sla check tests/test_error_def_lvi_fn_value_plain_arg.sla
+judge_ok lvi-fn-value-borrow-shapes "$SA" sla check tests/test_diag_def_lvi_fn_value_borrow_ok.sla
+
 # Positive control: the judging frontends must accept a legal program.
 judge_ok control-check "$SA" sla check tests/test_diag_control_ok.sla
 

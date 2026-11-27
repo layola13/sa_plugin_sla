@@ -1,0 +1,36 @@
+// DEF-LVI (lvi) check-level positive carrier, judged by `sla check`
+// via tools/run_diag_checks.sh (judge_ok). No @test blocks: the test
+// runner skips this file by design. On the pre-fix compiler both
+// functions below failed check with error.TypeMismatch (the fn-value
+// call arms lacked the borrow branch); after the fix this file must
+// check clean (exit 0).
+//
+// These two shapes are check-level only for now: at runtime they are
+// blocked by pre-existing defects outside (lvi)'s checker scope --
+// borrowing &v[i] through a &Vec parameter traps UseAfterMove in the
+// SA referee on the named path too, and a borrow-parameter closure
+// value is not dropped at scope exit (MemoryLeak trap). The shapes
+// that are runtime-clean live in
+// tests/test_unit_def_lvi_fn_value_borrow_call.sla.
+
+fn lvi_sub(a: &i64, b: &i64) -> i64 {
+    return *a - *b;
+}
+
+// slices.sla:323 shape: fn-typed parameter called with borrow
+// Vec-index arguments.
+fn lvi_cmp_at(v: &Vec<i64>, i: i64, j: i64, cmp: fn(&i64, &i64) -> i64) -> i64 {
+    return cmp(&v[i], &v[j]);
+}
+
+// Closure literal with borrow parameters, called with borrow args.
+fn lvi_closure_call() -> i64 {
+    let cmp = |x: &i64, y: &i64| *x - *y;
+    let a: i64 = 3;
+    let b: i64 = 4;
+    return cmp(&a, &b);
+}
+
+fn main() -> i32 {
+    return 0;
+}

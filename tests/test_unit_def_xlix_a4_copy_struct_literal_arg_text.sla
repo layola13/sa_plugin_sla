@@ -1,0 +1,92 @@
+// DEF-XLIX-A4 (xlix root A) regression:
+// a @derive(copy) struct literal passed by value as a call argument
+// must be copied at the call boundary (copy + ^-consume path, the
+// same path named locals already take). On the pre-fix compiler every
+// test below aborts with signal 6 (glibc: free(): double free
+// detected in tcache 2) after the values have already printed
+// correctly: the callee frees the literal's own cell at fn exit
+// while the caller's post-call release frees it again.
+// The last test is a guard: it was green before the fix (named-local
+// and call-result-temp args) and must stay green.
+
+@derive(copy)
+struct PsaVal {
+    tag: i64,
+    ipay: i64,
+    fpay: f64,
+}
+
+fn stage_of(v: PsaVal) -> PsaVal {
+    return PsaVal { tag: v.tag, ipay: v.ipay, fpay: v.fpay };
+}
+
+fn slice_of(v: PsaVal, lo: PsaVal, hi: PsaVal) -> PsaVal {
+    return PsaVal { tag: v.tag, ipay: v.ipay - lo.ipay, fpay: 0.0 };
+}
+
+fn id_of(f: PsaVal) -> i64 {
+    return f.tag;
+}
+
+fn env_of(f: PsaVal) -> PsaVal {
+    return PsaVal { tag: 9, ipay: f.ipay, fpay: 0.0 };
+}
+
+fn call_closure(id: i64, env: PsaVal, arg: PsaVal) -> i64 {
+    return env.ipay + arg.ipay;
+}
+
+fn sink(v: PsaVal) -> i64 {
+    return v.ipay;
+}
+
+fn val_of(v: PsaVal) -> i64 {
+    return v.ipay;
+}
+
+fn make_val() -> PsaVal {
+    return PsaVal { tag: 6, ipay: 42, fpay: 0.0 };
+}
+
+@test "xlix-a4 copy struct literal arg stage_of"() {
+    let stg = stage_of(PsaVal { tag: 3, ipay: 0, fpay: 0.0 });
+    if stg.tag != 3 { panic(9560); };
+    if stg.ipay != 0 { panic(9561); };
+}
+
+@test "xlix-a4 copy struct literal args in rebind loop"() {
+    let s: PsaVal = PsaVal { tag: 6, ipay: 3, fpay: 0.0 };
+    while s.ipay > 0 {
+        s = slice_of(s, PsaVal { tag: 0, ipay: 1, fpay: 0.0 }, PsaVal { tag: 3, ipay: 0, fpay: 0.0 });
+    }
+    if s.ipay != 0 { panic(9562); };
+}
+
+@test "xlix-a4 copy struct literal arg in closure dispatch"() {
+    let f: PsaVal = PsaVal { tag: 8, ipay: 7, fpay: 0.0 };
+    let r = call_closure(id_of(f), env_of(f), PsaVal { tag: 0, ipay: 1, fpay: 0.0 });
+    if r != 8 { panic(9563); };
+}
+
+@test "xlix-a4 copy struct literal arg in loop sink"() {
+    let total: i64 = 0;
+    let i: i64 = 0;
+    while i < 3 {
+        total = total + sink(PsaVal { tag: 0, ipay: i, fpay: 0.0 });
+        i = i + 1;
+    }
+    if total != 3 { panic(9564); };
+}
+
+@test "xlix-a4 copy struct literal arg to value consumer"() {
+    let got = val_of(PsaVal { tag: 6, ipay: 42, fpay: 0.0 });
+    if got != 42 { panic(9565); };
+}
+
+@test "xlix-a4 named local and call-result args stay green"() {
+    let t = make_val();
+    let got = val_of(t);
+    if got != 42 { panic(9566); };
+    let got2 = val_of(make_val());
+    if got2 != 42 { panic(9567); };
+}

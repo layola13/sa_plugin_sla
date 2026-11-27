@@ -14177,7 +14177,17 @@ pub const Codegen = struct {
                 // the result aliases). Forget it instead (DEF-R8PIN
                 // discipline): ownership is treated as moved out
                 // through the call.
-                break :blk .{ .reg = copied, .release_after_call = materialization.release_after_call, .consume_reg = copied };
+                // DEF-XLIX-A4: a struct-literal source is a fresh
+                // caller-owned temp, not a live binding — retire it
+                // once after the call (release_reg), or it leaks;
+                // an identifier source stays live and is dropped at
+                // its own scope exit, so it keeps release_reg null.
+                break :blk .{
+                    .reg = copied,
+                    .release_after_call = arg.* == .struct_literal,
+                    .release_reg = if (arg.* == .struct_literal) source_reg else null,
+                    .consume_reg = copied,
+                };
             };
         } else if (materialization.isShallowCopyPreservedValue()) {
             return blk: {
@@ -14454,7 +14464,19 @@ pub const Codegen = struct {
             // scope-exit drop frees it again (double free on every
             // swap(t) / id(t) shape with a named binding).
             (options.include_copy_struct_value and arg.* == .identifier and
-                if (options.param) |param| param.ty.* == .tuple and !param.is_borrow and !param.is_move and self.typeIsCopyValue(param.ty) else false);
+                if (options.param) |param| param.ty.* == .tuple and !param.is_borrow and !param.is_move and self.typeIsCopyValue(param.ty) else false) or
+            // DEF-XLIX-A4 (xlix root A): the struct-literal analog
+            // of callArgIsCopyStructValue, text-local only (the
+            // shared rule stays identifier-only so the SAB emitter
+            // never sees this classification): a Copy struct literal
+            // passed by value is copied at the boundary — the callee
+            // receives a fresh copy and frees it, the caller's
+            // literal temp is released once after the call. Without
+            // the copy the callee frees the literal's own cell at
+            // fn exit while the caller's post-call release frees it
+            // again (double free on every f(Literal{...}) shape).
+            (options.include_copy_struct_value and arg.* == .struct_literal and
+                if (options.param) |param| !param.is_borrow and !param.is_move and self.typeIsCopyStruct(param.ty) else false);
         const arg_ty = self.resolvedTypeForExpr(arg);
         // Shallow-copy materialization has struct-layout support only. Pure
         // enums still participate in copy analysis for nested struct fields,

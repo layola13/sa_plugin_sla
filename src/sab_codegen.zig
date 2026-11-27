@@ -3704,7 +3704,11 @@ pub const Codegen = struct {
                     try self.emitMove(value_reg);
                     return;
                 }
-                if (!self.tc.dropTaintCoversAt(taint_node, key)) {
+                // DEF-VECCLONE-A: a cloned place shares its elements
+                // with the clone; skip the element loop (the clone's
+                // deep drop frees them) but still free the container
+                // below.
+                if (!self.tc.dropTaintCoversAt(taint_node, key) and !self.tc.dropCloneCoversAt(taint_node, key)) {
                     try self.emitVecElementDrops(value_reg, ty, elem_plan, key, taint_node);
                 }
                 if (free_container) {
@@ -3729,7 +3733,8 @@ pub const Codegen = struct {
                     try self.emitMove(value_reg);
                     return;
                 }
-                if (!self.tc.dropTaintCoversAt(taint_node, key)) {
+                // DEF-VECCLONE-A: see .deep_vec above.
+                if (!self.tc.dropTaintCoversAt(taint_node, key) and !self.tc.dropCloneCoversAt(taint_node, key)) {
                     try self.emitGrowVecElementDrops(value_reg, ty, elem_plan, key, taint_node);
                 }
                 if (free_container) {

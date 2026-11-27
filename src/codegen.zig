@@ -1513,7 +1513,7 @@ pub const Codegen = struct {
                 switch (plan.*) {
                     .deep_struct => |fields| try self.emitStructFieldDropsText(resolved_name, binding_ty, fields, resolved_name, self.current_drop_node),
                     .deep_vec => |elem_plan| {
-                        if (!self.tc.dropTaintCoversAt(self.current_drop_node, resolved_name)) {
+                        if (!self.tc.dropTaintCoversAt(self.current_drop_node, resolved_name) and !self.tc.dropCloneCoversAt(self.current_drop_node, resolved_name)) {
                             try self.emitVecElementDropsText(resolved_name, binding_ty, elem_plan, resolved_name, self.current_drop_node);
                         }
                         self.outPrint("    EXPAND VEC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
@@ -1521,7 +1521,7 @@ pub const Codegen = struct {
                         return;
                     },
                     .deep_growvec => |elem_plan| {
-                        if (!self.tc.dropTaintCoversAt(self.current_drop_node, resolved_name)) {
+                        if (!self.tc.dropTaintCoversAt(self.current_drop_node, resolved_name) and !self.tc.dropCloneCoversAt(self.current_drop_node, resolved_name)) {
                             try self.emitGrowVecElementDropsText(resolved_name, binding_ty, elem_plan, resolved_name, self.current_drop_node);
                         }
                         self.outPrint("    EXPAND GROWVEC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
@@ -1613,7 +1613,11 @@ pub const Codegen = struct {
                     try self.emitRelease(value_reg);
                     return;
                 }
-                if (!self.tc.dropTaintCoversAt(taint_node, key)) {
+                // DEF-VECCLONE-A: a cloned place shares its elements
+                // with the clone; skip the element loop (the clone's
+                // deep drop frees them) but still free the container
+                // below.
+                if (!self.tc.dropTaintCoversAt(taint_node, key) and !self.tc.dropCloneCoversAt(taint_node, key)) {
                     try self.emitVecElementDropsText(value_reg, ty, elem_plan, key, taint_node);
                 }
                 if (free_container) {
@@ -1640,7 +1644,8 @@ pub const Codegen = struct {
                     try self.emitRelease(value_reg);
                     return;
                 }
-                if (!self.tc.dropTaintCoversAt(taint_node, key)) {
+                // DEF-VECCLONE-A: see .deep_vec above.
+                if (!self.tc.dropTaintCoversAt(taint_node, key) and !self.tc.dropCloneCoversAt(taint_node, key)) {
                     try self.emitGrowVecElementDropsText(value_reg, ty, elem_plan, key, taint_node);
                 }
                 if (free_container) {
@@ -1881,7 +1886,10 @@ pub const Codegen = struct {
     fn emitDeepBindingElementsText(self: *Codegen, resolved_name: []const u8) CodegenError!void {
         const ty = self.local_binding_types.get(resolved_name) orelse return;
         const plan = self.tc.planValueDrop(ty) catch return;
-        if (self.tc.dropTaintCoversAt(self.current_drop_node, resolved_name)) return;
+        // DEF-VECCLONE-A: a cloned binding shares its elements with
+        // the clone; skip the element loop (the caller still frees the
+        // container with VEC_FREE / GROWVEC_FREE).
+        if (self.tc.dropTaintCoversAt(self.current_drop_node, resolved_name) or self.tc.dropCloneCoversAt(self.current_drop_node, resolved_name)) return;
         switch (plan.*) {
             .deep_vec => try self.emitVecElementDropsText(resolved_name, ty, plan.deep_vec, resolved_name, self.current_drop_node),
             .deep_growvec => try self.emitGrowVecElementDropsText(resolved_name, ty, plan.deep_growvec, resolved_name, self.current_drop_node),

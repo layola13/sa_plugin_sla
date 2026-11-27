@@ -1691,6 +1691,23 @@ pub const TypeChecker = struct {
         return next == '.' or next == '[';
     }
 
+    /// Codegen drop decisions (DEF-VECCLONE-A): was `key` cloned (not
+    /// moved out) at `node`? True when a "clone:"-prefixed key for
+    /// `key`, or for a place overlapping it (an ancestor cloned whole,
+    /// or a sub-place cloned), is in the taint set at `node`. Mirrors
+    /// dropTaintCoversAt's set/fallback; the clone keys ride the same
+    /// snapshots, so the same node-identity rules apply.
+    pub fn dropCloneCoversAt(self: *TypeChecker, node: ?*const ast.Node, key: []const u8) bool {
+        const set = if (node) |n| self.dropTaintSetAt(n) else &self.tainted_places_union;
+        var iter = set.keyIterator();
+        while (iter.next()) |entry| {
+            const e = entry.*;
+            if (!std.mem.startsWith(u8, e, "clone:")) continue;
+            if (taintKeysOverlap(e["clone:".len..], key)) return true;
+        }
+        return false;
+    }
+
     // ---- DEF deep-drop batch: place-taint pass ----
     // Runs once per function/test body after checking. A place key
     // (fieldPlaceDesc form) enters the taint set when the place's owned
@@ -1723,10 +1740,19 @@ pub const TypeChecker = struct {
     fn clearDropTaint(taint: *std.StringHashMap(void), key: []const u8) void {
         var doomed = std.array_list.Managed([]const u8).init(taint.allocator);
         defer doomed.deinit();
+        // DEF-VECCLONE-A: also clear the clone-marked form of this
+        // place (and its sub-places); a reassigned place is a fresh
+        // value that was never cloned.
+        const clone_key = std.fmt.allocPrint(taint.allocator, "clone:{s}", .{key}) catch null;
+        defer if (clone_key) |ck| taint.allocator.free(ck);
         var iter = taint.keyIterator();
         while (iter.next()) |entry| {
             if (std.mem.eql(u8, entry.*, key) or taintKeyHasPrefix(entry.*, key)) {
                 doomed.append(entry.*) catch {};
+            } else if (clone_key) |ck| {
+                if (std.mem.eql(u8, entry.*, ck) or taintKeyHasPrefix(entry.*, ck)) {
+                    doomed.append(entry.*) catch {};
+                }
             }
         }
         for (doomed.items) |entry| {
@@ -1764,24 +1790,24 @@ pub const TypeChecker = struct {
 
     fn walkTaintStmt(self: *TypeChecker, node: *const ast.Node, taint: *std.StringHashMap(void)) TypeError!void {
         switch (node.*) {
-            .let_stmt => |let| try self.walkTaintExpr(let.value, true, taint),
+            .let_stmt => |let| try self.walkTaintExpr(let.value, true, taint, true),
             .arena_stmt => |a| try self.walkTaintStmts(a.body, taint),
             .let_else_stmt => |let_else| {
-                try self.walkTaintExpr(let_else.value, true, taint);
+                try self.walkTaintExpr(let_else.value, true, taint, false);
                 try self.walkTaintStmts(let_else.else_block, taint);
             },
-            .let_destructure_stmt => |dest| try self.walkTaintExpr(dest.value, true, taint),
-            .const_stmt => |cst| try self.walkTaintExpr(cst.value, true, taint),
+            .let_destructure_stmt => |dest| try self.walkTaintExpr(dest.value, true, taint, false),
+            .const_stmt => |cst| try self.walkTaintExpr(cst.value, true, taint, false),
             .var_stmt => {},
             .assign_stmt => |assign| try self.walkTaintAssign(node, assign, taint),
             .block_stmt => |block| try self.walkTaintStmts(block.body, taint),
-            .expr_stmt => |expr| try self.walkTaintExpr(expr, false, taint),
+            .expr_stmt => |expr| try self.walkTaintExpr(expr, false, taint, false),
             .return_stmt => |ret| {
-                if (ret.value) |value| try self.walkTaintExpr(value, true, taint);
+                if (ret.value) |value| try self.walkTaintExpr(value, true, taint, true);
             },
             .for_stmt => |f| {
-                try self.walkTaintExpr(f.start, true, taint);
-                if (f.end) |end| try self.walkTaintExpr(end, true, taint);
+                try self.walkTaintExpr(f.start, true, taint, false);
+                if (f.end) |end| try self.walkTaintExpr(end, true, taint, false);
                 var body_taint = try self.dupeDropTaint(taint);
                 defer body_taint.deinit();
                 try self.walkTaintStmts(f.body, &body_taint);
@@ -1797,7 +1823,7 @@ pub const TypeChecker = struct {
                 if (f.body.len > 0) try self.snapshotDropTaint(f.body[f.body.len - 1], &body_taint);
             },
             .while_stmt => |w| {
-                try self.walkTaintExpr(w.cond, true, taint);
+                try self.walkTaintExpr(w.cond, true, taint, false);
                 var body_taint = try self.dupeDropTaint(taint);
                 defer body_taint.deinit();
                 try self.walkTaintStmts(w.body, &body_taint);
@@ -1812,14 +1838,14 @@ pub const TypeChecker = struct {
                 // existing snapshot is untouched).
                 if (w.body.len > 0) try self.snapshotDropTaint(w.body[w.body.len - 1], &body_taint);
             },
-            .defer_stmt => |defer_stmt| try self.walkTaintExpr(defer_stmt.call, false, taint),
+            .defer_stmt => |defer_stmt| try self.walkTaintExpr(defer_stmt.call, false, taint, false),
             .select_stmt => |sel| {
                 for (sel.cases) |case| {
-                    try self.walkTaintExpr(case.call, false, taint);
+                    try self.walkTaintExpr(case.call, false, taint, false);
                     try self.walkTaintStmts(case.body, taint);
                 }
                 if (sel.default_body) |body| try self.walkTaintStmts(body, taint);
-                if (sel.timeout_expr) |expr| try self.walkTaintExpr(expr, true, taint);
+                if (sel.timeout_expr) |expr| try self.walkTaintExpr(expr, true, taint, false);
                 if (sel.timeout_body) |body| try self.walkTaintStmts(body, taint);
             },
             .release_stmt => |rel| {
@@ -1909,7 +1935,7 @@ pub const TypeChecker = struct {
         // Index sub-expressions of the target are value positions; the
         // target place spine itself is neither read nor consumed.
         try self.walkTaintTargetIndexes(assign.target, taint);
-        try self.walkTaintExpr(assign.value, true, taint);
+        try self.walkTaintExpr(assign.value, true, taint, assign.target.* == .identifier);
 
         const place_key = self.taintKeyOfPlace(assign.target);
         const target_ty = self.expr_types.get(assign.target);
@@ -1995,13 +2021,13 @@ pub const TypeChecker = struct {
             .field_expr => |f| try self.walkTaintTargetIndexes(f.expr, taint),
             .index_expr => |ix| {
                 try self.walkTaintTargetIndexes(ix.target, taint);
-                try self.walkTaintExpr(ix.index, true, taint);
+                try self.walkTaintExpr(ix.index, true, taint, false);
             },
-            .deref_expr => |d| try self.walkTaintExpr(d.expr, false, taint),
+            .deref_expr => |d| try self.walkTaintExpr(d.expr, false, taint, false),
             .slice_expr => |s| {
                 try self.walkTaintTargetIndexes(s.target, taint);
-                try self.walkTaintExpr(s.start, true, taint);
-                try self.walkTaintExpr(s.end, true, taint);
+                try self.walkTaintExpr(s.start, true, taint, false);
+                try self.walkTaintExpr(s.end, true, taint, false);
             },
             else => {},
         }
@@ -2028,12 +2054,12 @@ pub const TypeChecker = struct {
         const place = self.placeOfExpr(update);
         const decl = self.structDeclForType(lit.ty);
         if (place == null or decl == null or decl.?.is_union) {
-            try self.walkTaintExpr(update, true, taint);
+            try self.walkTaintExpr(update, true, taint, false);
             return;
         }
         // The spine's value sub-expressions (indexes and the like)
         // are walked without tainting the spine itself.
-        try self.walkTaintExpr(update, false, taint);
+        try self.walkTaintExpr(update, false, taint, false);
         for (decl.?.fields) |field| {
             if (lowering_rules.structLiteralExplicitValue(lit, field.name) != null) continue;
             const plan = lowering_rules.planStructLiteralField(decl.?, lit, field) orelse continue;
@@ -2056,7 +2082,7 @@ pub const TypeChecker = struct {
         }
     }
 
-    fn maybeTaintPlace(self: *TypeChecker, expr: *const ast.Node, taint: *std.StringHashMap(void)) TypeError!void {
+    fn maybeTaintPlace(self: *TypeChecker, expr: *const ast.Node, taint: *std.StringHashMap(void), clone_site: bool) TypeError!void {
         const ty = self.expr_types.get(expr) orelse return;
         if (isBorrowLikeType(ty)) return;
         const plan = try self.planValueDrop(ty);
@@ -2065,64 +2091,95 @@ pub const TypeChecker = struct {
         // read site (see the patch note); tainting them would shallow
         // the balancing husk drop and leak the count.
         if (plan.kind() == .arc_ptr or plan.kind() == .rc_ptr) return;
+        // DEF-VECCLONE-A: a field read at an ownership-transfer clone
+        // site is cloned by codegen (cloneBorrowedHandleFieldValue,
+        // DEF-5 / DEF-AOF-EXIT69). The clone copies the container (a
+        // fresh buffer) but SHARES the heap-handle elements with the
+        // source: VEC_CLONE is VEC_AS_SLICE + VEC_FROM_SLICE, so the
+        // element pointers are copied, not the inner values. The
+        // scope-exit drop must therefore free the container (VEC_FREE)
+        // but NOT recurse into the elements -- recursing double-frees
+        // them against the clone's deep drop (the naive un-taint made
+        // leak_clone/leak_arg/leak_ret segfault). Record the place
+        // under a "clone:"-prefixed key in the same taint set, so the
+        // release query can distinguish it from a transfer move
+        // (plain key):
+        //   plain key  -> moved out, shallow no-op drop
+        //   clone: key -> cloned, container-only drop (VEC_FREE, no
+        //                element loop)
+        // The clone key rides the same snapshots/flow as the taint
+        // (same set, same clear/union), so it survives lowerBlock node
+        // replacement exactly like the taint does. Nested positions
+        // (struct/tuple/array literal elements, method arguments such
+        // as Vec::push, ...) store the view without cloning, so their
+        // reads still taint; the clone_site flag is true only for the
+        // direct value of a let / return / identifier-target assign /
+        // plain-function call argument.
+        if (clone_site and expr.* == .field_expr) {
+            if (self.taintKeyOfPlace(expr)) |key| {
+                const clone_key = std.fmt.allocPrint(self.allocator, "clone:{s}", .{key}) catch return TypeError.OutOfMemory;
+                try self.addDropTaint(taint, clone_key);
+            }
+            return;
+        }
         if (self.taintKeyOfPlace(expr)) |key| {
             try self.addDropTaint(taint, key);
         }
     }
 
-    fn walkTaintExpr(self: *TypeChecker, node: *const ast.Node, consuming: bool, taint: *std.StringHashMap(void)) TypeError!void {
+    fn walkTaintExpr(self: *TypeChecker, node: *const ast.Node, consuming: bool, taint: *std.StringHashMap(void), clone_site: bool) TypeError!void {
         if (self.cleanups.contains(node) or self.phi_cleanups.contains(node)) {
             try self.snapshotDropTaint(node, taint);
         }
         switch (node.*) {
             .identifier, .field_expr, .index_expr, .deref_expr, .slice_expr => {
-                if (consuming) try self.maybeTaintPlace(node, taint);
+                if (consuming) try self.maybeTaintPlace(node, taint, clone_site);
                 // Walk the spine's value sub-expressions (indexes,
                 // deref base) without tainting the spine itself.
                 switch (node.*) {
-                    .field_expr => |f| try self.walkTaintExpr(f.expr, false, taint),
+                    .field_expr => |f| try self.walkTaintExpr(f.expr, false, taint, false),
                     .index_expr => |ix| {
-                        try self.walkTaintExpr(ix.target, false, taint);
-                        try self.walkTaintExpr(ix.index, true, taint);
+                        try self.walkTaintExpr(ix.target, false, taint, false);
+                        try self.walkTaintExpr(ix.index, true, taint, false);
                     },
-                    .deref_expr => |d| try self.walkTaintExpr(d.expr, false, taint),
+                    .deref_expr => |d| try self.walkTaintExpr(d.expr, false, taint, false),
                     .slice_expr => |s| {
-                        try self.walkTaintExpr(s.target, false, taint);
-                        try self.walkTaintExpr(s.start, true, taint);
-                        try self.walkTaintExpr(s.end, true, taint);
+                        try self.walkTaintExpr(s.target, false, taint, false);
+                        try self.walkTaintExpr(s.start, true, taint, false);
+                        try self.walkTaintExpr(s.end, true, taint, false);
                     },
                     else => {},
                 }
             },
-            .move_expr => |m| try self.walkTaintExpr(m.expr, true, taint),
-            .borrow_expr => |b| try self.walkTaintExpr(b.expr, false, taint),
+            .move_expr => |m| try self.walkTaintExpr(m.expr, true, taint, false),
+            .borrow_expr => |b| try self.walkTaintExpr(b.expr, false, taint, false),
             .call_expr => |call| try self.walkTaintCall(call, taint),
             .binary_expr => |bin| {
-                try self.walkTaintExpr(bin.left, true, taint);
-                try self.walkTaintExpr(bin.right, true, taint);
+                try self.walkTaintExpr(bin.left, true, taint, false);
+                try self.walkTaintExpr(bin.right, true, taint, false);
             },
             .struct_literal => |lit| {
                 for (lit.fields) |field| {
-                    try self.walkTaintExpr(field.value, true, taint);
+                    try self.walkTaintExpr(field.value, true, taint, false);
                 }
                 if (lit.update_expr) |update| try self.walkTaintStructUpdate(update, &lit, taint);
             },
             .enum_literal => |lit| {
                 for (lit.fields) |field| {
-                    try self.walkTaintExpr(field.value, true, taint);
+                    try self.walkTaintExpr(field.value, true, taint, false);
                 }
             },
             .tuple_literal => |lit| {
-                for (lit.elements) |elem| try self.walkTaintExpr(elem, true, taint);
+                for (lit.elements) |elem| try self.walkTaintExpr(elem, true, taint, false);
             },
             .array_literal => |lit| {
-                for (lit.elements) |elem| try self.walkTaintExpr(elem, true, taint);
+                for (lit.elements) |elem| try self.walkTaintExpr(elem, true, taint, false);
             },
-            .repeat_array_literal => |lit| try self.walkTaintExpr(lit.value, true, taint),
+            .repeat_array_literal => |lit| try self.walkTaintExpr(lit.value, true, taint, false),
             .if_expr => |if_expr| {
-                try self.walkTaintExpr(if_expr.cond, true, taint);
+                try self.walkTaintExpr(if_expr.cond, true, taint, false);
                 if (if_expr.let_chain) |chain| {
-                    for (chain) |cond| try self.walkTaintExpr(cond.value, true, taint);
+                    for (chain) |cond| try self.walkTaintExpr(cond.value, true, taint, false);
                 }
                 var then_taint = try self.dupeDropTaint(taint);
                 defer then_taint.deinit();
@@ -2136,9 +2193,9 @@ pub const TypeChecker = struct {
                 }
             },
             .match_expr => |match_expr| {
-                try self.walkTaintExpr(match_expr.val, true, taint);
+                try self.walkTaintExpr(match_expr.val, true, taint, false);
                 for (match_expr.cases) |case| {
-                    if (case.guard) |guard| try self.walkTaintExpr(guard, true, taint);
+                    if (case.guard) |guard| try self.walkTaintExpr(guard, true, taint, false);
                     var case_taint = try self.dupeDropTaint(taint);
                     defer case_taint.deinit();
                     try self.walkTaintStmts(case.body, &case_taint);
@@ -2146,7 +2203,7 @@ pub const TypeChecker = struct {
                 }
             },
             .switch_expr => |switch_expr| {
-                try self.walkTaintExpr(switch_expr.val, true, taint);
+                try self.walkTaintExpr(switch_expr.val, true, taint, false);
                 for (switch_expr.cases) |case| {
                     try self.walkTaintStmts(case.body, taint);
                 }
@@ -2159,10 +2216,10 @@ pub const TypeChecker = struct {
                 try self.walkTaintStmt(closure.body, &body_taint);
                 try unionDropTaint(taint, &body_taint);
             },
-            .try_expr => |try_expr| try self.walkTaintExpr(try_expr.expr, true, taint),
-            .await_expr => |await_expr| try self.walkTaintExpr(await_expr.expr, true, taint),
-            .cast_expr => |cast| try self.walkTaintExpr(cast.expr, true, taint),
-            .go_expr => |go_expr| try self.walkTaintExpr(go_expr.call, false, taint),
+            .try_expr => |try_expr| try self.walkTaintExpr(try_expr.expr, true, taint, false),
+            .await_expr => |await_expr| try self.walkTaintExpr(await_expr.expr, true, taint, false),
+            .cast_expr => |cast| try self.walkTaintExpr(cast.expr, true, taint, false),
+            .go_expr => |go_expr| try self.walkTaintExpr(go_expr.call, false, taint, false),
             .unsafe_expr => |unsafe_expr| try self.walkTaintStmts(unsafe_expr.body, taint),
             else => {},
         }
@@ -2170,8 +2227,8 @@ pub const TypeChecker = struct {
 
     fn walkTaintCall(self: *TypeChecker, call: ast.CallExpr, taint: *std.StringHashMap(void)) TypeError!void {
         if (call.callee) |callee| {
-            try self.walkTaintExpr(callee, false, taint);
-            for (call.args) |arg| try self.walkTaintExpr(arg, true, taint);
+            try self.walkTaintExpr(callee, false, taint, false);
+            for (call.args) |arg| try self.walkTaintExpr(arg, true, taint, false);
             return;
         }
         // Associated calls (Type::func) and calls to functions the
@@ -2181,10 +2238,18 @@ pub const TypeChecker = struct {
         // &self methods (a by-value self method would be under-tainted;
         // accepted residual, taint is defence-in-depth on top of the
         // checker's own move tracking).
-        const known_callee = call.associated_target != null or
+        // DEF-VECCLONE-A: only plain-function arguments are clone
+        // sites (codegen clones a field-read argument at the call
+        // site). Macro arguments are inlined and may be moved,
+        // Result/Option constructor payloads are moved by
+        // releaseOrMarkMovedConstructorPayload, and method arguments
+        // may be moved (Vec::push stores the view), so those keep
+        // tainting.
+        const plain_fn_callee = call.associated_target != null or
             self.funcs.contains(call.func_name) or
             self.extern_funcs.contains(call.func_name) or
-            self.imported_function_signatures.contains(call.func_name) or
+            self.imported_function_signatures.contains(call.func_name);
+        const known_callee = plain_fn_callee or
             self.macros.contains(call.func_name) or
             self.imported_macros.contains(call.func_name) or
             // TEXT-RESIDUAL-109 (S3 form-2): the Option/Result
@@ -2200,7 +2265,7 @@ pub const TypeChecker = struct {
             lowering_rules.isOptionSomeCall(call);
         for (call.args, 0..) |arg, i| {
             const consuming = known_callee or i != 0;
-            try self.walkTaintExpr(arg, consuming, taint);
+            try self.walkTaintExpr(arg, consuming, taint, plain_fn_callee);
         }
     }
 

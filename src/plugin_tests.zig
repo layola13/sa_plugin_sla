@@ -594,6 +594,17 @@ test "sla check enforces insert argument consumption" {
     try expectSlaCheckNamedDiagnostic("tests/test_error_insert_loop_consume.sla", "insert argument");
 }
 
+test "sla check allows Vec let alias with later use (R1394)" {
+    // R1394 (1009, zig_first): a Vec/GrowVec let-binding shares the
+    // call-arg principle — `let b = v` does not consume `v` when `v` is
+    // used later (the emitters clone the value for the new binding).
+    // The fmt.sla:848 shape (let body = raw; len(raw)) checks clean.
+    try expectSlaCheckOk("tests/test_unit_r1394_vec_let_alias_live.sla");
+    // Control: the exemption is Vec/GrowVec only — a String let-binding
+    // still moves the value, and a later use is rejected.
+    try expectSlaCheckNamedDiagnostic("tests/test_error_r1394_string_let_move.sla", "UseAfterMove");
+}
+
 test "sla check enforces F2-A arena domains (C1)" {
     // Root admission: the section 2.2 forbidden registry, one
     // corpus file per row. The diagnostic quadruple names the

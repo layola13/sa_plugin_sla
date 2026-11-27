@@ -16539,7 +16539,7 @@ pub const Codegen = struct {
                     if (self.async_pending_return_emitted) return;
                     // DEF-5 clone_on_extract: bind a deep clone when the
                     // value is a handle field read through a borrow/deref.
-                    const val_reg = (try self.cloneBorrowedHandleFieldValue(let.value, raw_val_reg)) orelse raw_val_reg;
+                    var val_reg = (try self.cloneBorrowedHandleFieldValue(let.value, raw_val_reg)) orelse raw_val_reg;
                     if (self.task_future_objects.get(val_reg)) |future_obj| {
                         self.task_future_objects.put(let.name, future_obj) catch return CodegenError.OutOfMemory;
                         _ = self.task_future_objects.remove(val_reg);
@@ -16615,8 +16615,28 @@ pub const Codegen = struct {
                         }
                     }
                     self.rebindRefCellBorrowHandleOwners(val_reg, let.name);
+                    // R1394 (1009, zig_first): a Vec/GrowVec let-binding
+                    // shares the call-arg clone discipline — when the
+                    // source must stay live for a later use, bind a clone
+                    // so the source keeps its own buffer (the checker no
+                    // longer consumes the source on a Vec let; aliasing
+                    // here would hand the source buffer to the new binding
+                    // while the source stays live). When the source is dead
+                    // after the let, keep the historical move below.
+                    var let_vec_cloned = false;
+                    if (let.value.* == .identifier and self.identifierMustStayLiveForLaterUse(let.value.identifier)) {
+                        if (self.resolvedTypeForExpr(let.value) orelse self.tc.expr_types.get(let.value)) |value_ty| {
+                            if (lowering_rules.growVecElementType(value_ty)) |elem_ty| {
+                                val_reg = try self.genGrowVecCloneValue(val_reg, elem_ty);
+                                let_vec_cloned = true;
+                            } else if (vecElementType(value_ty)) |elem_ty| {
+                                val_reg = try self.genVecCloneValue(val_reg, elem_ty);
+                                let_vec_cloned = true;
+                            }
+                        }
+                    }
                     const let_value_is_copy = let_ty.* == .primitive or let_ty.* == .fn_ptr or self.typeIsCopyStruct(let_ty);
-                    if (lowering_rules.storedValueMovesIdentifier(let.value, let_ty, let_value_is_copy) != null) {
+                    if (!let_vec_cloned and lowering_rules.storedValueMovesIdentifier(let.value, let_ty, let_value_is_copy) != null) {
                         try self.markConsumedBinding(val_reg);
                     }
                     if (self.file_bindings.contains(val_reg)) {

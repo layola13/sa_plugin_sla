@@ -1,0 +1,48 @@
+@import "sa_std/vec.sa"
+@import "sa_std/growvec.sa"
+
+// R1394 (1009, zig_first): a Vec/GrowVec let-binding shares the
+// call-arg principle — `let b = v` does not consume `v` when `v` is
+// used later; the emitters clone the value for the new binding. The
+// fmt.sla:848 shape (let body = raw; len(raw)) must check clean, and
+// the built program must run without a double free (both bindings own
+// independent buffers after the clone).
+fn float_shape(v: Vec<u8>) -> i64 {
+    let body = v;
+    if len(v) > 0 {
+        if v[0] == 45u8 {
+            body = v;
+        };
+    };
+    return len(body) as i64;
+}
+
+fn grow_shape(g: GrowVec<u8>) -> i64 {
+    let body = g;
+    if len(g) > 0 {
+        return len(body) as i64;
+    };
+    return 0;
+}
+
+fn main() -> i32 {
+    let v: Vec<u8> = Vec::new();
+    v.push(45u8);
+    v.push(66u8);
+    let n = float_shape(v);
+    if n != 2 {
+        panic(44011);
+    };
+    if len(v) != 2 {
+        panic(44012);
+    };
+    let g: GrowVec<u8> = GrowVec::new();
+    g.push(1u8);
+    if grow_shape(g) != 1 {
+        panic(44013);
+    };
+    if len(g) != 1 {
+        panic(44014);
+    };
+    return 0;
+}

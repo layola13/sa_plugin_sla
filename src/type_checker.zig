@@ -7924,7 +7924,17 @@ pub const TypeChecker = struct {
                 }
                 if (let.value.* == .identifier) {
                     if (scope.lookup(let.value.identifier)) |source| {
-                        if (!self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) {
+                        // R1394 (1009, zig_first): a Vec/GrowVec let-binding
+                        // shares the call-arg principle (consumeCallArgIfMoved):
+                        // the emitters clone the value when the source must
+                        // stay live for a later use, so the binding never
+                        // strands the source. A bare let b = v of a Vec
+                        // therefore does not consume v (the fmt.sla:848
+                        // let body = raw + len(raw) shape). Discard
+                        // bindings (let _ = v) keep the historical move:
+                        // the emitter forgets the discarded value.
+                        const let_vec_shared = !lowering_rules.isDiscardName(let.name) and (lowering_rules.vecElementType(source.ty) != null or lowering_rules.growVecElementType(source.ty) != null);
+                        if (!let_vec_shared and !self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) {
                             if (self.rootHasLiveFieldBorrow(scope, let.value.identifier)) |conflict| {
                                 self.setError("BorrowConflict: cannot move `{s}` into `{s}` while `{s}` is still borrowed by `{s}`", .{ let.value.identifier, let.name, self.fieldPlaceDesc(conflict.place), conflict.borrower });
                                 return TypeError.InvalidBorrow;

@@ -1,0 +1,16 @@
+// expect: UseAfterMove
+@import "sa_std/string.sa"
+
+// R1394 control: the Vec/GrowVec let exemption is Vec/GrowVec only. A
+// String let-binding still moves the value; a later use is rejected
+// with UseAfterMove, as before.
+fn bad_string_let_move() -> String {
+    let v = format("hello");
+    let b = v;
+    return v;
+}
+
+fn main() -> i32 {
+    let r = bad_string_let_move();
+    return len(r) as i32;
+}

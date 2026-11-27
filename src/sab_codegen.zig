@@ -8992,8 +8992,25 @@ pub const Codegen = struct {
             try self.pushTypedLocal(name, src, false, let_ty);
             return;
         }
-        try self.emitAssignReg(dst, src);
-        if (lowering_rules.storedValueMovesIdentifier(value_expr, let_ty, self.typeIsCopyValue(let_ty)) != null and self.isLocalReg(src)) {
+        // R1394 (1009, zig_first): mirror of the SA-text let clone — a
+        // Vec/GrowVec let-binding shares the call-arg clone discipline.
+        // When the source must stay live for a later use, bind a clone so
+        // the source keeps its own buffer (the checker no longer consumes
+        // the source on a Vec let). When the source is dead after the let,
+        // keep the historical move below.
+        var let_src = src;
+        var let_vec_cloned = false;
+        if (value_expr.* == .identifier and self.identifierMustStayLiveForLaterUse(value_expr.identifier)) {
+            if (lowering_rules.growVecElementType(let_ty)) |elem_ty| {
+                let_src = try self.genGrowVecCloneValue(src, elem_ty);
+                let_vec_cloned = true;
+            } else if (lowering_rules.vecElementType(let_ty)) |elem_ty| {
+                let_src = try self.genVecCloneValue(src, elem_ty);
+                let_vec_cloned = true;
+            }
+        }
+        try self.emitAssignReg(dst, let_src);
+        if (!let_vec_cloned and lowering_rules.storedValueMovesIdentifier(value_expr, let_ty, self.typeIsCopyValue(let_ty)) != null and self.isLocalReg(src)) {
             // `assign` gives the destination the same pointer-backed value. The
             // destination is now the sole cleanup owner, so suppress source
             // cleanup without emitting `move_`, which would invalidate both

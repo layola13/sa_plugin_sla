@@ -1,0 +1,147 @@
+@import "sa_std/core/box.sa"
+
+// DEF-BOXDROP (0)+(i): a Box field extracted to a binding aliases the
+// source's Box cell, and a Box payload shell must be freed exactly
+// once. Fail-before (b621487e baseline): the two extract tests abort
+// with rc=134 ("double free detected in tcache 2"); the loop tests
+// complete (the shell leak is observable only as RSS growth -- see the
+// bigbox RSS probes). Pass-after: all tests rc=0.
+
+struct Big { data: [u8; 73728] }
+
+struct Tiny { data: [u8; 64] }
+
+struct S { b: Box<Big> }
+
+fn extract_explicit_drop() -> i32 {
+    let s = S { b: Box::new(Big { data: [0u8; 73728] }) };
+    let c = s.b;
+    !c;
+    return 0;
+}
+
+fn extract_scope_drop() -> i32 {
+    let s = S { b: Box::new(Big { data: [0u8; 73728] }) };
+    let c = s.b;
+    if (*c).data[0] != 0 { return 1; };
+    return 0;
+}
+
+fn drop_box_vec_u8() -> i32 {
+    let v: Vec<u8> = Vec::new();
+    v.push(65);
+    let b = Box::new(v);
+    !b;
+    return 0;
+}
+
+fn drop_box_vec_tiny() -> i32 {
+    let v: Vec<Tiny> = Vec::new();
+    v.push(Tiny { data: [0u8; 64] });
+    let b = Box::new(v);
+    !b;
+    return 0;
+}
+
+fn drop_loop_explicit(n: u64) -> i32 {
+    let i: u64 = 0;
+    while i < n {
+        let b = Box::new(Big { data: [0u8; 73728] });
+        !b;
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn drop_loop_scope(n: u64) -> i32 {
+    let i: u64 = 0;
+    while i < n {
+        let b = Box::new(Big { data: [0u8; 73728] });
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn drop_loop_raw(n: u64) -> i32 {
+    let i: u64 = 0;
+    while i < n {
+        let raw = Box::into_raw(Box::new(Big { data: [0u8; 73728] }));
+        let b = unsafe { Box::from_raw(raw) };
+        !b;
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn drop_box_scalar() -> i32 {
+    let b = Box::new(10);
+    if (*b) != 10 { return 1; };
+    !b;
+    return 0;
+}
+
+fn drop_box_scalar_raw() -> i32 {
+    let raw = Box::into_raw(Box::new(10));
+    let b = unsafe { Box::from_raw(raw) };
+    if (*b) != 10 { return 1; };
+    !b;
+    return 0;
+}
+
+fn drop_box_nested_big() -> i32 {
+    let inner = Box::new(Big { data: [0u8; 73728] });
+    let outer = Box::new(inner);
+    !outer;
+    return 0;
+}
+
+fn drop_box_nested_scalar() -> i32 {
+    let inner = Box::new(10);
+    let outer = Box::new(inner);
+    !outer;
+    return 0;
+}
+
+@test "box field extract then explicit drop exits cleanly"() {
+    if extract_explicit_drop() != 0 { panic(7431); };
+}
+
+@test "box field extract then scope drop exits cleanly"() {
+    if extract_scope_drop() != 0 { panic(7432); };
+}
+
+@test "box of vec u8 drop exits cleanly"() {
+    if drop_box_vec_u8() != 0 { panic(7433); };
+}
+
+@test "box of vec tiny drop exits cleanly"() {
+    if drop_box_vec_tiny() != 0 { panic(7434); };
+}
+
+@test "box big payload drop in loop exits cleanly"() {
+    if drop_loop_explicit(200) != 0 { panic(7435); };
+}
+
+@test "box big payload scope drop in loop exits cleanly"() {
+    if drop_loop_scope(200) != 0 { panic(7436); };
+}
+
+@test "box big payload into raw from raw exits cleanly"() {
+    if drop_loop_raw(200) != 0 { panic(7437); };
+}
+
+@test "box scalar payload drop exits cleanly"() {
+    if drop_box_scalar() != 0 { panic(7438); };
+}
+
+@test "box scalar payload into raw from raw exits cleanly"() {
+    if drop_box_scalar_raw() != 0 { panic(7439); };
+}
+
+@test "box nested big payload drop exits cleanly"() {
+    if drop_box_nested_big() != 0 { panic(7440); };
+}
+
+@test "box nested scalar payload drop exits cleanly"() {
+    if drop_box_nested_scalar() != 0 { panic(7450); };
+}

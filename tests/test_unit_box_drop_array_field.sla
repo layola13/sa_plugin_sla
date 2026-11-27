@@ -1,0 +1,53 @@
+@import "sa_std/core/box.sa"
+
+// DEF-BOXDROP (ii): a struct field of fixed-array type owns a heap
+// buffer; the struct drop must free it. Fail-before: the buffer leaks
+// (observable only as RSS growth -- the bigbox RSS probes carry the
+// fail-before/pass-after numbers, 1.36 GiB -> ~1.4 MiB); these tests
+// pin the shape and assert clean completion.
+
+struct Big { data: [u8; 73728] }
+
+struct Pair { first: [u8; 16], second: [u8; 16] }
+
+fn drop_plain_big() -> i32 {
+    let v = Big { data: [0u8; 73728] };
+    if v.data[0] != 0 { return 1; };
+    return 0;
+}
+
+fn drop_pair() -> i32 {
+    let p = Pair { first: [1u8; 16], second: [2u8; 16] };
+    if p.first[0] != 1 { return 1; };
+    if p.second[15] != 2 { return 2; };
+    return 0;
+}
+
+fn drop_box_big() -> i32 {
+    let b = Box::new(Big { data: [0u8; 73728] });
+    if (*b).data[0] != 0 { return 1; };
+    !b;
+    return 0;
+}
+
+fn drop_box_tuple_array() -> i32 {
+    let b = Box::new(([0u8; 64], 7));
+    !b;
+    return 0;
+}
+
+@test "plain big struct scope drop exits cleanly"() {
+    if drop_plain_big() != 0 { panic(7441); };
+}
+
+@test "pair struct scope drop exits cleanly"() {
+    if drop_pair() != 0 { panic(7442); };
+}
+
+@test "box big struct drop exits cleanly"() {
+    if drop_box_big() != 0 { panic(7443); };
+}
+
+@test "box tuple with array element drop exits cleanly"() {
+    if drop_box_tuple_array() != 0 { panic(7444); };
+}

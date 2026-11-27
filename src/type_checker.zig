@@ -1576,7 +1576,16 @@ pub const TypeChecker = struct {
                 for (decl.fields) |field| {
                     const field_ty = try self.dropPlanSubstitute(field.ty, decl.generics, ud.generics);
                     const field_plan = try self.planValueDrop(field_ty);
-                    if (field_plan.kind() != .none) {
+                    // DEF-BOXDROP (ii): a fixed-array field owns a heap
+                    // buffer even though the field's own plan is .none
+                    // (arrays plan .none: the buffer is the value, not
+                    // a container the plan describes). Carry it in the
+                    // field list with its .none plan so the struct drop
+                    // recurses into it (codegen's emitStructFieldDropsText
+                    // frees the buffer via emitArrayBufferDropText); SAB
+                    // still skips .none fields, so its inline-array
+                    // representation is untouched.
+                    if (field_plan.kind() != .none or field_ty.* == .array) {
                         fields.append(.{ .name = field.name, .plan = field_plan }) catch return TypeError.OutOfMemory;
                     }
                 }
@@ -2116,11 +2125,29 @@ pub const TypeChecker = struct {
         // direct value of a let / return / identifier-target assign /
         // plain-function call argument.
         if (clone_site and expr.* == .field_expr) {
-            if (self.taintKeyOfPlace(expr)) |key| {
-                const clone_key = std.fmt.allocPrint(self.allocator, "clone:{s}", .{key}) catch return TypeError.OutOfMemory;
-                try self.addDropTaint(taint, clone_key);
+            // DEF-BOXDROP (0): the "clone:" key is only for field reads
+            // codegen actually clones (cloneBorrowedHandleFieldValue:
+            // String / Vec / GrowVec / Arc / Rc / struct-with-owning-
+            // handles). A Box field read is NOT cloned -- it aliases --
+            // so it takes plain taint below: the source's drop must be
+            // suppressed, else the Box cell is freed twice (Q1 probe:
+            // `let c = s.b; !c;` + scope-end drop of `s` aborted with
+            // rc=134, "double free detected in tcache 2", on the
+            // b621487e baseline). Cloned plan kinds, by computeDropPlan:
+            // .buffer (String / Vec of scalars), .deep_vec,
+            // .buffer_growvec, .deep_growvec, .deep_struct. (Arc/Rc
+            // already returned above.) Anything else -- notably
+            // .box_ptr -- falls through to plain taint.
+            switch (plan.kind()) {
+                .buffer, .deep_vec, .buffer_growvec, .deep_growvec, .deep_struct => {
+                    if (self.taintKeyOfPlace(expr)) |key| {
+                        const clone_key = std.fmt.allocPrint(self.allocator, "clone:{s}", .{key}) catch return TypeError.OutOfMemory;
+                        try self.addDropTaint(taint, clone_key);
+                    }
+                    return;
+                },
+                else => {},
             }
-            return;
         }
         if (self.taintKeyOfPlace(expr)) |key| {
             try self.addDropTaint(taint, key);

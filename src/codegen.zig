@@ -1595,7 +1595,22 @@ pub const Codegen = struct {
 
     fn emitDeepValueDropText(self: *Codegen, value_reg: []const u8, ty: *const ast.Type, plan: *const lowering_rules.DropPlan, key: []const u8, taint_node: ?*const ast.Node, may_alias: bool, free_container: bool) CodegenError!void {
         switch (plan.*) {
-            .none => try self.emitRelease(value_reg),
+            .none => {
+                // DEF-BOXDROP (ii): a tuple payload / element owns its
+                // array elements' buffers even though the tuple itself
+                // plans .none; recurse into them (the tuple block
+                // itself is freed by the caller's shell / cell free).
+                // A tainted tuple shallow-releases, like every other
+                // plan kind.
+                if (ty.* == .tuple) {
+                    if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+                        try self.emitRelease(value_reg);
+                        return;
+                    }
+                    try self.emitTupleElementDropsText(value_reg, ty, key, taint_node);
+                }
+                try self.emitRelease(value_reg);
+            },
             .buffer => {
                 if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
                     try self.emitRelease(value_reg);
@@ -1708,7 +1723,43 @@ pub const Codegen = struct {
         if (plan.kind() == .box_ptr) {
             const data_reg = try self.newTmp();
             self.outPrint("    {s} = load {s}+Box_value as ptr\n", .{ data_reg, h }) catch return CodegenError.CodegenError;
+            // DEF-BOXDROP (i): keep a copy of the shell pointer: the
+            // payload drop below releases data_reg, so the shell free
+            // must use the copy (same throwaway-copy pattern as the
+            // cell free below and emitAggregateCellFree).
+            const shell_reg = try self.newTmp();
+            self.outPrint("    {s} = add {s}, 0\n", .{ shell_reg, data_reg }) catch return CodegenError.CodegenError;
             try self.emitDeepValueDropText(data_reg, payload_ty, payload_plan, key, taint_node, false, true);
+            // The payload shell (the heap block the Box handle points
+            // at) is freed by the payload's own deep drop only for
+            // Vec / GrowVec / String / Arc / Rc payloads (their
+            // VEC_FREE / GROWVEC_FREE / refcount free covers the
+            // shell), and a nested Box's cell is freed by the inner
+            // Box arm. For a struct / array / tuple payload the deep
+            // drop only releases the loaded payload pointer -- a
+            // provenance-gated no-op -- so the shell leaks; free it
+            // explicitly here, after the payload drop (its fields /
+            // elements are retired first) and before the cell free
+            // below. But a SCALAR payload has no shell: BOX_NEW
+            // stores the value itself inline in the Box cell, so the
+            // "shell pointer" is the value -- freeing it segfaults
+            // (go_spawn: free(0xa) for Box::new(10)). A pointer /
+            // borrow payload is likewise not owned. So the shell free
+            // runs only for payloads that own a heap block (array
+            // buffer / tuple cell / plain struct cell). The taint
+            // guard at the top of this function already suppresses
+            // the whole arm for an aliased Box (DEF-BOXDROP (0)), so
+            // this free runs exactly once per Box.
+            switch (payload_plan.kind()) {
+                .buffer, .deep_vec, .buffer_growvec, .deep_growvec, .arc_ptr, .rc_ptr, .box_ptr => try self.emitRelease(shell_reg),
+                else => {
+                    if (payload_ty.* == .array or self.isAggregateHomeType(payload_ty)) {
+                        self.outPrint("    call @sa_mem_free(^{s})\n", .{shell_reg}) catch return CodegenError.CodegenError;
+                    } else {
+                        try self.emitRelease(shell_reg);
+                    }
+                },
+            }
             self.outPrint("    call @sa_mem_free(^{s})\n", .{h}) catch return CodegenError.CodegenError;
             if (release_value) try self.emitRelease(value_reg);
             return;
@@ -1835,15 +1886,46 @@ pub const Codegen = struct {
         try self.emitRelease(len_reg);
     }
 
+    /// DEF-BOXDROP (ii): free a fixed-array value's heap buffer. In
+    /// the SA-text backend an array value is a pointer to a buffer of
+    /// abi-sized element slots; the buffer is a plain `alloc` block,
+    /// freed with an explicit @sa_mem_free -- never VEC_FREE (that
+    /// reads a Vec header out of the buffer's first word) and never a
+    /// provenance-gated `!` (a loaded pointer's release is a silent
+    /// no-op). A tainted place (moved out) shallow-releases, like
+    /// every other drop arm.
+    /// Residual: elements that own heap values (e.g. [Vec<u8>; N])
+    /// are NOT deep-dropped here -- their inner buffers still leak;
+    /// only the array buffer itself is freed. That loop is a
+    /// follow-up: it must drop children without freeing the inline
+    /// element struct, unlike the Vec element loop.
+    fn emitArrayBufferDropText(self: *Codegen, buf_reg: []const u8, key: []const u8, taint_node: ?*const ast.Node, may_alias: bool) CodegenError!void {
+        if (may_alias and self.tc.dropTaintCoversAt(taint_node, key)) {
+            try self.emitRelease(buf_reg);
+            return;
+        }
+        const free_reg = try self.newTmp();
+        self.outPrint("    {s} = add {s}, 0\n", .{ free_reg, buf_reg }) catch return CodegenError.CodegenError;
+        self.outPrint("    call @sa_mem_free(^{s})\n", .{free_reg}) catch return CodegenError.CodegenError;
+        try self.emitRelease(buf_reg);
+    }
+
     fn emitStructFieldDropsText(self: *Codegen, struct_reg: []const u8, struct_ty: *const ast.Type, fields: []const lowering_rules.FieldDropPlan, key: []const u8, taint_node: ?*const ast.Node) CodegenError!void {
         const decl = self.structDeclForType(struct_ty) orelse return;
         for (fields) |field| {
-            if (field.plan.* == .none) continue;
             const layout = fieldLayout(decl, field.name) orelse continue;
             const field_ty = self.fieldTypeForType(struct_ty, field.name) orelse continue;
+            // DEF-BOXDROP (ii): a fixed-array field plans .none but
+            // owns a heap buffer; only .none fields that are not
+            // array-typed are skipped.
+            if (field.plan.* == .none and field_ty.* != .array) continue;
             const child_key = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ key, field.name }) catch return CodegenError.OutOfMemory;
             const val_reg = try self.newTmp();
             self.outPrint("    {s} = load {s}+{} as ptr\n", .{ val_reg, struct_reg, layout.offset }) catch return CodegenError.CodegenError;
+            if (field.plan.* == .none) {
+                try self.emitArrayBufferDropText(val_reg, child_key, taint_node, true);
+                continue;
+            }
             try self.emitDeepValueDropText(val_reg, field_ty, field.plan, child_key, taint_node, true, true);
         }
     }
@@ -1860,11 +1942,18 @@ pub const Codegen = struct {
         while (index < tuple.elems.len) : (index += 1) {
             const elem_ty = tuple.elems[index];
             const elem_plan = self.tc.planValueDrop(elem_ty) catch continue;
-            if (elem_plan.kind() == .none) continue;
+            // DEF-BOXDROP (ii): array elements plan .none but own a
+            // heap buffer; free it via the array helper (see
+            // emitStructFieldDropsText).
+            if (elem_plan.kind() == .none and elem_ty.* != .array) continue;
             const layout = tupleFieldLayout(tuple, index) orelse continue;
             const child_key = std.fmt.allocPrint(self.allocator, "{s}.{}", .{ key, index }) catch return CodegenError.OutOfMemory;
             const val_reg = try self.newTmp();
             self.outPrint("    {s} = load {s}+{} as ptr\n", .{ val_reg, tuple_reg, layout.offset }) catch return CodegenError.CodegenError;
+            if (elem_plan.kind() == .none) {
+                try self.emitArrayBufferDropText(val_reg, child_key, taint_node, true);
+                continue;
+            }
             try self.emitDeepValueDropText(val_reg, elem_ty, elem_plan, child_key, taint_node, true, true);
         }
     }

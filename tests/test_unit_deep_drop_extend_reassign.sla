@@ -1,0 +1,53 @@
+@import "sa_std/core/box.sa"
+
+// DEF-BOXDROP-FIX3: extend-then-reassign of a Vec field through a
+// deref-rooted place (the slaredis g_conn_step shape):
+//   (*job).inbuf = sa_vec_u8_extend_from_vec((*job).inbuf, &mb, 0, len(mb))
+// extend returns the SAME Vec header it was given (in-place). The
+// assign-drop must NOT free the overwritten field value: the stored
+// header IS the freed header (self-free), which dangled (*job).inbuf
+// and crashed slaredis on the first PING (free(): invalid pointer).
+// Regression: on 82805404 this test fails (read-back mismatch after
+// the filler Vec reuses the freed header chunk); with the fix it passes.
+
+struct Job {
+    inbuf: Vec<u8>,
+    inoff: u64,
+}
+
+fn my_extend(v: Vec<u8>, src: &Vec<u8>, n: u64) -> Vec<u8> {
+    let i: u64 = 0;
+    while i < n {
+        v.push(src[i]);
+        i = i + 1;
+    }
+    return v;
+}
+
+@test "deep drop extend reassign does not self free"() {
+    let job = Box::into_raw(Box::new(Job { inbuf: Vec::new(), inoff: 0 }));
+    let mb: Vec<u8> = Vec::new();
+    mb.push(80);
+    mb.push(73);
+    mb.push(78);
+    mb.push(71);
+    (*job).inbuf = my_extend((*job).inbuf, &mb, len(mb));
+    // Force allocator reuse of the inbuf header chunk if the buggy
+    // self-free fired (a fresh Vec header would land on it).
+    let filler: Vec<u8> = Vec::new();
+    filler.push(1);
+    filler.push(2);
+    filler.push(3);
+    filler.push(4);
+    filler.push(5);
+    filler.push(6);
+    filler.push(7);
+    filler.push(8);
+    filler.push(9);
+    filler.push(10);
+    if len((*job).inbuf) != 4 { panic(7471); };
+    if (*job).inbuf[0] != 80 { panic(7472); };
+    if (*job).inbuf[1] != 73 { panic(7473); };
+    if (*job).inbuf[2] != 78 { panic(7474); };
+    if (*job).inbuf[3] != 71 { panic(7475); };
+}

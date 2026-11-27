@@ -2292,8 +2292,41 @@ pub const TypeChecker = struct {
             lowering_rules.isOptionSomeCall(call);
         for (call.args, 0..) |arg, i| {
             const consuming = known_callee or i != 0;
-            try self.walkTaintExpr(arg, consuming, taint, plain_fn_callee);
+            // DEF-BOXDROP-FIX3: a field argument is a clone site only
+            // when codegen will actually clone it. The call-arg clone
+            // (DEF-PARALLEL / SCATTER-3) requires rootIdentifier(arg)
+            // != null: a deref-rooted field (e.g. (*job).inbuf) is
+            // passed raw into a by-value parameter, so the place is
+            // moved out and must carry plain taint. Marking it
+            // "clone:" let the assign-drop gate free a value the
+            // callee returns by alias (extend-in-place), crashing
+            // slaredis on the first PING (free(): invalid pointer).
+            // Borrow parameters keep the "clone:" marking: the source
+            // keeps its value there, so the old-value drop must fire.
+            var arg_clone_site = plain_fn_callee;
+            if (arg_clone_site and arg.* == .field_expr and lowering_rules.rootIdentifier(arg) == null) {
+                if (self.callArgTransfersOwnership(call, i)) arg_clone_site = false;
+            }
+            try self.walkTaintExpr(arg, consuming, taint, arg_clone_site);
         }
+    }
+
+    /// DEF-BOXDROP-FIX3: does parameter `index` of `call` take its
+    /// argument by value (transferring ownership)? Resolves the
+    /// callee from the local and imported signatures; an unresolvable
+    /// callee (extern, associated target, macro) returns false, which
+    /// keeps the historical "clone:" marking.
+    fn callArgTransfersOwnership(self: *TypeChecker, call: ast.CallExpr, index: usize) bool {
+        var param: ?ast.Param = null;
+        if (self.funcs.get(call.func_name)) |func| {
+            if (index < func.params.len) param = func.params[index];
+        } else if (self.imported_function_signatures.get(call.func_name)) |sig| {
+            if (index < sig.params.len) param = sig.params[index];
+        }
+        const p = param orelse return false;
+        const arg_ty = if (index < call.args.len) self.expr_types.get(call.args[index]) else null;
+        const arg_is_copy = if (arg_ty) |ty| self.typeIsCopyValue(ty) else false;
+        return lowering_rules.valueArgTransfersOwnershipFromParam(p, arg_ty, arg_is_copy);
     }
 
     fn fieldBorrowIsLive(self: *TypeChecker, scope: *Scope, entry: FieldBorrow) bool {

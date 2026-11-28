@@ -16652,8 +16652,26 @@ pub const Codegen = struct {
                         self.outPrint("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ let.name, label, len_reg }) catch return CodegenError.CodegenError;
                         try self.emitRelease(len_reg);
                     }
-                } else if (let.value.* == .closure_literal) {
-                    try self.closure_bindings.put(let.name, &let.value.closure_literal);
+                } else if (let.value.* == .closure_literal or
+                    (let.value.* == .move_expr and let.value.move_expr.expr.* == .closure_literal))
+                {
+                    // (lxxv) DEF-SLA-CODEGEN-LET-CLOSURE-REF: a closure
+                    // literal is written `^|| ...` in source, so the
+                    // parser wraps it in a .move_expr; the bare
+                    // .closure_literal arm could never trigger for real
+                    // source, and the generic path lowered it as
+                    // `tmp_N = 0` + `f = ^tmp_N`, which the SA assembler
+                    // rejects (UnknownRegister trap 1007: `^` on a
+                    // literal-assigned temp). A fresh literal has
+                    // nothing to move, so the move wrapper is a no-op
+                    // here: bind the null fn-ptr form `f = 0` and
+                    // register the literal for call dispatch, exactly
+                    // as the bare arm does.
+                    const lit = if (let.value.* == .closure_literal)
+                        &let.value.closure_literal
+                    else
+                        &let.value.move_expr.expr.closure_literal;
+                    try self.closure_bindings.put(let.name, lit);
                     self.outPrint("    {s} = 0\n", .{let.name}) catch return CodegenError.CodegenError;
                 } else if (let.value.* == .struct_literal) {
                     try self.genStructLiteralInto(let.name, &let.value.struct_literal, hoisted_allocs);

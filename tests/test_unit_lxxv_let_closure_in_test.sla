@@ -1,0 +1,53 @@
+// (lxxv) DEF-SLA-CODEGEN-LET-CLOSURE-REF regression corpus:
+// `let f = ^|| ...;` must lower to `f = 0` (registered for call
+// dispatch), not `tmp_N = 0` + `f = ^tmp_N`, which the SA assembler
+// rejects (error[UnknownRegister] trap 1007: `^` on a
+// literal-assigned temp). A closure literal is written `^|| ...`
+// in source, so the parser wraps it in a .move_expr; the bare
+// .closure_literal arm in genStmt could never trigger for real
+// source, and the generic path emitted the invalid form.
+// On the pre-fix compiler every @test below fails at assembly
+// (the whole `sa sla test` run reports trap 1007); the bare-pipe
+// control passes both before and after.
+
+fn lxxv_call_bound() -> int {
+    let a = 41;
+    let f = ^|| a + 1;
+    return f();
+}
+
+@test "lxxv let-bound move closure in test executes"() {
+    let a = 41;
+    let f = ^|| a + 1;
+    if f() != 42 { panic(77320); };
+}
+
+@test "lxxv let-bound move closure alias executes"() {
+    let a = 41;
+    let f = ^|| a + 1;
+    let g = f;
+    if g() != 42 { panic(77321); };
+}
+
+@test "lxxv let-bound move closure with params executes"() {
+    let base = 10;
+    let add = ^|x: int| x + base;
+    if add(5) != 15 { panic(77322); };
+}
+
+@test "lxxv let-bound move closure no call"() {
+    let a = 41;
+    let f = ^|| a + 1;
+    let g = f;
+    let _h = g;
+}
+
+@test "lxxv let-bound move closure via helper fn"() {
+    if lxxv_call_bound() != 42 { panic(77323); };
+}
+
+@test "lxxv bare pipe closure control"() {
+    let offset = 5;
+    let add_offset = |x: int| x + offset;
+    if add_offset(10) != 15 { panic(77324); };
+}

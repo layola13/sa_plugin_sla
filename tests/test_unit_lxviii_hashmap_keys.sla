@@ -1,0 +1,160 @@
+// Verification program for task (lxviii): HashMap key enumeration surface.
+//
+// Covers the four typed wrappers in sla_std/hashmap.sla:
+//   __go_hashmap_keys        (i64 keys, gosla runtime.sla shape)
+//   __go_hashmap_keys_string (SLA String keys)
+//   __go_hashmap_keys_bytes  (Vec<u8> keys = Go string keys, gosla shape)
+//   __go_hashmap_keys_g      (generic keys, gosla sync.sla shape)
+// Each shape asserts the key SET: length, element content (order-free),
+// and a get() round-trip over the returned keys. Run both as @test
+// (`sa sla test`, text backend) and as a program (`sa sla build-exe`,
+// fn main returns the first failing check code, 0 when all pass).
+//
+// Panic/check codes: 601xx i64, 602xx String, 603xx bytes, 604xx generic.
+
+@import "sa_std/vec.sa"
+@import "sa_std/hashmap.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/option.sa"
+@import "sla_std/hashmap.sla"
+
+fn verify_i64_keys() -> i32 {
+    let m = HashMap::new();
+    m.insert(5, 100);
+    m.insert(9, 200);
+    m.insert(5, 150);
+    if len(m) != 2 { return 60101; };
+    let ks = __go_hashmap_keys(&m);
+    if len(ks) != 2 { return 60102; };
+    if ks[0] + ks[1] != 14 { return 60103; };
+    if ks[0] == ks[1] { return 60104; };
+    let v0 = m.get(ks[0]);
+    if !v0.is_some() { return 60105; };
+    let v1 = m.get(ks[1]);
+    if !v1.is_some() { return 60106; };
+    if v0.copied().unwrap_or(0) + v1.copied().unwrap_or(0) != 350 { return 60107; };
+    return 0;
+}
+
+fn verify_string_keys() -> i32 {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("alpha", 1);
+    m.insert("beta", 2);
+    if len(m) != 2 { return 60201; };
+    let ks = __go_hashmap_keys_string(&m);
+    if len(ks) != 2 { return 60202; };
+    let a0 = str_eq(ks[0], "alpha");
+    let a1 = str_eq(ks[1], "alpha");
+    let b0 = str_eq(ks[0], "beta");
+    let b1 = str_eq(ks[1], "beta");
+    if !((a0 && b1) || (a1 && b0)) { return 60203; };
+    let v0 = m.get(ks[0]);
+    if !v0.is_some() { return 60204; };
+    let v1 = m.get(ks[1]);
+    if !v1.is_some() { return 60205; };
+    if v0.copied().unwrap_or(0) + v1.copied().unwrap_or(0) != 3 { return 60206; };
+    return 0;
+}
+
+fn mkbytes_ab() -> Vec<u8> {
+    let b: Vec<u8> = Vec::new();
+    b.push(97u8);
+    b.push(98u8);
+    return b;
+}
+
+fn mkbytes_cd() -> Vec<u8> {
+    let b: Vec<u8> = Vec::new();
+    b.push(99u8);
+    b.push(100u8);
+    return b;
+}
+
+fn verify_bytes_keys() -> i32 {
+    let m: HashMap<Vec<u8>, i64> = HashMap::new();
+    m.insert(mkbytes_ab(), 1);
+    m.insert(mkbytes_cd(), 2);
+    if len(m) != 2 { return 60301; };
+    let ks = __go_hashmap_keys_bytes(&m);
+    if len(ks) != 2 { return 60302; };
+    if len(ks[0]) != 2 { return 60303; };
+    if len(ks[1]) != 2 { return 60304; };
+    let s0 = ks[0][0] + ks[0][1];
+    let s1 = ks[1][0] + ks[1][1];
+    if s0 + s1 != 394 { return 60305; };
+    if s0 == s1 { return 60306; };
+    let v0 = m.get(ks[0]);
+    if !v0.is_some() { return 60307; };
+    let v1 = m.get(ks[1]);
+    if !v1.is_some() { return 60308; };
+    if v0.copied().unwrap_or(0) + v1.copied().unwrap_or(0) != 3 { return 60309; };
+    return 0;
+}
+
+fn verify_generic_keys() -> i32 {
+    // NOTE: the map type must be explicit here: with an inferred map the
+    // checker cannot bind the generic wrapper's K/V from the argument
+    // (TypeMismatch at the call). gosla's call site always has a
+    // declared HashMap<K, V> field type, so this matches real usage.
+    let m: HashMap<i64, i64> = HashMap::new();
+    m.insert(7, 70);
+    m.insert(8, 80);
+    let ks = __go_hashmap_keys_g(&m);
+    if len(ks) != 2 { return 60401; };
+    if ks[0] + ks[1] != 15 { return 60402; };
+    if ks[0] == ks[1] { return 60403; };
+    return 0;
+}
+
+fn verify_generic_string_keys() -> i32 {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("x", 1);
+    m.insert("y", 2);
+    let ks = __go_hashmap_keys_g(&m);
+    if len(ks) != 2 { return 60411; };
+    let x0 = str_eq(ks[0], "x");
+    let x1 = str_eq(ks[1], "x");
+    let y0 = str_eq(ks[0], "y");
+    let y1 = str_eq(ks[1], "y");
+    if !((x0 && y1) || (x1 && y0)) { return 60412; };
+    return 0;
+}
+
+@test "lxviii hashmap keys i64"() {
+    let rc = verify_i64_keys();
+    if rc != 0 { panic(60100); };
+}
+
+@test "lxviii hashmap keys string"() {
+    let rc = verify_string_keys();
+    if rc != 0 { panic(60200); };
+}
+
+@test "lxviii hashmap keys bytes"() {
+    let rc = verify_bytes_keys();
+    if rc != 0 { panic(60300); };
+}
+
+@test "lxviii hashmap keys generic"() {
+    let rc = verify_generic_keys();
+    if rc != 0 { panic(60400); };
+}
+
+@test "lxviii hashmap keys generic string"() {
+    let rc = verify_generic_string_keys();
+    if rc != 0 { panic(60410); };
+}
+
+fn main() -> i32 {
+    let rc = verify_i64_keys();
+    if rc != 0 { return rc; };
+    rc = verify_string_keys();
+    if rc != 0 { return rc; };
+    rc = verify_bytes_keys();
+    if rc != 0 { return rc; };
+    rc = verify_generic_keys();
+    if rc != 0 { return rc; };
+    rc = verify_generic_string_keys();
+    if rc != 0 { return rc; };
+    return 0;
+}

@@ -1,0 +1,74 @@
+// DEF-LXVI (lxvi) regression: a generic function that calls ITSELF by name
+// must resolve at every call site. On the pre-fix compiler the template is
+// dropped during specialization, so every call to a self-recursive generic
+// fails with "Undefined call: <name>" -- from the self-call inside its own
+// body, from a generic wrapper (sort.sla go_sort_vec<T> line 307 calling
+// __go_sort_quick_vec<T>), and from a plain non-generic wrapper alike.
+// The non-generic recursive control lives in
+// test_unit_def_lxvi_generic_self_recursion_control.sla and must stay green.
+// (lii) is the sibling case: generic fn called from OUTSIDE resolves; this
+// file is the self-recursive half that (lii) did not cover.
+
+// Minim 1: plain self-recursive generic + @test caller.
+fn lxvi_rec<T>(v: &Vec<T>, n: i64) -> i64 {
+    if n <= 0 { return 0; };
+    return lxvi_rec(v, n - 1);
+}
+
+// Minim 2: self-recursive generic passing a fn-value parameter through.
+fn lxvi_rec2<T>(v: &Vec<T>, n: i64, less: fn(&T, &T) -> bool) -> i64 {
+    if n <= 0 { return 0; };
+    return lxvi_rec2(v, n - 1, less);
+}
+
+// Sort shape: generic wrapper calls the self-recursive generic.
+fn lxvi_quick_vec<T>(v: &Vec<T>, lo: i64, hi: i64, less: fn(&T, &T) -> bool) -> void {
+    if hi - lo < 2 { return; };
+    lxvi_quick_vec(v, lo, hi - 1, less);
+    return;
+}
+
+fn lxvi_sort_vec<T>(v: &Vec<T>, less: fn(&T, &T) -> bool) -> void {
+    let n = len(v);
+    lxvi_quick_vec(v, 0, n, less);
+    return;
+}
+
+// Plain non-generic wrapper calling the self-recursive generic.
+fn lxvi_call_rec(v: &Vec<i64>) -> i64 {
+    return lxvi_rec(v, 3);
+}
+
+fn lxvi_less_i64(a: &i64, b: &i64) -> bool {
+    return *a < *b;
+}
+
+@test "generic self-recursive call resolves (lxvi minim 1)"() {
+    let v = Vec::new();
+    v.push(3);
+    v.push(1);
+    let r = lxvi_rec(&v, 3);
+    if r != 0 { panic(44601); };
+}
+
+@test "generic self-recursion with fn-value param (lxvi minim 2)"() {
+    let v = Vec::new();
+    v.push(3);
+    v.push(1);
+    let r = lxvi_rec2(&v, 3, lxvi_less_i64);
+    if r != 0 { panic(44602); };
+}
+
+@test "generic wrapper calls self-recursive generic (lxvi sort shape)"() {
+    let v = Vec::new();
+    v.push(3);
+    v.push(1);
+    lxvi_sort_vec(&v, lxvi_less_i64);
+}
+
+@test "non-generic wrapper calls self-recursive generic (lxvi f3)"() {
+    let v = Vec::new();
+    v.push(3);
+    let r = lxvi_call_rec(&v);
+    if r != 0 { panic(44603); };
+}

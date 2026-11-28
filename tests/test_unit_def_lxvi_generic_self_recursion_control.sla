@@ -1,0 +1,26 @@
+// DEF-LXVI (lxvi) control: the concrete (non-generic) counterpart of the
+// self-recursive shape must stay green. This file passed on the pre-fix
+// compiler and must keep passing after the fix.
+
+fn lxvi_quick_i64(v: &Vec<i64>, lo: i64, hi: i64, less: fn(&i64, &i64) -> bool) -> void {
+    if hi - lo < 2 { return; };
+    lxvi_quick_i64(v, lo, hi - 1, less);
+    return;
+}
+
+fn lxvi_sort_i64(v: &Vec<i64>, less: fn(&i64, &i64) -> bool) -> void {
+    let n = len(v);
+    lxvi_quick_i64(v, 0, n, less);
+    return;
+}
+
+fn lxvi_less_i64c(a: &i64, b: &i64) -> bool {
+    return *a < *b;
+}
+
+@test "non-generic recursive sort shape stays green (lxvi control)"() {
+    let v = Vec::new();
+    v.push(3);
+    v.push(1);
+    lxvi_sort_i64(&v, lxvi_less_i64c);
+}

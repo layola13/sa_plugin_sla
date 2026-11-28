@@ -1,0 +1,72 @@
+// (lxxii) DEF-SLA-CHECKER-CAST-RETURN-USEAFTERMOVE: returning a
+// ptr->ptr reinterpret cast of a parameter must not trap 1009.
+// The checker used to treat the cast result as a fresh value and
+// release the source binding before the return; codegen reuses the
+// source register for such casts, so the release was a use-after-move.
+fn ret_direct(e: ptr) -> *i32 {
+    return e as *i32;
+}
+
+fn tail_cast(e: ptr) -> *i32 {
+    e as *i32
+}
+
+fn chain_cast(e: ptr) -> ptr {
+    return (e as *i32) as ptr;
+}
+
+fn let_cast(e: ptr) -> *i32 {
+    let r = e as *i32;
+    return r;
+}
+
+fn ptr_to_int(e: ptr) -> i64 {
+    return e as i64;
+}
+
+fn int_to_ptr(n: i64) -> *i32 {
+    return n as *i32;
+}
+
+@test "lxxii direct return cast"() {
+    let target: *i32 = Box::into_raw(Box::new(41));
+    let got = ret_direct(target as ptr);
+    if got != target { panic(77201); };
+    let _reclaim = unsafe { Box::from_raw(target) };
+}
+
+@test "lxxii tail expression cast"() {
+    let target: *i32 = Box::into_raw(Box::new(42));
+    let got = tail_cast(target as ptr);
+    if got != target { panic(77202); };
+    let _reclaim = unsafe { Box::from_raw(target) };
+}
+
+@test "lxxii chained cast"() {
+    let target: *i32 = Box::into_raw(Box::new(43));
+    let got = chain_cast(target as ptr);
+    if (got as *i32) != target { panic(77203); };
+    let _reclaim = unsafe { Box::from_raw(target) };
+}
+
+@test "lxxii let bound cast"() {
+    let target: *i32 = Box::into_raw(Box::new(44));
+    let got = let_cast(target as ptr);
+    if got != target { panic(77204); };
+    let _reclaim = unsafe { Box::from_raw(target) };
+}
+
+@test "lxxii ptr to int control"() {
+    let target: *i32 = Box::into_raw(Box::new(45));
+    let got = ptr_to_int(target as ptr);
+    if got != target as i64 { panic(77205); };
+    let _reclaim = unsafe { Box::from_raw(target) };
+}
+
+@test "lxxii int to ptr control"() {
+    let target: *i32 = Box::into_raw(Box::new(46));
+    let addr = target as i64;
+    let got = int_to_ptr(addr);
+    if got != target { panic(77206); };
+    let _reclaim = unsafe { Box::from_raw(target) };
+}

@@ -1,0 +1,10 @@
+// expect: UseAfterMove
+// (lxxii) negative: a binding that was truly moved must still be
+// rejected when it is reused through a cast. The cast-return fix only
+// exempts pointer-carrier reinterpret casts of live bindings; it must
+// not weaken move checking. (*i32 is a non-Copy owner: a plain let
+// binding moves it, so the reuse below is a true use-after-move.)
+fn bad_cast_after_move(n: *i32) -> ptr {
+    let m = n;
+    return n as ptr;
+}

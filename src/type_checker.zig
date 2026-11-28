@@ -2708,8 +2708,39 @@ pub const TypeChecker = struct {
         }
     }
 
-    fn functionExitBindingEscapes(scope: *Scope, result_expr: *const ast.Node, candidate: []const u8) bool {
-        const result_name = switch (result_expr.*) {
+    /// Source type of a cast operand for the exit-escape drill-down:
+    /// the checker's recorded expression type when available, else the
+    /// scope declaration type (identifier operand) or the inner cast's
+    /// target type. Null when undeterminable; callers must not drill
+    /// then (safe default: keep the old behaviour).
+    fn escapeCastOperandType(self: *TypeChecker, scope: *Scope, operand: *const ast.Node) ?*ast.Type {
+        if (self.expr_types.get(operand)) |ty| return ty;
+        switch (operand.*) {
+            .identifier => |name| {
+                const sym = scope.lookup(name) orelse return null;
+                return sym.ty;
+            },
+            .cast_expr => |inner| return inner.ty,
+            else => return null,
+        }
+    }
+
+    fn functionExitBindingEscapes(self: *TypeChecker, scope: *Scope, result_expr: *const ast.Node, candidate: []const u8) bool {
+        // Drill down through pointer-carrier reinterpret casts before
+        // taking the result identifier: codegen reuses the source
+        // register for such casts (castResultMaterializesTemp is false
+        // when both sides are pointer carriers), so the binding that
+        // escapes is the cast's innermost operand. Any level that is
+        // not a pointer-carrier reinterpret cast keeps the old
+        // behaviour (the cast result does not alias the operand).
+        var drill_expr = result_expr;
+        while (drill_expr.* == .cast_expr) {
+            const cast = drill_expr.cast_expr;
+            const src_ty = self.escapeCastOperandType(scope, cast.expr) orelse return false;
+            if (!isPointerCarrierCastType(src_ty) or !isPointerCarrierCastType(cast.ty)) return false;
+            drill_expr = cast.expr;
+        }
+        const result_name = switch (drill_expr.*) {
             .identifier => |name| name,
             .move_expr => |move| if (move.expr.* == .identifier) move.expr.identifier else return false,
             else => return false,
@@ -2794,7 +2825,7 @@ pub const TypeChecker = struct {
         while (current) |frame| : (current = frame.parent) {
             for (frame.symbols.values()) |*sym| {
                 if (sym.state != .active or isInternalSymbol(sym.name)) continue;
-                if (functionExitBindingEscapes(scope, future_expr, sym.name)) continue;
+                if (self.functionExitBindingEscapes(scope, future_expr, sym.name)) continue;
                 // issue013: skip borrowed source that was aliased.
                 if (self.issue013SkipApplies(scope, sym)) continue;
                 try cleanup_list.append(sym.name);
@@ -7793,7 +7824,7 @@ pub const TypeChecker = struct {
                     // as the return-statement collection does.
                     const last = func.body[func.body.len - 1];
                     if (last.* == .expr_stmt and !stmtTerminates(last)) {
-                        if (functionExitBindingEscapes(scope, last.expr_stmt, sym.name)) continue;
+                        if (self.functionExitBindingEscapes(scope, last.expr_stmt, sym.name)) continue;
                         if (self.issue013SkipApplies(scope, sym)) continue;
                         try fn_exit_cleanup_list.append(sym.name);
                         sym.state = .consumed;
@@ -8427,7 +8458,7 @@ pub const TypeChecker = struct {
                     for (s.symbols.values()) |*sym| {
                         if (sym.state == .active and !isInternalSymbol(sym.name)) {
                             if (ret.value) |val| {
-                                if (functionExitBindingEscapes(scope, val, sym.name)) continue;
+                                if (self.functionExitBindingEscapes(scope, val, sym.name)) continue;
                             }
                             // issue013: skip borrow source that has been re-aliased.
                             if (self.issue013SkipApplies(scope, sym)) continue;

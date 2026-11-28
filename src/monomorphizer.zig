@@ -763,6 +763,7 @@ pub const Monomorphizer = struct {
                         .op = bin.op,
                         .left = new_left,
                         .right = new_right,
+                        .from_unary_neg = bin.from_unary_neg,
                     },
                 };
                 return res;
@@ -2140,6 +2141,7 @@ pub const Monomorphizer = struct {
                         .op = bin.op,
                         .left = spec_left,
                         .right = spec_right,
+                        .from_unary_neg = bin.from_unary_neg,
                     },
                 };
                 return res;

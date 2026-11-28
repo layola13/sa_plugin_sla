@@ -3441,7 +3441,7 @@ pub const Parser = struct {
                 zero.* = .{ .literal = .{ .int_val = 0 } };
                 const expr = try self.parseExpr(8);
                 const node = try self.allocator.create(ast.Node);
-                node.* = .{ .binary_expr = .{ .op = .sub, .left = zero, .right = expr } };
+                node.* = .{ .binary_expr = .{ .op = .sub, .left = zero, .right = expr, .from_unary_neg = true } };
                 return node;
             },
             .bang => {

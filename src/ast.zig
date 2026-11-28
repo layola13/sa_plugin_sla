@@ -631,6 +631,12 @@ pub const BinaryExpr = struct {
     op: BinaryOp,
     left: *Node,
     right: *Node,
+    /// DEF-LXIX: set only by the parser's unary-minus lowering
+    /// (`-expr` becomes `(0 - expr)`). Lets SA-text codegen emit a
+    /// true float sign flip for unary negation, while an explicitly
+    /// written `0 - x` subtraction (flag unset) keeps IEEE fsub
+    /// semantics.
+    from_unary_neg: bool = false,
 };
 
 pub const CallExpr = struct {

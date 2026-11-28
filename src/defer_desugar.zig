@@ -324,7 +324,7 @@ pub const Desugarer = struct {
                     .callee = if (call.callee) |callee| try self.cloneExpr(callee) else null,
                 } };
             },
-            .binary_expr => |bin| copy.* = .{ .binary_expr = .{ .op = bin.op, .left = try self.cloneExpr(bin.left), .right = try self.cloneExpr(bin.right) } },
+            .binary_expr => |bin| copy.* = .{ .binary_expr = .{ .op = bin.op, .left = try self.cloneExpr(bin.left), .right = try self.cloneExpr(bin.right), .from_unary_neg = bin.from_unary_neg } },
             .borrow_expr => |b| copy.* = .{ .borrow_expr = .{ .expr = try self.cloneExpr(b.expr) } },
             .move_expr => |m| copy.* = .{ .move_expr = .{ .expr = try self.cloneExpr(m.expr) } },
             .deref_expr => |d| copy.* = .{ .deref_expr = .{ .expr = try self.cloneExpr(d.expr) } },

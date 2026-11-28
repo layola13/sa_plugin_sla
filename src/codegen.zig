@@ -14017,21 +14017,57 @@ pub const Codegen = struct {
         self.current_expr_later_nodes.shrinkRetainingCapacity(mark);
     }
 
+    /// DEF-LXIX (D1): true IEEE sign flip for float unary negation:
+    /// bitcast to the same-width integer, xor the sign mask, bitcast
+    /// back. SA's own `fneg` cannot be used here -- sci's LLVM-C
+    /// lowering maps it to `fsub 0.0, x`, which maps +0.0 to +0.0
+    /// (raw-SA probes fn1/fn4, 2026-11-28). The bit form is exact for
+    /// +-0.0, finite values, infinities and NaN payloads alike.
+    fn emitFloatSignFlip(self: *Codegen, operand: []const u8, ty: *const ast.Type) CodegenError![]const u8 {
+        const is_f32 = ty.* == .primitive and ty.primitive == .f32;
+        const bits_ty: []const u8 = if (is_f32) "i32" else "i64";
+        const shift_amt: u8 = if (is_f32) 31 else 63;
+        const bits = try self.newTmp();
+        self.outPrint("    {s} = bitcast {s} as {s}\n", .{ bits, operand, bits_ty }) catch return CodegenError.CodegenError;
+        const one = try self.newTmp();
+        self.outPrint("    {s} = 1\n", .{one}) catch return CodegenError.CodegenError;
+        const shift = try self.newTmp();
+        self.outPrint("    {s} = {}\n", .{ shift, shift_amt }) catch return CodegenError.CodegenError;
+        const mask = try self.newTmp();
+        self.outPrint("    {s} = shl {s}, {s}\n", .{ mask, one, shift }) catch return CodegenError.CodegenError;
+        try self.emitRelease(one);
+        try self.emitRelease(shift);
+        const neg_bits = try self.newTmp();
+        self.outPrint("    {s} = xor {s}, {s}\n", .{ neg_bits, bits, mask }) catch return CodegenError.CodegenError;
+        try self.emitRelease(bits);
+        try self.emitRelease(mask);
+        const out = try self.newTmp();
+        self.outPrint("    {s} = bitcast {s} as {s}\n", .{ out, neg_bits, typeString(ty) }) catch return CodegenError.CodegenError;
+        try self.emitRelease(neg_bits);
+        return out;
+    }
+
     fn emitPrimitiveCopy(self: *Codegen, target: []const u8, source: []const u8, ty: *const ast.Type) CodegenError!void {
         if (ty.* != .primitive) return CodegenError.CodegenError;
         switch (ty.primitive) {
             .boolean => self.outPrint("    {s} = or {s}, 0\n", .{ target, source }) catch return CodegenError.CodegenError,
             .f32, .f64, .float => {
-                // Floats need the `fadd` opcode, not integer `add`. Emitting
-                // `add src, 0.0` makes the backend fold it as an integer identity
-                // copy and coalesce the destination onto the source register, so a
-                // later mutation of the destination clobbers the source. Materialize
-                // a float-zero constant in a register and use `fadd`, mirroring the
-                // `value + 0.0` lowering that produces an independent copy.
-                const zero = try self.newTmp();
-                try self.emitFloatConst(zero, 0.0);
-                self.outPrint("    {s} = fadd {s}, {s}\n", .{ target, source, zero }) catch return CodegenError.CodegenError;
-                try self.emitRelease(zero);
+                // DEF-LXIX (D2): a float copy must preserve the exact
+                // bit pattern. The historical `fadd src, 0.0` form (an
+                // independent copy the backend cannot coalesce onto
+                // the source, unlike `add src, 0`) maps -0.0 to +0.0
+                // and quiets signaling NaNs. Round-trip the value
+                // through a stack slot instead: store/load is
+                // bit-exact and still materializes an independent
+                // value. The slot is registered as a stack_alloc
+                // binding so it is released implicitly at scope exit
+                // and never explicitly (a bare `!slot` would trap
+                // StackEscape).
+                const slot = try self.newTmp();
+                self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
+                self.outPrint("    {s} = stack_alloc {}\n", .{ slot, typeSize(ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+0, {s} as {s}\n", .{ slot, source, typeString(ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    {s} = load {s}+0 as {s}\n", .{ target, slot, typeString(ty) }) catch return CodegenError.CodegenError;
             },
             else => self.outPrint("    {s} = add {s}, 0\n", .{ target, source }) catch return CodegenError.CodegenError,
         }
@@ -20725,6 +20761,19 @@ pub const Codegen = struct {
         if (bin.op == .logical_and or bin.op == .logical_or) {
             return try self.genShortCircuitCombine(bin, l, hoisted_allocs);
         }
+        // DEF-LXIX (D1): a flagged unary-neg node reached via the
+        // binary spine (e.g. `(-x) * y`): `l` holds the lowered zero
+        // operand's register, which is not the value to negate --
+        // flip the right operand's sign bit instead.
+        if (bin.from_unary_neg and right_ty.* == .primitive and
+            (right_ty.primitive == .f32 or right_ty.primitive == .f64 or right_ty.primitive == .float))
+        {
+            const r = try self.genExpr(bin.right, hoisted_allocs);
+            const reg = try self.emitFloatSignFlip(r, right_ty);
+            if (self.exprResultRegNeedsRelease(bin.left)) try self.emitRelease(l);
+            if (self.exprResultRegNeedsRelease(bin.right)) try self.emitRelease(r);
+            return reg;
+        }
         const r = try self.genExpr(bin.right, hoisted_allocs);
         const reg = try self.newTmp();
         const op = binaryOpName(bin.op, left_ty, right_ty) orelse return CodegenError.CodegenError;
@@ -20943,6 +20992,19 @@ pub const Codegen = struct {
                 }
                 const left_ty = self.resolvedTypeForExpr(bin.left) orelse self.tc.expr_types.get(bin.left) orelse return CodegenError.CodegenError;
                 const right_ty = self.resolvedTypeForExpr(bin.right) orelse self.tc.expr_types.get(bin.right) orelse return CodegenError.CodegenError;
+                // DEF-LXIX (D1): unary minus on a float arrives here as
+                // the parser's `(0 - expr)` lowering (flagged). Emitting
+                // fsub would map a +0.0 operand to +0.0 and mangle NaN
+                // payloads, so emit a bit-level sign flip instead. An
+                // explicitly written `0 - x` (flag unset) keeps fsub.
+                if (bin.from_unary_neg and right_ty.* == .primitive and
+                    (right_ty.primitive == .f32 or right_ty.primitive == .f64 or right_ty.primitive == .float))
+                {
+                    const operand = try self.genExpr(bin.right, hoisted_allocs);
+                    const reg = try self.emitFloatSignFlip(operand, right_ty);
+                    if (self.exprResultRegNeedsRelease(bin.right)) try self.emitRelease(operand);
+                    return reg;
+                }
                 if (try self.genSpaceshipExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructEqualityExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructOrdExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;

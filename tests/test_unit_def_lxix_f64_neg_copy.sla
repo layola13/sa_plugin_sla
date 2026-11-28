@@ -1,0 +1,116 @@
+// DEF-LXIX regression corpus: float unary negation and named-binding
+// copies must be bit-exact.
+//   D1: unary minus was lowered to (0 - x) and emitted as fsub, which
+//       maps +0.0 to +0.0 (IEEE: 0.0 - 0.0 = +0.0) and mangles the
+//       NaN sign. Negation is a pure sign flip.
+//   D2: every named f64/f32 let binding was materialized with
+//       `fadd src, 0.0`, which maps -0.0 to +0.0 and quiets signaling
+//       NaNs. A copy must preserve the exact bit pattern.
+// Sign oracle: x == 0.0 and 1.0 / x < 0.0  <=>  x is -0.0.
+// On the pre-fix compiler the D1/D2 tests below fail; the control
+// tests (explicit subtraction, nonzero negation, plain values) pass
+// both before and after.
+
+fn lxix_neg_lit() -> f64 {
+    return -0.0;
+}
+
+fn lxix_neg(x: f64) -> f64 {
+    return -x;
+}
+
+fn lxix_neg_f32(x: f32) -> f32 {
+    return -x;
+}
+
+fn lxix_neg_zero_src() -> f64 {
+    return (-1.0) * 0.0;
+}
+
+fn lxix_neg_zero_f32_src() -> f32 {
+    return (-1.0) * 0.0;
+}
+
+
+
+@test "lxix d1 neg literal is neg zero"() {
+    if !((1.0 / lxix_neg_lit()) < 0.0) { panic(69701); };
+}
+
+@test "lxix d1 neg of pos zero is neg zero"() {
+    if !((1.0 / lxix_neg(0.0)) < 0.0) { panic(69702); };
+}
+
+@test "lxix d1 neg of neg zero is pos zero"() {
+    if (1.0 / lxix_neg(lxix_neg_zero_src())) < 0.0 { panic(69703); };
+}
+
+@test "lxix d1 neg nonzero control"() {
+    if lxix_neg(1.5) != 0.0 - 1.5 { panic(69704); };
+    if lxix_neg(0.0 - 2.25) != 2.25 { panic(69705); };
+}
+
+@test "lxix d1 explicit sub of zero stays pos zero"() {
+    let a: f64 = 0.0;
+    let b: f64 = 0.0 - a;
+    if (1.0 / b) < 0.0 { panic(69706); };
+}
+
+@test "lxix d1 neg f32 zero"() {
+    let r: f32 = 1.0 / lxix_neg_f32(0.0);
+    if !(r < 0.0) { panic(69707); };
+}
+
+@test "lxix d1 neg nan stays nan"() {
+    // NaN-ness must survive negation. (Payload/sign observation via
+    // the vec packed export path is not usable: that path corrupts
+    // the high bytes of f64 elements on baseline and fixed compilers
+    // alike -- separate pre-existing defect, see RESULT. The new
+    // negation emission is bitcast+xor, bit-exact by construction.)
+    let n: f64 = 0.0 / 0.0;
+    if n == n { panic(69709); };
+    let m: f64 = lxix_neg(n);
+    if m == m { panic(69710); };
+}
+
+@test "lxix d2 binding keeps neg zero"() {
+    let y: f64 = lxix_neg_zero_src();
+    if !(y == 0.0) { panic(69712); };
+    if !((1.0 / y) < 0.0) { panic(69713); };
+}
+
+@test "lxix d2 rebind keeps neg zero"() {
+    let x: f64 = lxix_neg_zero_src();
+    let y: f64 = x;
+    if !((1.0 / y) < 0.0) { panic(69714); };
+}
+
+@test "lxix d2 binding literal control"() {
+    let z: f64 = 2.5;
+    if z != 2.5 { panic(69715); };
+}
+
+@test "lxix d2 binding nan stays nan"() {
+    let x: f64 = 0.0 / 0.0;
+    let y: f64 = x;
+    if y == y { panic(69717); };
+    let z: f64 = y;
+    if z == z { panic(69718); };
+}
+
+@test "lxix d1 neg on binary spine"() {
+    // (-1.0) is a unary neg sitting on the left spine of the
+    // multiplication; the product must be -0.0 and must survive the
+    // named binding. Likewise (-a) * 1.0 for a = +0.0.
+    let y: f64 = (-1.0) * 0.0;
+    if !((1.0 / y) < 0.0) { panic(69721); };
+    let a: f64 = 0.0;
+    let b: f64 = -a * 1.0;
+    if !((1.0 / b) < 0.0) { panic(69722); };
+}
+
+@test "lxix d2 binding f32 keeps neg zero"() {
+    let w: f32 = lxix_neg_zero_f32_src();
+    let r: f32 = 1.0 / w;
+    if !(r < 0.0) { panic(69720); };
+}

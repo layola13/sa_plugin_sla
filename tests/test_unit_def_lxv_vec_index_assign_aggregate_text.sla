@@ -1,0 +1,139 @@
+@import "sa_std/core/box.sa"
+
+// DEF-LXV (lxv) regression: Vec index assignment of an aggregate
+// element must materialize a copy when the stored value is a live
+// binding whose ownership does not transfer (the push path's
+// CLASSB-DEF1 contract), not store the binding's own record pointer.
+// On the pre-fix compiler the slot aliases the source cell:
+//  - a by-value parameter's cell is freed at callee exit, so the
+//    slot dangles and reads back recycled garbage (the psa
+//    pickle.loads shape: __psa_vec_set_h storing its PsaVal param
+//    made the reader state read back 0 forever, PANIC 77315);
+//  - a @derive(copy) local's cell is freed both by the element
+//    drop and by the binding's own scope drop (double free).
+// The last two tests are guards: move stores and fresh-temp stores
+// transfer ownership and were green before the fix.
+
+@derive(copy)
+struct CVal {
+    tag: i64,
+    ipay: i64,
+    fpay: f64,
+}
+
+struct PVal {
+    tag: i64,
+    ipay: i64,
+    fpay: f64,
+}
+
+fn set_cval(p: ptr, i: i64, x: CVal) {
+    let bx = unsafe { Box::from_raw(p as *Vec<CVal>) };
+    (*bx)[i] = x;
+    let rp: i64 = Box::into_raw(bx) as i64;
+}
+
+fn get_cval(p: ptr, i: i64) -> CVal {
+    let bx = unsafe { Box::from_raw(p as *Vec<CVal>) };
+    let v = (*bx)[i];
+    let rp: i64 = Box::into_raw(bx) as i64;
+    return v;
+}
+
+fn push_cval(p: ptr, x: CVal) {
+    let bx = unsafe { Box::from_raw(p as *Vec<CVal>) };
+    (*bx).push(x);
+    let rp: i64 = Box::into_raw(bx) as i64;
+}
+
+fn set_pval(p: ptr, i: i64, x: PVal) {
+    let bx = unsafe { Box::from_raw(p as *Vec<PVal>) };
+    (*bx)[i] = x;
+    let rp: i64 = Box::into_raw(bx) as i64;
+}
+
+fn get_pval(p: ptr, i: i64) -> PVal {
+    let bx = unsafe { Box::from_raw(p as *Vec<PVal>) };
+    let v = (*bx)[i];
+    let rp: i64 = Box::into_raw(bx) as i64;
+    return v;
+}
+
+fn push_pval(p: ptr, x: PVal) {
+    let bx = unsafe { Box::from_raw(p as *Vec<PVal>) };
+    (*bx).push(x);
+    let rp: i64 = Box::into_raw(bx) as i64;
+}
+
+// Allocate and drop same-sized records so a just-freed element
+// cell is recycled with a distinctive payload before the readback.
+fn churn_cval(v: i64) -> i64 {
+    let t = CVal { tag: 9, ipay: v, fpay: 0.0 };
+    return t.ipay;
+}
+
+fn churn_pval(v: i64) -> i64 {
+    let t = PVal { tag: 9, ipay: v, fpay: 0.0 };
+    return t.ipay;
+}
+
+fn make_cval() -> CVal {
+    return CVal { tag: 6, ipay: 42, fpay: 0.0 };
+}
+
+@test "lxv index assign of derive-copy param survives callee exit"() {
+    let xs: Vec<CVal> = Vec::new();
+    let p = Box::into_raw(Box::new(xs)) as ptr;
+    push_cval(p, CVal { tag: 0, ipay: 10, fpay: 0.0 });
+    push_cval(p, CVal { tag: 0, ipay: 20, fpay: 0.0 });
+    set_cval(p, 1, CVal { tag: 0, ipay: 42, fpay: 0.0 });
+    let junk = churn_cval(777);
+    if junk != 777 { panic(97810); };
+    let out = get_cval(p, 1);
+    if out.ipay != 42 { panic(97811); };
+    let first = get_cval(p, 0);
+    if first.ipay != 10 { panic(97812); };
+}
+
+@test "lxv index assign of plain struct param survives callee exit"() {
+    let xs: Vec<PVal> = Vec::new();
+    let p = Box::into_raw(Box::new(xs)) as ptr;
+    push_pval(p, PVal { tag: 0, ipay: 10, fpay: 0.0 });
+    push_pval(p, PVal { tag: 0, ipay: 20, fpay: 0.0 });
+    set_pval(p, 1, PVal { tag: 0, ipay: 42, fpay: 0.0 });
+    let junk = churn_pval(777);
+    if junk != 777 { panic(97813); };
+    let out = get_pval(p, 1);
+    if out.ipay != 42 { panic(97814); };
+    let first = get_pval(p, 0);
+    if first.ipay != 10 { panic(97815); };
+}
+
+@test "lxv index assign of derive-copy local stays independent"() {
+    let v: Vec<CVal> = Vec::new();
+    v.push(CVal { tag: 0, ipay: 0, fpay: 0.0 });
+    let x = CVal { tag: 1, ipay: 42, fpay: 0.0 };
+    v[0] = x;
+    if v[0].ipay != 42 { panic(97816); };
+    if x.ipay != 42 { panic(97817); };
+}
+
+@test "lxv index assign move of plain local stays green"() {
+    let v: Vec<PVal> = Vec::new();
+    v.push(PVal { tag: 0, ipay: 0, fpay: 0.0 });
+    let y = PVal { tag: 2, ipay: 33, fpay: 0.0 };
+    v[0] = y;
+    if v[0].ipay != 33 { panic(97818); };
+    if v[0].tag != 2 { panic(97819); };
+}
+
+@test "lxv index assign of literal and call result stays green"() {
+    let v: Vec<CVal> = Vec::new();
+    v.push(CVal { tag: 0, ipay: 0, fpay: 0.0 });
+    v.push(CVal { tag: 0, ipay: 0, fpay: 0.0 });
+    v[0] = CVal { tag: 3, ipay: 42, fpay: 0.0 };
+    v[1] = make_cval();
+    if v[0].ipay != 42 { panic(97820); };
+    if v[1].ipay != 42 { panic(97821); };
+    if v[1].tag != 6 { panic(97822); };
+}

@@ -19263,13 +19263,30 @@ pub const Codegen = struct {
                 if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
                 return;
             }
+            // DEF-LXV: when the stored value is a live binding whose
+            // ownership does not transfer into the slot (a by-value
+            // aggregate parameter, a Copy local), the slot must take
+            // a fresh materialized copy -- the same copy push owes
+            // such an element (CLASSB-DEF1). Storing the binding's
+            // own record pointer aliases its cell, and the binding's
+            // scope drop then frees the very record the slot points
+            // at (psa pickle.loads: __psa_vec_set_h stored its PsaVal
+            // parameter, whose cell the callee exit freed). A store
+            // that itself moves the identifier (storedIdentifierNeedsRelease)
+            // keeps the historical transfer: the slot takes the cell
+            // and the finish below forgets the source.
+            const val_copy = if (self.storedIdentifierNeedsRelease(value, elem_ty))
+                null
+            else
+                try self.pushArgCopyMaterialization(value, val_reg, elem_ty);
+            const store_reg = val_copy orelse val_reg;
             // VECFIX phase 1: a compact-scalar slot is only its ABI
             // width wide; a full-word store would stomp the following
             // slots. Other elements keep the historical word store.
             if (self.vecElementSlotSize(elem_ty) < 8) {
-                self.outPrint("    store {s}+0, {s} as {s}\n", .{ ptr_reg, val_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+0, {s} as {s}\n", .{ ptr_reg, store_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
             } else {
-                self.outPrint("    store {s}+0, {s} as u64\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+                self.outPrint("    store {s}+0, {s} as u64\n", .{ ptr_reg, store_reg }) catch return CodegenError.CodegenError;
             }
             try self.emitRelease(ptr_reg);
             try self.emitRelease(offset_reg);
@@ -19281,7 +19298,13 @@ pub const Codegen = struct {
             // index temp must be retired here too (proven leak,
             // MemoryLeak 1012).
             if (self.indexResultNeedsRelease(idx.index)) try self.emitRelease(index_reg);
-            try self.finishStoredValueAfterSlotStore(value, elem_ty, val_reg);
+            if (val_copy != null) {
+                // The store consumed the fresh copy; the source
+                // binding was never touched and needs no settlement.
+                try self.emitForgetMovedValue(store_reg);
+            } else {
+                try self.finishStoredValueAfterSlotStore(value, elem_ty, val_reg);
+            }
             if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
             if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
             return;

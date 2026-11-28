@@ -1123,7 +1123,17 @@ pub const Monomorphizer = struct {
         @memset(inferred, null);
 
         for (template.params, args) |param, arg| {
-            const actual_ty = try self.inferNodeType(arg) orelse return null;
+            // (lxvi) An argument whose type cannot be inferred shallowly
+            // (e.g. a binary operation like `n - 1`, or a call whose
+            // return type is unknown) must not veto the whole call: it
+            // can only bind a generic if its template parameter type
+            // mentions one, and a generic left unbound is still caught
+            // by the check below. Without this, every self-recursive
+            // generic failed to specialize, because its self-call
+            // almost always passes a computed argument -- the call was
+            // left unrewritten, the template dropped, and check then
+            // reported "Undefined call".
+            const actual_ty = (try self.inferNodeType(arg)) orelse continue;
             const template_ty = try self.effectiveParamType(param);
             if (!try self.collectGenericBindings(template.generics, template_ty, actual_ty, inferred)) {
                 return null;

@@ -5747,6 +5747,26 @@ pub const Codegen = struct {
         };
     }
 
+    /// (lxi) DEF-TUPLE-COPY-EMIT: true when a Copy element value can
+    /// be materialized by genCopyValueInto / genTupleCopyValueInto.
+    /// Every struct in it must satisfy typeIsCopyStruct: the helpers
+    /// error on structs whose typeHasCopyDerive is false — and
+    /// typeHasCopyDerive is false for a struct holding a tuple field
+    /// even when typeIsCopyBinding is true. That shape keeps the
+    /// let-site boundary and stays out of scope for this round (it
+    /// needs tuple-field deep copy inside genCopyValueInto).
+    /// Scalars and fn_ptr words need no helper call (copied by value).
+    fn tupleElemCopyMaterializable(self: *Codegen, ty: *const ast.Type) bool {
+        if (ty.* == .tuple) {
+            for (ty.tuple.elems) |elem_ty| {
+                if (!self.tupleElemCopyMaterializable(elem_ty)) return false;
+            }
+            return true;
+        }
+        if (self.structDeclForType(ty) != null) return self.typeIsCopyStruct(ty);
+        return true;
+    }
+
     fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
         if (lowering_rules.shallowCopyCallArgValueBase(ty, depth)) |decision| return decision;
         return switch (ty.*) {
@@ -18417,6 +18437,36 @@ pub const Codegen = struct {
             const layout = tupleFieldLayout(tuple, i) orelse return CodegenError.CodegenError;
             const elem_expected: ?*const ast.Type = if (use_expected) tuple.elems[i] else null;
             const val_reg = try self.genExprWithExpectedTy(elem, elem_expected, hoisted_allocs);
+            // (lxi) DEF-TUPLE-COPY-EMIT, form A (R1439 9-0): a Copy
+            // element taken from an existing binding must be
+            // materialized into a fresh cell before the store. The
+            // checker spares the source binding (caliber
+            // typeIsCopyBinding — the let/destructure/assignment
+            // caliber, not the call-arg caliber typeIsCopyValue), so
+            // a plain store aliases the source unit and the source's
+            // exit cleanup frees the cell the tuple still points at
+            // (UAF: garbage values, code=32 or SIGSEGV). Fresh
+            // values (literals, call results, nested literals) already
+            // own their temp and transfer it into the tuple, so they
+            // are untouched; an explicit `move` of a Copy binding is
+            // a genuine transfer (source dead after), so it is
+            // excluded too. Struct and tuple element types recurse
+            // through the same copy helpers the let/const sites use
+            // (genCopyValueInto / genTupleCopyValueInto); the copy is
+            // consumed into the slot with the ^ marker, exactly like
+            // the nested copies inside those helpers. The source
+            // binding stays live — nothing below settles it.
+            var store_val_reg = val_reg;
+            const copy_elem = elem.* == .identifier and self.typeIsCopyBinding(tuple.elems[i]) and (tuple.elems[i].* == .tuple or self.structDeclForType(tuple.elems[i]) != null) and self.tupleElemCopyMaterializable(tuple.elems[i]);
+            if (copy_elem) {
+                const copied = try self.newTmp();
+                if (tuple.elems[i].* == .tuple) {
+                    try self.genTupleCopyValueInto(copied, val_reg, tuple.elems[i]);
+                } else {
+                    try self.genCopyValueInto(copied, val_reg, tuple.elems[i]);
+                }
+                store_val_reg = try std.fmt.allocPrint(self.allocator, "^{s}", .{copied});
+            }
             // TEXT-RESIDUAL-109 (pool family): a bare identifier (or an
             // explicit move of one) as a non-Copy tuple element is a
             // genuine register transfer into the aggregate — the same
@@ -18431,7 +18481,9 @@ pub const Codegen = struct {
             const transfers_root = (elem.* == .identifier or
                 (elem.* == .move_expr and elem.move_expr.expr.* == .identifier)) and
                 !self.typeIsCopyValue(tuple.elems[i]);
-            const store_reg = if (transfers_root and !std.mem.startsWith(u8, val_reg, "^"))
+            const store_reg = if (copy_elem)
+                store_val_reg
+            else if (transfers_root and !std.mem.startsWith(u8, val_reg, "^"))
                 try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg})
             else
                 val_reg;
@@ -18458,7 +18510,7 @@ pub const Codegen = struct {
                 // with a forget. Identifier and place elements keep
                 // the MOVEVEC-1 bookkeeping path below, unchanged.
                 try self.emitForgetMovedValue(val_reg);
-            } else if (!self.typeIsCopyValue(tuple.elems[i])) {
+            } else if (!copy_elem and !self.typeIsCopyValue(tuple.elems[i])) {
                 try self.markMovedExprBinding(elem, val_reg);
             } else if (elem.* == .cast_expr and self.exprResultRegNeedsRelease(elem)) {
                 // POOL-CAPTURE (Defect V): a materialising cast as a
